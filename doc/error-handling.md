@@ -1,6 +1,6 @@
 # Error Handling
 
-ez has no exceptions and no `try` / `catch`. There are two kinds of failure:
+Koji has no exceptions and no `try` / `catch`. There are two kinds of failure:
 
 | Kind | Examples | Handling |
 | --- | --- | --- |
@@ -11,7 +11,7 @@ ez has no exceptions and no `try` / `catch`. There are two kinds of failure:
 
 A function that can fail returns a `Result[T, E]`: `Ok(value)` on success, `Err(error)` on failure. The standard library uses typed errors, such as `FileError` or `ParseError`, so `match` can handle each case:
 
-```ez
+```koji
 match (int('42')) {
 	Ok(value) => print(value + 1)
 	Err(InvalidNumber(text)) => print(`not a number: ${text}`)
@@ -21,7 +21,7 @@ match (int('42')) {
 
 Standard library errors have a readable message: printing or interpolating them shows it, and `error.display()` returns it (`error.debug()` gives the structure, `InvalidNumber('abc')`). A `Result` itself keeps its structural form:
 
-```ez
+```koji
 match (int('abc')) {
 	Ok(value) => print(value)
 	Err(error) => print(error) // 'abc' is not a valid number
@@ -37,7 +37,7 @@ print(int('abc')) // Err(InvalidNumber('abc'))
 -   on a `Result`, `value?` gives the `Ok` value, or returns the `Err` from the function;
 -   on an `Option`, `value?` gives the `Some` value, or returns `None` from the function.
 
-```ez
+```koji
 function parseAge(text: string): Result[int, ParseError] {
 	age = int(text)?
 
@@ -52,15 +52,15 @@ The function must declare its return type, and it must be a `Result` (for `?` on
 
 At the top level of the main file, an `Err` or a `None` stops the program, prints the error and exits with code 1:
 
-```ez
-n = int('oops')? // error: main.ez:1: 'oops' is not a valid number
+```koji
+n = int('oops')? // error: main.kj:1: 'oops' is not a valid number
 ```
 
 ### Combining Errors of Different Types
 
 A function can only return one error type. To combine errors from different sources, declare a sum type with one variant for each of them:
 
-```ez
+```koji
 import file
 import json
 
@@ -80,7 +80,7 @@ function readConfig(path: string): Result[json.Json, ConfigError] {
 
 `?` wraps the error automatically when the function's error type has **exactly one** variant whose only field has the type of the error. Otherwise the conversion is ambiguous or impossible, and it is a compile error:
 
-```ez
+```koji
 type E = {
 	A(error: ParseError)
 	B(error: ParseError)
@@ -95,7 +95,7 @@ function f(): Result[int, E] {
 
 `result.mapErr(f)` converts the error of a `Result` with a function (or a variant with one field), and keeps an `Ok` as it is:
 
-```ez
+```koji
 function parse(text: string): Result[int, string] {
 	n = int(text).mapErr((error: ParseError) => `bad number: ${text}`)?
 
@@ -109,7 +109,7 @@ print(parse('x')) // Err('bad number: x')
 
 `panic(message)` stops the program. Use it for states that should be impossible, not for expected failures:
 
-```ez
+```koji
 function check(age: int): int {
 	if (age >= 0) { return age }
 

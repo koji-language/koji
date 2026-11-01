@@ -3,7 +3,7 @@ pub mod ast;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::error::EzError;
+use crate::error::KojiError;
 use crate::lexer::token::{SpannedToken, Token};
 use crate::lexer::Lexer;
 use ast::{
@@ -27,8 +27,8 @@ const MULTIPLICATIVE_BP: u8 = 11;
 const UNARY_BP: u8 = 12;
 const POWER_BP: u8 = 13;
 
-fn error<T>(message: String) -> Result<T, EzError> {
-    Err(EzError::ParserError(message))
+fn error<T>(message: String) -> Result<T, KojiError> {
+    Err(KojiError::ParserError(message))
 }
 
 pub struct Parser {
@@ -110,7 +110,7 @@ impl Parser {
         token
     }
 
-    fn error_here<T>(&self, message: String) -> Result<T, EzError> {
+    fn error_here<T>(&self, message: String) -> Result<T, KojiError> {
         let line = self.current_line();
         if line == 0 {
             error(message)
@@ -119,7 +119,7 @@ impl Parser {
         }
     }
 
-    fn expect(&mut self, expected: Token, description: &str) -> Result<(), EzError> {
+    fn expect(&mut self, expected: Token, description: &str) -> Result<(), KojiError> {
         if *self.current() == expected {
             self.advance();
             Ok(())
@@ -132,7 +132,7 @@ impl Parser {
         }
     }
 
-    fn expect_identifier(&mut self, description: &str) -> Result<String, EzError> {
+    fn expect_identifier(&mut self, description: &str) -> Result<String, KojiError> {
         match self.current().clone() {
             Token::Identifier(name) => {
                 self.advance();
@@ -143,7 +143,7 @@ impl Parser {
     }
 
     /// Like `expect_identifier`, but also accepts keywords (`regex.match`, `{ type: 'x' }`).
-    fn expect_name(&mut self, description: &str) -> Result<String, EzError> {
+    fn expect_name(&mut self, description: &str) -> Result<String, KojiError> {
         if let Some(name) = self.current().keyword_name() {
             self.advance();
             return Ok(name.to_string());
@@ -157,7 +157,7 @@ impl Parser {
     }
 
     /// Parses something enclosed in brackets, where line breaks never end an expression.
-    fn grouped<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T, EzError>) -> Result<T, EzError> {
+    fn grouped<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T, KojiError>) -> Result<T, KojiError> {
         let saved = std::mem::replace(&mut self.newline_ends_expression, false);
         let result = parse(self);
         self.newline_ends_expression = saved;
@@ -174,8 +174,8 @@ impl Parser {
     fn parse_comma_separated<T>(
         &mut self,
         close: &Token,
-        mut parse_item: impl FnMut(&mut Self) -> Result<T, EzError>,
-    ) -> Result<Vec<T>, EzError> {
+        mut parse_item: impl FnMut(&mut Self) -> Result<T, KojiError>,
+    ) -> Result<Vec<T>, KojiError> {
         let mut items = Vec::new();
         if self.current() != close {
             loop {
@@ -199,7 +199,7 @@ impl Parser {
     // ------------------------------------------------------------------
 
     /// Parses a statement, wrapping it with its line when positions are known.
-    fn parse_located_statement(&mut self) -> Result<AstNode, EzError> {
+    fn parse_located_statement(&mut self) -> Result<AstNode, KojiError> {
         let line = self.current_line();
         let statement = self.parse_statement()?;
         if line == 0 {
@@ -212,7 +212,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_statement(&mut self) -> Result<AstNode, EzError> {
+    pub fn parse_statement(&mut self) -> Result<AstNode, KojiError> {
         match self.current().clone() {
             Token::Break => {
                 self.ensure_inside_loop("break")?;
@@ -261,7 +261,7 @@ impl Parser {
         }
     }
 
-    fn ensure_inside_loop(&self, keyword: &str) -> Result<(), EzError> {
+    fn ensure_inside_loop(&self, keyword: &str) -> Result<(), KojiError> {
         if self.loop_depth == 0 {
             self.error_here(format!("'{}' can only be used inside a loop", keyword))
         } else {
@@ -269,7 +269,7 @@ impl Parser {
         }
     }
 
-    fn parse_return(&mut self) -> Result<AstNode, EzError> {
+    fn parse_return(&mut self) -> Result<AstNode, KojiError> {
         if self.function_depth == 0 {
             return self.error_here("'return' can only be used inside a function".to_string());
         }
@@ -285,7 +285,7 @@ impl Parser {
         Ok(AstNode::Return(Some(Box::new(value))))
     }
 
-    fn parse_expression_statement(&mut self) -> Result<AstNode, EzError> {
+    fn parse_expression_statement(&mut self) -> Result<AstNode, KojiError> {
         let expression = self.parse_expression(0)?;
 
         let op = match self.current() {
@@ -321,7 +321,7 @@ impl Parser {
         name: String,
         is_const: bool,
         is_imut: bool,
-    ) -> Result<AstNode, EzError> {
+    ) -> Result<AstNode, KojiError> {
         let ty = if *self.current() == Token::Colon {
             self.advance();
             Some(self.parse_type()?)
@@ -339,7 +339,7 @@ impl Parser {
         })
     }
 
-    fn parse_type(&mut self) -> Result<TypeExpr, EzError> {
+    fn parse_type(&mut self) -> Result<TypeExpr, KojiError> {
         let mut ty = if *self.current() == Token::LParen {
             // Function type `(int, string) => boolean`, or a type in parentheses
             // (`(() => int)[]`, a list of functions).
@@ -380,11 +380,11 @@ impl Parser {
         Ok(ty)
     }
 
-    fn parse_block(&mut self) -> Result<AstNode, EzError> {
+    fn parse_block(&mut self) -> Result<AstNode, KojiError> {
         self.grouped(Self::parse_block_inner)
     }
 
-    fn parse_block_inner(&mut self) -> Result<AstNode, EzError> {
+    fn parse_block_inner(&mut self) -> Result<AstNode, KojiError> {
         self.expect(Token::LBrace, "'{'")?;
         let mut statements = Vec::new();
         loop {
@@ -401,7 +401,7 @@ impl Parser {
         Ok(AstNode::Block(statements))
     }
 
-    fn parse_loop_body(&mut self) -> Result<AstNode, EzError> {
+    fn parse_loop_body(&mut self) -> Result<AstNode, KojiError> {
         self.loop_depth += 1;
         let body = self.parse_block();
         self.loop_depth -= 1;
@@ -409,7 +409,7 @@ impl Parser {
     }
 
     /// Parses a function body: `break`/`continue` do not cross function boundaries.
-    fn parse_function_body(&mut self, block_only: bool) -> Result<AstNode, EzError> {
+    fn parse_function_body(&mut self, block_only: bool) -> Result<AstNode, KojiError> {
         let saved_loops = std::mem::replace(&mut self.loop_depth, 0);
         self.function_depth += 1;
         let body = if block_only || *self.current() == Token::LBrace {
@@ -423,7 +423,7 @@ impl Parser {
     }
 
     /// Conditions must be parenthesized: `(x > 1)`, `not (x > 1)` or `(a) and (b)`.
-    fn parse_condition(&mut self, keyword: &str) -> Result<AstNode, EzError> {
+    fn parse_condition(&mut self, keyword: &str) -> Result<AstNode, KojiError> {
         let mut index = self.position;
         while matches!(self.token_at(index), Token::Not | Token::Bang) {
             index += 1;
@@ -437,7 +437,7 @@ impl Parser {
         self.parse_expression(0)
     }
 
-    fn parse_while(&mut self) -> Result<AstNode, EzError> {
+    fn parse_while(&mut self) -> Result<AstNode, KojiError> {
         self.advance(); // while
         let condition = self.parse_condition("while")?;
         let body = self.parse_loop_body()?;
@@ -447,7 +447,7 @@ impl Parser {
         })
     }
 
-    fn parse_for(&mut self) -> Result<AstNode, EzError> {
+    fn parse_for(&mut self) -> Result<AstNode, KojiError> {
         self.advance(); // for
         let is_mut = *self.current() == Token::Mut;
         if is_mut {
@@ -465,7 +465,7 @@ impl Parser {
         })
     }
 
-    fn parse_params(&mut self) -> Result<Vec<Param>, EzError> {
+    fn parse_params(&mut self) -> Result<Vec<Param>, KojiError> {
         self.expect(Token::LParen, "'(' before the parameters")?;
         let params = self.parse_comma_separated(&Token::RParen, |p| {
             let is_mut = *p.current() == Token::Mut;
@@ -485,7 +485,7 @@ impl Parser {
         Ok(params)
     }
 
-    fn parse_optional_return_type(&mut self) -> Result<Option<TypeExpr>, EzError> {
+    fn parse_optional_return_type(&mut self) -> Result<Option<TypeExpr>, KojiError> {
         if *self.current() == Token::Colon {
             self.advance();
             Ok(Some(self.parse_type()?))
@@ -494,7 +494,7 @@ impl Parser {
         }
     }
 
-    fn parse_function_declaration(&mut self) -> Result<AstNode, EzError> {
+    fn parse_function_declaration(&mut self) -> Result<AstNode, KojiError> {
         self.advance(); // function
         let mut name = self.expect_identifier("function name")?;
         // `function Person.greet(self)`: a method (or associated function) of `Person`.
@@ -536,7 +536,7 @@ impl Parser {
         matches!(self.token_at(index + 1), Token::FatArrow | Token::Colon)
     }
 
-    fn parse_lambda(&mut self) -> Result<AstNode, EzError> {
+    fn parse_lambda(&mut self) -> Result<AstNode, KojiError> {
         let params = self.parse_params()?;
         let return_type = self.parse_optional_return_type()?;
         self.expect(Token::FatArrow, "'=>' in anonymous function")?;
@@ -549,7 +549,7 @@ impl Parser {
     }
 
     /// `export function`, `export const`, `export var` or `export type`.
-    fn parse_export(&mut self) -> Result<AstNode, EzError> {
+    fn parse_export(&mut self) -> Result<AstNode, KojiError> {
         let line = self.current_line();
         self.advance(); // export
         if !matches!(
@@ -572,7 +572,7 @@ impl Parser {
         }
     }
 
-    fn parse_import(&mut self) -> Result<AstNode, EzError> {
+    fn parse_import(&mut self) -> Result<AstNode, KojiError> {
         self.advance(); // import
         if *self.current() == Token::LBrace {
             self.advance();
@@ -600,7 +600,7 @@ impl Parser {
         })
     }
 
-    fn expect_string(&mut self, description: &str) -> Result<String, EzError> {
+    fn expect_string(&mut self, description: &str) -> Result<String, KojiError> {
         match self.current().clone() {
             Token::StringLiteral(s) => {
                 self.advance();
@@ -611,7 +611,7 @@ impl Parser {
     }
 
     /// Fields `name: type` separated by newlines or commas, up to and including `}`.
-    fn parse_fields(&mut self) -> Result<Vec<Field>, EzError> {
+    fn parse_fields(&mut self) -> Result<Vec<Field>, KojiError> {
         let mut fields: Vec<Field> = Vec::new();
         loop {
             while matches!(self.current(), Token::Comma | Token::Semicolon) {
@@ -635,7 +635,7 @@ impl Parser {
         Ok(fields)
     }
 
-    fn parse_type_declaration(&mut self) -> Result<AstNode, EzError> {
+    fn parse_type_declaration(&mut self) -> Result<AstNode, KojiError> {
         self.advance(); // type
         let name = self.expect_identifier("type name")?;
         self.expect(Token::Equal, "'=' in type declaration")?;
@@ -661,7 +661,7 @@ impl Parser {
     }
 
     /// One operand of a type definition: a `{ ... }` body or a type name.
-    fn parse_type_part(&mut self) -> Result<TypeDef, EzError> {
+    fn parse_type_part(&mut self) -> Result<TypeDef, KojiError> {
         if *self.current() != Token::LBrace {
             return Ok(TypeDef::Alias(self.parse_type()?));
         }
@@ -709,7 +709,7 @@ impl Parser {
         }
     }
 
-    fn parse_variant(&mut self) -> Result<Variant, EzError> {
+    fn parse_variant(&mut self) -> Result<Variant, KojiError> {
         let name = self.expect_identifier("variant name")?;
         let mut fields = Vec::new();
         if *self.current() == Token::LParen {
@@ -761,7 +761,7 @@ impl Parser {
         Some((entry.0, entry.1, false))
     }
 
-    pub fn parse_expression(&mut self, min_bp: u8) -> Result<AstNode, EzError> {
+    pub fn parse_expression(&mut self, min_bp: u8) -> Result<AstNode, KojiError> {
         let mut left = self.parse_prefix()?;
 
         loop {
@@ -812,7 +812,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_prefix(&mut self) -> Result<AstNode, EzError> {
+    fn parse_prefix(&mut self) -> Result<AstNode, KojiError> {
         if *self.current() == Token::LParen && self.is_lambda_start(self.position) {
             return self.parse_lambda();
         }
@@ -880,7 +880,7 @@ impl Parser {
     }
 
     /// Called after consuming `{`. Entries are separated by commas or newlines.
-    fn parse_object_literal(&mut self) -> Result<AstNode, EzError> {
+    fn parse_object_literal(&mut self) -> Result<AstNode, KojiError> {
         let mut entries: Vec<ObjectEntry> = Vec::new();
         loop {
             while matches!(self.current(), Token::Comma | Token::Semicolon) {
@@ -910,7 +910,7 @@ impl Parser {
         Ok(AstNode::ObjectLiteral(entries))
     }
 
-    fn parse_call(&mut self, callee: AstNode) -> Result<AstNode, EzError> {
+    fn parse_call(&mut self, callee: AstNode) -> Result<AstNode, KojiError> {
         self.advance(); // '('
         let args = self.grouped(|p| {
             p.parse_comma_separated(&Token::RParen, |p| {
@@ -930,7 +930,7 @@ impl Parser {
         })
     }
 
-    fn parse_index(&mut self, target: AstNode) -> Result<AstNode, EzError> {
+    fn parse_index(&mut self, target: AstNode) -> Result<AstNode, KojiError> {
         self.advance(); // '['
         let index = self.grouped(|p| p.parse_expression(0))?;
         self.expect(Token::RBracket, "']' after the index")?;
@@ -940,7 +940,7 @@ impl Parser {
         })
     }
 
-    fn parse_member(&mut self, object: AstNode) -> Result<AstNode, EzError> {
+    fn parse_member(&mut self, object: AstNode) -> Result<AstNode, KojiError> {
         self.advance(); // '.'
         let name = self.expect_name("member name after '.'")?;
         Ok(AstNode::Member {
@@ -950,7 +950,7 @@ impl Parser {
     }
 
     /// Called after consuming `if`.
-    fn parse_if(&mut self) -> Result<AstNode, EzError> {
+    fn parse_if(&mut self) -> Result<AstNode, KojiError> {
         let condition = self.parse_condition("if")?;
         let then_branch = self.parse_block()?;
 
@@ -958,7 +958,7 @@ impl Parser {
             self.advance();
             if *self.current() == Token::If {
                 return self.error_here(
-                    "ez does not have 'else if'; use 'match' with guards".to_string(),
+                    "Koji does not have 'else if'; use 'match' with guards".to_string(),
                 );
             }
             Some(Box::new(self.parse_block()?))
@@ -974,7 +974,7 @@ impl Parser {
     }
 
     /// Called after consuming `match`.
-    fn parse_match(&mut self) -> Result<AstNode, EzError> {
+    fn parse_match(&mut self) -> Result<AstNode, KojiError> {
         self.expect(Token::LParen, "'(' after 'match'")?;
         let scrutinee = self.parse_expression(0)?;
         self.expect(Token::RParen, "')' after the match value")?;
@@ -1004,7 +1004,7 @@ impl Parser {
         })
     }
 
-    fn parse_match_arm(&mut self) -> Result<MatchArm, EzError> {
+    fn parse_match_arm(&mut self) -> Result<MatchArm, KojiError> {
         let pattern = self.parse_pattern()?;
 
         let guard = if *self.current() == Token::If {
@@ -1033,7 +1033,7 @@ impl Parser {
     }
 
     /// Arm bodies may be statements such as `x += 1` or `break`, as well as expressions.
-    fn parse_located_arm_expression(&mut self) -> Result<AstNode, EzError> {
+    fn parse_located_arm_expression(&mut self) -> Result<AstNode, KojiError> {
         let saved = std::mem::replace(&mut self.newline_ends_expression, true);
         let result = match self.current() {
             Token::Break | Token::Continue | Token::Return => self.parse_statement(),
@@ -1043,7 +1043,7 @@ impl Parser {
         result
     }
 
-    fn parse_pattern(&mut self) -> Result<Pattern, EzError> {
+    fn parse_pattern(&mut self) -> Result<Pattern, KojiError> {
         match self.current().clone() {
             Token::Identifier(name) => {
                 self.advance();
@@ -1089,8 +1089,8 @@ impl Parser {
 }
 
 /// Splits the raw contents of a template string into text and `${...}` expressions.
-fn parse_template(raw: &str, line: usize) -> Result<AstNode, EzError> {
-    let at_line = |message: String| -> Result<AstNode, EzError> {
+fn parse_template(raw: &str, line: usize) -> Result<AstNode, KojiError> {
+    let at_line = |message: String| -> Result<AstNode, KojiError> {
         if line == 0 {
             error(message)
         } else {
@@ -1144,7 +1144,7 @@ fn parse_template(raw: &str, line: usize) -> Result<AstNode, EzError> {
             let mut sub_parser = Parser::new(&tokens);
             let expression = match sub_parser.parse_expression(0) {
                 Ok(expression) => expression,
-                Err(EzError::ParserError(message)) => {
+                Err(KojiError::ParserError(message)) => {
                     return at_line(format!("in interpolation: {}", message))
                 }
                 Err(other) => return Err(other),
@@ -1170,7 +1170,7 @@ fn parse_template(raw: &str, line: usize) -> Result<AstNode, EzError> {
 }
 
 /// Parses a single expression and requires the input to end there.
-pub fn parse(tokens: &[Token]) -> Result<AstNode, EzError> {
+pub fn parse(tokens: &[Token]) -> Result<AstNode, KojiError> {
     let mut parser = Parser::new(tokens);
     let expression = parser.parse_expression(0)?;
     if *parser.current() != Token::EOF {
@@ -1182,7 +1182,7 @@ pub fn parse(tokens: &[Token]) -> Result<AstNode, EzError> {
     Ok(expression)
 }
 
-fn parse_statements(mut parser: Parser) -> Result<Vec<AstNode>, EzError> {
+fn parse_statements(mut parser: Parser) -> Result<Vec<AstNode>, KojiError> {
     let mut statements = Vec::new();
     loop {
         parser.skip_semicolons();
@@ -1199,22 +1199,22 @@ fn parse_statements(mut parser: Parser) -> Result<Vec<AstNode>, EzError> {
 }
 
 /// Parses an entire file: a sequence of statements.
-pub fn parse_program(tokens: &[Token]) -> Result<Vec<AstNode>, EzError> {
+pub fn parse_program(tokens: &[Token]) -> Result<Vec<AstNode>, KojiError> {
     parse_statements(Parser::new(tokens))
 }
 
 /// Parses an entire file keeping line information: statements are wrapped in `Located`, and a
 /// `(` or `[` at the start of a line is not taken as a call/index of the previous line.
-pub fn parse_program_with_positions(tokens: &[SpannedToken]) -> Result<Vec<AstNode>, EzError> {
+pub fn parse_program_with_positions(tokens: &[SpannedToken]) -> Result<Vec<AstNode>, KojiError> {
     parse_statements(Parser::with_positions(tokens))
 }
 
 /// Lexes and parses source code.
-pub fn parse_source(source: &str) -> Result<Vec<AstNode>, EzError> {
+pub fn parse_source(source: &str) -> Result<Vec<AstNode>, KojiError> {
     let tokens = Lexer::new(source).tokenize_spanned();
     if let Some(illegal) = tokens.iter().find(|t| matches!(t.token, Token::Illegal(_))) {
         if let Token::Illegal(c) = illegal.token {
-            return Err(EzError::LexerError(format!(
+            return Err(KojiError::LexerError(format!(
                 "line {}: unexpected character '{}'",
                 illegal.line, c
             )));
@@ -1228,12 +1228,12 @@ mod tests {
     use super::*;
     use crate::lexer::Lexer;
 
-    fn parse_str(source: &str) -> Result<AstNode, EzError> {
+    fn parse_str(source: &str) -> Result<AstNode, KojiError> {
         let tokens = Lexer::new(source).tokenize();
         parse(&tokens)
     }
 
-    fn parse_program_str(source: &str) -> Result<Vec<AstNode>, EzError> {
+    fn parse_program_str(source: &str) -> Result<Vec<AstNode>, KojiError> {
         let tokens = Lexer::new(source).tokenize();
         parse_program(&tokens)
     }
@@ -1702,7 +1702,7 @@ mod tests {
     #[test]
     fn imports() {
         let program = parse_program_str(
-            "import math\nimport m from 'math.ez'\nimport { add, subtract } from 'math.ez'",
+            "import math\nimport m from 'math.kj'\nimport { add, subtract } from 'math.kj'",
         )
         .unwrap();
         assert_eq!(

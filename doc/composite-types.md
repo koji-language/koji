@@ -4,7 +4,7 @@
 
 An ordered list of elements of the same type. The type of a list of `T` is written `T[]`.
 
-```ez
+```koji
 numbers: int[] = [1, 2, 3]
 
 coordinates: int[][] = [[1, 2], [3, 4]]
@@ -14,7 +14,7 @@ positions: int[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
 
 Elements are accessed by their index, starting at `0`. An index out of range panics.
 
-```ez
+```koji
 print(numbers[0]) // 1
 print(coordinates[1][0]) // 3
 print(numbers.length()) // 3

@@ -1,6 +1,6 @@
-# ez Language Documentation
+# Koji Language Documentation
 
-Welcome to the **ez** documentation. Here you will find the syntax, the types, functions, error handling, modules and the standard library.
+Welcome to the **Koji documentation**. Here you will find the syntax, the types, functions, error handling, modules and the standard library.
 
 ## Contents
 

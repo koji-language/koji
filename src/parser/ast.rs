@@ -152,9 +152,9 @@ pub struct MethodRef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImportKind {
-    /// `import math` / `import math from 'math.ez'`
+    /// `import math` / `import math from 'math.kj'`
     Module(String),
-    /// `import { add, subtract } from 'math.ez'`
+    /// `import { add, subtract } from 'math.kj'`
     Names(Vec<String>),
 }
 

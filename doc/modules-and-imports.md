@@ -4,8 +4,8 @@ Modules organize code in separate files. Each file is a module: it can import a 
 
 ## Declaring a Module
 
-```ez
-// file: math.ez
+```koji
+// file: math.kj
 
 export function add(a: int, b: int): int {
 	return a + b
@@ -18,26 +18,26 @@ export function subtract(a: int, b: int): int {
 
 Everything in a module is private by default. Only declarations marked with `export` (functions, `var`, `const` and `imut` variables, and types) can be imported by other modules. Exporting a sum type also exports its variants, and the methods of an exported type are available wherever the type is.
 
-```ez
-// file: math.ez
+```koji
+// file: math.kj
 
-function clamp(x: int): int { ... } // private: only usable inside math.ez
+function clamp(x: int): int { ... } // private: only usable inside math.kj
 
 export const pi: float = 3.14159
 ```
 
-```ez
-import { clamp } from 'math.ez' // Error! 'clamp' is not exported by 'math.ez'
+```koji
+import { clamp } from 'math.kj' // Error! 'clamp' is not exported by 'math.kj'
 ```
 
 `export` is only allowed at the top level of a file, and must be followed by `function`, `var`, `const`, `imut` or `type`. A declaration without a keyword (`x = 1`) cannot be exported.
 
 ## Importing a Module
 
-```ez
-// file: main.ez
+```koji
+// file: main.kj
 
-import math from 'math.ez'
+import math from 'math.kj'
 
 result: int = math.add(5, 10)
 
@@ -46,10 +46,10 @@ print(result) // 15
 
 The module is named after the file (`math`), and its items are used as `math.add`. To use them without the prefix, import specific items:
 
-```ez
-// file: main.ez
+```koji
+// file: main.kj
 
-import { add, subtract } from 'math.ez'
+import { add, subtract } from 'math.kj'
 
 result: int = add(5, 10)
 
@@ -64,8 +64,8 @@ Imports apply to the whole file, wherever they are written: types and functions 
 
 An exported `var` is read-only outside its module: only the module itself can assign to it. Importers always see its **current** value.
 
-```ez
-// file: counter.ez
+```koji
+// file: counter.kj
 
 export var count = 0
 
@@ -74,16 +74,16 @@ export function increment() {
 }
 ```
 
-```ez
-// file: main.ez
+```koji
+// file: main.kj
 
-import { count, increment } from 'counter.ez'
+import { count, increment } from 'counter.kj'
 
 increment()
 
 print(count) // 1
 
-count = 5 // Error! 'count' is read-only outside 'counter.ez'
+count = 5 // Error! 'count' is read-only outside 'counter.kj'
 ```
 
 Like `const`, only the variable is read-only: the contents of an exported list or object can still be changed.
@@ -92,7 +92,7 @@ Like `const`, only the variable is read-only: the contents of an exported list o
 
 An exported declaration cannot use a private type, because other modules could not name it:
 
-```ez
+```koji
 type Helper = {
 	value: int
 }

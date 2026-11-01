@@ -20,7 +20,7 @@ Use `monotonic()` when you need to measure elapsed time precisely, regardless of
 
 ## Example
 
-```ez
+```koji
 import time
 
 print('Waiting...')

@@ -1,17 +1,17 @@
-# ez
+# Koji
 
 > [!WARNING]
-> ez is in an early stage of development — expect breaking changes and unfinished features. It's not ready for production use.
+> Koji is in an early stage of development — expect breaking changes and unfinished features. It's not ready for production use.
 
-**ez** is a strongly and statically typed programming language designed to be simple, readable, and powerful.
+**Koji** is a strongly and statically typed programming language designed to be simple, readable, and powerful.
 
 > Built for developers who want to move fast, without sacrificing safety or performance.
 
 ---
 
-## Why ez?
+## Why Koji?
 
-ez was created with the belief that a programming language can be simple and **readable** without compromising security and performance.
+Koji was created with the belief that a programming language can be simple and **readable** without compromising security and performance.
 
 Key principles:
 
@@ -26,7 +26,7 @@ The goal is to provide a language that any developer can quickly learn and use c
 
 ## Getting Started
 
-New to ez? Start with [Getting Started](doc/getting-started.md).
+New to Koji? Start with [Getting Started](doc/getting-started.md).
 
 ---
 

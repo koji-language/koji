@@ -4,25 +4,25 @@ The `regex` module provides regular expressions for searching, validation, and s
 
 ## Import
 
-```ez
+```koji
 import regex
 ```
 
 ## Compiling a Pattern
 
-```ez
+```koji
 regex.compile(pattern: string) -> Result[Regex, RegexError]
 ```
 
 A pattern is compiled once, and the resulting `Regex` is used as many times as needed. Only compiling can fail; the methods of `Regex` cannot.
 
-```ez
+```koji
 type RegexError = {
     InvalidPattern(pattern: string, message: string)
 }
 ```
 
-```ez
+```koji
 match (regex.compile('(abc')) {
     Ok(_) => print('valid')
     Err(error) => print(error) // invalid regular expression '(abc': unclosed group
@@ -50,7 +50,7 @@ In `repl`, `$1` (or `${1}`) is the text of the first group, `${name}` the text o
 
 **Example:**
 
-```ez
+```koji
 import regex
 
 const digits = regex.compile('[0-9]+')?
@@ -82,7 +82,7 @@ print(date.replaceAll('2025-10', '$2/$1')) // 10/2025
 
 Represents a found match.
 
-```ez
+```koji
 Match {
 	value: string
 	start: int

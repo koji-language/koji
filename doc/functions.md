@@ -4,7 +4,7 @@ Functions allow you to encapsulate logic, making your code reusable and easier t
 
 ## Basic Syntax
 
-```ez
+```koji
 function sum(a: int, b: int): int {
 	return a + b
 }
@@ -24,7 +24,7 @@ Parameters always have a type. The return type comes after `)`; without it, the 
 
 A function whose body is a block can return its last expression without `return`:
 
-```ez
+```koji
 function max(a: int, b: int): int {
 	if (a > b) { a } else { b }
 }
@@ -32,7 +32,7 @@ function max(a: int, b: int): int {
 
 ## Anonymous Functions
 
-```ez
+```koji
 const double = (x: int): int => {
 	return x * 2
 }
@@ -42,7 +42,7 @@ print(double(10)) // 20
 
 When the body is a single expression, the braces and `return` can be left out, and the return type is inferred:
 
-```ez
+```koji
 const triple = (x: int) => x * 3
 
 print(triple(10)) // 30
@@ -54,7 +54,7 @@ The type of a function is written `(parameters) => return type`: `(int) => int`.
 
 A function created inside another function can read the variables around it. It captures a **read-only copy**: it sees the values from the moment it was created, and cannot change them.
 
-```ez
+```koji
 function makeAdder(amount: int): (int) => int {
 	return (x: int) => x + amount
 }
@@ -72,7 +72,7 @@ function count(): int {
 
 Variables at the top level of a module are not captured: functions can read and change them.
 
-```ez
+```koji
 total = 0
 
 function add(n: int) {
@@ -87,7 +87,7 @@ print(total) // 2
 
 A function cannot change its parameters, or their contents:
 
-```ez
+```koji
 function clear(items: int[]) {
 	items[0] = 0 // Error! cannot modify 'items': parameters can only be modified when declared 'mut'
 }
@@ -97,7 +97,7 @@ function clear(items: int[]) {
 
 A parameter marked `mut` can be changed, and the change is visible to the caller when the function returns. The call repeats `mut`, so it is clear where a variable may change:
 
-```ez
+```koji
 function reset(mut n: int) {
 	n = 0
 }
@@ -124,7 +124,7 @@ print(numbers) // [11, 2, 3]
 
 A function prefixed with a type is part of that type. With `self` as the first parameter, it is a **method**, called on a value; without `self`, it is an **associated function**, called on the type (useful for constructors):
 
-```ez
+```koji
 type Person = {
 	name: string
 	age: int

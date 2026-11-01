@@ -2,13 +2,13 @@ use std::path::Path;
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-ez - the ez programming language
+kojic - The Koji Programming Language
 
 Usage:
-    ez <file.ez>          check and run a program
-    ez run <file.ez>      check and run a program
-    ez check <file.ez>    only check syntax and types
-    ez help               show this message";
+    kojic <file.kj>          check and run a program
+    kojic run <file.kj>      check and run a program
+    kojic check <file.kj>    only check syntax and types
+    kojic help               show this message";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -27,8 +27,8 @@ fn main() -> ExitCode {
 
     let path = Path::new(file);
     let result = match command {
-        "check" => ez::check_file(path).map(|_| ()),
-        _ => ez::run_file(path),
+        "check" => kojic::check_file(path).map(|_| ()),
+        _ => kojic::run_file(path),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

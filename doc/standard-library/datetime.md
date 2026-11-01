@@ -34,7 +34,7 @@ The `datetime` module provides utilities to work with current date and time, and
 -   `parse(text: string, pattern: string) -> Result[int, DateError]`  
     Converts a date string that follows `pattern` into a timestamp (seconds since the epoch). The pattern uses the same tokens as `format`.
 
-    ```ez
+    ```koji
     type DateError = {
         PatternMismatch(text: string, pattern: string) // the text does not follow the pattern
         InvalidDate(text: string) // e.g. 2025-02-30
@@ -45,7 +45,7 @@ Dates and times are in UTC.
 
 ## Example
 
-```ez
+```koji
 import datetime
 
 date = datetime.today()

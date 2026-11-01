@@ -2,7 +2,7 @@
 
 Only backtick supports interpolation.
 
-```ez
+```koji
 name: string = 'Emma'
 
 print(`Hello, ${name}!`) // Hello, Emma!

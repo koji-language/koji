@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
-use crate::error::EzError;
+use crate::error::KojiError;
 use crate::parser::ast::{
     AssignOperator, AstNode, BinaryOperator, ImportKind, MatchArm, MethodRef, Pattern, TemplatePart, TryWrap,
     TypeDef, TypeExpr, UnaryOperator,
@@ -21,11 +21,11 @@ pub enum Flow {
     Break,
     Continue,
     Return(Value),
-    Error(EzError),
+    Error(KojiError),
 }
 
-impl From<EzError> for Flow {
-    fn from(error: EzError) -> Self {
+impl From<KojiError> for Flow {
+    fn from(error: KojiError) -> Self {
         Flow::Error(error)
     }
 }
@@ -105,7 +105,7 @@ impl Interpreter {
     }
 
     /// Runs the entry module of the program.
-    pub fn run(&mut self) -> Result<(), EzError> {
+    pub fn run(&mut self) -> Result<(), KojiError> {
         let entry = self.program.entry.clone();
         let result = self.load_module(&entry).map(|_| ());
         let _ = self.out.flush();
@@ -121,17 +121,17 @@ impl Interpreter {
     }
 
     pub(crate) fn error(&self, message: impl Into<String>) -> Flow {
-        Flow::Error(EzError::RuntimeError(format!("{}: {}", self.location(), message.into())))
+        Flow::Error(KojiError::RuntimeError(format!("{}: {}", self.location(), message.into())))
     }
 
-    fn load_module(&mut self, path: &Path) -> Result<Rc<ModuleValue>, EzError> {
+    fn load_module(&mut self, path: &Path) -> Result<Rc<ModuleValue>, KojiError> {
         if let Some(module) = self.modules.get(path) {
             return Ok(Rc::clone(module));
         }
         let program = match self.program.modules.get(path) {
             Some(program) => Rc::clone(program),
             None => {
-                return Err(EzError::ImportError(format!(
+                return Err(KojiError::ImportError(format!(
                     "module '{}' was not checked",
                     path.display()
                 )))
@@ -589,7 +589,7 @@ impl Interpreter {
                 Value::Variant(variant) if variant.name == "Err" => variant.values[0].display(),
                 other => other.display(),
             };
-            return Err(Flow::Error(EzError::UnhandledError(format!(
+            return Err(Flow::Error(KojiError::UnhandledError(format!(
                 "{}: {}",
                 self.location(),
                 shown

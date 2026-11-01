@@ -6,7 +6,7 @@ Custom types are declared with `type`. This page covers shape types (named field
 
 Types with fixed named fields, for values with a known structure.
 
-```ez
+```koji
 type Person = {
     name: string
     age: int
@@ -20,7 +20,7 @@ person: Person = {
 
 Shape types can be nested, and used for variables, function parameters and return types:
 
-```ez
+```koji
 type Address = {
     street: string
     city: string
@@ -50,7 +50,7 @@ All fields are required, and an object literal cannot have extra fields. Fields 
 
 Shape types are **nominal**: two types with the same fields are still different types. An object literal is accepted by any type whose fields it matches.
 
-```ez
+```koji
 type Celsius = { value: float }
 type Fahrenheit = { value: float }
 
@@ -64,7 +64,7 @@ fahrenheit = celsius // Error! Celsius is not Fahrenheit
 
 Types with dynamic keys: every key is a `string`, and every value has the same type. They work as dictionaries.
 
-```ez
+```koji
 type Dictionary = {
     [key: string]: string
 }
@@ -82,11 +82,11 @@ Reading a key that does not exist panics. To go through the keys, use `for key i
 
 ## Type Union
 
-ez does not support untagged type unions (e.g. `string | int`).
+Koji does not support untagged type unions (e.g. `string | int`).
 
 When a value can be one of several types, use a sum type (tagged union). Each variant is explicitly tagged, so the compiler can verify exhaustiveness and the programmer always knows which variant they are handling.
 
-```ez
+```koji
 type Value = string | int // Error! Untagged union is not allowed
 
 // Tagged union: each variant is named
@@ -102,7 +102,7 @@ This ensures that "it can be A or B" always comes with a tag you can match on. T
 
 A type defined with intersection (`&`) merges the fields of its parts into a new type:
 
-```ez
+```koji
 type Animal = {
     name: string
 }
@@ -116,9 +116,9 @@ const rex: Dog = { name: 'Rex', breed: 'Beagle' }
 
 ## No Subtyping
 
-ez has no subtyping. A type is not accepted where another type is expected, even when it has all of its fields: `Dog` above has the fields of `Animal`, but it is not an `Animal`.
+Koji has no subtyping. A type is not accepted where another type is expected, even when it has all of its fields: `Dog` above has the fields of `Animal`, but it is not an `Animal`.
 
-```ez
+```koji
 function greet(animal: Animal) {
     print(animal.name)
 }
@@ -131,7 +131,7 @@ greet({ name: rex.name }) // Ok
 
 A function declared as `function Type.name(...)` belongs to `Type`. With `self` as the first parameter, it is a **method**, called on a value:
 
-```ez
+```koji
 type Person = {
     name: string
     age: int
@@ -149,7 +149,7 @@ const person: Person = {
 person.greet() // Hello, I'm John!
 ```
 
-```ez
+```koji
 type Rect = {
     width: int
     height: int
@@ -173,7 +173,7 @@ print(rect.area()) // 12
 
 Without `self`, the function is an **associated function**, called on the type: `Type.name(...)`. It is useful for constructors:
 
-```ez
+```koji
 function Rect.square(side: int): Rect {
     return { width: side, height: side }
 }
@@ -185,7 +185,7 @@ print(Rect.square(3).area()) // 9
 
 Sum types can have methods too:
 
-```ez
+```koji
 type Shape = {
     Circle(radius: float)
     Square(side: float)
@@ -205,7 +205,7 @@ print(Square(2.0).area()) // 4.0
 
 A method that changes its value declares `mut self`. The call needs no marker, but the value must be a `var` or a `const` (or a field or element of one), not an `imut`:
 
-```ez
+```koji
 type Counter = {
     count: int
 }
@@ -223,7 +223,7 @@ print(counter.count) // 1
 
 ### Rules
 
--   Methods are declared at the top level of the file that declares the type, and take no `export`: they are available wherever the type is (`import { Point } from 'geometry.ez'` then `Point.origin()`, or `geometry.Point.origin()`).
+-   Methods are declared at the top level of the file that declares the type, and take no `export`: they are available wherever the type is (`import { Point } from 'geometry.kj'` then `Point.origin()`, or `geometry.Point.origin()`).
 -   A method cannot have the same name as a field of its type.
 -   A method with `self` is called on a value (`person.greet()`), and an associated function on the type (`Person.create()`); the other way around is an error.
 
@@ -231,7 +231,7 @@ print(counter.count) // 1
 
 `print` and string interpolation show a value with its type's `display` method, when there is one. It is declared as `function Type.display(self): string`:
 
-```ez
+```koji
 type Person = {
     name: string
     age: int

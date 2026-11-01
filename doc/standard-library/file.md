@@ -7,7 +7,7 @@ The `file` module provides functionality for working with files.
 -   `open(path: string, mode: Mode) -> Result[File, FileError]`  
     Opens the file at `path` in the specified `mode`:
 
-    ```ez
+    ```koji
     type Mode = {
         Read      // read
         Write     // write (overwrites existing content)

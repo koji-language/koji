@@ -19,9 +19,9 @@ impl Write for Output {
     }
 }
 
-fn execute(source: &str, input: &str, path: &Path) -> (String, Result<(), ez::error::EzError>) {
+fn execute(source: &str, input: &str, path: &Path) -> (String, Result<(), kojic::error::KojiError>) {
     let output = Output::default();
-    let result = ez::run_source(
+    let result = kojic::run_source(
         source,
         path,
         Box::new(output.clone()),
@@ -32,7 +32,7 @@ fn execute(source: &str, input: &str, path: &Path) -> (String, Result<(), ez::er
 }
 
 fn run_with_input(source: &str, input: &str) -> String {
-    let (output, result) = execute(source, input, Path::new("test.ez"));
+    let (output, result) = execute(source, input, Path::new("test.kj"));
     if let Err(error) = result {
         panic!("program failed: {}\noutput so far:\n{}", error, output);
     }
@@ -45,7 +45,7 @@ fn run(source: &str) -> String {
 
 /// Runs a program that must fail and returns the error message.
 fn run_err(source: &str) -> String {
-    let (output, result) = execute(source, "", Path::new("test.ez"));
+    let (output, result) = execute(source, "", Path::new("test.kj"));
     match result {
         Ok(()) => panic!("program should have failed, output:\n{}", output),
         Err(error) => error.to_string(),
@@ -63,7 +63,7 @@ fn assert_error(source: &str, fragment: &str) {
 }
 
 fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ez-test-{}-{}", name, std::process::id()));
+    let dir = std::env::temp_dir().join(format!("koji-test-{}-{}", name, std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -987,9 +987,9 @@ fn question_mark_rules() {
     assert_error("x = 5?", "can only be used on a Result or an Option");
     assert_error("g = (s: string) => int(s)?", "needs the function to declare its return type");
     // At the top level of the main file, an error stops the program.
-    let (output, result) = execute("print(int('1')?)\nn = int('oops')?\nprint('never')", "", Path::new("test.ez"));
+    let (output, result) = execute("print(int('1')?)\nn = int('oops')?\nprint('never')", "", Path::new("test.kj"));
     assert_eq!(output, "1\n");
-    assert_eq!(result.unwrap_err().to_string(), "error: test.ez:2: 'oops' is not a valid number");
+    assert_eq!(result.unwrap_err().to_string(), "error: test.kj:2: 'oops' is not a valid number");
 }
 
 #[test]
@@ -1013,9 +1013,9 @@ fn imports_are_hoisted() {
 fn modules_and_imports() {
     let dir = temp_dir("modules");
     std::fs::write(
-        dir.join("math.ez"),
+        dir.join("math.kj"),
         r#"
-        // file: math.ez
+        // file: math.kj
 
         export function add(a: int, b: int): int {
             return a + b
@@ -1045,10 +1045,10 @@ fn modules_and_imports() {
     )
     .unwrap();
     let source = r#"
-        // file: main.ez
+        // file: main.kj
 
-        import math from 'math.ez'
-        import { add, subtract, Shape, count, increment } from 'math.ez'
+        import math from 'math.kj'
+        import { add, subtract, Shape, count, increment } from 'math.kj'
 
         result: int = math.add(5, 10)
 
@@ -1062,21 +1062,21 @@ fn modules_and_imports() {
         math.increment()
         print(count, math.count) // always the current value
     "#;
-    let (output, result) = execute(source, "", &dir.join("main.ez"));
+    let (output, result) = execute(source, "", &dir.join("main.kj"));
     result.unwrap();
     assert_eq!(output, "15\n15 -5\nCircle(1.0) Square(2.0)\n2 2\n");
 
     let fails = |source: &str, fragment: &str| {
-        let (_, result) = execute(source, "", &dir.join("main.ez"));
+        let (_, result) = execute(source, "", &dir.join("main.kj"));
         let error = result.unwrap_err().to_string();
         assert!(error.contains(fragment), "expected {:?} in {:?}", fragment, error);
     };
-    fails("import { nope } from 'math.ez'", "has no member 'nope'");
-    fails("import { clamp } from 'math.ez'", "'clamp' is not exported by 'math.ez'");
-    fails("import math from 'math.ez'\nprint(math.clamp(1))", "'clamp' is not exported by 'math.ez'");
-    fails("import { count } from 'math.ez'\ncount = 5", "'count' is read-only outside 'math.ez'");
-    fails("import math from 'math.ez'\nmath.count = 5", "'count' is read-only outside 'math.ez'");
-    fails("import { origin } from 'math.ez'\norigin[0] = 1", "cannot modify 'origin': it is imut");
+    fails("import { nope } from 'math.kj'", "has no member 'nope'");
+    fails("import { clamp } from 'math.kj'", "'clamp' is not exported by 'math.kj'");
+    fails("import math from 'math.kj'\nprint(math.clamp(1))", "'clamp' is not exported by 'math.kj'");
+    fails("import { count } from 'math.kj'\ncount = 5", "'count' is read-only outside 'math.kj'");
+    fails("import math from 'math.kj'\nmath.count = 5", "'count' is read-only outside 'math.kj'");
+    fails("import { origin } from 'math.kj'\norigin[0] = 1", "cannot modify 'origin': it is imut");
 }
 
 #[test]
@@ -1242,7 +1242,7 @@ fn floats_have_no_nan_or_infinity() {
 
 #[test]
 fn panic_builtin() {
-    assert_error("panic('impossible state')", "panic: test.ez:1: impossible state");
+    assert_error("panic('impossible state')", "panic: test.kj:1: impossible state");
     let source = r#"
         function check(x: int): int {
             if (x > 0) { return x }
@@ -1258,10 +1258,10 @@ fn stdlib_json() {
     let source = r#"
         import json
 
-        match (json.parse('{"name": "ezlang", "year": 2025, "tags": ["a"], "ok": true, "x": null, "pi": 3.14}')) {
+        match (json.parse('{"name": "koji", "year": 2025, "tags": ["a"], "ok": true, "x": null, "pi": 3.14}')) {
             Ok(Object(fields)) => {
                 match (fields['name']) {
-                    String(name) => print(name) // ezlang
+                    String(name) => print(name) // koji
                     _ => print('name is not a string')
                 }
                 match (fields['x']) {
@@ -1288,7 +1288,7 @@ fn stdlib_json() {
 
         print(json.stringify(json.Array([json.Float(2.0), json.Int(2), json.String('a'), json.Null, json.Bool(false), json.Float(6.022e23)])))
         // parse and stringify give back the same text; floats keep their decimal point
-        for text in ['{"name":"ezlang","year":2025,"tags":[1,2.5,null]}', '[2.0, 1e3]'] {
+        for text in ['{"name":"koji","year":2025,"tags":[1,2.5,null]}', '[2.0, 1e3]'] {
             match (json.parse(text)) {
                 Ok(value) => print(json.stringify(value))
                 Err(error) => print(error)
@@ -1299,8 +1299,8 @@ fn stdlib_json() {
     "#;
     assert_eq!(
         run(source),
-        "ezlang\nnull\nInt(2025) Array([String('a')]) Float(3.14)\nSome(Int(2025)) None\nSome(2025) Some(2025.0) None\n{\"year\":2025}\n[2.0,2,\"a\",null,false,6.022e23]\n\
-         {\"name\":\"ezlang\",\"year\":2025,\"tags\":[1,2.5,null]}\n[2.0,1000.0]\nErr(Syntax('unexpected character \\'}\\'', 1, 7))\nErr(NumberOutOfRange('99999999999999999999', 2, 2))\n"
+        "koji\nnull\nInt(2025) Array([String('a')]) Float(3.14)\nSome(Int(2025)) None\nSome(2025) Some(2025.0) None\n{\"year\":2025}\n[2.0,2,\"a\",null,false,6.022e23]\n\
+         {\"name\":\"koji\",\"year\":2025,\"tags\":[1,2.5,null]}\n[2.0,1000.0]\nErr(Syntax('unexpected character \\'}\\'', 1, 7))\nErr(NumberOutOfRange('99999999999999999999', 2, 2))\n"
     );
     assert_error("import json\nprint(json.stringify(1))", "must be Json");
 }
@@ -1420,10 +1420,10 @@ fn stdlib_http() {
 fn all_examples_type_check() {
     for entry in std::fs::read_dir("examples").unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("ez") {
+        if path.extension().and_then(|e| e.to_str()) != Some("Koji") {
             continue;
         }
-        if let Err(error) = ez::check_file(&path) {
+        if let Err(error) = kojic::check_file(&path) {
             panic!("{}: {}", path.display(), error);
         }
     }
@@ -1493,7 +1493,7 @@ fn methods_and_associated_functions() {
 fn methods_of_imported_types() {
     let dir = temp_dir("methods");
     std::fs::write(
-        dir.join("geo.ez"),
+        dir.join("geo.kj"),
         r#"
         export type Point = {
             x: int
@@ -1519,8 +1519,8 @@ fn methods_of_imported_types() {
     )
     .unwrap();
     let source = r#"
-        import geo from 'geo.ez'
-        import { Point, make, double } from 'geo.ez'
+        import geo from 'geo.kj'
+        import { Point, make, double } from 'geo.kj'
 
         print(geo.Point.origin().sum(), Point.origin().sum(), make(2, 3).sum())
         var n = 3
@@ -1528,7 +1528,7 @@ fn methods_of_imported_types() {
         double(mut n)
         print(n)
     "#;
-    let (output, result) = execute(source, "", &dir.join("main.ez"));
+    let (output, result) = execute(source, "", &dir.join("main.kj"));
     result.unwrap();
     assert_eq!(output, "0 0 5\n12\n");
 }

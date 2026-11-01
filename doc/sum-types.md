@@ -6,7 +6,7 @@ Sum types (also known as tagged unions or variant types) allow a value to be one
 
 Use the `type` keyword to define a sum type with multiple variants:
 
-```ez
+```koji
 type Result = {
 	Ok(value: string)
 	Err(message: string)
@@ -17,7 +17,7 @@ type Result = {
 
 You can use pattern matching with `match` to handle each variant of a sum type.
 
-```ez
+```koji
 function handleResult(result: Result) {
 	match (result) {
 		Ok(value) => print(`Success: ${value}`)
@@ -30,7 +30,7 @@ function handleResult(result: Result) {
 
 `Option[T]` and `Result[T, E]` are provided by the language and behave as if they were declared like this (user-defined types cannot take type parameters):
 
-```ez
+```koji
 type Option[T] = {
 	Some(value: T)
 	None
@@ -44,7 +44,7 @@ type Result[T, E] = {
 
 Use `is` to check a variant; inside the `if`, its fields can be accessed directly:
 
-```ez
+```koji
 name: Option[string] = Some('Ana')
 
 if (name is Some) {
@@ -56,7 +56,7 @@ if (name is Some) {
 
 Use `_` as a wildcard to match any value not already covered:
 
-```ez
+```koji
 match (option) {
 	Some(value) => print(value)
 	_ => print('No value')
@@ -67,7 +67,7 @@ match (option) {
 
 Sum types support nested patterns and destructuring:
 
-```ez
+```koji
 type Shape = {
 	Circle(radius: float)
 	Rectangle(width: float, height: float)

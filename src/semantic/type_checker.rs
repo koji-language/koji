@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::error::EzError;
+use crate::error::KojiError;
 use crate::parser::ast::{
     AssignOperator, AstNode, BinaryOperator, Field, ImportKind, MatchArm, MethodRef, Param, Pattern,
     TemplatePart, TryWrap, TypeDef, TypeExpr, UnaryOperator,
@@ -12,7 +12,7 @@ use crate::parser::parse_source;
 use crate::semantic::builtin_sums::{stdlib_functions, BUILTIN_SUMS};
 use crate::semantic::types::{ModuleId, Type, TypeId, TypeKind, TypeTable, VariantDef};
 
-type CheckResult<T> = Result<T, EzError>;
+type CheckResult<T> = Result<T, KojiError>;
 
 /// Names of the standard library modules (`import math`).
 pub const STDLIB_MODULES: &[&str] = &["time", "file", "datetime", "math", "http", "json", "regex"];
@@ -101,7 +101,7 @@ struct Scope {
 
 #[derive(Debug, Default, Clone)]
 struct ModuleType {
-    /// How the module is named in messages (`math.ez`, `json`).
+    /// How the module is named in messages (`math.kj`, `json`).
     display: String,
     /// Exported values, functions and constructors.
     members: HashMap<String, Symbol>,
@@ -450,7 +450,7 @@ impl Checker {
     /// Checks the file at `path` and every module it imports.
     pub fn check_file(mut self, path: &Path) -> CheckResult<Program> {
         let source = std::fs::read_to_string(path).map_err(|e| {
-            EzError::ImportError(format!("cannot read '{}': {}", path.display(), e))
+            KojiError::ImportError(format!("cannot read '{}': {}", path.display(), e))
         })?;
         let entry = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         self.check_module(&entry, &path.display().to_string(), &source)?;
@@ -637,7 +637,7 @@ impl Checker {
         } else {
             format!("{}:{}", self.state.file, self.state.line)
         };
-        Err(EzError::TypeError(format!("{}: {}", location, message)))
+        Err(KojiError::TypeError(format!("{}: {}", location, message)))
     }
 
     fn show(&self, ty: &Type) -> String {
@@ -2729,7 +2729,7 @@ impl Checker {
                         if self.table.fields_of(param).is_some() && self.table.fields_of(&ty).is_some() =>
                     {
                         format!(
-                            " ({} is not a subtype of {}: ez has no subtyping, pass the fields explicitly)",
+                            " ({} is not a subtype of {}: Koji has no subtyping, pass the fields explicitly)",
                             self.show(&ty),
                             self.show(param)
                         )
@@ -3368,13 +3368,13 @@ fn prefix_error(file: &str, error: EzError) -> EzError {
         format!("{}: {}", file, message)
     };
     match error {
-        EzError::LexerError(message) => EzError::LexerError(locate(message)),
-        EzError::ParserError(message) => EzError::ParserError(locate(message)),
+        KojiError::LexerError(message) => KojiError::LexerError(locate(message)),
+        KojiError::ParserError(message) => KojiError::ParserError(locate(message)),
         other => other,
     }
 }
 
 /// Checks the file at `path` (and its imports).
-pub fn check_types(path: &Path) -> Result<Program, EzError> {
+pub fn check_types(path: &Path) -> Result<Program, KojiError> {
     Checker::new().check_file(path)
 }

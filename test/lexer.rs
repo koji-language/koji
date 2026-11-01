@@ -1,8 +1,8 @@
-use ez::lexer::{token::Token, Lexer};
+use kojic::lexer::{token::Token, Lexer};
 use std::fs;
 
 fn read_example(name: &str) -> String {
-    fs::read_to_string(format!("examples/{}.ez", name)).expect("failed to read example")
+    fs::read_to_string(format!("examples/{}.kj", name)).expect("failed to read example")
 }
 
 fn lex_all(input: &str) -> Vec<Token> {
@@ -22,12 +22,12 @@ fn test_basic_tokens() {
 fn test_all_examples_parse() {
     for entry in fs::read_dir("examples").unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("ez") {
+        if path.extension().and_then(|e| e.to_str()) != Some("Koji") {
             continue;
         }
         let source = fs::read_to_string(&path).unwrap();
         let tokens = Lexer::new(&source).tokenize();
-        let result = ez::parser::parse_program(&tokens);
+        let result = kojic::parser::parse_program(&tokens);
         assert!(result.is_ok(), "{}: {:?}", path.display(), result.err());
     }
 }

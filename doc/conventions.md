@@ -7,7 +7,7 @@
 -   Imports are written at the top of the file.
 -   A comment after code on the same line is separated from it by exactly one space. Comments are not aligned into columns:
 
-    ```ez
+    ```koji
     count = 0 // number of items
     total = 0.0 // sum of the prices
     ```
