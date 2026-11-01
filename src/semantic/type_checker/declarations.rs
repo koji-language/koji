@@ -162,6 +162,13 @@ impl Checker {
                 ));
             }
         }
+        // `drop` runs when a value goes out of scope; declaring it makes the type move-only.
+        if name == "drop" && (!has_self || params.len() != 1 || !params[0].is_mut || return_type.is_some()) {
+            return self.err(format!(
+                "'{}' must be declared as 'function {}(mut self)'",
+                full, full
+            ));
+        }
         for (i, param) in params.iter().enumerate() {
             if param.name != "self" {
                 continue;

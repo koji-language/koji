@@ -1780,3 +1780,173 @@ fn value_semantics() {
         "[1, 2, 3] [9, 2, 3]\n[[1, 2], [3, 4]] [[1, 2], [0, 4]]\n30 31\n30 32\n[1, 2] [100, 2]\n[1] [2]\n"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Move-only values and drop
+// ---------------------------------------------------------------------------
+
+const CONN: &str = r#"
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+"#;
+
+#[test]
+fn drop_runs_when_the_owner_goes_out_of_scope() {
+    let source = format!(
+        "{}{}",
+        CONN,
+        r#"
+        a = Conn.open('a')
+        if (true) {
+            b = Conn.open('b')
+            use(b)
+        }
+        c = Conn.open('c')
+        d = c
+        use(Conn.open('temp'))
+        Conn.open('statement')
+        e = Conn.open('e1')
+        e = Conn.open('e2')
+
+        function make(): Conn {
+            x = Conn.open('made')
+            y = Conn.open('local')
+            return x
+        }
+        m = make()
+        print('end')
+    "#
+    );
+    assert_eq!(
+        run(&source),
+        "opening a\nopening b\nusing b\nclosing b\nopening c\nopening temp\nusing temp\nclosing temp\n\
+         opening statement\nclosing statement\nopening e1\nopening e2\nclosing e1\nopening made\n\
+         opening local\nclosing local\nend\nclosing made\nclosing e2\nclosing c\nclosing a\n"
+    );
+}
+
+#[test]
+fn drop_runs_for_fields_after_the_owner() {
+    let source = format!(
+        "{}{}",
+        CONN,
+        r#"
+        type Pool = {
+            first: Conn
+            second: Conn
+        }
+
+        function Pool.drop(mut self) {
+            print('closing the pool')
+        }
+
+        type Maybe = {
+            One(conn: Conn)
+            Nothing
+        }
+
+        p: Pool = { first: Conn.open('p1'), second: Conn.open('p2') }
+        list: Conn[] = [Conn.open('l1'), Conn.open('l2')]
+        maybe: Maybe = One(Conn.open('v'))
+    "#
+    );
+    assert_eq!(
+        run(&source),
+        "opening p1\nopening p2\nopening l1\nopening l2\nopening v\nclosing v\nclosing l1\nclosing l2\n\
+         closing the pool\nclosing p1\nclosing p2\n"
+    );
+}
+
+#[test]
+fn files_are_closed_by_their_owner() {
+    let dir = temp_dir("ownership");
+    let path = dir.join("notes.txt").display().to_string().replace('\\', "/");
+    let source = format!(
+        r#"
+        import file
+
+        function save(path: string): Result[int, file.FileError] {{
+            f = file.open(path, file.Write)?
+            f.write('one ')?
+            g = f
+            g.write('two')?
+            return Ok(2)
+        }}
+
+        function load(path: string): Result[string, file.FileError] {{
+            f = file.open(path, file.Read)?
+            return f.read()
+        }}
+
+        print(save('{path}'))
+        print(load('{path}'))
+        h = file.open('{path}', file.Read)?
+        h.close()
+    "#
+    );
+    let (output, result) = execute(&source, "", &dir.join("main.ez"));
+    result.unwrap();
+    assert_eq!(output, "Ok(2)\nOk('one two')\n");
+}
+
+#[test]
+fn move_only_values_cannot_be_used_after_a_move() {
+    let errors = [
+        ("c = Conn.open('a')\nd = c\nprint(c.name)", "'c' cannot be used here: its value was moved (or closed) on line"),
+        ("c = Conn.open('a')\nif (true) { d = c }\nprint(c.name)", "its value was moved"),
+        ("function f(c: Conn) { d = c }", "'c' cannot be moved: it is a parameter, which only borrows its value"),
+        ("c = Conn.open('a')\nfor i in range(2) { d = c }", "cannot be moved inside a loop"),
+        ("c = Conn.open('a')\nfunction g() { d = c }", "declared outside this function"),
+        ("function g() {\nc = Conn.open('a')\nh = () => c.name\n}", "functions capture a copy"),
+        ("c = Conn.open('a')\nx = if (true) { c } else { c }", "cannot be moved out of a variable inside an 'if'"),
+        ("type Pair = { a: Conn }\np: Pair = { a: Conn.open('x') }\nq = p.a", "cannot be copied out of a field"),
+        ("c = Conn.open('a')\nc.drop()", "'drop' cannot be called"),
+        ("cs: Conn[] = [Conn.open('a')]\nfor mut c in cs { print(c.name) }", "'for mut' would copy each item"),
+        ("type Other = { n: int }\nfunction Other.drop(self) {}", "'Other.drop' must be declared as 'function Other.drop(mut self)'"),
+    ];
+    for (code, fragment) in errors {
+        assert_error(&format!("{}{}", CONN, code), fragment);
+    }
+    // A moved variable can get a new value, and a move in a branch that returns does not count.
+    let source = format!(
+        "{}{}",
+        CONN,
+        r#"
+        c = Conn.open('a')
+        d = c
+        c = Conn.open('b')
+        function pick(flag: boolean): Conn {
+            x = Conn.open('x')
+            if (flag) {
+                return x
+            }
+            print(x.name)
+            return x
+        }
+        p = pick(false)
+        print(c.name, d.name, p.name)
+    "#
+    );
+    assert_eq!(
+        run(&source),
+        "opening a\nopening b\nopening x\nx\nb a x\nclosing x\nclosing a\nclosing b\n"
+    );
+    assert_error(
+        "import file\nh = file.open('x', file.Read)?\nh.close()\nprint(h.read())",
+        "'h' cannot be used here",
+    );
+}

@@ -3,7 +3,9 @@
 use super::*;
 
 impl Interpreter {
-    pub(super) fn eval_match(&mut self, value: &Value, arms: &[MatchArm], env: &Rc<Env>) -> Exec<Value> {
+    /// `owning`: the value is a move-only temporary, so the bindings own its parts (and the
+    /// value is dropped when the arm binds nothing).
+    pub(super) fn eval_match(&mut self, value: &Value, arms: &[MatchArm], env: &Rc<Env>, owning: bool) -> Exec<Value> {
         for arm in arms {
             let scope = Env::child(env);
             if !self.match_pattern(&arm.pattern, value, &scope)? {
@@ -14,7 +16,13 @@ impl Interpreter {
                     continue;
                 }
             }
-            return self.exec_block(&arm.body, &scope);
+            let binds = owning && scope.own_all();
+            let result = self.exec_block(&arm.body, &scope);
+            let result = self.end_scope(&scope, result);
+            if owning && !binds && result.is_ok() {
+                self.drop_value(value.clone())?;
+            }
+            return result;
         }
         Err(self.error(format!("no match arm matches the value {}", value.repr())))
     }

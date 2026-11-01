@@ -11,6 +11,24 @@ impl Interpreter {
         displays: &[Option<MethodRef>],
         env: &Rc<Env>,
     ) -> Exec<Value> {
+        let mut temporaries = Vec::new();
+        let result = self.eval_call_with(callee, args, method, displays, env, &mut temporaries)?;
+        // Move-only temporaries used by the call (`show(Conn.open())`) are dropped after it.
+        for temporary in temporaries {
+            self.drop_value(temporary)?;
+        }
+        Ok(result)
+    }
+
+    fn eval_call_with(
+        &mut self,
+        callee: &AstNode,
+        args: &[AstNode],
+        method: Option<MethodRef>,
+        displays: &[Option<MethodRef>],
+        env: &Rc<Env>,
+        temporaries: &mut Vec<Value>,
+    ) -> Exec<Value> {
         // A method (`person.greet()`) or an associated function (`Person.create()`).
         if let Some(method) = method {
             let closure = match self.methods.get(&(method.module.clone(), method.key.clone())) {
@@ -28,19 +46,28 @@ impl Interpreter {
                         values.push(value);
                         places.push((0, place));
                     } else {
-                        values.push(self.eval(object, env)?);
+                        let value = self.eval(object, env)?;
+                        if self.is_temporary(object) {
+                            temporaries.push(value.clone());
+                        }
+                        values.push(value);
                     }
                 }
             }
             let offset = values.len();
-            let (rest, arg_places) = self.eval_args(args, env)?;
+            let (rest, arg_places, arg_temporaries) = self.eval_args(args, env)?;
+            temporaries.extend(arg_temporaries);
             values.extend(rest);
             places.extend(arg_places.into_iter().map(|(i, place)| (i + offset, place)));
             return self.call_with_places(&Value::Function(closure), values, places, env);
         }
-        if let AstNode::Member { object, name } = callee.unlocated() {
-            let object = self.eval(object, env)?;
-            let (args, places) = self.eval_args(args, env)?;
+        if let AstNode::Member { object: object_node, name } = callee.unlocated() {
+            let object = self.eval(object_node, env)?;
+            if self.is_temporary(object_node) {
+                temporaries.push(object.clone());
+            }
+            let (args, places, arg_temporaries) = self.eval_args(args, env)?;
+            temporaries.extend(arg_temporaries);
             if !places.is_empty() {
                 let function = self.member(&object, name)?;
                 return self.call_with_places(&function, args, places, env);
@@ -48,7 +75,8 @@ impl Interpreter {
             return self.call_method(&object, name, args);
         }
         let callee = self.eval(callee, env)?;
-        let (mut args, places) = self.eval_args(args, env)?;
+        let (mut args, places, arg_temporaries) = self.eval_args(args, env)?;
+        temporaries.extend(arg_temporaries);
         // `print(person)`: values whose type declares `display` are shown with it.
         for (arg, display) in args.iter_mut().zip(displays) {
             if display.is_some() {
@@ -79,6 +107,7 @@ impl Interpreter {
     pub(super) fn eval_args(&mut self, args: &[AstNode], env: &Rc<Env>) -> Exec<Args> {
         let mut values = Vec::with_capacity(args.len());
         let mut places = Vec::new();
+        let mut temporaries = Vec::new();
         for (i, arg) in args.iter().enumerate() {
             match arg.unlocated() {
                 AstNode::MutArg(place) => {
@@ -86,10 +115,16 @@ impl Interpreter {
                     values.push(value);
                     places.push((i, place));
                 }
-                other => values.push(self.eval(other, env)?),
+                other => {
+                    let value = self.eval(other, env)?;
+                    if self.is_temporary(other) {
+                        temporaries.push(value.clone());
+                    }
+                    values.push(value);
+                }
             }
         }
-        Ok((values, places))
+        Ok((values, places, temporaries))
     }
 
     pub(super) fn eval_place(&mut self, node: &AstNode, env: &Rc<Env>) -> Exec<(Value, Place)> {
@@ -172,6 +207,8 @@ impl Interpreter {
             AstNode::Block(statements) => self.exec_statements(statements, &scope),
             expression => self.eval(expression, &scope),
         };
+        // The function's own variables are dropped when it returns.
+        let result = self.end_scope(&scope, result);
         self.function_depth -= 1;
         self.file = saved_file;
         self.line = saved_line;

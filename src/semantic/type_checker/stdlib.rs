@@ -156,6 +156,7 @@ impl Checker {
             asts: HashMap::new(),
             methods: HashMap::new(),
             last_arg_types: Vec::new(),
+            ownership: Ownership::default(),
             state: ModuleState::default(),
         }
     }
@@ -239,6 +240,8 @@ impl Checker {
                         owner: None,
                         mut_params: Vec::new(),
                         reason: None,
+                        borrowed: None,
+                        narrowed: false,
                     },
                 );
             }
@@ -343,6 +346,9 @@ impl Checker {
     /// Checks a call to a built-in function and returns its result type.
     pub(super) fn check_builtin_call(&mut self, name: &str, args: &[AstNode]) -> CheckResult<Type> {
         let types = self.arg_types(args)?;
+        for (arg, ty) in args.iter().zip(&types) {
+            self.note_temporary(arg, ty);
+        }
         self.last_arg_types = types.clone();
         let b = self.builtins;
         let s = Type::String;

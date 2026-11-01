@@ -34,6 +34,7 @@ pub fn sum(name: &str) -> Rc<SumType> {
         Rc::clone(sums.borrow_mut().entry(definition.name).or_insert_with(|| {
             Rc::new(SumType {
                 name: definition.name.to_string(),
+                module: std::path::PathBuf::new(),
                 variants: definition
                     .variants
                     .iter()

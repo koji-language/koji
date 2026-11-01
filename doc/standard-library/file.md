@@ -26,9 +26,11 @@ The `file` module provides functionality for working with files.
     Writes `text` to the file. The file must have been opened with `Write` or `Append`.
 
 -   `close() -> void`  
-    Closes the file.
+    Closes the file. It consumes the variable: using it afterwards is a compile error.
 
-Reading a file opened for writing, writing to a file opened for reading, or using a closed file are bugs: they panic.
+A `File` is move-only: it cannot be copied, only moved, and it is closed automatically when its owner goes out of scope (see [Values and Memory](../memory.md#files)). So `close()` is only needed to close a file earlier.
+
+Reading a file opened for writing, or writing to a file opened for reading, is a bug: it panics.
 
 ## Errors
 

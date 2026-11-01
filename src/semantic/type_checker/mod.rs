@@ -22,9 +22,13 @@ mod statements;
 mod functions;
 mod expressions;
 mod calls;
+mod ownership;
 mod patterns;
 
 type CheckResult<T> = Result<T, EzError>;
+
+/// Variables whose value was moved, by scope index and name, with the line of the move.
+type Moves = HashMap<(usize, String), usize>;
 
 /// Names of the standard library modules (`import math`).
 pub const STDLIB_MODULES: &[&str] = &["time", "file", "datetime", "math", "http", "json", "regex"];
@@ -34,6 +38,32 @@ pub const STDLIB_MODULES: &[&str] = &["time", "file", "datetime", "math", "http"
 pub struct Program {
     pub entry: PathBuf,
     pub modules: HashMap<PathBuf, Rc<Vec<AstNode>>>,
+    pub ownership: Ownership,
+}
+
+/// What the interpreter needs to know about move-only values, found by the type checker. AST
+/// nodes are identified by their address (`node_id`): the parsed modules are never moved.
+#[derive(Debug, Clone, Default)]
+pub struct Ownership {
+    /// Variables read by moving them out (`g = f` reads `f`).
+    pub moves: HashSet<usize>,
+    /// Declarations of a variable that owns a move-only value: it is dropped at the end of its
+    /// block.
+    pub declares: HashSet<usize>,
+    /// Assignments that replace a move-only value: the old one is dropped.
+    pub replaces: HashSet<usize>,
+    /// Move-only values that are only used in place (`file.open(...)?` as a statement, or as an
+    /// argument): they are dropped after that use.
+    pub temporaries: HashSet<usize>,
+    /// Scrutinees of a `match` on a move-only temporary: its bindings own their values.
+    pub owning_matches: HashSet<usize>,
+    /// Object literals of a type with a `drop` method, with that method (module, `Type.drop`).
+    pub drops: HashMap<usize, (PathBuf, String)>,
+}
+
+/// Identity of an AST node, for the `Ownership` tables.
+pub fn node_id(node: &AstNode) -> usize {
+    node.unlocated() as *const AstNode as usize
 }
 
 /// Resolves the path of a user module relative to the directory of the importing file.
@@ -70,6 +100,12 @@ struct Symbol {
     /// Why the variable is read-only, when the reason is not its declaration (a parameter,
     /// `self`, the `for` variable...).
     reason: Option<&'static str>,
+    /// The variable borrows its value (a parameter, the `for` variable...): it cannot move it.
+    /// The text says what the variable is.
+    borrowed: Option<&'static str>,
+    /// A copy of a variable with a narrower type (`if (x is Some)`): moving it moves the
+    /// original too.
+    narrowed: bool,
 }
 
 impl Symbol {
@@ -82,6 +118,8 @@ impl Symbol {
             owner: None,
             mut_params: Vec::new(),
             reason: None,
+            borrowed: None,
+            narrowed: false,
         }
     }
 
@@ -94,6 +132,8 @@ impl Symbol {
             owner: None,
             mut_params: Vec::new(),
             reason: None,
+            borrowed: None,
+            narrowed: false,
         }
     }
 }
@@ -176,6 +216,12 @@ struct ModuleState {
     path: PathBuf,
     dir: PathBuf,
     line: usize,
+    /// Variables whose value was moved.
+    moved: Moves,
+    /// Scope index where each loop being checked starts.
+    loop_scopes: Vec<usize>,
+    /// While checking the patterns of a `match` on a variable: its bindings borrow.
+    borrowing_match: bool,
 }
 
 pub struct Checker {
@@ -190,6 +236,7 @@ pub struct Checker {
     methods: HashMap<(TypeId, String), MethodInfo>,
     /// Argument types of the last built-in call checked.
     last_arg_types: Vec<Type>,
+    ownership: Ownership,
     state: ModuleState,
 }
 
@@ -223,6 +270,7 @@ impl Checker {
         Ok(Program {
             entry,
             modules: self.asts,
+            ownership: self.ownership,
         })
     }
 
@@ -233,6 +281,7 @@ impl Checker {
         Ok(Program {
             entry,
             modules: self.asts,
+            ownership: self.ownership,
         })
     }
 
@@ -255,6 +304,8 @@ impl Checker {
 
     fn pop_scope(&mut self) {
         self.state.scopes.pop();
+        let len = self.state.scopes.len();
+        self.state.moved.retain(|(index, _), _| *index < len);
     }
 
     fn current_scope(&mut self) -> &mut Scope {

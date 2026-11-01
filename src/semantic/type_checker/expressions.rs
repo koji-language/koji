@@ -45,6 +45,7 @@ impl Checker {
                 let mut element_ty = Type::Unknown;
                 for element in elements {
                     let ty = self.check_value(element, expected_element.as_ref())?;
+                    self.consume(element, &ty)?;
                     element_ty = match self.join(&element_ty, &ty) {
                         Some(joined) => joined,
                         None => {
@@ -63,7 +64,17 @@ impl Checker {
                 }
                 Ok(Type::List(Box::new(element_ty)))
             }
-            AstNode::ObjectLiteral(entries) => self.check_object(entries, expected),
+            AstNode::ObjectLiteral(entries) => {
+                let ty = self.check_object(entries, expected)?;
+                // A value of a type with `drop` remembers its type, to call it.
+                if let Type::Named { id, .. } = &ty {
+                    if let Some(info) = self.methods.get(&(*id, "drop".to_string())) {
+                        let key = (info.module.clone(), self.method_name(*id, "drop"));
+                        self.ownership.drops.insert(node_id(node), key);
+                    }
+                }
+                Ok(ty)
+            }
             AstNode::Identifier(name) => self.check_identifier(name, expected),
             AstNode::Unary { op, operand } => {
                 let ty = self.check_value(operand, None)?;
@@ -150,14 +161,26 @@ impl Checker {
             } => {
                 self.check_condition(condition, "if")?;
                 let narrowed = self.narrowing(condition);
+                let before = self.state.moved.clone();
                 match else_branch {
                     None => {
-                        self.check_block(then_branch, None, narrowed)?;
+                        let then_ty = self.check_block(then_branch, None, narrowed)?;
+                        let then_moved = std::mem::replace(&mut self.state.moved, before.clone());
+                        self.merge_moves(before, vec![(then_moved, then_ty == Type::Never)]);
                         Ok(Type::Void)
                     }
                     Some(else_branch) => {
                         let then_ty = self.check_block(then_branch, expected, narrowed)?;
+                        let then_moved = std::mem::replace(&mut self.state.moved, before.clone());
                         let else_ty = self.check_block(else_branch, expected, vec![])?;
+                        let else_moved = std::mem::replace(&mut self.state.moved, before.clone());
+                        self.merge_moves(
+                            before,
+                            vec![
+                                (then_moved, then_ty == Type::Never),
+                                (else_moved, else_ty == Type::Never),
+                            ],
+                        );
                         self.branch_types(&[then_ty, else_ty], expected, "if")
                     }
                 }
@@ -181,6 +204,8 @@ impl Checker {
     /// `value?` on a `Result` or an `Option`: its type is the `Ok` / `Some` value.
     pub(super) fn check_try(&mut self, value: &AstNode, wrap: &RefCell<Option<TryWrap>>) -> CheckResult<Type> {
         let ty = self.check_value(value, None)?;
+        // `x?` takes the value out of `x`.
+        self.consume(value, &ty)?;
         let (id, args) = match &ty {
             Type::Named { id, args } if *id == self.builtins.result || *id == self.builtins.option => {
                 (*id, args.clone())
@@ -347,6 +372,7 @@ impl Checker {
                     if let Type::Named { id, args } = &symbol.ty {
                         if id == variant_type {
                             let mut narrowed = symbol.clone();
+                            narrowed.narrowed = true;
                             narrowed.ty = Type::Variant {
                                 id: *id,
                                 args: args.clone(),
@@ -478,7 +504,11 @@ impl Checker {
                 "'{}' has 'mut' parameters and can only be called, not used as a value",
                 name
             )),
-            SymbolKind::Value => Ok(symbol.ty),
+            SymbolKind::Value => {
+                self.ensure_not_moved(name)?;
+                self.ensure_not_captured_move_only(name, &symbol.ty)?;
+                Ok(symbol.ty)
+            }
         }
     }
 
@@ -494,6 +524,7 @@ impl Checker {
                     match fields.iter().find(|(n, _)| *n == entry.key) {
                         Some((_, field_ty)) => {
                             let value_ty = self.check_value(&entry.value, Some(field_ty))?;
+                            self.consume(&entry.value, &value_ty)?;
                             if !self.assignable(field_ty, &value_ty) {
                                 return self.err(format!(
                                     "field '{}' of {} must be {}, found {}",
@@ -526,6 +557,7 @@ impl Checker {
             Some((ty, TypeKind::Dict { value, .. })) => {
                 for entry in entries {
                     let value_ty = self.check_value(&entry.value, Some(&value))?;
+                    self.consume(&entry.value, &value_ty)?;
                     if !self.assignable(&value, &value_ty) {
                         return self.err(format!(
                             "value of '{}' must be {}, found {}",
@@ -558,6 +590,7 @@ impl Checker {
 
     pub(super) fn check_member(&mut self, object: &AstNode, name: &str) -> CheckResult<Type> {
         let object_ty = self.check_value(object, None)?;
+        self.note_temporary(object, &object_ty);
         match &object_ty {
             Type::Module(id) => match self.modules[*id].members.get(name).cloned() {
                 Some(symbol) => match symbol.kind {

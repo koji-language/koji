@@ -50,6 +50,7 @@ impl Interpreter {
                 } => {
                     let sum = Rc::new(SumType {
                         name: name.clone(),
+                        module: self.module_path.clone(),
                         variants: variants
                             .iter()
                             .map(|v| {
@@ -77,6 +78,10 @@ impl Interpreter {
         let mut last = Value::Void;
         for statement in statements {
             last = self.eval(statement, env)?;
+            // A move-only value produced by a statement and not stored is dropped.
+            if self.is_temporary(statement) {
+                self.drop_value(last.clone())?;
+            }
         }
         match statements.last().map(AstNode::unlocated) {
             Some(
@@ -95,10 +100,11 @@ impl Interpreter {
     /// Runs a block (or a single expression, e.g. a match arm) in a new scope.
     pub(super) fn exec_block(&mut self, node: &AstNode, env: &Rc<Env>) -> Exec<Value> {
         let scope = Env::child(env);
-        match node.unlocated() {
+        let result = match node.unlocated() {
             AstNode::Block(statements) => self.exec_statements(statements, &scope),
             other => self.eval(other, &scope),
-        }
+        };
+        self.end_scope(&scope, result)
     }
 
     pub(super) fn exec_loop_body(&mut self, body: &AstNode, env: &Rc<Env>) -> Exec<bool> {
@@ -111,6 +117,7 @@ impl Interpreter {
 
     pub(super) fn eval_assign(
         &mut self,
+        node: &AstNode,
         target: &AstNode,
         op: &AssignOperator,
         value: &AstNode,
@@ -120,13 +127,25 @@ impl Interpreter {
         if let AstNode::Identifier(name) = target.unlocated() {
             if env.get(name).is_none() {
                 let value = self.eval(value, env)?;
-                env.define(name, value);
+                // A variable whose value was moved out gets a value again.
+                if !env.restore(name, value.clone()) {
+                    env.define(name, value);
+                    if self.ownership.declares.contains(&node_id(node)) {
+                        env.own(name);
+                    }
+                }
                 return Ok(());
             }
         }
         // The place first (with its indices), then the value, as written from left to right.
         let place = self.resolve_place(target, env)?;
         let current = self.read_place(&place, env)?;
+        // Replacing a move-only value drops the old one.
+        let replaced = if self.ownership.replaces.contains(&node_id(node)) {
+            current.clone()
+        } else {
+            None
+        };
         let value = self.eval(value, env)?;
         let value = match (op.binary(), current) {
             (None, Some(Value::Float(_))) => coerce(value, true),
@@ -142,6 +161,10 @@ impl Interpreter {
                 }))
             }
         };
-        self.write_place(&place, value, env)
+        self.write_place(&place, value, env)?;
+        match replaced {
+            Some(old) => self.drop_value(old),
+            None => Ok(()),
+        }
     }
 }

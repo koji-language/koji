@@ -25,6 +25,7 @@ impl Checker {
                 path: path.to_path_buf(),
                 dir,
                 line: 0,
+                ..ModuleState::default()
             },
         );
 

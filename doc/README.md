@@ -27,6 +27,7 @@ New to ez? Start with [Getting Started](getting-started.md).
 -   [Functions](functions.md)
 -   [String Interpolation](string-interpolation.md)
 -   [Error Handling](error-handling.md): `Result`, `?` and panics
+-   [Values and Memory](memory.md): copies, move-only values and `drop`
 -   [Modules and Imports](modules-and-imports.md)
 
 ### Reference

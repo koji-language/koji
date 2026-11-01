@@ -18,6 +18,10 @@ impl Checker {
             let is_last = i + 1 == statements.len();
             tail = self.check_statement(statement, if is_last { expected } else { None })?;
             if !is_last && !matches!(tail, Type::Never) {
+                // The value of an expression statement is discarded.
+                if !is_statement(statement) {
+                    self.note_temporary(statement, &tail);
+                }
                 tail = Type::Void;
             }
         }
@@ -80,13 +84,17 @@ impl Checker {
                     }
                     None => value_ty,
                 };
+                self.consume(value, &var_ty)?;
+                if self.is_move_only(&var_ty) {
+                    self.ownership.declares.insert(node_id(node));
+                }
                 let mut symbol = Symbol::value(var_ty, *is_const);
                 symbol.is_imut = *is_imut;
                 self.declare(name, symbol)?;
                 Ok(Type::Void)
             }
             AstNode::Assign { target, op, value } => {
-                self.check_assign(target, op, value)?;
+                self.check_assign(node, target, op, value)?;
                 Ok(Type::Void)
             }
             AstNode::FunctionDecl {
@@ -128,7 +136,10 @@ impl Checker {
             AstNode::Import { .. } => Ok(Type::Void),
             AstNode::While { condition, body } => {
                 self.check_condition(condition, "while")?;
-                self.check_block(body, None, vec![])?;
+                self.state.loop_scopes.push(self.state.scopes.len());
+                let result = self.check_block(body, None, vec![]);
+                self.state.loop_scopes.pop();
+                result?;
                 Ok(Type::Void)
             }
             AstNode::For {
@@ -148,10 +159,22 @@ impl Checker {
                     },
                     _ => return self.not_iterable(&iterable_ty),
                 };
+                self.note_temporary(iterable, &iterable_ty);
+                if *is_mut && self.is_move_only(&item) {
+                    return self.err(format!(
+                        "'for mut' would copy each item, and {} is move-only: use 'for {} in'",
+                        self.show(&item),
+                        variable
+                    ));
+                }
                 let mut symbol = Symbol::value(item, !is_mut);
                 symbol.is_imut = !is_mut;
                 symbol.reason = Some("the 'for' variable is imut (use 'for mut' to change it)");
-                self.check_block(body, None, vec![(variable.clone(), symbol)])?;
+                symbol.borrowed = Some("the 'for' variable");
+                self.state.loop_scopes.push(self.state.scopes.len());
+                let result = self.check_block(body, None, vec![(variable.clone(), symbol)]);
+                self.state.loop_scopes.pop();
+                result?;
                 Ok(Type::Void)
             }
             AstNode::Break | AstNode::Continue => Ok(Type::Never),
@@ -188,7 +211,11 @@ impl Checker {
             None => return self.err("'return' outside of a function".to_string()),
         };
         let value_ty = match value {
-            Some(value) => Some(self.check_value(value, declared.as_ref())?),
+            Some(value) => {
+                let ty = self.check_value(value, declared.as_ref())?;
+                self.consume(value, &ty)?;
+                Some(ty)
+            }
             None => None,
         };
         match (declared, value_ty) {
@@ -235,7 +262,13 @@ impl Checker {
         }
     }
 
-    pub(super) fn check_assign(&mut self, target: &AstNode, op: &AssignOperator, value: &AstNode) -> CheckResult<()> {
+    pub(super) fn check_assign(
+        &mut self,
+        node: &AstNode,
+        target: &AstNode,
+        op: &AssignOperator,
+        value: &AstNode,
+    ) -> CheckResult<()> {
         match target {
             AstNode::Identifier(name) => {
                 let existing = self.lookup(name).cloned();
@@ -247,6 +280,10 @@ impl Checker {
                         }
                         // Assigning to a new name declares a mutable variable.
                         let ty = self.check_value(value, None)?;
+                        self.consume(value, &ty)?;
+                        if self.is_move_only(&ty) {
+                            self.ownership.declares.insert(node_id(node));
+                        }
                         return self.declare(name, Symbol::value(ty, false));
                     }
                 };
@@ -267,6 +304,14 @@ impl Checker {
                     return self.err(format!("cannot modify a 'const' value ('{}')", name));
                 }
                 let new_ty = self.check_assigned_value(&symbol.ty, op, value, name)?;
+                self.consume(value, &new_ty)?;
+                if self.is_move_only(&symbol.ty) {
+                    // The old value is dropped, and a moved variable gets a value again.
+                    self.ownership.replaces.insert(node_id(node));
+                    if let Some(index) = self.scope_of(name) {
+                        self.state.moved.remove(&(index, name.clone()));
+                    }
+                }
                 if symbol.ty.contains_unknown() {
                     let refined = self.join(&symbol.ty, &new_ty).unwrap_or(symbol.ty.clone());
                     if let Some(symbol) = self.lookup_mut(name) {
@@ -296,7 +341,11 @@ impl Checker {
                     Type::String => return self.err("strings cannot be modified".to_string()),
                     other => return self.err(format!("cannot assign by index to {}", self.show(other))),
                 };
-                self.check_assigned_value(&element, op, value, "element")?;
+                let value_ty = self.check_assigned_value(&element, op, value, "element")?;
+                self.consume(value, &value_ty)?;
+                if self.is_move_only(&element) {
+                    self.ownership.replaces.insert(node_id(node));
+                }
                 Ok(())
             }
             AstNode::Member { object, name } => {
@@ -338,7 +387,11 @@ impl Checker {
                         }
                     },
                 };
-                self.check_assigned_value(&field_ty, op, value, name)?;
+                let value_ty = self.check_assigned_value(&field_ty, op, value, name)?;
+                self.consume(value, &value_ty)?;
+                if self.is_move_only(&field_ty) {
+                    self.ownership.replaces.insert(node_id(node));
+                }
                 Ok(())
             }
             _ => self.err("invalid assignment target".to_string()),
@@ -358,7 +411,10 @@ impl Checker {
                         Some(symbol) if symbol.is_imut && matches!(symbol.kind, SymbolKind::Value) => {
                             self.err(format!("cannot modify '{}': {}", name, self.imut_reason(symbol)))
                         }
-                        _ => self.ensure_not_captured(name),
+                        _ => {
+                            self.ensure_not_moved(name)?;
+                            self.ensure_not_captured(name)
+                        }
                     };
                 }
                 _ => return Ok(()),
@@ -390,6 +446,7 @@ impl Checker {
                     return self.err(format!("'{}' is read-only outside '{}'", name, owner));
                 }
                 self.ensure_not_captured(name)?;
+                self.ensure_not_moved(name)?;
                 if !matches!(symbol.kind, SymbolKind::Value) || matches!(symbol.ty, Type::Module(_)) {
                     return self.err(what(name));
                 }

@@ -5,19 +5,33 @@ use super::*;
 impl Checker {
     pub(super) fn check_match(&mut self, scrutinee: &AstNode, arms: &[MatchArm], expected: Option<&Type>) -> CheckResult<Type> {
         let scrutinee_ty = self.check_value(scrutinee, None)?;
+        // On a move-only variable, the bindings borrow its parts; on a temporary, they own them.
+        let move_only = self.is_move_only(&scrutinee_ty);
+        let borrowing = move_only && Self::is_place(scrutinee);
+        if move_only && !borrowing {
+            self.ownership.owning_matches.insert(node_id(scrutinee));
+        }
+        let before = self.state.moved.clone();
+        let mut branches = Vec::new();
         let mut arm_types = Vec::new();
         for arm in arms {
             self.push_scope();
             let result = (|| -> CheckResult<Type> {
-                self.check_pattern(&arm.pattern, &scrutinee_ty)?;
+                self.state.borrowing_match = borrowing;
+                let pattern = self.check_pattern(&arm.pattern, &scrutinee_ty);
+                self.state.borrowing_match = false;
+                pattern?;
                 if let Some(guard) = &arm.guard {
                     self.check_condition(guard, "match guard")?;
                 }
                 self.check_block(&arm.body, expected, vec![])
             })();
             self.pop_scope();
-            arm_types.push(result?);
+            let ty = result?;
+            branches.push((std::mem::replace(&mut self.state.moved, before.clone()), ty == Type::Never));
+            arm_types.push(ty);
         }
+        self.merge_moves(before, branches);
         self.check_exhaustive(&scrutinee_ty, arms)?;
         self.branch_types(&arm_types, expected, "match arm")
     }
@@ -71,6 +85,9 @@ impl Checker {
                 let mut symbol = Symbol::value(ty.clone(), true);
                 symbol.is_imut = true;
                 symbol.reason = Some("variables bound by 'match' are imut");
+                if self.state.borrowing_match {
+                    symbol.borrowed = Some("bound by 'match' to a part of a variable");
+                }
                 self.current_scope().vars.insert(name.clone(), symbol);
                 Ok(())
             }

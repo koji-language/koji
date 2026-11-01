@@ -85,7 +85,7 @@ print(total) // 2
 
 ## Parameters Are Read-Only
 
-A function cannot change its parameters, or their contents:
+Arguments are copies (see [Values and Memory](memory.md)): a function cannot change the caller's variables, except through [`mut`](#mut-parameters). A function cannot change its parameters, or their contents either:
 
 ```ez
 function clear(items: int[]) {

@@ -16,7 +16,7 @@ use crate::runtime::env::Env;
 use crate::runtime::stdlib::{self, PowFailure};
 use crate::runtime::value::{format_float, Closure, ModuleValue, SumType, Value};
 use crate::semantic::builtin_sums::BUILTIN_SUMS;
-use crate::semantic::type_checker::{is_stdlib_import, resolve_module_path, Program};
+use crate::semantic::type_checker::{is_stdlib_import, node_id, resolve_module_path, Ownership, Program};
 
 mod modules;
 mod statements;
@@ -24,6 +24,7 @@ mod expressions;
 mod operators;
 mod calls;
 mod patterns;
+mod drops;
 mod places;
 
 /// Non-local control flow while executing statements.
@@ -70,8 +71,9 @@ impl Step {
     }
 }
 
-/// Argument values and the places of the `mut` ones, by argument position.
-type Args = (Vec<Value>, Vec<(usize, Place)>);
+/// Argument values, the places of the `mut` ones (by argument position), and the move-only
+/// temporaries to drop after the call.
+type Args = (Vec<Value>, Vec<(usize, Place)>, Vec<Value>);
 
 pub struct Interpreter {
     program: Program,
@@ -86,6 +88,10 @@ pub struct Interpreter {
     module_path: PathBuf,
     /// Methods and associated functions, by module and `Type.name`.
     methods: HashMap<(PathBuf, String), Rc<Closure>>,
+    /// Moves and drops of move-only values, found by the type checker.
+    ownership: Ownership,
+    /// User modules in the order they finished loading (dropped in reverse order).
+    load_order: Vec<Rc<ModuleValue>>,
     /// Functions being executed (0 at the top level of a module).
     function_depth: usize,
     file: Rc<str>,
@@ -106,7 +112,8 @@ fn coerce(value: Value, to_float: bool) -> Value {
 }
 
 impl Interpreter {
-    pub fn new(program: Program, out: Box<dyn Write>, input: Box<dyn BufRead>) -> Self {
+    pub fn new(mut program: Program, out: Box<dyn Write>, input: Box<dyn BufRead>) -> Self {
+        let ownership = std::mem::take(&mut program.ownership);
         let prelude = Env::new(None);
         for name in ["print", "input", "range", "int", "float", "string", "panic"] {
             prelude.define(name, Value::Builtin(Rc::from(name)));
@@ -128,6 +135,8 @@ impl Interpreter {
             current_module: None,
             module_path: PathBuf::new(),
             methods: HashMap::new(),
+            ownership,
+            load_order: Vec::new(),
             function_depth: 0,
             file: Rc::from(""),
             dir: PathBuf::from("."),
@@ -138,7 +147,17 @@ impl Interpreter {
     /// Runs the entry module of the program.
     pub fn run(&mut self) -> Result<(), EzError> {
         let entry = self.program.entry.clone();
-        let result = self.load_module(&entry).map(|_| ());
+        let result = self.load_module(&entry).map(|_| ()).and_then(|_| {
+            // At the end, the values owned by each module are dropped, the main file first.
+            for module in std::mem::take(&mut self.load_order).into_iter().rev() {
+                match self.drop_scope(&module.env) {
+                    Ok(()) => {}
+                    Err(Flow::Error(error)) => return Err(error),
+                    Err(_) => {}
+                }
+            }
+            Ok(())
+        });
         let _ = self.out.flush();
         result
     }

@@ -39,8 +39,12 @@ impl Checker {
             } else {
                 "parameters can only be modified when declared 'mut'"
             });
+            symbol.borrowed = Some(if param.name == "self" { "'self'" } else { "a parameter" });
             self.declare(&param.name, symbol)?;
         }
+        // Moves inside the function only concern its own variables.
+        let saved_moved = self.state.moved.clone();
+        let saved_loops = std::mem::take(&mut self.state.loop_scopes);
         self.state.returns.push(ReturnContext {
             declared: declared.clone(),
             inferred: None,
@@ -50,10 +54,28 @@ impl Checker {
         let body_result = match body.unlocated() {
             AstNode::Block(statements) => self.check_statements(statements, value_expected),
             expression => self.check_value(expression, value_expected),
-        };
+        }
+        .and_then(|body_ty| {
+            // The value of the last expression is returned (moved out), or dropped when the
+            // function returns nothing.
+            let tail = match body.unlocated() {
+                AstNode::Block(statements) => statements.last().filter(|s| !is_statement(s)),
+                expression => Some(expression),
+            };
+            if let Some(tail) = tail {
+                if declared == Some(Type::Void) {
+                    self.note_temporary(tail, &body_ty);
+                } else {
+                    self.consume(tail, &body_ty)?;
+                }
+            }
+            Ok(body_ty)
+        });
         let context = self.state.returns.pop();
         self.state.function_scopes.pop();
         self.pop_scope();
+        self.state.moved = saved_moved;
+        self.state.loop_scopes = saved_loops;
         let body_ty = body_result?;
 
         let ret = match declared {

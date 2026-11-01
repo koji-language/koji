@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::parser::ast::{AstNode, Param};
@@ -30,6 +31,8 @@ pub enum Value {
 pub struct Object {
     /// Fields in declaration order.
     pub fields: Vec<(String, Value)>,
+    /// For a type with a `drop` method: that method (module, `Type.drop`).
+    pub drop: Option<Rc<(PathBuf, String)>>,
 }
 
 impl Object {
@@ -53,6 +56,8 @@ impl Object {
 #[derive(Debug)]
 pub struct SumType {
     pub name: String,
+    /// Module that declares the type (empty for built-in types), where its methods are.
+    pub module: PathBuf,
     pub variants: Vec<(String, Vec<String>)>,
 }
 
@@ -220,7 +225,7 @@ impl Value {
     }
 
     pub fn object(fields: Vec<(String, Value)>) -> Value {
-        Value::Object(Rc::new(RefCell::new(Object { fields })))
+        Value::Object(Rc::new(RefCell::new(Object { fields, drop: None })))
     }
 
     pub fn type_name(&self) -> &'static str {

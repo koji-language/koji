@@ -192,11 +192,11 @@ print(b) // [9, 2, 3]
 Consequences:
 
 -   **`is` only tests variants** (`result is Some`). There is no reference identity; `==` compares values.
--   **Three mutability levels**: `var` (everything can change), `const` (the variable cannot be reassigned, its contents can change, as in TypeScript) and `imut` (neither the variable nor its contents can change). `imut` is checked at compile time. With value semantics, `const` only prevents replacing the value as a whole. A separate keyword for compile-time constants is not needed: the compiler can recognize an `imut` with a literal value by itself. Until the interpreter uses copy-on-write, an `imut` list passed to a function can still be changed there, because it is shared by reference.
+-   **Three mutability levels**: `var` (everything can change), `const` (the variable cannot be reassigned, its contents can change, as in TypeScript) and `imut` (neither the variable nor its contents can change). `imut` is checked at compile time. With value semantics, `const` only prevents replacing the value as a whole. A separate keyword for compile-time constants is not needed: the compiler can recognize an `imut` with a literal value by itself.
 -   **`defer` is not needed**: dropping releases resources. It may come back later as an optional feature, for cleanup that does not belong to any value.
 -   **Resource types are move-only.** A `File` cannot be copied (two copies would close the same file): `g = f` moves it, and using `f` afterwards is a compile error. `f.close()` consumes `f`, so using a closed file is a compile error instead of a panic.
 
-The current interpreter still uses shared references (and `is` still compares references between objects): it will be changed to these semantics in phase 1, so that `ez run` and `ez build` behave the same.
+Implemented in the interpreter: assignments and `mut` write-backs go through a place (a variable with fields and indices) that copies every shared level before changing it. See [Values and Memory](memory.md).
 
 ### Value semantics details
 
@@ -212,11 +212,16 @@ The current interpreter still uses shared references (and `is` still compares re
     An `imut` variable can never be passed as `mut`, and a `const` neither (the function could replace the value). Parameters without `mut` (and `self`) are read-only. Implemented; see [Functions](functions.md#mut-parameters).
 -   **Move-only types**, including user types: values that cannot be copied (resources). Assigning moves them, and using the previous variable is a compile error.
 -   **Only move-only types can have a `drop`** method, called automatically when the value is dropped. A copyable type with `drop` would run it once per copy.
--   **Move-only is implicit**: a type is move-only when it declares a `drop` method, or when it has a field of a move-only type (a type holding a `File` cannot be copied either). There is no separate marker. Not implemented yet: it comes with value semantics in the interpreter.
+-   **Move-only is implicit**: a type is move-only when it declares a `drop` method, or when it has a field of a move-only type (a type holding a `File` cannot be copied either). There is no separate marker.
 -   **`for` and `match` variables are `imut`**: `for x in items` gives an imut `x`; `for mut x in items` allows changing it (a copy: the list does not change). Variables bound by `match` patterns are always imut. Implemented.
 -   **Intentionally shared structures** (graphs, caches) use indices into a list ("arenas"). An explicit shared type may come later, only if arenas prove insufficient.
 
-Move-only types and `drop` are not implemented yet (phase 1).
+Move-only types and `drop` are implemented:
+
+-   **Borrowing**: parameters (with or without `mut`), `self`, the `for` variable and the bindings of a `match` on a variable borrow their value, so passing a file to a function does not move it. A value is moved by assigning it, returning it, or storing it in another value (a field, a list, a variant).
+-   **Checks**: using a variable after its value was moved is a compile error. The check follows branches (a move in a branch that returns does not count after it), and forbids moves that could happen twice: out of a variable declared outside the current loop or function. Values cannot be copied out of a field or an element, and closures cannot use a move-only variable around them.
+-   **Drops**: at the end of a block (also when leaving it with `return`, `break` or `?`), when the variable gets a new value, after a temporary is used, and at the end of the program, in reverse order of declaration. `drop` is declared as `function Type.drop(mut self)` and cannot be called directly. `file.close()` consumes the file.
+-   **Not decided yet**: a way for a function to take ownership of an argument (today, parameters only borrow, so a function cannot store a file it receives). Parts of a temporary that a `match` does not bind are not dropped (a `File` is still closed when its memory is released).
 
 ### Standard library: file modes and readable errors
 
@@ -409,6 +414,7 @@ Notes:
 1.  **Generics**: `function first[T](items: T[]): Option[T]` and `type Pair[A, B] = { ... }`; whether type parameters need constraints is still being considered. Left for last, as it is the most complex.
 2.  **Phase 1 APIs**: collections (`push`, `pop`, slicing, maps with any key type, sets), text (a character type, slicing, a string builder), system (command-line arguments, exit code, environment variables, processes) and FFI (`extern function`). Depends on generics.
 3.  **More `RegexError` variants**, if `InvalidPattern` proves too coarse.
+4.  **Owned parameters**: a marker for a parameter that takes ownership of a move-only argument (so that a function can store a file it receives), like `owned` in Mojo or `sink` in Hylo. Today parameters only borrow.
 
 Decided:
 

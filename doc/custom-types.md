@@ -238,6 +238,10 @@ print(counter.count) // 1
 
 `mut self` changes the contents of the value, not the value as a whole: `self = ...` is an error. So, as with `const`, the variable keeps the same value, only with different contents.
 
+### `drop`
+
+A type can declare `function Type.drop(mut self)`, which runs by itself when a value of the type goes out of scope (to close a connection, for example). Such a type is move-only: its values are moved, not copied. See [Values and Memory](memory.md#drop).
+
 ### Rules
 
 -   Methods are declared at the top level of the file that declares the type, and take no `export`: they are available wherever the type is (`import { Point } from 'geometry.ez'` then `Point.origin()`, or `geometry.Point.origin()`).

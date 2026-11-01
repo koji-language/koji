@@ -31,6 +31,7 @@ impl Checker {
                     return self.check_associated_call(id, name, args, method);
                 }
                 let object_ty = self.check_value(object, None)?;
+                self.check_receiver(object, &object_ty, name)?;
                 if let Type::Named { id, .. } | Type::Variant { id, .. } = &object_ty {
                     if let Some(info) = self.methods.get(&(*id, name.clone())).cloned() {
                         return self.check_method(object, *id, name, info, args, method);
@@ -42,6 +43,35 @@ impl Checker {
         }
         let callee_ty = self.check_value(callee, None)?;
         self.check_function_call(&callee_ty, args)
+    }
+
+    /// Ownership rules for the value a method is called on.
+    fn check_receiver(&mut self, object: &AstNode, ty: &Type, name: &str) -> CheckResult<()> {
+        let id = match ty {
+            Type::Named { id, .. } | Type::Variant { id, .. } => *id,
+            _ => return Ok(()),
+        };
+        if name == "drop" && self.methods.contains_key(&(id, "drop".to_string())) {
+            return self.err(
+                "'drop' cannot be called: it runs by itself when the value goes out of scope".to_string(),
+            );
+        }
+        // `f.close()` consumes the file: `f` cannot be used afterwards.
+        if id == self.builtins.file && name == "close" {
+            return match object.unlocated() {
+                AstNode::Identifier(variable) => self.move_variable(object, variable, ty),
+                AstNode::Member { .. } | AstNode::Index { .. } => self.err(
+                    "'close' consumes the file: call it on a variable (a file in a field or a list is closed when its owner is dropped)"
+                        .to_string(),
+                ),
+                _ => {
+                    self.note_temporary(object, ty);
+                    Ok(())
+                }
+            };
+        }
+        self.note_temporary(object, ty);
+        Ok(())
     }
 
     /// The type named by `Person` or `module.Person` when used before a `.`, if it is a type
@@ -219,6 +249,7 @@ impl Checker {
                 _ => {}
             }
             let ty = self.check_value(arg, Some(param))?;
+            self.note_temporary(arg, &ty);
             if !self.assignable(param, &ty) {
                 let hint = match (param, &ty) {
                     (Type::Named { .. }, Type::Named { .. })
@@ -280,6 +311,7 @@ impl Checker {
         for ((field, field_ty), arg) in fields.iter().zip(args) {
             let wanted = field_ty.substitute(&generic);
             let actual = self.check_value(arg, Some(&wanted))?;
+            self.consume(arg, &actual)?;
             if let Type::Param(i) = field_ty {
                 if generic[*i].contains_unknown() {
                     generic[*i] = self.join(&generic[*i], &actual).unwrap_or(actual.clone());

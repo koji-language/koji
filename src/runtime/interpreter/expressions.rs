@@ -41,12 +41,22 @@ impl Interpreter {
                 for entry in entries {
                     fields.push((entry.key.clone(), self.eval(&entry.value, env)?));
                 }
-                Ok(Value::object(fields))
+                let object = Value::object(fields);
+                // A value of a type with `drop` remembers the method.
+                if let (Some(key), Value::Object(inner)) = (self.ownership.drops.get(&node_id(node)), &object) {
+                    inner.borrow_mut().drop = Some(Rc::new(key.clone()));
+                }
+                Ok(object)
             }
-            AstNode::Identifier(name) => match env.get(name) {
-                Some(value) => Ok(value),
-                None => Err(self.error(format!("undefined variable '{}'", name))),
-            },
+            AstNode::Identifier(name) => {
+                // A move takes the value out of the variable.
+                let moves = !self.ownership.moves.is_empty() && self.ownership.moves.contains(&node_id(node));
+                match if moves { env.take(name) } else { env.get(name) } {
+                    Some(value) => Ok(value),
+                    None if env.was_moved(name) => Err(self.error(format!("'{}' was moved and has no value", name))),
+                    None => Err(self.error(format!("undefined variable '{}'", name))),
+                }
+            }
             AstNode::Unary { op, operand } => {
                 let value = self.eval(operand, env)?;
                 self.unary(op, value)
@@ -69,8 +79,13 @@ impl Interpreter {
                 self.index(&target, &index)
             }
             AstNode::Member { object, name } => {
+                let is_temporary = self.is_temporary(object);
                 let object = self.eval(object, env)?;
-                self.member(&object, name)
+                let field = self.member(&object, name)?;
+                if is_temporary {
+                    self.drop_value(object)?;
+                }
+                Ok(field)
             }
             AstNode::If {
                 condition,
@@ -87,8 +102,9 @@ impl Interpreter {
                 }
             }
             AstNode::Match { scrutinee, arms } => {
+                let owning = self.ownership.owning_matches.contains(&node_id(scrutinee));
                 let value = self.eval(scrutinee, env)?;
-                self.eval_match(&value, arms, env)
+                self.eval_match(&value, arms, env, owning)
             }
             AstNode::Lambda {
                 params,
@@ -119,6 +135,7 @@ impl Interpreter {
                 iterable,
                 body,
             } => {
+                let is_temporary = self.is_temporary(iterable);
                 let iterable = self.eval(iterable, env)?;
                 let items: Vec<Value> = match &iterable {
                     Value::List(items) => items.borrow().clone(),
@@ -144,6 +161,9 @@ impl Interpreter {
                         break;
                     }
                 }
+                if is_temporary {
+                    self.drop_value(iterable)?;
+                }
                 Ok(Value::Void)
             }
             AstNode::Break => Err(Flow::Break),
@@ -156,12 +176,15 @@ impl Interpreter {
                 Err(Flow::Return(value))
             }
             AstNode::Assign { target, op, value } => {
-                self.eval_assign(target, op, value, env)?;
+                self.eval_assign(node, target, op, value, env)?;
                 Ok(Value::Void)
             }
             AstNode::VarDecl { name, ty, value, .. } => {
                 let value = self.eval(value, env)?;
                 env.define(name, coerce(value, is_float_type(ty)));
+                if self.ownership.declares.contains(&node_id(node)) {
+                    env.own(name);
+                }
                 Ok(Value::Void)
             }
             // A function declared inside another function captures a copy of the variables

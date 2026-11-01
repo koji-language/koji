@@ -62,6 +62,7 @@ impl Interpreter {
             Err(_) => {}
         }
         self.modules.insert(path.to_path_buf(), Rc::clone(&module));
+        self.load_order.push(Rc::clone(&module));
         Ok(module)
     }
 

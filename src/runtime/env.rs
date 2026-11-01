@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::runtime::value::Value;
@@ -14,6 +14,11 @@ pub struct Env {
     parent: Option<Rc<Env>>,
     /// The top-level scope of a module (its variables are not captured by functions).
     is_module: bool,
+    /// Variables of this scope that own a move-only value, in declaration order: their values
+    /// are dropped when the scope ends.
+    owned: RefCell<Vec<String>>,
+    /// Variables of this scope whose value was moved out.
+    moved: RefCell<HashSet<String>>,
 }
 
 impl Env {
@@ -23,6 +28,8 @@ impl Env {
             aliases: RefCell::new(HashMap::new()),
             parent,
             is_module: false,
+            owned: RefCell::default(),
+            moved: RefCell::default(),
         })
     }
 
@@ -33,6 +40,8 @@ impl Env {
             aliases: RefCell::new(HashMap::new()),
             parent: Some(Rc::clone(prelude)),
             is_module: true,
+            owned: RefCell::default(),
+            moved: RefCell::default(),
         })
     }
 
@@ -65,6 +74,8 @@ impl Env {
             aliases: RefCell::new(aliases),
             parent: Some(current),
             is_module: false,
+            owned: RefCell::default(),
+            moved: RefCell::default(),
         })
     }
 
@@ -95,7 +106,70 @@ impl Env {
     }
 
     pub fn define(&self, name: &str, value: Value) {
+        self.moved.borrow_mut().remove(name);
         self.vars.borrow_mut().insert(name.to_string(), value);
+    }
+
+    /// Moves the value out of the variable `name`: the variable is left without a value.
+    pub fn take(&self, name: &str) -> Option<Value> {
+        if let Some(value) = self.vars.borrow_mut().remove(name) {
+            self.moved.borrow_mut().insert(name.to_string());
+            return Some(value);
+        }
+        self.parent.as_ref().and_then(|parent| parent.take(name))
+    }
+
+    /// Whether `name` is a variable whose value was moved out.
+    pub fn was_moved(&self, name: &str) -> bool {
+        if self.vars.borrow().contains_key(name) {
+            return false;
+        }
+        self.moved.borrow().contains(name) || self.parent.as_ref().is_some_and(|parent| parent.was_moved(name))
+    }
+
+    /// Gives a value again to a variable whose value was moved out.
+    pub fn restore(&self, name: &str, value: Value) -> bool {
+        if self.moved.borrow_mut().remove(name) {
+            self.vars.borrow_mut().insert(name.to_string(), value);
+            return true;
+        }
+        match &self.parent {
+            Some(parent) => parent.restore(name, value),
+            None => false,
+        }
+    }
+
+    /// Records that the variable `name` (in the scope that declares it) owns its value.
+    pub fn own(&self, name: &str) {
+        if self.vars.borrow().contains_key(name) || self.moved.borrow().contains(name) {
+            let mut owned = self.owned.borrow_mut();
+            if !owned.iter().any(|n| n == name) {
+                owned.push(name.to_string());
+            }
+            return;
+        }
+        if let Some(parent) = &self.parent {
+            parent.own(name);
+        }
+    }
+
+    /// Records that every variable of this scope owns its value; `false` if there is none.
+    pub fn own_all(&self) -> bool {
+        let names: Vec<String> = self.vars.borrow().keys().cloned().collect();
+        let mut owned = self.owned.borrow_mut();
+        for name in &names {
+            if !owned.contains(name) {
+                owned.push(name.clone());
+            }
+        }
+        !names.is_empty()
+    }
+
+    /// Takes the values owned by this scope, last declared first, to drop them.
+    pub fn take_owned(&self) -> Vec<Value> {
+        let names = std::mem::take(&mut *self.owned.borrow_mut());
+        let mut vars = self.vars.borrow_mut();
+        names.iter().rev().filter_map(|name| vars.remove(name)).collect()
     }
 
     /// Runs `f` on the variable `name` itself (in this scope, an enclosing one or the module it
