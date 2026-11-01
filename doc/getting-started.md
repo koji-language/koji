@@ -11,8 +11,8 @@ Koji is implemented in Rust. To build it, install [Rust](https://www.rust-lang.o
 Clone the repository and build it in release mode:
 
 ```sh
-git clone https://github.com/ez-language/ez.git
-cd ez
+git clone https://github.com/koji-language/koji.git
+cd koji
 cargo build --release
 ```
 
