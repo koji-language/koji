@@ -155,7 +155,6 @@ impl Checker {
                 .iter()
                 .chain(std::iter::once(&**ret))
                 .find_map(|t| Self::find_type_id(t, ids)),
-            Type::Record(fields) => fields.iter().find_map(|(_, t)| Self::find_type_id(t, ids)),
             _ => None,
         }
     }

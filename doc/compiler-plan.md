@@ -246,7 +246,7 @@ It is kept for future functions, even though no current function returns it (`0 
 
 ### No `interface`
 
-`type` covers what interfaces did: shape types describe the fields of a value. Shape types are **nominal**: two types with the same fields are different types (`Celsius` and `Fahrenheit` do not mix), and an object literal is accepted by any type whose fields it matches.
+`type` covers what interfaces did: shape types describe the fields of a value. Shape types are **nominal**: two types with the same fields are different types (`Celsius` and `Fahrenheit` do not mix). An object literal is a value of the type expected where it is written (an annotation, a parameter, a return type); without an expected type, it is a compile error, so there are no anonymous objects.
 
 `interface` stays a reserved word, as a precaution, in case behavior contracts (e.g. constraints on generic types) are ever needed. Whether generics need constraints is still an [open decision](#open-decisions); without them, behavior is passed as functions (e.g. `sort(items, (a, b) => a.age < b.age)`).
 
@@ -418,3 +418,4 @@ Decided:
 -   **Display**: `display()` is readable (a `display(self): string` method of the type, when declared) and is what `print` and interpolation use; `debug()` shows the structure (see [Custom Types](custom-types.md#display)).
 -   **`regex.compile`**, with `RegexError = { InvalidPattern(pattern, message) }` (see [Typed errors in the standard library](#typed-errors-in-the-standard-library)).
 -   **`for` and `match` variables are imut**, with `for mut` to opt out.
+-   **No anonymous objects**: an object literal needs a known type (see [No `interface`](#no-interface)). Values are built with a literal or with an associated function (`Person.create(...)`); the language has no special constructors.

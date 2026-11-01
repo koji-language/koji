@@ -31,8 +31,6 @@ pub enum Type {
         args: Vec<Type>,
         variant: String,
     },
-    /// Object literal without a declared type.
-    Record(Vec<(String, Type)>),
     Module(ModuleId),
     /// Generic parameter of a built-in type (`T` in `Option[T]`).
     Param(usize),
@@ -57,7 +55,6 @@ impl Type {
             Type::Named { args, .. } | Type::Variant { args, .. } => {
                 args.iter().any(Type::contains_unknown)
             }
-            Type::Record(fields) => fields.iter().any(|(_, t)| t.contains_unknown()),
             _ => false,
         }
     }
@@ -84,12 +81,6 @@ impl Type {
                 args: inner.iter().map(|a| a.substitute(args)).collect(),
                 variant: variant.clone(),
             },
-            Type::Record(fields) => Type::Record(
-                fields
-                    .iter()
-                    .map(|(n, t)| (n.clone(), t.substitute(args)))
-                    .collect(),
-            ),
             other => other.clone(),
         }
     }
@@ -148,7 +139,6 @@ impl TypeTable {
     /// Fields of a value of this type, with generic arguments applied.
     pub fn fields_of(&self, ty: &Type) -> Option<Vec<(String, Type)>> {
         match ty {
-            Type::Record(fields) => Some(fields.clone()),
             Type::Named { id, args } => match &self.get(*id).kind {
                 TypeKind::Shape(fields)
                 | TypeKind::Builtin { fields, .. } => Some(
@@ -215,13 +205,6 @@ impl fmt::Display for TypeDisplay<'_> {
                     write!(f, ".{}", variant)?;
                 }
                 Ok(())
-            }
-            Type::Record(fields) => {
-                let fields: Vec<String> = fields
-                    .iter()
-                    .map(|(n, t)| format!("{}: {}", n, show(t)))
-                    .collect();
-                write!(f, "{{ {} }}", fields.join(", "))
             }
             Type::Module(_) => write!(f, "module"),
             Type::Param(i) => write!(f, "T{}", i),

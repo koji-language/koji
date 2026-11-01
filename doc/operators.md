@@ -49,8 +49,13 @@ To handle the `**` cases instead of panicking, use `math.pow`, which returns a `
 `==` compares values: two lists or objects are equal when their contents are equal.
 
 ```ez
-const a = { name: 'Ana', age: 30 }
-const b = { name: 'Ana', age: 30 }
+type Person = {
+	name: string
+	age: int
+}
+
+const a: Person = { name: 'Ana', age: 30 }
+const b: Person = { name: 'Ana', age: 30 }
 
 a == b // true: the fields are equal
 ```

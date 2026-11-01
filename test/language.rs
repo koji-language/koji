@@ -244,8 +244,12 @@ fn comparison_operators() {
 #[test]
 fn identity_and_membership() {
     let source = r#"
-        const a = { name: 'Ana', age: 30 }
-        const b = { name: 'Ana', age: 30 }
+        type Person = {
+            name: string
+            age: int
+        }
+        const a: Person = { name: 'Ana', age: 30 }
+        const b: Person = { name: 'Ana', age: 30 }
 
         print(a == b) // true: the fields are equal
         print(a is b) // false: different objects in memory
@@ -1541,6 +1545,10 @@ fn mut_parameters() {
             age: int
         }
 
+        type Box = {
+            inner: int
+        }
+
         function reset(mut n: int) {
             n = 0
         }
@@ -1559,7 +1567,7 @@ fn mut_parameters() {
         replace(mut list)
         var people: Person[] = [{ name: 'Ana', age: 30 }]
         birthday(mut people[0])
-        var data = { inner: 3 }
+        var data: Box = { inner: 3 }
         reset(mut data.inner)
         print(count, list, people[0].age, data.inner)
     "#;
@@ -1680,4 +1688,43 @@ fn loop_and_match_variables_are_imut() {
         print(rows)
     "#;
     assert_eq!(run(source), "[0, 2]\n[0, 4]\n[[1, 2], [3, 4]]\n");
+}
+
+#[test]
+fn object_literals_need_a_type() {
+    let source = r#"
+        type Person = {
+            name: string
+            age: int
+        }
+
+        function make(name: string): Person {
+            return { name: name, age: 0 }
+        }
+
+        function show(person: Person) {
+            print(person.name, person.age)
+        }
+
+        const a: Person = { name: 'Ana', age: 30 }
+        var people: Person[] = [{ name: 'Bia', age: 20 }]
+        people[0] = { name: 'Caio', age: 40 }
+        const maybe: Option[Person] = Some({ name: 'Duda', age: 10 })
+        show(a)
+        show(make('Eva'))
+        show({ name: 'Fábio', age: 50 })
+        show(people[0])
+        match (maybe) {
+            Some(person) => show(person)
+            None => print('none')
+        }
+    "#;
+    assert_eq!(run(source), "Ana 30\nEva 0\nFábio 50\nCaio 40\nDuda 10\n");
+    assert_error("const d = { name: 'Leo' }", "this object literal needs a type");
+    assert_error("print({ a: 1 })", "this object literal needs a type");
+    assert_error("x: int = { a: 1 }", "an object literal cannot be a value of type int");
+    assert_error(
+        "type S = { Circle(r: float) }\nconst s: S = { r: 1.0 }",
+        "an object literal cannot be a value of type S",
+    );
 }

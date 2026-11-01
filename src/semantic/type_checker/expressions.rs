@@ -532,14 +532,22 @@ impl Checker {
                 }
                 Ok(ty)
             }
-            _ => {
-                let mut fields = Vec::new();
-                for entry in entries {
-                    let ty = self.check_value(&entry.value, None)?;
-                    fields.push((entry.key.clone(), ty));
-                }
-                Ok(Type::Record(fields))
-            }
+            // Types are nominal: an object literal is always a value of a declared type, which
+            // comes from where it is used (an annotation, a parameter, a return type...).
+            Some((ty, _)) => self.err(format!(
+                "an object literal cannot be a value of type {}",
+                self.show(&ty)
+            )),
+            None => match expected.filter(|ty| !ty.contains_unknown()) {
+                Some(ty) => self.err(format!(
+                    "an object literal cannot be a value of type {}",
+                    self.show(ty)
+                )),
+                None => self.err(
+                    "this object literal needs a type: declare one with 'type' and annotate the variable ('person: Person = { ... }')"
+                        .to_string(),
+                ),
+            },
         }
     }
 

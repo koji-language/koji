@@ -27,25 +27,6 @@ impl Checker {
                     variant: av,
                 },
             ) => e == a && ev == av && ea.iter().zip(aa).all(|(x, y)| self.assignable(x, y)),
-            (Type::Named { id, .. }, actual) => match &self.table.get(*id).kind {
-                // Shapes are nominal: only an object literal with the same fields (or a value of
-                // the same type, handled above) is accepted.
-                TypeKind::Shape(fields) => match actual {
-                    Type::Record(actual_fields) => self.same_fields(fields, actual_fields),
-                    _ => false,
-                },
-                TypeKind::Dict { value, .. } => match actual {
-                    Type::Record(actual_fields) => {
-                        actual_fields.iter().all(|(_, t)| self.assignable(value, t))
-                    }
-                    _ => false,
-                },
-                _ => false,
-            },
-            (Type::Record(fields), actual) => match self.table.fields_of(actual) {
-                Some(actual_fields) => self.same_fields(fields, &actual_fields),
-                None => false,
-            },
             (
                 Type::Function { params: ep, ret: er },
                 Type::Function { params: ap, ret: ar },
@@ -56,16 +37,6 @@ impl Checker {
             }
             (e, a) => e == a,
         }
-    }
-
-    /// Same set of field names, with compatible types.
-    pub(super) fn same_fields(&self, expected: &[(String, Type)], actual: &[(String, Type)]) -> bool {
-        expected.len() == actual.len()
-            && expected.iter().all(|(name, ty)| {
-                actual
-                    .iter()
-                    .any(|(n, t)| n == name && self.assignable(ty, t))
-            })
     }
 
     /// Common type of two branches, if there is one.

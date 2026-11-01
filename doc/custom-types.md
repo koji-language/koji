@@ -48,7 +48,7 @@ function printUser(user: User) {
 
 All fields are required, and an object literal cannot have extra fields. Fields can be separated by commas or new lines.
 
-Shape types are **nominal**: two types with the same fields are still different types. An object literal is accepted by any type whose fields it matches.
+Shape types are **nominal**: two types with the same fields are still different types. An object literal is a value of the type expected where it is written: the type of the variable, of the parameter, of the return value or of the list.
 
 ```ez
 type Celsius = { value: float }
@@ -58,6 +58,23 @@ const celsius: Celsius = { value: 20.0 }
 fahrenheit: Fahrenheit = { value: 68.0 } // Ok
 
 fahrenheit = celsius // Error! Celsius is not Fahrenheit
+```
+
+So an object literal always needs a known type. Without one, it is an error:
+
+```ez
+const point = { x: 1, y: 2 } // Error! this object literal needs a type
+
+type Point = {
+    x: int
+    y: int
+}
+
+const origin: Point = { x: 0, y: 0 } // Ok
+
+function move(point: Point) { ... }
+
+move({ x: 1, y: 2 }) // Ok: the parameter gives the type
 ```
 
 ## Index Signatures
