@@ -37,28 +37,8 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
             Err(interpreter.error(message))
         }
         "range" => {
-            let (start, end, step) = match args.len() {
-                1 => (0, int_arg(interpreter, &args, 0)?, 1),
-                2 => (int_arg(interpreter, &args, 0)?, int_arg(interpreter, &args, 1)?, 1),
-                _ => (
-                    int_arg(interpreter, &args, 0)?,
-                    int_arg(interpreter, &args, 1)?,
-                    int_arg(interpreter, &args, 2)?,
-                ),
-            };
-            if step == 0 {
-                return Err(interpreter.error("range() step cannot be 0"));
-            }
-            let mut items = Vec::new();
-            let mut i = start;
-            while (step > 0 && i < end) || (step < 0 && i > end) {
-                items.push(Value::Int(i));
-                i = match i.checked_add(step) {
-                    Some(next) => next,
-                    None => break,
-                };
-            }
-            Ok(Value::list(items))
+            let range = Range::new(interpreter, &args)?;
+            Ok(Value::list(range.map(Value::Int).collect()))
         }
         "int" => match &args[0] {
             Value::Int(n) => Ok(Value::Int(*n)),
@@ -108,5 +88,54 @@ fn parse_float(text: &str) -> Value {
         Ok(n) if well_formed && n.is_finite() => ok(Value::Float(n)),
         Ok(_) if well_formed => err(variant("ParseError", "OutOfRange", vec![Value::str(text)])),
         _ => err(variant("ParseError", "InvalidNumber", vec![Value::str(text)])),
+    }
+}
+
+/// The integers of `range(...)`, produced one at a time: a `for` over `range` does not build
+/// the list.
+pub struct Range {
+    next: i64,
+    end: i64,
+    step: i64,
+    done: bool,
+}
+
+impl Range {
+    /// `range(end)`, `range(start, end)` or `range(start, end, step)`.
+    pub fn new(interpreter: &Interpreter, args: &[Value]) -> Exec<Range> {
+        let (start, end, step) = match args.len() {
+            1 => (0, int_arg(interpreter, args, 0)?, 1),
+            2 => (int_arg(interpreter, args, 0)?, int_arg(interpreter, args, 1)?, 1),
+            _ => (
+                int_arg(interpreter, args, 0)?,
+                int_arg(interpreter, args, 1)?,
+                int_arg(interpreter, args, 2)?,
+            ),
+        };
+        if step == 0 {
+            return Err(interpreter.error("range() step cannot be 0"));
+        }
+        Ok(Range {
+            next: start,
+            end,
+            step,
+            done: false,
+        })
+    }
+}
+
+impl Iterator for Range {
+    type Item = i64;
+
+    fn next(&mut self) -> Option<i64> {
+        let i = self.next;
+        if self.done || !((self.step > 0 && i < self.end) || (self.step < 0 && i > self.end)) {
+            return None;
+        }
+        match i.checked_add(self.step) {
+            Some(next) => self.next = next,
+            None => self.done = true,
+        }
+        Some(i)
     }
 }

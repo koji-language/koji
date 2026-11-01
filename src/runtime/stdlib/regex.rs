@@ -9,11 +9,7 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
             let pattern = str_arg(interpreter, &args, 0)?;
             Ok(match ::regex::Regex::new(pattern) {
                 Ok(regex) => ok(Value::Native(Rc::new(RefCell::new(Native::Regex(regex))))),
-                Err(error) => err(variant(
-                    "RegexError",
-                    "InvalidPattern",
-                    vec![Value::str(pattern), Value::str(&regex_error_message(&error))],
-                )),
+                Err(error) => err(regex_error(pattern, &error)),
             })
         }
         other => Err(interpreter.error(format!("unknown built-in function '{}'", other))),
@@ -26,6 +22,20 @@ fn regex_error_message(error: &::regex::Error) -> String {
     let text = error.to_string();
     let last = text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
     last.trim().trim_start_matches("error: ").to_string()
+}
+
+/// `TooLarge` for a pattern too large to compile, `Unsupported` for valid syntax that the
+/// engine does not support (look-around, backreferences), `InvalidPattern` otherwise.
+fn regex_error(pattern: &str, error: &::regex::Error) -> Value {
+    let pattern_value = Value::str(pattern);
+    match error {
+        ::regex::Error::CompiledTooBig(_) => variant("RegexError", "TooLarge", vec![pattern_value]),
+        _ => {
+            let message = regex_error_message(error);
+            let name = if message.contains("not supported") { "Unsupported" } else { "InvalidPattern" };
+            variant("RegexError", name, vec![pattern_value, Value::str(&message)])
+        }
+    }
 }
 
 /// Methods of a compiled `Regex`.

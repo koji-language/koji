@@ -317,12 +317,14 @@ type MathError = {
 // regex.compile
 type RegexError = {
     InvalidPattern(pattern: string, message: string)
+    Unsupported(pattern: string, message: string)
+    TooLarge(pattern: string)
 }
 ```
 
 `time` has no error type. `input()` keeps returning `Option[string]`.
 
-`regex.compile(pattern)` returns `Result[Regex, RegexError]`, and the methods of `Regex` (`test`, `find`, `findAll`, `replace`, `replaceAll`, `split`) cannot fail. More variants may be added. Implemented.
+`regex.compile(pattern)` returns `Result[Regex, RegexError]`, and the methods of `Regex` (`test`, `find`, `findAll`, `replace`, `replaceAll`, `split`) cannot fail. Implemented.
 
 ### No NaN, no infinity
 
@@ -413,7 +415,6 @@ Notes:
 
 1.  **Generics**: `function first[T](items: T[]): Option[T]` and `type Pair[A, B] = { ... }`; whether type parameters need constraints is still being considered. Left for last, as it is the most complex.
 2.  **Phase 1 APIs**: collections (`push`, `pop`, slicing, maps with any key type, sets), text (a character type, slicing, a string builder), system (command-line arguments, exit code, environment variables, processes) and FFI (`extern function`). Depends on generics.
-3.  **More `RegexError` variants**, if `InvalidPattern` proves too coarse.
 4.  **Owned parameters**: a marker for a parameter that takes ownership of a move-only argument (so that a function can store a file it receives), like `owned` in Mojo or `sink` in Hylo. Today parameters only borrow.
 
 Decided:

@@ -1350,6 +1350,22 @@ fn stdlib_regex() {
          invalid regular expression '(abc': unclosed group | InvalidPattern('(abc', 'unclosed group')\nOk(3)\n"
     );
     assert_error("import regex\nprint(regex.match('a', 'a'))", "has no member 'match'");
+    let source = r#"
+        import regex
+
+        print(regex.compile('(?=a)b'))
+        print(regex.compile('a{1000}{1000}'))
+        match (regex.compile('(a)\\1')) {
+            Ok(_) => print('valid?')
+            Err(error) => print(error)
+        }
+    "#;
+    assert_eq!(
+        run(source),
+        "Err(Unsupported('(?=a)b', 'look-around, including look-ahead and look-behind, is not supported'))\n\
+         Err(TooLarge('a{1000}{1000}'))\n\
+         unsupported regular expression '(a)\\1': backreferences are not supported\n"
+    );
 }
 
 #[test]
@@ -1949,4 +1965,21 @@ fn move_only_values_cannot_be_used_after_a_move() {
         "import file\nh = file.open('x', file.Read)?\nh.close()\nprint(h.read())",
         "'h' cannot be used here",
     );
+}
+
+#[test]
+fn range_in_a_for_loop() {
+    let source = r#"
+        total = 0
+        for i in range(100000) {
+            total += i
+        }
+        print(total)
+        for i in range(10, 0, -3) {
+            print(i)
+        }
+        print(range(3))
+    "#;
+    assert_eq!(run(source), "4999950000\n10\n7\n4\n1\n[0, 1, 2]\n");
+    assert_error("for i in range(0, 5, 0) { print(i) }", "range() step cannot be 0");
 }

@@ -108,7 +108,11 @@ pub const BUILTIN_SUMS: &[BuiltinSum] = &[
         name: "RegexError",
         module: Some("regex"),
         params: 0,
-        variants: &[("InvalidPattern", &[("pattern", "string"), ("message", "string")])],
+        variants: &[
+            ("InvalidPattern", &[("pattern", "string"), ("message", "string")]),
+            ("Unsupported", &[("pattern", "string"), ("message", "string")]),
+            ("TooLarge", &[("pattern", "string")]),
+        ],
     },
 ];
 

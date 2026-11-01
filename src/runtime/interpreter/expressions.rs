@@ -135,6 +135,22 @@ impl Interpreter {
                 iterable,
                 body,
             } => {
+                // `for i in range(...)` produces the numbers one at a time, without the list.
+                if let AstNode::Call { callee, args, .. } = iterable.unlocated() {
+                    let is_range = matches!(callee.unlocated(), AstNode::Identifier(name) if name == "range")
+                        && matches!(env.get("range"), Some(Value::Builtin(name)) if &*name == "range");
+                    if is_range {
+                        let (values, _, _) = self.eval_args(args, env)?;
+                        for i in stdlib::Range::new(self, &values)? {
+                            let scope = Env::child(env);
+                            scope.define(variable, Value::Int(i));
+                            if !self.exec_loop_body(body, &scope)? {
+                                break;
+                            }
+                        }
+                        return Ok(Value::Void);
+                    }
+                }
                 let is_temporary = self.is_temporary(iterable);
                 let iterable = self.eval(iterable, env)?;
                 let items: Vec<Value> = match &iterable {

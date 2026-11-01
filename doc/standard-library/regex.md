@@ -18,7 +18,9 @@ A pattern is compiled once, and the resulting `Regex` is used as many times as n
 
 ```koji
 type RegexError = {
-    InvalidPattern(pattern: string, message: string)
+    InvalidPattern(pattern: string, message: string) // the syntax is wrong: '(abc'
+    Unsupported(pattern: string, message: string) // valid, but not supported: look-around, backreferences
+    TooLarge(pattern: string) // too large to compile: 'a{1000}{1000}'
 }
 ```
 

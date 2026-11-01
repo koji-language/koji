@@ -44,6 +44,8 @@ range(2, 5) // [2, 3, 4]
 range(10, 0, -3) // [10, 7, 4, 1]
 ```
 
+In a `for` loop, the numbers are produced one at a time: `for i in range(1000000)` does not build a list of a million numbers.
+
 ## Conversions
 
 | Function    | Description             | Example           |

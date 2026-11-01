@@ -21,6 +21,7 @@ mod string;
 mod time;
 
 pub use math::{real_pow, PowFailure};
+pub use prelude::Range;
 pub use string::string_method;
 
 thread_local! {
@@ -187,6 +188,8 @@ pub fn error_message(error: &VariantValue) -> Option<String> {
         "PatternMismatch" => format!("'{}' does not match the pattern '{}'", text(0), text(1)),
         "InvalidDate" => format!("'{}' is not a valid date", text(0)),
         "InvalidPattern" => format!("invalid regular expression '{}': {}", text(0), text(1)),
+        "Unsupported" => format!("unsupported regular expression '{}': {}", text(0), text(1)),
+        "TooLarge" => format!("regular expression '{}' is too large", text(0)),
         _ => return None,
     };
     Some(message)
