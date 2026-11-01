@@ -57,11 +57,11 @@ type JsonError = {
 ```koji
 import json
 
-text: string = '{"name": "ezlang", "year": 2025}'
+text: string = '{"name": "koji", "year": 2025}'
 
 match (json.parse(text)) {
     Ok(Object(fields)) => match (fields['name']) {
-        String(name) => print(name) // ezlang
+        String(name) => print(name) // koji
         _ => print('name is not a string')
     }
     Ok(_) => print('expected an object')
@@ -74,14 +74,14 @@ With the helper functions:
 ```koji
 import json
 
-match (json.parse('{"name": "ezlang", "year": 2025}')) {
+match (json.parse('{"name": "koji", "year": 2025}')) {
     Ok(data) => {
         match (json.get(data, 'year')) {
             Some(year) => print(json.asInt(year)) // Some(2025)
             None => print('no year')
         }
 
-        print(json.stringify(data)) // {"name":"ezlang","year":2025}
+        print(json.stringify(data)) // {"name":"koji","year":2025}
     }
     Err(error) => print(error)
 }

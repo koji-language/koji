@@ -1263,10 +1263,10 @@ fn stdlib_json() {
     let source = r#"
         import json
 
-        match (json.parse('{"name": "ezlang", "year": 2025, "tags": ["a"], "ok": true, "x": null, "pi": 3.14}')) {
+        match (json.parse('{"name": "koji", "year": 2025, "tags": ["a"], "ok": true, "x": null, "pi": 3.14}')) {
             Ok(Object(fields)) => {
                 match (fields['name']) {
-                    String(name) => print(name) // ezlang
+                    String(name) => print(name) // koji
                     _ => print('name is not a string')
                 }
                 match (fields['x']) {
@@ -1293,7 +1293,7 @@ fn stdlib_json() {
 
         print(json.stringify(json.Array([json.Float(2.0), json.Int(2), json.String('a'), json.Null, json.Bool(false), json.Float(6.022e23)])))
         // parse and stringify give back the same text; floats keep their decimal point
-        for text in ['{"name":"ezlang","year":2025,"tags":[1,2.5,null]}', '[2.0, 1e3]'] {
+        for text in ['{"name":"koji","year":2025,"tags":[1,2.5,null]}', '[2.0, 1e3]'] {
             match (json.parse(text)) {
                 Ok(value) => print(json.stringify(value))
                 Err(error) => print(error)
@@ -1304,8 +1304,8 @@ fn stdlib_json() {
     "#;
     assert_eq!(
         run(source),
-        "ezlang\nnull\nInt(2025) Array([String('a')]) Float(3.14)\nSome(Int(2025)) None\nSome(2025) Some(2025.0) None\n{\"year\":2025}\n[2.0,2,\"a\",null,false,6.022e23]\n\
-         {\"name\":\"ezlang\",\"year\":2025,\"tags\":[1,2.5,null]}\n[2.0,1000.0]\nErr(Syntax('unexpected character \\'}\\'', 1, 7))\nErr(NumberOutOfRange('99999999999999999999', 2, 2))\n"
+        "koji\nnull\nInt(2025) Array([String('a')]) Float(3.14)\nSome(Int(2025)) None\nSome(2025) Some(2025.0) None\n{\"year\":2025}\n[2.0,2,\"a\",null,false,6.022e23]\n\
+         {\"name\":\"koji\",\"year\":2025,\"tags\":[1,2.5,null]}\n[2.0,1000.0]\nErr(Syntax('unexpected character \\'}\\'', 1, 7))\nErr(NumberOutOfRange('99999999999999999999', 2, 2))\n"
     );
     assert_error("import json\nprint(json.stringify(1))", "must be Json");
 }
