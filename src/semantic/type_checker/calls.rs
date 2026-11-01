@@ -172,11 +172,9 @@ impl Checker {
                 self.check_mut_place(object, Some(&full))?;
             }
             // `take self`: the value is moved into the method.
-            Some(ParamMode::Take) => {
-                if Self::is_place(object) {
-                    let ty = self.check_value(object, None)?;
-                    self.consume(object, &ty)?;
-                }
+            Some(ParamMode::Take) if Self::is_place(object) => {
+                let ty = self.check_value(object, None)?;
+                self.consume(object, &ty)?;
             }
             _ => {}
         }
