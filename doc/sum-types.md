@@ -32,7 +32,7 @@ describe(Success('Ana')) // Welcome, Ana
 
 ## Built-in Sum Types
 
-`Option[T]` and `Result[T, E]` are provided by the language and behave as if they were declared like this (user-defined types cannot take type parameters yet):
+`Option[T]` and `Result[T, E]` are provided by the language and behave as if they were declared like this (see [Generics](generics.md) for your own generic types):
 
 ```koji
 type Option[T] = {

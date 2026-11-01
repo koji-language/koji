@@ -315,12 +315,16 @@ pub enum AstNode {
     FunctionDecl {
         name: String,
         owner: Option<String>,
+        /// `function first[T](...)`: the names of its type parameters.
+        type_params: Vec<String>,
         params: Vec<Param>,
         return_type: Option<TypeExpr>,
         body: Rc<AstNode>,
     },
     TypeDecl {
         name: String,
+        /// `type Pair[A, B] = ...`: the names of its type parameters.
+        params: Vec<String>,
         definition: TypeDef,
     },
     Import {

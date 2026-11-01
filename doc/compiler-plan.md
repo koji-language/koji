@@ -364,7 +364,7 @@ Like Go and Rust: `int / int` gives an `int` truncated toward zero, a division w
 
 A compiler is a large program, with many data structures and many operations that can fail. These features are needed before writing `kojic` in Koji, in order of importance:
 
-1.  **User-defined generics**: `type Map[K, V]`, `function find[T](...)`, using the same bracket syntax as `Option[T]` (constraints are an [open decision](#open-decisions)).
+1.  **User-defined generics**: `type Map[K, V]`, `function find[T](...)`, using the same bracket syntax as `Option[T]`: implemented, without constraints (see [Generics](generics.md)).
 2.  **Collections**:
     -   lists with `push`, `pop`, `insert` and slicing;
     -   maps with any comparable key type (index signatures only allow `string` keys today);
@@ -414,8 +414,8 @@ Notes:
 
 ## Open decisions
 
-1.  **Generics**: `function first[T](items: T[]): Option[T]` and `type Pair[A, B] = { ... }`; whether type parameters need constraints is still being considered. Left for last, as it is the most complex.
-2.  **Phase 1 APIs**: collections (`push`, `pop`, slicing, maps with any key type, sets), text (a character type, slicing, a string builder), system (command-line arguments, exit code, environment variables, processes) and FFI (`extern function`). Depends on generics.
+1.  **Constraints on type parameters**: whether a type parameter can require operations (`==`, `<`, methods), and how to write it without `interface`. Today a type parameter supports none, and cannot be a move-only value (being copyable is a constraint too).
+2.  **Phase 1 APIs**: collections (`push`, `pop`, slicing, maps with any key type, sets), text (a character type, slicing, a string builder), system (command-line arguments, exit code, environment variables, processes) and FFI (`extern function`). Their syntax needs to be decided with them.
 
 Decided:
 
@@ -428,5 +428,6 @@ Decided:
 -   **`take` parameters** take ownership of a move-only argument (like `owned` in Mojo or `sink` in Hylo); see [Values and Memory](memory.md#taking-ownership).
 -   **`RegexError`** has `InvalidPattern`, `Unsupported` and `TooLarge`.
 -   **`range` is lazy** in a `for` loop.
+-   **Generics**: brackets after the name (`function first[T]`, `type Pair[A, B]`); type arguments are never written at a call, they are inferred from the arguments and the expected type; methods of a generic type see its type parameters (`function Pair.swap(self): Pair[B, A]`) and can add their own (`function Pair.mapFirst[C](...)`). See [Generics](generics.md).
 -   **Opaque types** (a type that other modules can use but not build with a literal) are postponed until they are needed.
 -   **No anonymous objects**: an object literal needs a known type (see [No `interface`](#no-interface)). Values are built with a literal or with an associated function (`Person.create(...)`); the language has no special constructors.

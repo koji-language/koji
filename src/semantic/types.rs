@@ -101,6 +101,9 @@ pub enum TypeKind {
     Shape(Vec<(String, Type)>),
     /// Index signature: `{ [key: string]: T }`.
     Dict { key: Type, value: Type },
+    /// A type parameter seen from inside the generic function or type that declares it (`T`
+    /// in the body of `first[T]`): an opaque type, with no fields and no operators.
+    Param,
     /// Built-in object (`File`, `DateTime`...): read-only fields and methods.
     Builtin {
         fields: Vec<(String, Type)>,

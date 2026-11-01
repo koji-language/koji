@@ -106,6 +106,14 @@ impl Checker {
                 }
                 let left_ty = self.check_value(left, None)?;
                 let right_ty = self.check_value(right, None)?;
+                // Type parameters have no constraints, so no operator applies to them.
+                if let Some(param) = [&left_ty, &right_ty].into_iter().find(|ty| self.is_type_param(ty)) {
+                    return self.err(format!(
+                        "operator '{}' cannot be used on '{}': type parameters have no operators",
+                        op.symbol(),
+                        self.show(param)
+                    ));
+                }
                 self.binary_type(*op, &left_ty, &right_ty)
             }
             AstNode::Call {
@@ -500,6 +508,10 @@ impl Checker {
                     _ => Ok(symbol.ty),
                 }
             }
+            SymbolKind::Value if symbol.generics > 0 => self.err(format!(
+                "'{}' is generic and can only be called (its type arguments come from the call)",
+                name
+            )),
             SymbolKind::Value if !symbol.modes.is_empty() => self.err(format!(
                 "'{}' has 'mut' or 'take' parameters and can only be called, not used as a value",
                 name
@@ -520,17 +532,25 @@ impl Checker {
         match target {
             Some((ty, TypeKind::Shape(fields))) => {
                 let type_name = self.show(&ty);
+                // For a generic type, the unknown type arguments are learned from the fields.
+                let (id, mut generic) = match &ty {
+                    Type::Named { id, args } => (*id, args.clone()),
+                    _ => unreachable!("the target of an object literal is a named type"),
+                };
                 for entry in entries {
                     match fields.iter().find(|(n, _)| *n == entry.key) {
                         Some((_, field_ty)) => {
-                            let value_ty = self.check_value(&entry.value, Some(field_ty))?;
+                            let wanted = field_ty.substitute(&generic);
+                            let value_ty = self.check_value(&entry.value, Some(&wanted))?;
                             self.consume(&entry.value, &value_ty)?;
-                            if !self.assignable(field_ty, &value_ty) {
+                            self.unify(field_ty, &value_ty, &mut generic);
+                            let wanted = field_ty.substitute(&generic);
+                            if !self.assignable(&wanted, &value_ty) {
                                 return self.err(format!(
                                     "field '{}' of {} must be {}, found {}",
                                     entry.key,
                                     type_name,
-                                    self.show(field_ty),
+                                    self.show(&wanted),
                                     self.show(&value_ty)
                                 ));
                             }
@@ -552,7 +572,8 @@ impl Checker {
                         type_name
                     ));
                 }
-                Ok(ty)
+                self.ensure_copyable_args(&generic)?;
+                Ok(Type::Named { id, args: generic })
             }
             Some((ty, TypeKind::Dict { value, .. })) => {
                 for entry in entries {
@@ -597,6 +618,10 @@ impl Checker {
                     SymbolKind::Builtin(builtin) => {
                         self.err(format!("'{}' is a built-in function and must be called", builtin))
                     }
+                    _ if symbol.generics > 0 => self.err(format!(
+                        "'{}' is generic and can only be called (its type arguments come from the call)",
+                        name
+                    )),
                     _ if !symbol.modes.is_empty() => self.err(format!(
                         "'{}' has 'mut' or 'take' parameters and can only be called, not used as a value",
                         name

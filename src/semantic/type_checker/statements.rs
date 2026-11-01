@@ -105,20 +105,27 @@ impl Checker {
                 ..
             } => {
                 let full = format!("{}.{}", owner, name);
-                let signature = match self.lookup_type(owner) {
-                    Some(TypeRef::Type(Type::Named { id, .. })) => {
-                        self.methods.get(&(*id, name.clone())).map(|m| m.ty.clone())
+                let info = match self.lookup_type(owner) {
+                    Some(TypeRef::Type(Type::Named { id, .. }) | TypeRef::Generic(id)) => {
+                        self.methods.get(&(*id, name.clone())).cloned()
                     }
                     _ => None,
                 };
-                match signature {
-                    Some(signature) => self.check_function(&full, params, signature, body)?,
+                let info = match info {
+                    Some(info) => info,
                     None => return self.err(format!("unknown method '{}'", full)),
                 };
+                // Inside the body, the type parameters are opaque types.
+                let opaque = self.opaque_params(&info.type_param_names);
+                let signature = info.ty.substitute(&opaque);
+                self.with_type_params(&info.type_param_names, &opaque, |c| {
+                    c.check_function(&full, params, signature, body)
+                })?;
                 Ok(Type::Void)
             }
             AstNode::FunctionDecl {
                 name,
+                type_params,
                 params,
                 return_type,
                 body,
@@ -126,9 +133,13 @@ impl Checker {
             } => {
                 let signature = match self.state.scopes.last().and_then(|s| s.vars.get(name)) {
                     Some(symbol) => symbol.ty.clone(),
-                    None => self.function_signature(name, params, return_type.as_ref(), true)?,
+                    None => self.with_type_params(type_params, &Self::signature_params(type_params.len()), |c| {
+                        c.function_signature(name, params, return_type.as_ref(), true)
+                    })?,
                 };
-                self.check_function(name, params, signature, body)?;
+                let opaque = self.opaque_params(type_params);
+                let signature = signature.substitute(&opaque);
+                self.with_type_params(type_params, &opaque, |c| c.check_function(name, params, signature, body))?;
                 Ok(Type::Void)
             }
             AstNode::TypeDecl { .. } => Ok(Type::Void),

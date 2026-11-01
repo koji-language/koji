@@ -2031,3 +2031,127 @@ fn take_parameters() {
         assert_error(&format!("{}{}", CONN, code), fragment);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Generics
+// ---------------------------------------------------------------------------
+
+#[test]
+fn generic_functions_and_types() {
+    let source = r#"
+        function first[T](items: T[]): Option[T] {
+            if (items.length() == 0) {
+                return None
+            }
+            return Some(items[0])
+        }
+
+        function map[A, B](items: A[], f: (A) => B): B[] {
+            var result: B[] = []
+            for item in items {
+                result = result + [f(item)]
+            }
+            return result
+        }
+
+        type Pair[A, B] = {
+            first: A
+            second: B
+        }
+
+        function Pair.create(first: A, second: B): Pair[A, B] {
+            return { first: first, second: second }
+        }
+
+        function Pair.swap(self): Pair[B, A] {
+            return { first: self.second, second: self.first }
+        }
+
+        function Pair.mapFirst[C](self, f: (A) => C): Pair[C, B] {
+            return { first: f(self.first), second: self.second }
+        }
+
+        type Tree[T] = {
+            Leaf
+            Node(value: T, left: Tree[T], right: Tree[T])
+        }
+
+        function Tree.size(self): int {
+            return match (self) {
+                Leaf => 0
+                Node(_, left, right) => 1 + left.size() + right.size()
+            }
+        }
+
+        print(first([1, 2, 3]), first(['a']))
+        const nothing: Option[int] = first([])
+        print(nothing)
+        print(map([1, 2, 3], (x: int) => `#${x}`))
+        const p = Pair.create(1, 'one')
+        const q = p.swap()
+        const r = p.mapFirst((n: int) => n * 10)
+        print(p.first, p.second, q.first, q.second, r.first, r.second)
+        const explicit: Pair[string, int] = { first: 'x', second: 2 }
+        print(explicit.swap().first)
+        const tree: Tree[int] = Node(1, Node(2, Leaf, Leaf), Leaf)
+        print(tree.size())
+    "#;
+    assert_eq!(
+        run(source),
+        "Some(1) Some('a')\nNone\n['#1', '#2', '#3']\n1 one one 1 10 one\n2\n2\n"
+    );
+}
+
+#[test]
+fn generic_errors() {
+    let errors = [
+        ("function eq[T](a: T, b: T): boolean { return a == b }", "operator '==' cannot be used on 'T': type parameters have no operators"),
+        ("function f[T](a: T): int { return a.length }", "a value of type T has no field 'length'"),
+        ("function id[T](a: T): T { return a }\ng = id", "'id' is generic and can only be called"),
+        ("function id[T](a: T): T { return a }\nx: int = id('a')", "argument 1 must be int, found string"),
+        ("type Box[T] = { value: T }\nb: Box = { value: 1 }", "type 'Box' needs 1 type argument(s)"),
+        ("type Box[T] = { value: T }\nb: Box[int, int] = { value: 1 }", "expects 1 type argument(s), found 2"),
+        ("import file\ntype Box[T] = { value: T }\nfunction f(b: Box[file.File]) {}", "type parameters cannot be move-only values yet"),
+        ("type Alias[T] = int", "the alias 'Alias' cannot have type parameters"),
+        ("function f[T, T]() {}", "type parameter 'T' is declared twice"),
+        ("type Box[T] = { value: T }\nfunction Box.make[T](v: T): Box[T] { return { value: v } }", "is already a type parameter of 'Box'"),
+        ("function pair[A, B](a: A, b: B): A { return b }", "returning B, but the function returns A"),
+    ];
+    for (code, fragment) in errors {
+        assert_error(code, fragment);
+    }
+}
+
+#[test]
+fn generics_across_modules() {
+    let dir = temp_dir("generics");
+    std::fs::write(
+        dir.join("box.kj"),
+        r#"
+        export type Box[T] = {
+            value: T
+        }
+
+        function Box.get(self): T {
+            return self.value
+        }
+
+        export function wrap[T](value: T): Box[T] {
+            return { value: value }
+        }
+        "#,
+    )
+    .unwrap();
+    let source = r#"
+        import box from 'box.kj'
+        import { Box, wrap } from 'box.kj'
+
+        b = wrap(5)
+        c: Box[string] = { value: 'x' }
+        d: box.Box[int] = box.wrap(2)
+        print(b.get(), c.get(), box.wrap(true).get(), d.value)
+    "#;
+    let (output, result) = execute(source, "", &dir.join("main.kj"));
+    result.unwrap();
+    assert_eq!(output, "5 x true 2\n");
+}

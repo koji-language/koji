@@ -242,6 +242,7 @@ impl Checker {
                         reason: None,
                         borrowed: None,
                         narrowed: false,
+                        generics: 0,
                     },
                 );
             }
@@ -511,6 +512,10 @@ impl Checker {
                 SymbolKind::Builtin(builtin) => self.check_builtin_call(&builtin, args),
                 SymbolKind::Constructor { id, variant } => {
                     self.check_constructor(id, &variant, args, expected)
+                }
+                SymbolKind::Value if symbol.generics > 0 => {
+                    let generic = vec![Type::Unknown; symbol.generics];
+                    self.check_generic_call(&symbol.ty, generic, &symbol.modes, args, expected)
                 }
                 SymbolKind::Value => self.check_function_call_mut(&symbol.ty, &symbol.modes, args),
             };

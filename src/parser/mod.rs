@@ -504,12 +504,14 @@ impl Parser {
             self.advance();
             owner = Some(std::mem::replace(&mut name, self.expect_name("method name")?));
         }
+        let type_params = self.parse_type_params()?;
         let params = self.parse_params()?;
         let return_type = self.parse_optional_return_type()?;
         let body = self.parse_function_body(true)?;
         Ok(AstNode::FunctionDecl {
             name,
             owner,
+            type_params,
             params,
             return_type,
             body: Rc::new(body),
@@ -639,6 +641,7 @@ impl Parser {
     fn parse_type_declaration(&mut self) -> Result<AstNode, EzError> {
         self.advance(); // type
         let name = self.expect_identifier("type name")?;
+        let params = self.parse_type_params()?;
         self.expect(Token::Equal, "'=' in type declaration")?;
 
         let mut parts = vec![self.parse_type_part()?];
@@ -658,7 +661,30 @@ impl Parser {
         } else {
             TypeDef::Intersection(parts)
         };
-        Ok(AstNode::TypeDecl { name, definition })
+        Ok(AstNode::TypeDecl {
+            name,
+            params,
+            definition,
+        })
+    }
+
+    /// `[A, B]` after the name of a generic type or function (none: empty).
+    fn parse_type_params(&mut self) -> Result<Vec<String>, EzError> {
+        if *self.current() != Token::LBracket {
+            return Ok(Vec::new());
+        }
+        self.advance(); // [
+        let params = self.parse_comma_separated(&Token::RBracket, |p| p.expect_identifier("type parameter name"))?;
+        self.expect(Token::RBracket, "']' after the type parameters")?;
+        if params.is_empty() {
+            return self.error_here("expected at least one type parameter between '[' and ']'".to_string());
+        }
+        for (i, name) in params.iter().enumerate() {
+            if params[..i].contains(name) {
+                return self.error_here(format!("type parameter '{}' is declared twice", name));
+            }
+        }
+        Ok(params)
     }
 
     /// One operand of a type definition: a `{ ... }` body or a type name.
@@ -1510,6 +1536,7 @@ mod tests {
             AstNode::TypeDecl {
                 name,
                 definition: TypeDef::Sum(variants),
+                ..
             } => {
                 assert_eq!(name.as_str(), "Shape");
                 assert_eq!(variants.len(), 2);

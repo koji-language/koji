@@ -211,6 +211,7 @@ impl Interpreter {
                 params,
                 return_type,
                 body,
+                ..
             } => {
                 let captured = Env::snapshot(env);
                 if !Rc::ptr_eq(&captured, env) {

@@ -20,17 +20,25 @@ impl Checker {
             match statement.unlocated() {
                 AstNode::TypeDecl {
                     name,
+                    params,
                     definition: TypeDef::Alias(_),
                 } => {
                     self.check_type_name_free(name)?;
+                    if !params.is_empty() {
+                        return self.err(format!("the alias '{}' cannot have type parameters", name));
+                    }
                     pending.push((statement, None));
                 }
-                AstNode::TypeDecl { name, .. } => {
+                AstNode::TypeDecl { name, params, .. } => {
                     self.check_type_name_free(name)?;
-                    let id = self.table.add(name, 0, TypeKind::Pending);
-                    self.current_scope()
-                        .types
-                        .insert(name.clone(), TypeRef::Type(Self::named(id)));
+                    let id = self.table.add(name, params.len(), TypeKind::Pending);
+                    // A generic type needs its arguments where it is used: `Pair[int, string]`.
+                    let type_ref = if params.is_empty() {
+                        TypeRef::Type(Self::named(id))
+                    } else {
+                        TypeRef::Generic(id)
+                    };
+                    self.current_scope().types.insert(name.clone(), type_ref);
                     pending.push((statement, Some(id)));
                 }
                 _ => {}
@@ -44,6 +52,7 @@ impl Checker {
                     AstNode::TypeDecl {
                         name,
                         definition: TypeDef::Alias(expr),
+                        ..
                     },
                     None,
                 ) => {
@@ -52,8 +61,17 @@ impl Checker {
                         .types
                         .insert(name.clone(), TypeRef::Type(ty));
                 }
-                (AstNode::TypeDecl { name, definition }, Some(id)) => {
-                    let kind = self.resolve_type_def(name, definition)?;
+                (
+                    AstNode::TypeDecl {
+                        name,
+                        params,
+                        definition,
+                    },
+                    Some(id),
+                ) => {
+                    let kind = self.with_type_params(params, &Self::signature_params(params.len()), |c| {
+                        c.resolve_type_def(name, definition)
+                    })?;
                     self.table.types[id].kind = kind;
                     if matches!(self.table.get(id).kind, TypeKind::Sum(_)) {
                         let mut scope = std::mem::take(self.current_scope());
@@ -70,17 +88,21 @@ impl Checker {
             if let AstNode::FunctionDecl {
                 name,
                 owner,
+                type_params,
                 params,
                 return_type,
                 ..
             } = statement.unlocated()
             {
-                if let Some(owner) = owner {
-                    self.declare_method(statements, statement, owner, name, params, return_type.as_ref())?;
+                if owner.is_some() {
+                    self.declare_method(statements, statement)?;
                     continue;
                 }
-                let ty = self.function_signature(name, params, return_type.as_ref(), true)?;
+                let ty = self.with_type_params(type_params, &Self::signature_params(type_params.len()), |c| {
+                    c.function_signature(name, params, return_type.as_ref(), true)
+                })?;
                 let mut symbol = Symbol::value(ty, true);
+                symbol.generics = type_params.len();
                 if params.iter().any(|p| p.mode() != ParamMode::Borrow) {
                     symbol.modes = params.iter().map(Param::mode).collect();
                 }
@@ -92,15 +114,18 @@ impl Checker {
 
     /// `function Person.greet(self)` or `function Person.create(name: string)`: only at the top
     /// level of the file that declares `Person`.
-    pub(super) fn declare_method(
-        &mut self,
-        statements: &[AstNode],
-        statement: &AstNode,
-        owner: &str,
-        name: &str,
-        params: &[Param],
-        return_type: Option<&TypeExpr>,
-    ) -> CheckResult<()> {
+    pub(super) fn declare_method(&mut self, statements: &[AstNode], statement: &AstNode) -> CheckResult<()> {
+        let (name, owner, type_params, params, return_type) = match statement.unlocated() {
+            AstNode::FunctionDecl {
+                name,
+                owner: Some(owner),
+                type_params,
+                params,
+                return_type,
+                ..
+            } => (name, owner, type_params, params, return_type.as_ref()),
+            _ => unreachable!("declare_method is called on a method declaration"),
+        };
         let full = format!("{}.{}", owner, name);
         if self.state.scopes.len() != 2 || !self.state.function_scopes.is_empty() {
             return self.err(format!(
@@ -114,14 +139,18 @@ impl Checker {
                 full
             ));
         }
-        let declared_here = statements.iter().any(|s| {
-            matches!(
-                s.unlocated(),
-                AstNode::TypeDecl { name, definition } if name == owner && !matches!(definition, TypeDef::Alias(_))
-            )
+        // The type parameters of the type (`A`, `B` in `type Pair[A, B]`) are visible in its
+        // methods, before the method's own.
+        let owner_params = statements.iter().find_map(|s| match s.unlocated() {
+            AstNode::TypeDecl { name, params, definition } if name == owner && !matches!(definition, TypeDef::Alias(_)) => {
+                Some(params.clone())
+            }
+            _ => None,
         });
+        let declared_here = owner_params.is_some();
+        let owner_params = owner_params.unwrap_or_default();
         let id = match self.current_scope().types.get(owner) {
-            Some(TypeRef::Type(Type::Named { id, .. })) if declared_here => *id,
+            Some(TypeRef::Type(Type::Named { id, .. }) | TypeRef::Generic(id)) if declared_here => *id,
             _ => {
                 return self.err(format!(
                     "cannot declare '{}': methods belong to a type with fields or variants declared in the same file",
@@ -183,11 +212,24 @@ impl Checker {
                 ));
             }
         }
+        if let Some(clash) = type_params.iter().find(|p| owner_params.contains(p)) {
+            return self.err(format!(
+                "in '{}', the type parameter '{}' is already a type parameter of '{}'",
+                full, clash, owner
+            ));
+        }
+        let names: Vec<String> = owner_params.iter().chain(type_params).cloned().collect();
+        let generic = Self::signature_params(names.len());
+        let self_type = Type::Named {
+            id,
+            args: generic[..owner_params.len()].to_vec(),
+        };
         let rest = if has_self { &params[1..] } else { params };
-        let ty = match self.function_signature(&full, rest, return_type, true)? {
+        let signature = self.with_type_params(&names, &generic, |c| c.function_signature(&full, rest, return_type, true))?;
+        let ty = match signature {
             Type::Function { mut params, ret } => {
                 if has_self {
-                    params.insert(0, Self::named(id));
+                    params.insert(0, self_type);
                 }
                 Type::Function { params, ret }
             }
@@ -198,6 +240,8 @@ impl Checker {
             has_self,
             modes: params.iter().map(Param::mode).collect(),
             module: self.state.path.clone(),
+            generics: names.len(),
+            type_param_names: names,
         };
         self.methods.insert((id, name.to_string()), info);
         Ok(())

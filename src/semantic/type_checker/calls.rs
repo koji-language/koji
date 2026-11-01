@@ -2,6 +2,13 @@
 
 use super::*;
 
+/// The value a method is called on: its expression, its type and the type's arguments.
+pub(super) struct Receiver<'a> {
+    node: &'a AstNode,
+    id: TypeId,
+    args: Vec<Type>,
+}
+
 impl Checker {
     pub(super) fn check_call(
         &mut self,
@@ -18,6 +25,10 @@ impl Checker {
                         SymbolKind::Constructor { id, variant } => {
                             return self.check_constructor(id, &variant, args, expected)
                         }
+                        SymbolKind::Value if symbol.generics > 0 => {
+                            let generic = vec![Type::Unknown; symbol.generics];
+                            return self.check_generic_call(&symbol.ty, generic, &symbol.modes, args, expected);
+                        }
                         SymbolKind::Value if !symbol.modes.is_empty() => {
                             return self.check_function_call_mut(&symbol.ty, &symbol.modes, args)
                         }
@@ -28,7 +39,7 @@ impl Checker {
             AstNode::Member { object, name } => {
                 // `Person.create(...)`: an associated function.
                 if let Some(id) = self.type_path(object) {
-                    return self.check_associated_call(id, name, args, method);
+                    return self.check_associated_call(id, name, args, method, expected);
                 }
                 let object_ty = self.check_value(object, None)?;
                 let user_method = match &object_ty {
@@ -43,7 +54,16 @@ impl Checker {
                     self.check_receiver(object, &object_ty, name)?;
                 }
                 if let Some((id, info)) = user_method {
-                    return self.check_method(object, id, name, info, args, method);
+                    let receiver_args = match &object_ty {
+                        Type::Named { args, .. } | Type::Variant { args, .. } => args.clone(),
+                        _ => Vec::new(),
+                    };
+                    let receiver = Receiver {
+                        node: object,
+                        id,
+                        args: receiver_args,
+                    };
+                    return self.check_method(receiver, name, info, args, method, expected);
                 }
                 return self.check_method_call(&object_ty, name, args, expected);
             }
@@ -99,7 +119,7 @@ impl Checker {
             _ => None,
         };
         match found {
-            Some(TypeRef::Type(Type::Named { id, .. })) => Some(id),
+            Some(TypeRef::Type(Type::Named { id, .. }) | TypeRef::Generic(id)) => Some(id),
             _ => None,
         }
     }
@@ -129,6 +149,7 @@ impl Checker {
         name: &str,
         args: &[AstNode],
         method: &RefCell<Option<MethodRef>>,
+        expected: Option<&Type>,
     ) -> CheckResult<Type> {
         let full = self.method_name(id, name);
         let info = match self.methods.get(&(id, name.to_string())) {
@@ -146,19 +167,29 @@ impl Checker {
             key: full,
             has_self: false,
         });
+        if info.generics > 0 {
+            // `Pair.create(1, 'a')`: the type arguments are inferred, like a generic function.
+            let generic = vec![Type::Unknown; info.generics];
+            return self.check_generic_call(&info.ty, generic, &info.modes, args, expected);
+        }
         self.check_function_call_mut(&info.ty, &info.modes, args)
     }
 
     /// `person.greet()`
     pub(super) fn check_method(
         &mut self,
-        object: &AstNode,
-        id: TypeId,
+        receiver: Receiver,
         name: &str,
         info: MethodInfo,
         args: &[AstNode],
         method: &RefCell<Option<MethodRef>>,
+        expected: Option<&Type>,
     ) -> CheckResult<Type> {
+        let Receiver {
+            node: object,
+            id,
+            args: receiver_args,
+        } = receiver;
         let full = self.method_name(id, name);
         if !info.has_self {
             return self.err(format!(
@@ -191,6 +222,12 @@ impl Checker {
             other => other,
         };
         let modes = info.modes.get(1..).unwrap_or(&[]);
+        if info.generics > 0 {
+            // The type arguments of the value (`Pair[int, string]`), then the method's own.
+            let mut generic = receiver_args;
+            generic.resize(info.generics, Type::Unknown);
+            return self.check_generic_call(&ty, generic, modes, args, expected);
+        }
         self.check_function_call_mut(&ty, modes, args)
     }
 

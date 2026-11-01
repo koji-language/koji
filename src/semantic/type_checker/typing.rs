@@ -91,6 +91,10 @@ impl Checker {
                         .iter()
                         .map(|a| self.resolve_type(a))
                         .collect::<CheckResult<Vec<_>>>()?;
+                    // `Option[File]` is fine; a user generic type cannot hold a move-only value yet.
+                    if id != self.builtins.option && id != self.builtins.result {
+                        self.ensure_copyable_args(&args)?;
+                    }
                     Ok(Type::Named { id, args })
                 }
                 TypeRef::Type(_) => self.err(format!("type '{}' is not generic", name)),

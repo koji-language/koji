@@ -22,6 +22,7 @@ impl Interpreter {
                     params,
                     return_type,
                     body,
+                    ..
                 } => {
                     let full = match owner {
                         Some(owner) => format!("{}.{}", owner, name),
@@ -47,6 +48,7 @@ impl Interpreter {
                 AstNode::TypeDecl {
                     name,
                     definition: TypeDef::Sum(variants),
+                    ..
                 } => {
                     let sum = Rc::new(SumType {
                         name: name.clone(),

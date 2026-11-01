@@ -20,6 +20,7 @@ mod typing;
 mod declarations;
 mod statements;
 mod functions;
+mod generics;
 mod expressions;
 mod calls;
 mod ownership;
@@ -107,6 +108,8 @@ struct Symbol {
     /// A copy of a variable with a narrower type (`if (x is Some)`): moving it moves the
     /// original too.
     narrowed: bool,
+    /// For a generic function: the number of its type parameters (`Type::Param(0..)` in `ty`).
+    generics: usize,
 }
 
 impl Symbol {
@@ -121,6 +124,7 @@ impl Symbol {
             reason: None,
             borrowed: None,
             narrowed: false,
+            generics: 0,
         }
     }
 
@@ -135,6 +139,7 @@ impl Symbol {
             reason: None,
             borrowed: None,
             narrowed: false,
+            generics: 0,
         }
     }
 }
@@ -173,6 +178,11 @@ struct MethodInfo {
     has_self: bool,
     modes: Vec<ParamMode>,
     module: PathBuf,
+    /// Type parameters of the type (first) and of the method itself: `Type::Param(0..)` in
+    /// `ty`.
+    generics: usize,
+    /// Their names, to check the method's body.
+    type_param_names: Vec<String>,
 }
 
 struct ReturnContext {
