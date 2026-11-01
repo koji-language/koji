@@ -116,81 +116,32 @@ impl Interpreter {
         value: &AstNode,
         env: &Rc<Env>,
     ) -> Exec<()> {
-        let new_value = |interpreter: &mut Self, current: Option<Value>| -> Exec<Value> {
-            let value = interpreter.eval(value, env)?;
-            match (op.binary(), current) {
-                (None, Some(Value::Float(_))) => Ok(coerce(value, true)),
-                (None, _) => Ok(value),
-                (Some(binary), Some(current)) => {
-                    let is_float = matches!(current, Value::Float(_));
-                    Ok(coerce(interpreter.binary(binary, current, value)?, is_float))
-                }
-                (Some(_), None) => Err(interpreter.error("compound assignment to an undefined value")),
+        // `x = value` on a new name declares a variable.
+        if let AstNode::Identifier(name) = target.unlocated() {
+            if env.get(name).is_none() {
+                let value = self.eval(value, env)?;
+                env.define(name, value);
+                return Ok(());
+            }
+        }
+        // The place first (with its indices), then the value, as written from left to right.
+        let place = self.resolve_place(target, env)?;
+        let current = self.read_place(&place, env)?;
+        let value = self.eval(value, env)?;
+        let value = match (op.binary(), current) {
+            (None, Some(Value::Float(_))) => coerce(value, true),
+            (None, _) => value,
+            (Some(binary), Some(current)) => {
+                let is_float = matches!(current, Value::Float(_));
+                coerce(self.binary(binary, current, value)?, is_float)
+            }
+            (Some(_), None) => {
+                return Err(self.error(match place.steps.last().and_then(Step::key) {
+                    Some(key) => format!("key '{}' not found", key),
+                    None => "compound assignment to an undefined value".to_string(),
+                }))
             }
         };
-
-        match target.unlocated() {
-            AstNode::Identifier(name) => {
-                let current = env.get(name);
-                let value = new_value(self, current)?;
-                if !env.assign(name, value.clone()) {
-                    env.define(name, value);
-                }
-                Ok(())
-            }
-            AstNode::Index { target, index } => {
-                let container = self.eval(target, env)?;
-                let index = self.eval(index, env)?;
-                match &container {
-                    Value::List(items) => {
-                        let position = self.list_position(items.borrow().len(), &index)?;
-                        let current = items.borrow()[position].clone();
-                        let value = new_value(self, Some(current))?;
-                        items.borrow_mut()[position] = value;
-                        Ok(())
-                    }
-                    Value::Object(object) => {
-                        let key = match &index {
-                            Value::Str(key) => key.to_string(),
-                            other => {
-                                return Err(self.error(format!(
-                                    "dictionary keys must be strings, found {}",
-                                    other.type_name()
-                                )))
-                            }
-                        };
-                        let current = object.borrow().get(&key).cloned();
-                        let value = if op.binary().is_some() && current.is_none() {
-                            return Err(self.error(format!("key '{}' not found", key)));
-                        } else {
-                            new_value(self, current)?
-                        };
-                        object.borrow_mut().set(&key, value);
-                        Ok(())
-                    }
-                    other => Err(self.error(format!(
-                        "cannot assign by index to a value of type {}",
-                        other.type_name()
-                    ))),
-                }
-            }
-            AstNode::Member { object, name } => {
-                let object = self.eval(object, env)?;
-                match &object {
-                    Value::Object(fields) => {
-                        let current = fields.borrow().get(name).cloned();
-                        let value = new_value(self, current)?;
-                        fields.borrow_mut().set(name, value);
-                        Ok(())
-                    }
-                    other => Err(self.error(format!(
-                        "cannot assign field '{}' on a value of type {}",
-                        name,
-                        other.type_name()
-                    ))),
-                }
-            }
-            _ => Err(self.error("invalid assignment target")),
-        }
+        self.write_place(&place, value, env)
     }
 }

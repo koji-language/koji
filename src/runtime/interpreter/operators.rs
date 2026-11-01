@@ -51,7 +51,7 @@ impl Interpreter {
                         }));
                     }
                 }
-                Ok(Value::Bool(left_value.identical(&right_value)))
+                Err(self.error("'is' checks a variant"))
             }
             _ => {
                 let left = self.eval(left, env)?;
@@ -67,7 +67,6 @@ impl Interpreter {
         match (op, &left, &right) {
             (Equal, _, _) => Ok(Value::Bool(left.equals(&right))),
             (NotEqual, _, _) => Ok(Value::Bool(!left.equals(&right))),
-            (Is, _, _) => Ok(Value::Bool(left.identical(&right))),
             (In, _, _) => self.contains(&right, &left).map(Value::Bool),
 
             (Add, Value::Int(a), Value::Int(b)) => a.checked_add(*b).map(Value::Int).ok_or_else(overflow),

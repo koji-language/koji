@@ -115,7 +115,7 @@ impl Interpreter {
             }
             AstNode::For {
                 variable,
-                is_mut,
+                is_mut: _,
                 iterable,
                 body,
             } => {
@@ -138,8 +138,8 @@ impl Interpreter {
                 };
                 for item in items {
                     let scope = Env::child(env);
-                    // A `for mut` variable is a copy: changing it does not change the list.
-                    scope.define(variable, if *is_mut { item.deep_copy() } else { item });
+                    // Value semantics: changing a `for mut` variable does not change the list.
+                    scope.define(variable, item);
                     if !self.exec_loop_body(body, &scope)? {
                         break;
                     }

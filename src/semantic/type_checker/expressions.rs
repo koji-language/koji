@@ -84,9 +84,14 @@ impl Checker {
             }
             AstNode::BinaryOp { left, op, right } => {
                 if *op == BinaryOperator::Is {
-                    if let Some(result) = self.check_variant_test(left, right)? {
-                        return Ok(result);
-                    }
+                    // Values have no identity: `is` only checks a variant.
+                    return match self.check_variant_test(left, right)? {
+                        Some(result) => Ok(result),
+                        None => self.err(
+                            "'is' checks a variant ('result is Some'); to compare values, use '=='"
+                                .to_string(),
+                        ),
+                    };
                 }
                 let left_ty = self.check_value(left, None)?;
                 let right_ty = self.check_value(right, None)?;

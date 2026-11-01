@@ -12,7 +12,8 @@ pub enum Value {
     Str(Rc<str>),
     Bool(bool),
     Void,
-    /// Lists are reference values: a `const` list can still have its contents changed.
+    /// Lists and objects have value semantics: copies share their memory until one of them
+    /// changes (copy-on-write, see `interpreter/places.rs`).
     List(Rc<RefCell<Vec<Value>>>),
     /// Shape-typed values, object literals and dictionaries.
     Object(Rc<RefCell<Object>>),
@@ -25,7 +26,7 @@ pub enum Value {
     Native(Rc<RefCell<Native>>),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Object {
     /// Fields in declaration order.
     pub fields: Vec<(String, Value)>,
@@ -34,6 +35,10 @@ pub struct Object {
 impl Object {
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, v)| v)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
+        self.fields.iter_mut().find(|(n, _)| n == name).map(|(_, v)| v)
     }
 
     pub fn set(&mut self, name: &str, value: Value) {
@@ -218,27 +223,6 @@ impl Value {
         Value::Object(Rc::new(RefCell::new(Object { fields })))
     }
 
-    /// A copy that shares nothing with the original (lists and objects are copied too).
-    pub fn deep_copy(&self) -> Value {
-        match self {
-            Value::List(items) => Value::list(items.borrow().iter().map(Value::deep_copy).collect()),
-            Value::Object(object) => Value::object(
-                object
-                    .borrow()
-                    .fields
-                    .iter()
-                    .map(|(name, value)| (name.clone(), value.deep_copy()))
-                    .collect(),
-            ),
-            Value::Variant(variant) => Value::Variant(Rc::new(VariantValue {
-                sum: Rc::clone(&variant.sum),
-                name: variant.name.clone(),
-                values: variant.values.iter().map(Value::deep_copy).collect(),
-            })),
-            other => other.clone(),
-        }
-    }
-
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Int(_) => "int",
@@ -412,7 +396,8 @@ impl Value {
         }
     }
 
-    /// Identity (`is`): reference values must be the same object in memory.
+    /// Equality used by `equals` for values that are not compared by their contents
+    /// (functions, modules, files...).
     pub fn identical(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),

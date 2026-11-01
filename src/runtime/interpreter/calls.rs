@@ -93,40 +93,15 @@ impl Interpreter {
     }
 
     pub(super) fn eval_place(&mut self, node: &AstNode, env: &Rc<Env>) -> Exec<(Value, Place)> {
-        match node.unlocated() {
-            AstNode::Identifier(name) => match env.get(name) {
-                Some(value) => Ok((value, Place::Variable(name.clone()))),
-                None => Err(self.error(format!("undefined variable '{}'", name))),
-            },
-            AstNode::Member { object, name } => {
-                let object = self.eval(object, env)?;
-                let value = self.member(&object, name)?;
-                Ok((value, Place::Field(object, name.clone())))
-            }
-            AstNode::Index { target, index } => {
-                let target = self.eval(target, env)?;
-                let index = self.eval(index, env)?;
-                let value = self.index(&target, &index)?;
-                Ok((value, Place::Element(target, index)))
-            }
-            _ => Err(self.error("only a variable, a field or an element can be passed as 'mut'")),
+        let place = self.resolve_place(node, env)?;
+        match self.read_place(&place, env)? {
+            Some(value) => Ok((value, place)),
+            None => Err(self.error("only a variable, a field or an element can be passed as 'mut'")),
         }
     }
 
     pub(super) fn set_place(&mut self, place: Place, value: Value, env: &Rc<Env>) -> Exec<()> {
-        match place {
-            Place::Variable(name) => {
-                env.assign(&name, value);
-            }
-            Place::Field(Value::Object(fields), name) => fields.borrow_mut().set(&name, value),
-            Place::Element(Value::List(items), index) => {
-                let position = self.list_position(items.borrow().len(), &index)?;
-                items.borrow_mut()[position] = value;
-            }
-            Place::Element(Value::Object(object), Value::Str(key)) => object.borrow_mut().set(&key, value),
-            _ => return Err(self.error("invalid 'mut' argument")),
-        }
-        Ok(())
+        self.write_place(&place, value, env)
     }
 
     /// Calls `callee`; then stores the final value of each `mut` parameter (by position) back

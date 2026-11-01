@@ -24,6 +24,7 @@ mod expressions;
 mod operators;
 mod calls;
 mod patterns;
+mod places;
 
 /// Non-local control flow while executing statements.
 pub enum Flow {
@@ -41,11 +42,32 @@ impl From<EzError> for Flow {
 
 pub type Exec<T> = Result<T, Flow>;
 
-/// Where a `mut` argument came from, to store the parameter's final value back.
-enum Place {
+/// Where a value lives, for assignments and `mut` arguments: a variable (or a temporary
+/// value) followed by fields and elements, as in `people[0].age`.
+struct Place {
+    base: Base,
+    steps: Vec<Step>,
+}
+
+enum Base {
     Variable(String),
-    Field(Value, String),
-    Element(Value, Value),
+    Temporary(Value),
+}
+
+enum Step {
+    Field(String),
+    Index(Value),
+}
+
+impl Step {
+    /// The key of a field or of a dictionary entry.
+    fn key(&self) -> Option<&str> {
+        match self {
+            Step::Field(name) => Some(name),
+            Step::Index(Value::Str(key)) => Some(key),
+            Step::Index(_) => None,
+        }
+    }
 }
 
 /// Argument values and the places of the `mut` ones, by argument position.

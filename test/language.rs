@@ -242,7 +242,7 @@ fn comparison_operators() {
 }
 
 #[test]
-fn identity_and_membership() {
+fn equality_and_membership() {
     let source = r#"
         type Person = {
             name: string
@@ -252,12 +252,13 @@ fn identity_and_membership() {
         const b: Person = { name: 'Ana', age: 30 }
 
         print(a == b) // true: the fields are equal
-        print(a is b) // false: different objects in memory
-        print(a is a)
         print('a' in 'banana')
         print(2 in [1, 2, 3], 'x' in ['a'])
     "#;
-    assert_eq!(run(source), "true\nfalse\ntrue\ntrue\ntrue false\n");
+    assert_eq!(run(source), "true\ntrue\ntrue false\n");
+    // Values have no identity: `is` only checks variants.
+    assert_error("a = [1]\nb = a\nprint(a is b)", "'is' checks a variant");
+    assert_error("x = 1\nprint(x is 1)", "'is' checks a variant");
 }
 
 #[test]
@@ -1726,5 +1727,56 @@ fn object_literals_need_a_type() {
     assert_error(
         "type S = { Circle(r: float) }\nconst s: S = { r: 1.0 }",
         "an object literal cannot be a value of type S",
+    );
+}
+
+#[test]
+fn value_semantics() {
+    let source = r#"
+        type Person = {
+            name: string
+            age: int
+        }
+
+        a = [1, 2, 3]
+        b = a
+        b[0] = 9
+        print(a, b)
+
+        m = [[1, 2], [3, 4]]
+        n = m
+        n[1][0] = 0
+        print(m, n)
+
+        const ana: Person = { name: 'Ana', age: 30 }
+        var people: Person[] = [ana]
+        people[0].age = 31
+        print(ana.age, people[0].age)
+
+        function birthday(mut p: Person) {
+            p.age += 1
+        }
+        birthday(mut people[0])
+        print(ana.age, people[0].age)
+
+        function same(items: int[]): int[] {
+            return items
+        }
+        imut fixed = [1, 2]
+        var copy = same(fixed)
+        copy[0] = 100
+        print(fixed, copy)
+
+        function makeReader(items: int[]): () => int[] {
+            return () => items
+        }
+        var source = [1]
+        const read = makeReader(source)
+        source[0] = 2
+        print(read(), source)
+    "#;
+    assert_eq!(
+        run(source),
+        "[1, 2, 3] [9, 2, 3]\n[[1, 2], [3, 4]] [[1, 2], [0, 4]]\n30 31\n30 32\n[1, 2] [100, 2]\n[1] [2]\n"
     );
 }

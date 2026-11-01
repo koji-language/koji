@@ -98,6 +98,21 @@ impl Env {
         self.vars.borrow_mut().insert(name.to_string(), value);
     }
 
+    /// Runs `f` on the variable `name` itself (in this scope, an enclosing one or the module it
+    /// was imported from); `None` if it does not exist.
+    pub fn with_slot<R>(&self, name: &str, f: impl FnOnce(&mut Value) -> R) -> Option<R> {
+        if let Some(slot) = self.vars.borrow_mut().get_mut(name) {
+            return Some(f(slot));
+        }
+        if let Some(module) = self.aliases.borrow().get(name) {
+            return module.with_slot(name, f);
+        }
+        match &self.parent {
+            Some(parent) => parent.with_slot(name, f),
+            None => None,
+        }
+    }
+
     /// Updates an existing variable in this scope or an enclosing one; `false` if not found.
     pub fn assign(&self, name: &str, value: Value) -> bool {
         if let Some(slot) = self.vars.borrow_mut().get_mut(name) {
