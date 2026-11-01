@@ -5,7 +5,6 @@ const USAGE: &str = "\
 ez - the ez programming language
 
 Usage:
-    ez <file.ez>          check and run a program
     ez run <file.ez>      check and run a program
     ez check <file.ez>    only check syntax and types
     ez help               show this message";
@@ -18,7 +17,10 @@ fn main() -> ExitCode {
             println!("{}", USAGE);
             return ExitCode::SUCCESS;
         }
-        [file] => ("run", file),
+        [file] if file.ends_with(".ez") => {
+            eprintln!("use 'ez run {}' to run a program\n\n{}", file, USAGE);
+            return ExitCode::from(2);
+        }
         _ => {
             eprintln!("{}", USAGE);
             return ExitCode::from(2);
