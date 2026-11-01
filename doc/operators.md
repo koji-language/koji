@@ -13,7 +13,7 @@
 
 Division follows the type of the operands: dividing two `int` values gives an `int` (truncated toward zero), and dividing `float` values gives a `float`. If one operand is a `float`, the result is a `float`. The remainder `%` has the sign of the dividend.
 
-```ez
+```koji
 7 / 2 // 3
 -7 / 2 // -3
 7.0 / 2.0 // 3.5
@@ -48,7 +48,7 @@ To handle the `**` cases instead of panicking, use `math.pow`, which returns a `
 
 `==` compares values: two lists or objects are equal when their contents are equal.
 
-```ez
+```koji
 type Person = {
 	name: string
 	age: int
@@ -62,14 +62,14 @@ a == b // true: the fields are equal
 
 `in` checks whether an element is in a list, or a text in a string:
 
-```ez
+```koji
 'a' in 'banana' // true
 2 in [1, 2, 3] // true
 ```
 
 `is` checks the variant of a sum type value. Inside the `if`, the fields of the variant can be used:
 
-```ez
+```koji
 result = Some(1)
 
 if (result is Some) {
@@ -85,7 +85,7 @@ if (result is Some) {
 | `or`     | Logical OR  |
 | `not`    | Logical NOT |
 
-```ez
+```koji
 if (age >= 18 and not hasTicket) {
 	print('buy a ticket first')
 }

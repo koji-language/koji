@@ -1,6 +1,6 @@
 # Values and Memory
 
-ez manages memory without a garbage collector and without manual frees. Two rules cover almost every program:
+Koji manages memory without a garbage collector and without manual frees. Two rules cover almost every program:
 
 -   **Values are copied.** Assigning or passing a list or an object gives an independent copy.
 -   **Resources are moved.** A value that holds a resource (a file, or a type with `drop`) has exactly one owner, and it is released when its owner goes out of scope.
@@ -9,7 +9,7 @@ ez manages memory without a garbage collector and without manual frees. Two rule
 
 Assigning a value, passing it to a function or storing it in a list gives a **copy**: changing one of them never changes the other.
 
-```ez
+```koji
 a = [1, 2, 3]
 b = a
 b[0] = 9
@@ -28,7 +28,7 @@ Some values cannot be copied: a `File` (two copies would close the same file), a
 
 A move-only value has exactly one owner. Assigning it to another variable, returning it or storing it in another value **moves** it, and the variable it came from cannot be used anymore:
 
-```ez
+```koji
 import file
 
 f = file.open('notes.txt', file.Read)?
@@ -42,7 +42,7 @@ A variable that was moved can get a new value (`f = file.open(...)?`), and a mov
 
 Parameters, `self`, the `for` variable and the bindings of a `match` on a variable **borrow** their value: they can use it, but they cannot move it. Passing a file to a function does not move it:
 
-```ez
+```koji
 function show(f: file.File) {
     print(f.read())
 }
@@ -66,7 +66,7 @@ The compiler checks that a move-only value is never copied:
 
 When the owner of a move-only value goes out of scope, the value is **dropped**: a file is closed, and the `drop` method of the type runs. This happens at the end of the block, when the function returns (also through `?`), when the variable gets a new value, and at the end of the program. Variables are dropped in the reverse order of their declaration.
 
-```ez
+```koji
 type Connection = {
     name: string
 }
@@ -95,7 +95,7 @@ So there is no `defer`: cleanup belongs to the value that needs it.
 
 A `File` is move-only, and it is closed when its owner goes out of scope, so most programs never call `close()`:
 
-```ez
+```koji
 import file
 
 function readNotes(): Result[string, file.FileError] {

@@ -6,7 +6,7 @@
 
 Executes a block of code conditionally.
 
-```ez
+```koji
 if (age > 18) {
     print('Adult')
 } else {
@@ -16,13 +16,13 @@ if (age > 18) {
 
 `if` can also be used as an expression. It then needs an `else`, and both branches must have the same type:
 
-```ez
+```koji
 const label: string = if (age > 18) { 'Adult' } else { 'Minor' }
 
 print(label)
 ```
 
-ez has no `else if`. For more than two branches, use a [`match` with guards](#guards).
+Koji has no `else if`. For more than two branches, use a [`match` with guards](#guards).
 
 ## Loop
 
@@ -34,13 +34,13 @@ The `for` loop runs a block once for each item of a list, each character of a st
 
 `range(start, end)` gives the integers from `start` up to, but not including, `end` (see [`range`](builtins.md#range) for the other forms):
 
-```ez
+```koji
 range(0, 5) // [0, 1, 2, 3, 4]
 ```
 
 #### Basic Syntax
 
-```ez
+```koji
 for i in range(0, 10) {
     print(i)
 }
@@ -56,7 +56,7 @@ This prints numbers from 0 to 9.
 
 #### Going Through a List
 
-```ez
+```koji
 names: string[] = ['Anna', 'Claire', 'Leon']
 
 // By index
@@ -74,7 +74,7 @@ for name in names {
 
 The loop variable is `imut`: assigning to it, or changing its contents, is an error. With `for mut`, it can be changed, but it is a copy: the list does not change.
 
-```ez
+```koji
 for name in names {
     name = name.upper() // Error! cannot modify 'name': the 'for' variable is imut (use 'for mut' to change it)
 }
@@ -93,7 +93,7 @@ print(rows) // [[1, 2], [3, 4]]
 
 Repeats a block of code while a condition is true.
 
-```ez
+```koji
 while (count < 5) {
     print(count)
 
@@ -105,7 +105,7 @@ while (count < 5) {
 
 -	`break`: exits the current loop immediately.
 
-```ez
+```koji
 for i in range(0, 10) {
     if (i == 5) {
         break
@@ -120,7 +120,7 @@ break // Error! break can only be used inside a loop
 
 -	`continue`: skips to the next iteration.
 
-```ez
+```koji
 for i in range(0, 10) {
     if (i % 2 == 0) {
         continue
@@ -137,7 +137,7 @@ continue // Error! continue can only be used inside a loop
 
 The `match` expression allows you to compare a value against multiple patterns.
 
-```ez
+```koji
 match (result) {
 	Ok(value) => print(`Value: ${value}`)
 	Err(error) => print(`Error: ${error}`)
@@ -146,7 +146,7 @@ match (result) {
 
 Each arm has the form `pattern => expression`. Arms are tried in order, and the first one that matches runs. Patterns can match variants, take their fields apart (`Ok(value)`), and be nested (`Err(NotFound(path))`). The variables bound by a pattern (`value`, `error`) are `imut`.
 
-```ez
+```koji
 match (user) {
 	Admin(name) => print(`Admin: ${name}`)
 	Guest => print('Guest user')
@@ -155,7 +155,7 @@ match (user) {
 
 A `match` is exhaustive: it must handle every possible variant, unless a wildcard (`_`) is used:
 
-```ez
+```koji
 match (option) {
 	Some(value) => print(value)
 	_ => print('No value')
@@ -164,7 +164,7 @@ match (option) {
 
 A `match` is also an expression, so its value can be assigned to a variable:
 
-```ez
+```koji
 const label: string = match (result) {
     Ok(value) => `Value: ${value}`
     Err(error) => `Error: ${error}`
@@ -173,7 +173,7 @@ const label: string = match (result) {
 
 All arms must evaluate to the same type, which becomes the type of the expression.
 
-```ez
+```koji
 const label: int = match (result) {
     Ok(value) => `Value: ${value}` // Error! string is not int
     Err(error) => `Error: ${error}`
@@ -184,7 +184,7 @@ const label: int = match (result) {
 
 A guard, `if (condition)` after a pattern, makes the arm match only when the condition is true. `match` with guards replaces both `else if` chains and `switch` / `case` statements:
 
-```ez
+```koji
 age: int = 14
 
 const label: string = match (age) {

@@ -1,6 +1,6 @@
 # Variable Types
 
-The `ez` language provides three variable types that control mutability:
+Koji provides three variable types that control mutability:
 
 | Keyword | Reassign the variable | Change its contents |
 | ------- | --------------------- | ------------------- |
@@ -16,7 +16,7 @@ The `ez` language provides three variable types that control mutability:
 
 **Example**:
 
-```ez
+```koji
 globalVar = 1 // Global variable
 
 function test() {
@@ -34,7 +34,7 @@ print(localVar) // Error! 'localVar' is not accessible outside the function
 
 Other blocks work the same way:
 
-```ez
+```koji
 if (true) {
 	message = 'inside' // declared in the if block
 }
@@ -44,7 +44,7 @@ print(message) // Error! 'message' is not accessible outside the block
 
 Assigning to a name that already exists in an outer block changes that variable instead of declaring a new one:
 
-```ez
+```koji
 count = 0
 
 if (true) {
@@ -62,14 +62,14 @@ print(count) // 1
 
 **Example**:
 
-```ez
+```koji
 const pi = 3.14159
 pi = 3.14 // Error! cannot modify a 'const' value ('pi')
 ```
 
 If its value has contents (an object or a list), they can still be changed:
 
-```ez
+```koji
 type Person = {
 	name: string
 	age: int
@@ -92,7 +92,7 @@ person = { name: 'Bia', age: 25 } // Error! cannot modify a 'const' value ('pers
 
 **Example**:
 
-```ez
+```koji
 type Person = {
 	name: string
 	age: int

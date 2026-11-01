@@ -1,6 +1,6 @@
 # Roadmap
 
-This document outlines the planned features and milestones for the ez programming language. The detailed plan for the compiler is in the [compiler plan](compiler-plan.md).
+This document outlines the planned features and milestones for the Koji programming language. The detailed plan for the compiler is in the [compiler plan](compiler-plan.md).
 
 ---
 
@@ -24,8 +24,8 @@ This document outlines the planned features and milestones for the ez programmin
 -   [x] Module system with mandatory `export`
 -   [ ] Value semantics with copy-on-write, move-only types and `drop`
 -   [ ] User-defined generics
--   [ ] A compiler targeting native binaries (`ez build`, through C)
--   [ ] A self-hosted compiler, written in ez
+-   [ ] A compiler targeting native binaries (`kojic build`, through C)
+-   [ ] A self-hosted compiler, written in Koji
 
 ---
 

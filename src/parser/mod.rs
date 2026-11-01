@@ -958,7 +958,7 @@ impl Parser {
             self.advance();
             if *self.current() == Token::If {
                 return self.error_here(
-                    "ez does not have 'else if'; use 'match' with guards".to_string(),
+                    "Koji does not have 'else if'; use 'match' with guards".to_string(),
                 );
             }
             Some(Box::new(self.parse_block()?))
@@ -1702,7 +1702,7 @@ mod tests {
     #[test]
     fn imports() {
         let program = parse_program_str(
-            "import math\nimport m from 'math.ez'\nimport { add, subtract } from 'math.ez'",
+            "import math\nimport m from 'math.kj'\nimport { add, subtract } from 'math.kj'",
         )
         .unwrap();
         assert_eq!(

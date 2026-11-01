@@ -4,13 +4,13 @@
 
 -   `int`: 64-bit integer numbers.
 
-```ez
+```koji
 age: int = 23
 ```
 
 -   `float`: 64-bit floating-point numbers. A `float` is always a finite real number: there is no NaN and no infinity.
 
-```ez
+```koji
 const pi: float = 3.14
 const avogadro: float = 6.022e23 // scientific notation
 ```
@@ -23,7 +23,7 @@ When a numeric result does not fit in an `int` or a `float` (a representation li
 
 -   `string`: a sequence of characters.
 
-```ez
+```koji
 name: string = 'Mary'
 ```
 
@@ -31,23 +31,23 @@ name: string = 'Mary'
 
 -   `boolean`: logical values (`true`, `false`).
 
-```ez
+```koji
 isStudent: boolean = true
 ```
 
 ## Missing Values
 
-The ez language does **not** include `null` or `undefined`.
+The Koji language does **not** include `null` or `undefined`.
 
 To represent the absence of a value, use the `Option[T]` sum type:
 
-```ez
+```koji
 name: Option[string] = None
 ```
 
 A value that is only known later starts as `None` and is set afterwards:
 
-```ez
+```koji
 x: Option[int] = None
 
 // Later in the code

@@ -8,7 +8,7 @@
 -   A variable is annotated only when its type is not evident from its value: `const person = Person.create('Ana')`, but `const person: Person = { name: 'Ana', age: 30 }` (an object literal needs the type).
 -   A comment after code on the same line is separated from it by exactly one space. Comments are not aligned into columns:
 
-    ```ez
+    ```koji
     count = 0 // number of items
     total = 0.0 // sum of the prices
     ```

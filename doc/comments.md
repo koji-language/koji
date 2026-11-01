@@ -4,7 +4,7 @@
 
 Everything after `//` until the end of the line is a comment.
 
-```ez
+```koji
 // Single-line comment
 print('ok') // a comment after code
 ```
@@ -13,7 +13,7 @@ print('ok') // a comment after code
 
 ## Multi-line Comments
 
-```ez
+```koji
 /*
 Multi-line
 comment

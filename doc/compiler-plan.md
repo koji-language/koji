@@ -1,6 +1,6 @@
 # Compiler Plan
 
-This document plans the path from the current implementation to a **self-hosted compiler**: an ez compiler written in ez that produces native binaries. It records the language decisions already made and the ones still open.
+This document plans the path from the current implementation to a **self-hosted compiler**: a Koji compiler written in Koji that produces native binaries. It records the language decisions already made and the ones still open.
 
 > Status: the [decisions](#decisions) below are implemented in the current (interpreted) implementation, except where noted. The phases that build the compiler (2 to 5) have not started.
 
@@ -8,7 +8,7 @@ This document plans the path from the current implementation to a **self-hosted 
 
 ## Where we are
 
-Today `ez run <file>` runs four stages, all written in Rust:
+Today `kojic run <file>` runs four stages, all written in Rust:
 
 1. **Lexer** (`src/lexer/`): source text → tokens.
 2. **Parser** (`src/parser/`): tokens → AST.
@@ -24,13 +24,13 @@ Today `ez run <file>` runs four stages, all written in Rust:
 A self-hosted compiler needs an existing compiler to be built the first time. The Rust implementation plays that role.
 
 ```
-stage 0: ez in Rust (current implementation + a code generator)
+stage 0: kojic in Rust (current implementation + a code generator)
     │ compiles
     ▼
-stage 1: ezc written in ez, compiled by stage 0
+stage 1: kojic written in Koji, compiled by stage 0
     │ compiles its own source
     ▼
-stage 2: ezc compiled by ezc
+stage 2: kojic compiled by kojic
     │ compiles its own source again
     ▼
 stage 3: must be identical to stage 2 (fixed point)
@@ -50,7 +50,7 @@ When stage 2 and stage 3 produce the same output, the compiler sustains itself.
 
 JSON becomes a sum type in the `json` module:
 
-```ez
+```koji
 type Json = {
     Null
     Bool(value: boolean)
@@ -89,8 +89,8 @@ Everything in a module is private by default. Only declarations marked with `exp
     -   Importers always see the **current** value, not a copy taken at import time.
     -   Only the **binding** is read-only: like `const`, the contents of a list or object can still be changed.
 
-    ```ez
-    // file: counter.ez
+    ```koji
+    // file: counter.kj
     export var count = 0
 
     export function increment() {
@@ -98,22 +98,22 @@ Everything in a module is private by default. Only declarations marked with `exp
     }
     ```
 
-    ```ez
-    import { count, increment } from 'counter.ez'
+    ```koji
+    import { count, increment } from 'counter.kj'
 
     increment()
     print(count) // 1
-    count = 5 // Error! 'count' is read-only outside 'counter.ez'
+    count = 5 // Error! 'count' is read-only outside 'counter.kj'
     ```
 
--   Importing something that is not exported is an error: `'helper' is not exported by 'math.ez'`.
+-   Importing something that is not exported is an error: `'helper' is not exported by 'math.kj'`.
 -   A public signature cannot use a private type (e.g. `export function f(): Helper` with a private `Helper`).
 -   The standard library is unaffected: all of its members are public.
--   Later: re-exports (`export { add } from 'math.ez'`).
+-   Later: re-exports (`export { add } from 'math.kj'`).
 
-### Tooling: `ez run` and `ez build`
+### Tooling: `kojic run` and `kojic build`
 
-The interpreter stays: `ez run` checks and interprets a program, for fast development. The compiler will be `ez build`, producing a native binary. Both must give the same results (every test runs in both modes).
+The interpreter stays: `kojic run` checks and interprets a program, for fast development. The compiler will be `kojic build`, producing a native binary. Both must give the same results (every test runs in both modes).
 
 ### The `?` operator
 
@@ -123,7 +123,7 @@ The interpreter stays: `ez run` checks and interprets a program, for fast develo
 -   on an `Option`, `x?` gives the `Some` value, or returns `None` (only in functions returning `Option`);
 -   at the top level of the main file, an `Err` stops the program with its message and exit code 1.
 
-```ez
+```koji
 type ConfigError = {
     File(error: file.FileError)
     Json(error: json.JsonError)
@@ -145,7 +145,7 @@ Implemented; see [Error Handling](error-handling.md).
 
 A method is a function prefixed with its type, with an explicit `self` parameter (not `this`):
 
-```ez
+```koji
 type Person = {
     name: string
 }
@@ -171,7 +171,7 @@ Implemented; see [Custom Types](custom-types.md#methods).
 
 Memory is managed with **ownership**, without a garbage collector. Every value has exactly one owner, and when the owner goes out of scope the value is **dropped**: its memory is released and, for resources, the resource is closed. This is deterministic, so there is no `defer`.
 
-```ez
+```koji
 function readNotes(): Result[string, file.FileError] {
     f = file.open('notes.txt', file.Read)?
     content = f.read()? // on an error, '?' returns and 'f' is closed
@@ -181,7 +181,7 @@ function readNotes(): Result[string, file.FileError] {
 
 **Value semantics with copy-on-write**, as in Swift, Hylo and Mojo. Assigning or passing a value gives an independent copy: there is no aliasing, and no variable becomes unusable (unlike a move). Underneath, the memory is shared until one of the copies is modified, so copies are cheap.
 
-```ez
+```koji
 a = [1, 2, 3]
 b = a // nothing is copied yet
 b[0] = 9 // the list is copied now, because b changes
@@ -203,7 +203,7 @@ Implemented in the interpreter: assignments and `mut` write-backs go through a p
 -   **Closures capture a read-only copy** of the variables they use: assigning to a captured variable (or changing its contents) is a compile error, and the closure sees the value from the moment it was created. Module variables are not captured: functions read and change them directly. State that changes is kept another way (e.g. a type with methods). Implemented.
 -   **`mut` marks a parameter the function may modify**, both in the declaration and in the call, so the change is visible where it happens:
 
-    ```ez
+    ```koji
     function addItem(mut list: int[], item: int) { ... }
 
     addItem(mut items, 2)
@@ -227,7 +227,7 @@ Move-only types and `drop` are implemented:
 
 -   `file.open(path, mode)` takes a sum type, so an invalid mode does not compile:
 
-    ```ez
+    ```koji
     type Mode = { Read  Write  Append }
 
     f = file.open('notes.txt', Read)?
@@ -270,7 +270,7 @@ A built-in `panic(message)` lets code report impossible states.
 
 Every fallible standard library function returns a `Result` with an error type specific to its module:
 
-```ez
+```koji
 // file
 type FileError = {
     NotFound(path: string)
@@ -359,7 +359,7 @@ Like Go and Rust: `int / int` gives an `int` truncated toward zero, a division w
 
 ## What the language needs to support the compiler
 
-A compiler is a large program, with many data structures and many operations that can fail. These features are needed before writing `ezc` in ez, in order of importance:
+A compiler is a large program, with many data structures and many operations that can fail. These features are needed before writing `kojic` in Koji, in order of importance:
 
 1.  **User-defined generics**: `type Map[K, V]`, `function find[T](...)`, using the same bracket syntax as `Option[T]` (constraints are an [open decision](#open-decisions)).
 2.  **Collections**:
@@ -397,15 +397,15 @@ A compiler is a large program, with many data structures and many operations tha
 | --- | --- | --- |
 | **0. Decisions** | The open decisions below, and the documentation updated | Documentation reviewed |
 | **1. Language** | The decisions above and the features in [What the language needs](#what-the-language-needs-to-support-the-compiler), implemented in the Rust checker and interpreter | Tests like the current ones |
-| **2. Compiler in Rust** | A typed IR in `src/ir/` (monomorphization, closure conversion, `match` compiled to decision trees), a C code generator, a C runtime (strings, lists, maps, memory management) and an `ez build` command | Every test runs both interpreted and compiled, with identical output |
-| **3. `ezc` in ez** | Lexer → parser → checker → IR → C generator, in this order | At each step, compare with the Rust implementation: same tokens, same AST, same errors, same generated C |
+| **2. Compiler in Rust** | A typed IR in `src/ir/` (monomorphization, closure conversion, `match` compiled to decision trees), a C code generator, a C runtime (strings, lists, maps, memory management) and a `kojic build` command | Every test runs both interpreted and compiled, with identical output |
+| **3. `kojic` in Koji** | Lexer → parser → checker → IR → C generator, in this order | At each step, compare with the Rust implementation: same tokens, same AST, same errors, same generated C |
 | **4. Bootstrap** | Stages 1 → 2 → 3 | Stage 2 output identical to stage 3 |
-| **5. Maintenance** | A bootstrap policy: freeze the Rust implementation as stage 0, or commit the generated C of `ezc` so that only a C compiler is needed to build everything | CI rebuilds every stage |
+| **5. Maintenance** | A bootstrap policy: freeze the Rust implementation as stage 0, or commit the generated C of `kojic` so that only a C compiler is needed to build everything | CI rebuilds every stage |
 
 Notes:
 
--   **Compiled standard library**: `json` and `regex` can be rewritten in ez. `http` with TLS is heavy: it can go through FFI (e.g. libcurl) or stay outside the core.
--   **Rule for `ezc`**: it may only use features supported by the previous compiler version, otherwise the bootstrap breaks.
+-   **Compiled standard library**: `json` and `regex` can be rewritten in Koji. `http` with TLS is heavy: it can go through FFI (e.g. libcurl) or stay outside the core.
+-   **Rule for `kojic`**: it may only use features supported by the previous compiler version, otherwise the bootstrap breaks.
 
 ---
 

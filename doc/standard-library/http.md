@@ -30,7 +30,7 @@ A response with an error status (such as `404` or `500`) is still `Ok(Response)`
 
 ## Errors
 
-```ez
+```koji
 type HttpError = {
     InvalidUrl(url: string)
     ConnectionFailed(url: string, message: string)
@@ -42,7 +42,7 @@ type HttpError = {
 
 ## Example
 
-```ez
+```koji
 import http
 
 match (http.get('https://example.com/api')) {

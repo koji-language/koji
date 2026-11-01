@@ -6,7 +6,7 @@ The `json` module provides functions to encode and decode data in JSON format.
 
 JSON data is represented by a sum type, so every kind of value is explicit and must be handled with `match`:
 
-```ez
+```koji
 type Json = {
     Null
     Bool(value: boolean)
@@ -23,7 +23,7 @@ type JsonObject = {
 ```
 
 -   A number without `.`, `e` or `E` is an `Int` (`2025`); any other number is a `Float` (`2025.0`, `1e3`).
--   JSON `null` is the `Null` variant: ez itself has no `null`.
+-   JSON `null` is the `Null` variant: Koji itself has no `null`.
 -   `Int(1) == Float(1.0)` is `false`: they are different variants.
 
 ## Functions
@@ -45,7 +45,7 @@ type JsonObject = {
 
 ## Errors
 
-```ez
+```koji
 type JsonError = {
     Syntax(message: string, line: int, column: int)
     NumberOutOfRange(text: string, line: int, column: int) // an integer too large for int
@@ -54,7 +54,7 @@ type JsonError = {
 
 ## Example
 
-```ez
+```koji
 import json
 
 text: string = '{"name": "ezlang", "year": 2025}'
@@ -71,7 +71,7 @@ match (json.parse(text)) {
 
 With the helper functions:
 
-```ez
+```koji
 import json
 
 match (json.parse('{"name": "ezlang", "year": 2025}')) {
@@ -89,7 +89,7 @@ match (json.parse('{"name": "ezlang", "year": 2025}')) {
 
 Building a value to convert:
 
-```ez
+```koji
 import json
 
 print(json.stringify(json.Array([json.Int(1), json.Float(2.0), json.Null]))) // [1,2.0,null]

@@ -31,7 +31,7 @@ The `math` module follows one rule:
 -   **Domain problems return a `MathError`.** The result does not exist in the real numbers.
 -   **Representation limits panic.** The result exists, but does not fit in an `int` or a `float` (e.g. `math.pow(10, 400)`, or `math.round(1e300)`, which does not fit in an `int`).
 
-```ez
+```koji
 type MathError = {
     Complex // the result exists only in the complex numbers: sqrt(-1)
     Indeterminate // indeterminate form (no current function returns it)
@@ -55,7 +55,7 @@ Operators cannot return a `Result`, so they panic instead: `1 / 0` and `0.0 ** -
 
 ## Example
 
-```ez
+```koji
 import math
 
 match (math.pow(5, 2)) {

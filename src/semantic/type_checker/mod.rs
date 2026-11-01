@@ -153,7 +153,7 @@ struct Scope {
 
 #[derive(Debug, Default, Clone)]
 struct ModuleType {
-    /// How the module is named in messages (`math.ez`, `json`).
+    /// How the module is named in messages (`math.kj`, `json`).
     display: String,
     /// Exported values, functions and constructors.
     members: HashMap<String, Symbol>,

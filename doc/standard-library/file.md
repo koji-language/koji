@@ -7,7 +7,7 @@ The `file` module provides functionality for working with files.
 -   `open(path: string, mode: Mode) -> Result[File, FileError]`  
     Opens the file at `path` in the specified `mode`:
 
-    ```ez
+    ```koji
     type Mode = {
         Read // read
         Write // write (overwrites existing content)
@@ -34,7 +34,7 @@ Reading a file opened for writing, or writing to a file opened for reading, is a
 
 ## Errors
 
-```ez
+```koji
 type FileError = {
     NotFound(path: string)
     PermissionDenied(path: string)
@@ -46,7 +46,7 @@ type FileError = {
 
 Printing an error shows a readable message, also available as `error.display()`:
 
-```ez
+```koji
 match (file.open('missing.txt', file.Read)) {
     Ok(f) => print(f.read())
     Err(error) => print(error) // file 'missing.txt' not found
@@ -55,7 +55,7 @@ match (file.open('missing.txt', file.Read)) {
 
 ## Example
 
-```ez
+```koji
 import file
 
 match (file.open('notes.txt', file.Write)) {
@@ -82,7 +82,7 @@ match (file.open('notes.txt', file.Read)) {
 
 With the `?` operator (see [Error Handling](../error-handling.md)), inside a function:
 
-```ez
+```koji
 import file
 
 function readNotes(): Result[string, file.FileError] {

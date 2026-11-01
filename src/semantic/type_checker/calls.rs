@@ -256,7 +256,7 @@ impl Checker {
                         if self.table.fields_of(param).is_some() && self.table.fields_of(&ty).is_some() =>
                     {
                         format!(
-                            " ({} is not a subtype of {}: ez has no subtyping, pass the fields explicitly)",
+                            " ({} is not a subtype of {}: Koji has no subtyping, pass the fields explicitly)",
                             self.show(&ty),
                             self.show(param)
                         )
