@@ -469,7 +469,8 @@ impl Parser {
         self.expect(Token::LParen, "'(' before the parameters")?;
         let params = self.parse_comma_separated(&Token::RParen, |p| {
             let is_mut = *p.current() == Token::Mut;
-            if is_mut {
+            let is_take = *p.current() == Token::Take;
+            if is_mut || is_take {
                 p.advance();
             }
             let name = p.expect_identifier("parameter name")?;
@@ -479,7 +480,7 @@ impl Parser {
             } else {
                 None
             };
-            Ok(Param { name, ty, is_mut })
+            Ok(Param { name, ty, is_mut, is_take })
         })?;
         self.expect(Token::RParen, "')' after the parameters")?;
         Ok(params)

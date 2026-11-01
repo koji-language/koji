@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::error::EzError;
 use crate::parser::ast::{
-    AssignOperator, AstNode, BinaryOperator, Field, ImportKind, MatchArm, MethodRef, Param, Pattern,
+    AssignOperator, AstNode, BinaryOperator, Field, ImportKind, MatchArm, MethodRef, Param, ParamMode, Pattern,
     TemplatePart, TryWrap, TypeDef, TypeExpr, UnaryOperator,
 };
 use crate::parser::parse_source;
@@ -95,8 +95,9 @@ struct Symbol {
     kind: SymbolKind,
     /// Module that declared the symbol, when it was imported: it is read-only here.
     owner: Option<String>,
-    /// For functions: which parameters are `mut` (empty when none is).
-    mut_params: Vec<bool>,
+    /// For functions with `mut` or `take` parameters: how each parameter is passed (empty
+    /// when every parameter is borrowed).
+    modes: Vec<ParamMode>,
     /// Why the variable is read-only, when the reason is not its declaration (a parameter,
     /// `self`, the `for` variable...).
     reason: Option<&'static str>,
@@ -116,7 +117,7 @@ impl Symbol {
             is_imut: false,
             kind: SymbolKind::Value,
             owner: None,
-            mut_params: Vec::new(),
+            modes: Vec::new(),
             reason: None,
             borrowed: None,
             narrowed: false,
@@ -130,7 +131,7 @@ impl Symbol {
             is_imut: true,
             kind: SymbolKind::Builtin(name.to_string()),
             owner: None,
-            mut_params: Vec::new(),
+            modes: Vec::new(),
             reason: None,
             borrowed: None,
             narrowed: false,
@@ -170,7 +171,7 @@ struct MethodInfo {
     /// Full signature; for a method, the first parameter is `self`.
     ty: Type,
     has_self: bool,
-    mut_params: Vec<bool>,
+    modes: Vec<ParamMode>,
     module: PathBuf,
 }
 

@@ -18,8 +18,8 @@ impl Checker {
                         SymbolKind::Constructor { id, variant } => {
                             return self.check_constructor(id, &variant, args, expected)
                         }
-                        SymbolKind::Value if !symbol.mut_params.is_empty() => {
-                            return self.check_function_call_mut(&symbol.ty, &symbol.mut_params, args)
+                        SymbolKind::Value if !symbol.modes.is_empty() => {
+                            return self.check_function_call_mut(&symbol.ty, &symbol.modes, args)
                         }
                         SymbolKind::Value => {}
                     }
@@ -31,11 +31,19 @@ impl Checker {
                     return self.check_associated_call(id, name, args, method);
                 }
                 let object_ty = self.check_value(object, None)?;
-                self.check_receiver(object, &object_ty, name)?;
-                if let Type::Named { id, .. } | Type::Variant { id, .. } = &object_ty {
-                    if let Some(info) = self.methods.get(&(*id, name.clone())).cloned() {
-                        return self.check_method(object, *id, name, info, args, method);
+                let user_method = match &object_ty {
+                    Type::Named { id, .. } | Type::Variant { id, .. } => {
+                        self.methods.get(&(*id, name.clone())).cloned().map(|info| (*id, info))
                     }
+                    _ => None,
+                };
+                // With `take self`, the method owns the value: it is not a temporary to drop.
+                let takes_self = matches!(&user_method, Some((_, info)) if info.modes.first() == Some(&ParamMode::Take));
+                if !takes_self {
+                    self.check_receiver(object, &object_ty, name)?;
+                }
+                if let Some((id, info)) = user_method {
+                    return self.check_method(object, id, name, info, args, method);
                 }
                 return self.check_method_call(&object_ty, name, args, expected);
             }
@@ -138,7 +146,7 @@ impl Checker {
             key: full,
             has_self: false,
         });
-        self.check_function_call_mut(&info.ty, &info.mut_params, args)
+        self.check_function_call_mut(&info.ty, &info.modes, args)
     }
 
     /// `person.greet()`
@@ -158,9 +166,19 @@ impl Checker {
                 full, full
             ));
         }
-        // `mut self`: the call needs no marker, but the value must be one that can change.
-        if info.mut_params[0] {
-            self.check_mut_place(object, Some(&full))?;
+        match info.modes.first() {
+            // `mut self`: the call needs no marker, but the value must be one that can change.
+            Some(ParamMode::Mut) => {
+                self.check_mut_place(object, Some(&full))?;
+            }
+            // `take self`: the value is moved into the method.
+            Some(ParamMode::Take) => {
+                if Self::is_place(object) {
+                    let ty = self.check_value(object, None)?;
+                    self.consume(object, &ty)?;
+                }
+            }
+            _ => {}
         }
         *method.borrow_mut() = Some(MethodRef {
             module: info.module.clone(),
@@ -174,23 +192,24 @@ impl Checker {
             },
             other => other,
         };
-        self.check_function_call_mut(&ty, &info.mut_params[1..], args)
+        let modes = info.modes.get(1..).unwrap_or(&[]);
+        self.check_function_call_mut(&ty, modes, args)
     }
 
     pub(super) fn check_function_call(&mut self, callee_ty: &Type, args: &[AstNode]) -> CheckResult<Type> {
         self.check_function_call_mut(callee_ty, &[], args)
     }
 
-    /// A call to a function whose parameters marked in `mut_params` are `mut`.
+    /// A call to a function whose parameters are passed as `modes` (borrowed when empty).
     pub(super) fn check_function_call_mut(
         &mut self,
         callee_ty: &Type,
-        mut_params: &[bool],
+        modes: &[ParamMode],
         args: &[AstNode],
     ) -> CheckResult<Type> {
         match callee_ty {
             Type::Function { params, ret } => {
-                self.check_args_mut(params, mut_params, args)?;
+                self.check_args_mut(params, modes, args)?;
                 Ok((**ret).clone())
             }
             Type::Unknown => {
@@ -207,7 +226,7 @@ impl Checker {
         self.check_args_mut(params, &[], args)
     }
 
-    pub(super) fn check_args_mut(&mut self, params: &[Type], mut_params: &[bool], args: &[AstNode]) -> CheckResult<Vec<Type>> {
+    pub(super) fn check_args_mut(&mut self, params: &[Type], modes: &[ParamMode], args: &[AstNode]) -> CheckResult<Vec<Type>> {
         if params.len() != args.len() {
             return self.err(format!(
                 "expected {} argument(s), found {}",
@@ -217,7 +236,8 @@ impl Checker {
         }
         let mut types = Vec::new();
         for (i, (param, arg)) in params.iter().zip(args).enumerate() {
-            let is_mut = mut_params.get(i).copied().unwrap_or(false);
+            let mode = modes.get(i).copied().unwrap_or(ParamMode::Borrow);
+            let is_mut = mode == ParamMode::Mut;
             match (arg.unlocated(), is_mut) {
                 (AstNode::MutArg(place), true) => {
                     let ty = self.check_mut_place(place, None)?;
@@ -249,7 +269,12 @@ impl Checker {
                 _ => {}
             }
             let ty = self.check_value(arg, Some(param))?;
-            self.note_temporary(arg, &ty);
+            if mode == ParamMode::Take {
+                // The argument moves into the function, which owns it from now on.
+                self.consume(arg, &ty)?;
+            } else {
+                self.note_temporary(arg, &ty);
+            }
             if !self.assignable(param, &ty) {
                 let hint = match (param, &ty) {
                     (Type::Named { .. }, Type::Named { .. })

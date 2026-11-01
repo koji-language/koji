@@ -238,7 +238,7 @@ impl Checker {
                             variant: variant.name.clone(),
                         },
                         owner: None,
-                        mut_params: Vec::new(),
+                        modes: Vec::new(),
                         reason: None,
                         borrowed: None,
                         narrowed: false,
@@ -512,7 +512,7 @@ impl Checker {
                 SymbolKind::Constructor { id, variant } => {
                     self.check_constructor(id, &variant, args, expected)
                 }
-                SymbolKind::Value => self.check_function_call_mut(&symbol.ty, &symbol.mut_params, args),
+                SymbolKind::Value => self.check_function_call_mut(&symbol.ty, &symbol.modes, args),
             };
         }
 

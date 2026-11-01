@@ -500,8 +500,8 @@ impl Checker {
                     _ => Ok(symbol.ty),
                 }
             }
-            SymbolKind::Value if !symbol.mut_params.is_empty() => self.err(format!(
-                "'{}' has 'mut' parameters and can only be called, not used as a value",
+            SymbolKind::Value if !symbol.modes.is_empty() => self.err(format!(
+                "'{}' has 'mut' or 'take' parameters and can only be called, not used as a value",
                 name
             )),
             SymbolKind::Value => {
@@ -597,8 +597,8 @@ impl Checker {
                     SymbolKind::Builtin(builtin) => {
                         self.err(format!("'{}' is a built-in function and must be called", builtin))
                     }
-                    _ if !symbol.mut_params.is_empty() => self.err(format!(
-                        "'{}' has 'mut' parameters and can only be called, not used as a value",
+                    _ if !symbol.modes.is_empty() => self.err(format!(
+                        "'{}' has 'mut' or 'take' parameters and can only be called, not used as a value",
                         name
                     )),
                     _ => Ok(symbol.ty),

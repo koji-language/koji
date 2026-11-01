@@ -23,9 +23,10 @@ impl Checker {
         self.push_scope();
         self.state.function_scopes.push(self.state.scopes.len() - 1);
         for (param, ty) in params.iter().zip(&param_types) {
-            if param.is_mut && name == "anonymous function" {
+            if (param.is_mut || param.is_take) && name == "anonymous function" {
                 return self.err(format!(
-                    "anonymous functions cannot have 'mut' parameters ('{}')",
+                    "anonymous functions cannot have '{}' parameters ('{}')",
+                    if param.is_mut { "mut" } else { "take" },
                     param.name
                 ));
             }
@@ -39,7 +40,10 @@ impl Checker {
             } else {
                 "parameters can only be modified when declared 'mut'"
             });
-            symbol.borrowed = Some(if param.name == "self" { "'self'" } else { "a parameter" });
+            // A `take` parameter owns its value; the others only borrow it.
+            if !param.is_take {
+                symbol.borrowed = Some(if param.name == "self" { "'self'" } else { "a parameter" });
+            }
             self.declare(&param.name, symbol)?;
         }
         // Moves inside the function only concern its own variables.

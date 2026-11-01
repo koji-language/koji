@@ -52,11 +52,33 @@ show(f)
 show(f) // still usable: show only borrowed it
 ```
 
+### Taking Ownership
+
+A parameter marked `take` takes ownership of its argument: the value moves into the function, which can store it, return it, or let it be dropped when it returns. The call needs no marker, and the caller's variable cannot be used afterwards:
+
+```koji
+type Logger = {
+    out: file.File
+}
+
+function Logger.create(take out: file.File): Logger {
+    return { out: out }
+}
+
+f = file.open('log.txt', file.Write)?
+logger = Logger.create(f) // the file moves into the logger
+f.write('x') // Error! 'f' cannot be used here: its value was moved (or closed) on line 10
+```
+
+A method can take its value with `take self`: after `value.finish()`, `value` cannot be used. Like `mut`, `take` cannot be used in anonymous functions, and a function with `take` parameters can only be called, not stored in a variable.
+
+For a value that is not move-only, `take` makes no difference: the function receives a copy, as usual.
+
 ### Rules
 
 The compiler checks that a move-only value is never copied:
 
--   A value cannot be moved out of a parameter, `self`, the `for` variable or a `match` binding on a variable.
+-   A value cannot be moved out of a parameter (unless it is `take`), `self`, the `for` variable or a `match` binding on a variable.
 -   A value cannot be copied out of a field or an element (`g = pair.first`).
 -   A variable declared outside a loop or a function cannot be moved inside it: the next iteration, or the next call, would use it again.
 -   A function cannot use a move-only variable of the functions around it (closures capture copies).

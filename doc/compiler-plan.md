@@ -221,7 +221,8 @@ Move-only types and `drop` are implemented:
 -   **Borrowing**: parameters (with or without `mut`), `self`, the `for` variable and the bindings of a `match` on a variable borrow their value, so passing a file to a function does not move it. A value is moved by assigning it, returning it, or storing it in another value (a field, a list, a variant).
 -   **Checks**: using a variable after its value was moved is a compile error. The check follows branches (a move in a branch that returns does not count after it), and forbids moves that could happen twice: out of a variable declared outside the current loop or function. Values cannot be copied out of a field or an element, and closures cannot use a move-only variable around them.
 -   **Drops**: at the end of a block (also when leaving it with `return`, `break` or `?`), when the variable gets a new value, after a temporary is used, and at the end of the program, in reverse order of declaration. `drop` is declared as `function Type.drop(mut self)` and cannot be called directly. `file.close()` consumes the file.
--   **Not decided yet**: a way for a function to take ownership of an argument (today, parameters only borrow, so a function cannot store a file it receives). Parts of a temporary that a `match` does not bind are not dropped (a `File` is still closed when its memory is released).
+-   **`take` parameters** take ownership of their argument, which moves in at the call (no marker): the function can store it, return it, or let it be dropped when it returns. `take self` consumes the value a method is called on.
+-   **Limitation**: parts of a temporary that a `match` does not bind are not dropped (a `File` is still closed when its memory is released).
 
 ### Standard library: file modes and readable errors
 
@@ -415,7 +416,6 @@ Notes:
 
 1.  **Generics**: `function first[T](items: T[]): Option[T]` and `type Pair[A, B] = { ... }`; whether type parameters need constraints is still being considered. Left for last, as it is the most complex.
 2.  **Phase 1 APIs**: collections (`push`, `pop`, slicing, maps with any key type, sets), text (a character type, slicing, a string builder), system (command-line arguments, exit code, environment variables, processes) and FFI (`extern function`). Depends on generics.
-4.  **Owned parameters**: a marker for a parameter that takes ownership of a move-only argument (so that a function can store a file it receives), like `owned` in Mojo or `sink` in Hylo. Today parameters only borrow.
 
 Decided:
 
@@ -425,4 +425,8 @@ Decided:
 -   **Display**: `display()` is readable (a `display(self): string` method of the type, when declared) and is what `print` and interpolation use; `debug()` shows the structure (see [Custom Types](custom-types.md#display)).
 -   **`regex.compile`**, with `RegexError = { InvalidPattern(pattern, message) }` (see [Typed errors in the standard library](#typed-errors-in-the-standard-library)).
 -   **`for` and `match` variables are imut**, with `for mut` to opt out.
+-   **`take` parameters** take ownership of a move-only argument (like `owned` in Mojo or `sink` in Hylo); see [Values and Memory](memory.md#taking-ownership).
+-   **`RegexError`** has `InvalidPattern`, `Unsupported` and `TooLarge`.
+-   **`range` is lazy** in a `for` loop.
+-   **Opaque types** (a type that other modules can use but not build with a literal) are postponed until they are needed.
 -   **No anonymous objects**: an object literal needs a known type (see [No `interface`](#no-interface)). Values are built with a literal or with an associated function (`Person.create(...)`); the language has no special constructors.

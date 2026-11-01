@@ -120,6 +120,16 @@ print(numbers) // [11, 2, 3]
 -   A function with `mut` parameters can only be called, not stored in a variable, and anonymous functions cannot have `mut` parameters.
 -   Methods use `mut self` instead, and their call has no marker (`counter.increment()`); see [Custom Types](custom-types.md#methods).
 
+## `take` Parameters
+
+A parameter marked `take` takes ownership of its argument, which moves into the function. It matters for move-only values, such as files: see [Values and Memory](memory.md#taking-ownership).
+
+```koji
+function Logger.create(take out: file.File): Logger {
+    return { out: out }
+}
+```
+
 ## Methods and Associated Functions
 
 A function prefixed with a type is part of that type. With `self` as the first parameter, it is a **method**, called on a value; without `self`, it is an **associated function**, called on the type (useful for constructors):

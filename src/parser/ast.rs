@@ -136,6 +136,31 @@ pub struct Param {
     pub ty: Option<TypeExpr>,
     /// `mut items: int[]`: the function can modify the caller's variable.
     pub is_mut: bool,
+    /// `take file: File`: the function takes ownership of the argument (it is moved in).
+    pub is_take: bool,
+}
+
+/// How a function receives an argument.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParamMode {
+    /// The default: the function borrows the value (read-only).
+    Borrow,
+    /// `mut`: the function may change the caller's variable.
+    Mut,
+    /// `take`: the value is moved into the function, which owns it.
+    Take,
+}
+
+impl Param {
+    pub fn mode(&self) -> ParamMode {
+        if self.is_mut {
+            ParamMode::Mut
+        } else if self.is_take {
+            ParamMode::Take
+        } else {
+            ParamMode::Borrow
+        }
+    }
 }
 
 /// Method or associated function that a call resolves to (`person.greet()`,

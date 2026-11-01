@@ -81,8 +81,8 @@ impl Checker {
                 }
                 let ty = self.function_signature(name, params, return_type.as_ref(), true)?;
                 let mut symbol = Symbol::value(ty, true);
-                if params.iter().any(|p| p.is_mut) {
-                    symbol.mut_params = params.iter().map(|p| p.is_mut).collect();
+                if params.iter().any(|p| p.mode() != ParamMode::Borrow) {
+                    symbol.modes = params.iter().map(Param::mode).collect();
                 }
                 self.declare(name, symbol)?;
             }
@@ -196,7 +196,7 @@ impl Checker {
         let info = MethodInfo {
             ty,
             has_self,
-            mut_params: params.iter().map(|p| p.is_mut).collect(),
+            modes: params.iter().map(Param::mode).collect(),
             module: self.state.path.clone(),
         };
         self.methods.insert((id, name.to_string()), info);

@@ -198,6 +198,10 @@ impl Interpreter {
         let scope = Env::child(&closure.env);
         for ((param, value), to_float) in closure.params.iter().zip(args).zip(&closure.float_params) {
             scope.define(&param.name, coerce(value, *to_float));
+            // A `take` parameter owns its value: it is dropped when the function returns.
+            if param.is_take {
+                scope.own(&param.name);
+            }
         }
 
         let saved_file = std::mem::replace(&mut self.file, Rc::clone(&closure.file));

@@ -1983,3 +1983,51 @@ fn range_in_a_for_loop() {
     assert_eq!(run(source), "4999950000\n10\n7\n4\n1\n[0, 1, 2]\n");
     assert_error("for i in range(0, 5, 0) { print(i) }", "range() step cannot be 0");
 }
+
+#[test]
+fn take_parameters() {
+    let source = format!(
+        "{}{}",
+        CONN,
+        r#"
+        type Pool = {
+            conn: Conn
+        }
+
+        function Pool.create(take conn: Conn): Pool {
+            return { conn: conn }
+        }
+
+        function consume(take conn: Conn) {
+            print(`consuming ${conn.name}`)
+        }
+
+        function Conn.finish(take self) {
+            print(`finishing ${self.name}`)
+        }
+
+        c = Conn.open('a')
+        p = Pool.create(c)
+        d = Conn.open('b')
+        consume(d)
+        consume(Conn.open('temp'))
+        e = Conn.open('e')
+        e.finish()
+        print('end')
+    "#
+    );
+    assert_eq!(
+        run(&source),
+        "opening a\nopening b\nconsuming b\nclosing b\nopening temp\nconsuming temp\nclosing temp\n\
+         opening e\nfinishing e\nclosing e\nend\nclosing a\n"
+    );
+    let errors = [
+        ("function consume(take conn: Conn) {}\nc = Conn.open('a')\nconsume(c)\nprint(c.name)", "'c' cannot be used here"),
+        ("function consume(take conn: Conn) {}\nfunction f(c: Conn) { consume(c) }", "'c' cannot be moved: it is a parameter"),
+        ("function consume(take conn: Conn) {}\nconst g = consume", "has 'mut' or 'take' parameters"),
+        ("const g = (take c: Conn) => c.name", "anonymous functions cannot have 'take' parameters"),
+    ];
+    for (code, fragment) in errors {
+        assert_error(&format!("{}{}", CONN, code), fragment);
+    }
+}
