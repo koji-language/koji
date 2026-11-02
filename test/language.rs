@@ -2221,3 +2221,23 @@ fn generic_constraints() {
     // A shape of equatable fields is equatable.
     assert_eq!(run(&format!("{}a: Person = {{ name: 'a' }}\nprint(same(a, a))", common)), "true\n");
 }
+
+#[test]
+fn building_text() {
+    let source = r#"
+        var text = ''
+        for i in range(1000) {
+            text += 'x'
+        }
+        print(text.length())
+        a = 'ab'
+        b = a
+        b += 'c'
+        print(a, b)
+        print(['a', 'b', 'c'].join(', '), ['x'].join(''))
+        names: string[] = ['Ana', 'Bia']
+        print(names.join(' & '))
+    "#;
+    assert_eq!(run(source), "1000\nab abc\na, b, c x\nAna & Bia\n");
+    assert_error("print([1, 2].join(','))", "'join' needs a list of strings, found int[]");
+}

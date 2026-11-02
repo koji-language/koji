@@ -546,8 +546,16 @@ impl Checker {
                 "replace" => Some((vec![s.clone(), s], Type::String)),
                 _ => None,
             },
-            Type::List(_) => match name {
+            Type::List(element) => match name {
                 "length" => Some((vec![], Type::Int)),
+                // `['a', 'b'].join(', ')` gives 'a, b'.
+                "join" if **element == Type::String || element.contains_unknown() => Some((vec![s.clone()], Type::String)),
+                "join" => {
+                    return self.err(format!(
+                        "'join' needs a list of strings, found {}",
+                        self.show(object_ty)
+                    ))
+                }
                 _ => None,
             },
             Type::Unknown => {

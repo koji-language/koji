@@ -36,3 +36,18 @@ The `is...` methods return `false` for an empty string.
 | Method       | Description                                    | Example                 |
 | ------------ | ---------------------------------------------- | ----------------------- |
 | `x.length()` | Number of items (of keys, for a dictionary)    | `[1, 2, 3].length() → 3` |
+| `list.join(sep)` | Joins a list of strings, with `sep` between them | `['a', 'b'].join(', ') → 'a, b'` |
+
+## Building Text
+
+There is no string builder: text is built with `+=`, which appends in place when the variable is the only owner of its string (strings have [value semantics](memory.md)), or with `join`:
+
+```koji
+var line = ''
+for i in range(3) {
+    line += `${i};`
+}
+print(line) // 0;1;2;
+
+print(['a', 'b', 'c'].join(', ')) // a, b, c
+```

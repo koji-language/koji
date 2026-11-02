@@ -10,7 +10,8 @@ use crate::runtime::env::Env;
 pub enum Value {
     Int(i64),
     Float(f64),
-    Str(Rc<str>),
+    /// Strings have value semantics too: `+=` appends in place when the string is not shared.
+    Str(Rc<String>),
     Bool(bool),
     Void,
     /// Lists and objects have value semantics: copies share their memory until one of them
@@ -217,7 +218,7 @@ fn is_identifier(name: &str) -> bool {
 
 impl Value {
     pub fn str(s: &str) -> Value {
-        Value::Str(Rc::from(s))
+        Value::Str(Rc::new(s.to_string()))
     }
 
     pub fn list(items: Vec<Value>) -> Value {

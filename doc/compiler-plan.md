@@ -429,5 +429,6 @@ Decided:
 -   **`range` is lazy** in a `for` loop.
 -   **Constraints**: `[T: equatable]` and `[T: orderable]`, names the compiler knows; types never declare them, the compiler decides from their structure (see [Generics](generics.md#constraints)). There are no method requirements, and type parameters cannot be move-only values yet.
 -   **Generics**: brackets after the name (`function first[T]`, `type Pair[A, B]`); type arguments are never written at a call, they are inferred from the arguments and the expected type; methods of a generic type see its type parameters (`function Pair.swap(self): Pair[B, A]`) and can add their own (`function Pair.mapFirst[C](...)`). See [Generics](generics.md).
+-   **No string builder**: text is built with `+=` (appending in place when the string is not shared, as in Swift) and `list.join(separator)`.
 -   **Opaque types** (a type that other modules can use but not build with a literal) are postponed until they are needed.
 -   **No anonymous objects**: an object literal needs a known type (see [No `interface`](#no-interface)). Values are built with a literal or with an associated function (`Person.create(...)`); the language has no special constructors.

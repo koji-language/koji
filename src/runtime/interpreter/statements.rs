@@ -139,6 +139,25 @@ impl Interpreter {
                 return Ok(());
             }
         }
+        // `text += 'x'` appends in place when `text` is the only owner of its string.
+        if let (AstNode::Identifier(name), AssignOperator::Add) = (target.unlocated(), op) {
+            if matches!(env.get(name), Some(Value::Str(_))) {
+                let addition = self.eval(value, env)?;
+                if let Value::Str(addition) = &addition {
+                    let appended = env.with_slot(name, |slot| match slot {
+                        Value::Str(text) => {
+                            Rc::make_mut(text).push_str(addition);
+                            true
+                        }
+                        _ => false,
+                    });
+                    if appended == Some(true) {
+                        return Ok(());
+                    }
+                }
+                return Err(self.error("'+=' on a string needs a string"));
+            }
+        }
         // The place first (with its indices), then the value, as written from left to right.
         let place = self.resolve_place(target, env)?;
         let current = self.read_place(&place, env)?;

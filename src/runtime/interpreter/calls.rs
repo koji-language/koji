@@ -243,6 +243,14 @@ impl Interpreter {
             Value::Str(s) => stdlib::string_method(self, s, name, args),
             Value::List(items) => match name {
                 "length" => Ok(Value::Int(items.borrow().len() as i64)),
+                "join" => {
+                    let separator = match args.first() {
+                        Some(Value::Str(separator)) => separator.to_string(),
+                        _ => return Err(self.error("'join' needs a separator string")),
+                    };
+                    let parts: Vec<String> = items.borrow().iter().map(Value::display).collect();
+                    Ok(Value::str(&parts.join(&separator)))
+                }
                 _ => Err(self.error(format!("lists have no method '{}'", name))),
             },
             Value::Object(fields) => {
