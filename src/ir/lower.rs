@@ -43,6 +43,9 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
         type_names: Vec::new(),
         record_types: HashMap::new(),
         type_args: &program.ownership.type_args,
+        ownership: &program.ownership,
+        drop_methods: &program.ownership.drop_methods,
+        drop_functions: HashMap::new(),
         modules: Vec::new(),
         module_ids: HashMap::new(),
         module: 0,
@@ -59,7 +62,8 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
         lowerer.enter(module);
         lowerer.bind_imports()?;
     }
-    for module in 0..lowerer.modules.len() {
+    // The main file last: at its end, it drops the values owned by every module.
+    for module in (0..lowerer.modules.len()).rev() {
         lowerer.enter(module);
         lowerer.lower_module_body()?;
         lowerer.lower_functions()?;
@@ -90,6 +94,9 @@ struct Module<'a> {
     names: HashMap<String, Item>,
     /// The modules it imports, in order: they run before it.
     imports: Vec<usize>,
+    /// Its top-level variables that own a move-only value, with the function that drops them
+    /// at the end of the program.
+    owned: Vec<(GlobalId, FuncId)>,
     /// The function that runs its top-level statements (once), and the global that says
     /// whether it ran.
     init: FuncId,
@@ -167,6 +174,10 @@ struct Lowerer<'a> {
     /// The declared type and the type arguments of each record.
     record_types: HashMap<RecordId, (TypeId, Vec<Ty>)>,
     type_args: &'a HashMap<usize, Vec<Type>>,
+    ownership: &'a crate::semantic::type_checker::Ownership,
+    drop_methods: &'a HashMap<TypeId, (std::path::PathBuf, String)>,
+    /// The function that drops each type (none when there is nothing to drop).
+    drop_functions: HashMap<Ty, Option<FuncId>>,
     modules: Vec<Module<'a>>,
     module_ids: HashMap<std::path::PathBuf, usize>,
     /// The module being lowered.
@@ -189,7 +200,10 @@ struct Builder {
     terminated: bool,
     scopes: Vec<HashMap<String, Variable>>,
     /// `(continue target, break target)` of the enclosing loops.
-    loops: Vec<(BlockId, BlockId)>,
+    loops: Vec<(BlockId, BlockId, usize)>,
+    /// The variables that own a move-only value, with the depth of their scope and the
+    /// function that drops them: they are dropped when their scope ends, last declared first.
+    owned: Vec<(usize, Place, FuncId)>,
     ret: Ty,
     /// Lowering the top-level statements: their declarations are globals.
     is_main: bool,
@@ -207,6 +221,7 @@ impl Builder {
             terminated: false,
             scopes: vec![HashMap::new()],
             loops: Vec::new(),
+            owned: Vec::new(),
             ret,
             is_main,
         }
@@ -507,6 +522,7 @@ impl<'a> Lowerer<'a> {
             statements,
             names: HashMap::new(),
             imports: Vec::new(),
+            owned: Vec::new(),
             init,
             initialized,
         });
@@ -528,6 +544,19 @@ impl<'a> Lowerer<'a> {
         }
         self.modules[id].imports = imports;
         Ok(id)
+    }
+
+    /// The modules in the order they finish running: the imports of a module before it.
+    fn load_order(&self, module: usize, order: &mut Vec<usize>) {
+        if order.contains(&module) {
+            return;
+        }
+        for import in self.modules[module].imports.clone() {
+            self.load_order(import, order);
+        }
+        if !order.contains(&module) {
+            order.push(module);
+        }
     }
 
     /// Lowers the declarations of the module `module` from now on.
@@ -572,9 +601,6 @@ impl<'a> Lowerer<'a> {
                 self.line = *line;
             }
             if let AstNode::FunctionDecl { name, owner, type_params, .. } = statement.unlocated() {
-                if owner.is_some() && name == "drop" {
-                    return self.unsupported("a type with 'drop'");
-                }
                 let key = function_key(self.module, owner, name);
                 if owner.is_none() {
                     self.modules[self.module].names.insert(name.clone(), Item::Function(key.clone()));
@@ -733,6 +759,10 @@ impl<'a> Lowerer<'a> {
         for (param, ty) in params.iter().zip(&signature.params) {
             let local = builder.local(ty.clone(), Some(&param.name));
             builder.declare(&param.name, Variable::Local(local));
+            // A `take` parameter owns its value: it is dropped when the function returns.
+            if param.is_take {
+                self.own(&mut builder, Place::Local(local), ty)?;
+            }
         }
         builder.scopes.push(HashMap::new());
         self.function_body(&mut builder, body, &signature.ret)?;
@@ -785,6 +815,17 @@ impl<'a> Lowerer<'a> {
         }
         self.line = 0;
         self.statements(&mut builder, statements)?;
+        if init == 0 {
+            // At the end of the program, the values owned by each module are dropped (the main
+            // file first, then the others, last loaded first, like the interpreter).
+            let mut order = Vec::new();
+            self.load_order(0, &mut order);
+            for module in order.into_iter().rev() {
+                for (global, function) in self.modules[module].owned.clone().into_iter().rev() {
+                    builder.emit(Instruction::Drop { value: Place::Global(global), function });
+                }
+            }
+        }
         builder.terminate(Terminator::Return(None));
         let name = if init == 0 { "main".to_string() } else { format!("{} (module)", self.file) };
         self.functions[init] = Some(builder.finish(name, self.file.clone(), 0, Vec::new()));
@@ -809,6 +850,175 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// Drops `value` if `node` is a move-only temporary (a value used in place, not kept).
+    fn drop_temporary(&mut self, builder: &mut Builder, node: &AstNode, value: Option<Operand>) -> Lower<()> {
+        if !self.ownership.temporaries.contains(&node_id(node)) {
+            return Ok(());
+        }
+        let Some(Operand::Local(local)) = value else {
+            return Ok(());
+        };
+        let ty = builder.locals[local].ty.clone();
+        if let Some(function) = self.drop_function(&ty)? {
+            builder.emit(Instruction::Drop { value: Place::Local(local), function });
+        }
+        Ok(())
+    }
+
+    /// Records that `place` owns its value, if it is a move-only value: it is dropped when the
+    /// current scope ends.
+    fn own(&mut self, builder: &mut Builder, place: Place, ty: &Ty) -> Lower<()> {
+        if let Some(function) = self.drop_function(ty)? {
+            builder.owned.push((builder.scopes.len(), place, function));
+        }
+        Ok(())
+    }
+
+    /// Whether dropping a value of type `ty` does something: a type with a `drop` method, or
+    /// a value that holds one.
+    fn droppable(&self, ty: &Ty, visiting: &mut std::collections::HashSet<RecordId>) -> bool {
+        match ty {
+            Ty::Record(record) => {
+                if !visiting.insert(*record) {
+                    return false;
+                }
+                let has_method = self
+                    .record_types
+                    .get(record)
+                    .is_some_and(|(id, _)| self.drop_methods.contains_key(id));
+                has_method
+                    || self.records[*record]
+                        .variants
+                        .iter()
+                        .any(|variant| variant.fields.iter().any(|(_, field)| self.droppable(field, visiting)))
+            }
+            Ty::List(element) | Ty::Set(element) => self.droppable(element, visiting),
+            Ty::Map(key, value) => self.droppable(key, visiting) || self.droppable(value, visiting),
+            _ => false,
+        }
+    }
+
+    /// The function that drops a value of type `ty` (like the interpreter: the type's `drop`
+    /// method first, then what the value holds), or none when there is nothing to do.
+    fn drop_function(&mut self, ty: &Ty) -> Lower<Option<FuncId>> {
+        if let Some(function) = self.drop_functions.get(ty) {
+            return Ok(*function);
+        }
+        if !self.droppable(ty, &mut std::collections::HashSet::new()) {
+            self.drop_functions.insert(ty.clone(), None);
+            return Ok(None);
+        }
+        let id = self.functions.len();
+        self.functions.push(None);
+        // Known before its body: a type can hold itself.
+        self.drop_functions.insert(ty.clone(), Some(id));
+        let (line, file) = (self.line, self.file.clone());
+        let mut builder = Builder::new(Ty::Void, false);
+        let value = builder.local(ty.clone(), Some("value"));
+        match ty {
+            Ty::Record(record) => {
+                let record = *record;
+                let mut current = Operand::Local(value);
+                let (type_id, type_args) = self.record_types[&record].clone();
+                if let Some((module, name)) = self.drop_methods.get(&type_id).cloned() {
+                    let module = self.module_ids.get(&module).copied().unwrap_or(self.module);
+                    let signature = self.callee(&format!("{}:{}", module, name), type_args)?;
+                    // `drop(mut self)` may change the value before what it holds is dropped.
+                    let changed = builder.local(ty.clone(), None);
+                    builder.emit(Instruction::Copy { dest: Place::Local(changed), value: current });
+                    builder.emit(Instruction::Call {
+                        dest: None,
+                        function: signature.id,
+                        args: vec![Operand::Local(changed)],
+                        writebacks: vec![(0, Target { root: Place::Local(changed), path: Vec::new() })],
+                        line: 0,
+                    });
+                    current = Operand::Local(changed);
+                }
+                let variants = self.records[record].variants.clone();
+                for (index, variant) in variants.iter().enumerate() {
+                    let mut fields = Vec::new();
+                    for (field, (_, field_type)) in variant.fields.iter().enumerate() {
+                        if let Some(function) = self.drop_function(field_type)? {
+                            fields.push((field, field_type.clone(), function));
+                        }
+                    }
+                    if fields.is_empty() {
+                        continue;
+                    }
+                    let next = builder.new_block();
+                    if variants.len() > 1 {
+                        let tag = self.unary(&mut builder, UnaryOp::RecordTag, current.clone(), Ty::Int);
+                        let condition = self.binary(
+                            &mut builder,
+                            BinaryOp::IntCompare(Comparison::Equal),
+                            tag,
+                            Operand::Int(index as i64),
+                            Ty::Bool,
+                        );
+                        let body = builder.new_block();
+                        builder.terminate(Terminator::Branch { condition, then_block: body, else_block: next });
+                        builder.switch_to(body);
+                    }
+                    for (field, field_type, function) in fields {
+                        let dest = builder.local(field_type, None);
+                        builder.emit(Instruction::FieldGet { dest, record: current.clone(), field });
+                        builder.emit(Instruction::Call {
+                            dest: None,
+                            function,
+                            args: vec![Operand::Local(dest)],
+                            writebacks: Vec::new(),
+                            line: 0,
+                        });
+                    }
+                    builder.terminate(Terminator::Goto(next));
+                    builder.switch_to(next);
+                }
+            }
+            Ty::List(element) | Ty::Set(element) => {
+                let function = self.drop_function(element)?.expect("droppable items");
+                let list = match ty {
+                    Ty::Set(_) => self.unary(&mut builder, UnaryOp::MapKeys, Operand::Local(value), Ty::List(element.clone())),
+                    _ => Operand::Local(value),
+                };
+                self.drop_items(&mut builder, list, element, function);
+            }
+            Ty::Map(key, item) => {
+                for (part, op) in [(key, UnaryOp::MapKeys), (item, UnaryOp::MapValues)] {
+                    if let Some(function) = self.drop_function(part)? {
+                        let list = self.unary(&mut builder, op, Operand::Local(value), Ty::List(part.clone()));
+                        self.drop_items(&mut builder, list, part, function);
+                    }
+                }
+            }
+            _ => unreachable!("not droppable"),
+        }
+        builder.terminate(Terminator::Return(None));
+        self.functions[id] = Some(builder.finish(format!("drop {:?}", ty), file, 1, vec![false]));
+        self.line = line;
+        Ok(Some(id))
+    }
+
+    /// Calls `function` on each item of `list`.
+    fn drop_items(&mut self, builder: &mut Builder, list: Operand, element: &Ty, function: FuncId) {
+        let length = self.unary(builder, UnaryOp::ListLength, list.clone(), Ty::Int);
+        let index = builder.local(Ty::Int, None);
+        builder.emit(Instruction::Copy { dest: Place::Local(index), value: Operand::Int(0) });
+        let (head, body, exit) = (builder.new_block(), builder.new_block(), builder.new_block());
+        builder.terminate(Terminator::Goto(head));
+        builder.switch_to(head);
+        let more = self.binary(builder, BinaryOp::IntCompare(Comparison::Less), Operand::Local(index), length, Ty::Bool);
+        builder.terminate(Terminator::Branch { condition: more, then_block: body, else_block: exit });
+        builder.switch_to(body);
+        let item = builder.local(element.clone(), None);
+        builder.emit(Instruction::ListGet { dest: item, list, index: Operand::Local(index), line: 0 });
+        builder.emit(Instruction::Call { dest: None, function, args: vec![Operand::Local(item)], writebacks: Vec::new(), line: 0 });
+        let next = self.binary(builder, BinaryOp::IntAdd, Operand::Local(index), Operand::Int(1), Ty::Int);
+        builder.emit(Instruction::Copy { dest: Place::Local(index), value: next });
+        builder.terminate(Terminator::Goto(head));
+        builder.switch_to(exit);
+    }
+
     /// The body of a function or a lambda, which returns `ret`: a block (whose last
     /// expression, if it gives a value, is returned) or an expression.
     fn function_body(&mut self, builder: &mut Builder, body: &AstNode, ret: &Ty) -> Lower<()> {
@@ -826,6 +1036,7 @@ impl<'a> Lowerer<'a> {
                 let (last, rest) = statements.split_last().expect("a statement");
                 self.statements(builder, rest)?;
                 let value = self.value_as(builder, last, ret)?;
+                drop_owned(builder, 0, false);
                 builder.terminate(Terminator::Return(value));
             }
             AstNode::Block(statements) => self.statements(builder, statements)?,
@@ -834,10 +1045,12 @@ impl<'a> Lowerer<'a> {
             }
             expression => {
                 let value = self.value_as(builder, expression, ret)?;
+                drop_owned(builder, 0, false);
                 builder.terminate(Terminator::Return(value));
             }
         }
         if *ret == Ty::Void {
+            drop_owned(builder, 0, false);
             builder.terminate(Terminator::Return(None));
         }
         Ok(())
@@ -986,6 +1199,7 @@ impl<'a> Lowerer<'a> {
             AstNode::Block(statements) => self.statements(builder, statements),
             other => self.statement(builder, other),
         };
+        drop_owned(builder, builder.scopes.len() - 1, true);
         builder.scopes.pop();
         result
     }
@@ -1011,7 +1225,7 @@ impl<'a> Lowerer<'a> {
                     builder.declare(name, Variable::Global(id));
                     Place::Global(id)
                 } else {
-                    Place::Local(builder.local(var_type, Some(name)))
+                    Place::Local(builder.local(var_type.clone(), Some(name)))
                 };
                 if let Some(value) = operand {
                     builder.emit(Instruction::Copy { dest: place, value });
@@ -1020,9 +1234,21 @@ impl<'a> Lowerer<'a> {
                 if let Place::Local(id) = place {
                     builder.declare(name, Variable::Local(id));
                 }
+                // A variable that owns a move-only value drops it at the end of its scope (at
+                // the end of the program, for a top-level variable).
+                if self.ownership.declares.contains(&node_id(node)) {
+                    match place {
+                        Place::Global(global) => {
+                            if let Some(function) = self.drop_function(&var_type)? {
+                                self.modules[self.module].owned.push((global, function));
+                            }
+                        }
+                        Place::Local(_) => self.own(builder, place, &var_type)?,
+                    }
+                }
                 Ok(())
             }
-            AstNode::Assign { target, op, value } => self.assign(builder, target, op, value),
+            AstNode::Assign { target, op, value } => self.assign(builder, node, target, op, value),
             AstNode::While { condition, body } => {
                 let head = builder.new_block();
                 let body_block = builder.new_block();
@@ -1036,7 +1262,7 @@ impl<'a> Lowerer<'a> {
                     else_block: exit,
                 });
                 builder.switch_to(body_block);
-                builder.loops.push((head, exit));
+                builder.loops.push((head, exit, builder.scopes.len()));
                 self.block(builder, body)?;
                 builder.loops.pop();
                 builder.terminate(Terminator::Goto(head));
@@ -1056,16 +1282,18 @@ impl<'a> Lowerer<'a> {
                 }
             }
             AstNode::Break => {
-                let Some(&(_, exit)) = builder.loops.last() else {
+                let Some(&(_, exit, depth)) = builder.loops.last() else {
                     return self.unsupported("'break' outside a loop");
                 };
+                drop_owned(builder, depth, false);
                 builder.terminate(Terminator::Goto(exit));
                 Ok(())
             }
             AstNode::Continue => {
-                let Some(&(head, _)) = builder.loops.last() else {
+                let Some(&(head, _, depth)) = builder.loops.last() else {
                     return self.unsupported("'continue' outside a loop");
                 };
+                drop_owned(builder, depth, false);
                 builder.terminate(Terminator::Goto(head));
                 Ok(())
             }
@@ -1077,6 +1305,7 @@ impl<'a> Lowerer<'a> {
                     }
                     None => None,
                 };
+                drop_owned(builder, 0, false);
                 builder.terminate(Terminator::Return(operand));
                 Ok(())
             }
@@ -1089,7 +1318,8 @@ impl<'a> Lowerer<'a> {
                 self.if_statement(builder, condition, then_branch, else_branch.as_deref())
             }
             expression => {
-                self.expr(builder, expression)?;
+                let value = self.expr(builder, expression)?;
+                self.drop_temporary(builder, expression, value)?;
                 Ok(())
             }
         }
@@ -1213,7 +1443,7 @@ impl<'a> Lowerer<'a> {
         body: &AstNode,
     ) -> Lower<()> {
         builder.scopes.push(HashMap::from([(variable.to_string(), Variable::Local(value))]));
-        builder.loops.push((next, exit));
+        builder.loops.push((next, exit, builder.scopes.len()));
         let result = self.block(builder, body);
         builder.loops.pop();
         builder.scopes.pop();
@@ -1483,6 +1713,7 @@ impl<'a> Lowerer<'a> {
     fn assign(
         &mut self,
         builder: &mut Builder,
+        node: &AstNode,
         target: &AstNode,
         op: &AssignOperator,
         value: &AstNode,
@@ -1505,6 +1736,12 @@ impl<'a> Lowerer<'a> {
             AstNode::Identifier(name) => {
                 let (place, _) = self.variable(builder, name)?;
                 if let Some(value) = new_value(self, builder)? {
+                    // The move-only value it had is dropped.
+                    if self.ownership.replaces.contains(&node_id(node)) {
+                        if let Some(function) = self.drop_function(&target_type)? {
+                            builder.emit(Instruction::Drop { value: place, function });
+                        }
+                    }
                     builder.emit(Instruction::Copy { dest: place, value });
                 }
                 Ok(())
@@ -1746,7 +1983,8 @@ impl<'a> Lowerer<'a> {
                 let (field, ty) = self.field(builder, object, name)?;
                 let record = self.expr(builder, object)?.expect("a record");
                 let dest = builder.local(ty, None);
-                builder.emit(Instruction::FieldGet { dest, record, field });
+                builder.emit(Instruction::FieldGet { dest, record: record.clone(), field });
+                self.drop_temporary(builder, object, Some(record))?;
                 Ok(Some(Operand::Local(dest)))
             }
             AstNode::Match { scrutinee, arms } => self.lower_match(builder, node, scrutinee, arms),
@@ -1768,7 +2006,13 @@ impl<'a> Lowerer<'a> {
                         return self.function_value(builder, &key, name).map(Some);
                     }
                 }
-                let (place, _) = self.variable(builder, name)?;
+                let (place, ty) = self.variable(builder, name)?;
+                // A move takes the value out of the variable.
+                if self.ownership.moves.contains(&node_id(node)) && ty.is_managed() {
+                    let dest = builder.local(ty, None);
+                    builder.emit(Instruction::Take { dest, source: place });
+                    return Ok(Some(Operand::Local(dest)));
+                }
                 Ok(Some(match place {
                     Place::Local(id) => Operand::Local(id),
                     Place::Global(id) => Operand::Global(id),
@@ -1959,6 +2203,7 @@ impl<'a> Lowerer<'a> {
                 let result = self
                     .statements(builder, rest)
                     .and_then(|_| self.value_as(builder, last, ty));
+                drop_owned(builder, builder.scopes.len() - 1, true);
                 builder.scopes.pop();
                 result
             }
@@ -2423,6 +2668,9 @@ impl<'a> Lowerer<'a> {
     ) -> Lower<Option<Operand>> {
         let result_type = self.type_in(builder, node).unwrap_or(Ty::Void);
         let result = (result_type != Ty::Void).then(|| builder.local(result_type.clone(), None));
+        if self.ownership.owning_matches.contains(&node_id(scrutinee)) {
+            return self.unsupported("a 'match' on a move-only value that is not in a variable");
+        }
         let scrutinee_type = self.type_in(builder, scrutinee)?;
         let value = self.expr(builder, scrutinee)?.expect("a value");
         // Kept in a local: the arms may change the variable that was matched.
@@ -2592,6 +2840,7 @@ impl<'a> Lowerer<'a> {
                     Operand::Local(dest)
                 }
             };
+            drop_owned(builder, 0, false);
             builder.terminate(Terminator::Return(Some(failure_value)));
         }
 
@@ -2617,6 +2866,7 @@ impl<'a> Lowerer<'a> {
         let writeback = signature.writeback;
         let mut values = Vec::new();
         let mut writebacks = Vec::new();
+        let mut temporaries = Vec::new();
         for (index, (arg, param)) in receiver.into_iter().chain(args).zip(&params).enumerate() {
             let arg = match arg.unlocated() {
                 AstNode::MutArg(place) => place,
@@ -2626,7 +2876,11 @@ impl<'a> Lowerer<'a> {
                 writebacks.push((index, self.target(builder, arg)?));
                 values.push(self.expr(builder, arg)?.expect("an argument"));
             } else {
-                values.push(self.value_as(builder, arg, param)?.expect("an argument"));
+                let value = self.value_as(builder, arg, param)?.expect("an argument");
+                if self.ownership.temporaries.contains(&node_id(arg)) {
+                    temporaries.push((arg, value.clone()));
+                }
+                values.push(value);
             }
         }
         let dest = (ret != Ty::Void).then(|| builder.local(ret, None));
@@ -2637,6 +2891,10 @@ impl<'a> Lowerer<'a> {
             writebacks,
             line: self.line,
         });
+        // Move-only values used only by the call (`show(Conn.open())`) are dropped after it.
+        for (arg, value) in temporaries {
+            self.drop_temporary(builder, arg, Some(value))?;
+        }
         Ok(dest.map(Operand::Local))
     }
 
@@ -2701,6 +2959,24 @@ impl<'a> Lowerer<'a> {
             }
             _ => self.unsupported(&format!("'{}'", name)),
         }
+    }
+}
+
+/// Drops the variables owned by scopes deeper than `depth` (last declared first); `remove`
+/// forgets them, when their scope ends.
+fn drop_owned(builder: &mut Builder, depth: usize, remove: bool) {
+    let drops: Vec<(Place, FuncId)> = builder
+        .owned
+        .iter()
+        .rev()
+        .filter(|(scope, _, _)| *scope > depth)
+        .map(|(_, place, function)| (*place, *function))
+        .collect();
+    for (value, function) in drops {
+        builder.emit(Instruction::Drop { value, function });
+    }
+    if remove {
+        builder.owned.retain(|(scope, _, _)| *scope <= depth);
     }
 }
 

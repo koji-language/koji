@@ -628,6 +628,27 @@ impl Generator<'_> {
                     dest
                 );
             }
+            Instruction::Take { dest, source } => {
+                let ty = function.locals[*dest].ty.clone();
+                let source = self.place(source);
+                self.set(&format!("l{}", dest), &ty, &source);
+                let _ = writeln!(self.out, "    {} = NULL;", source);
+            }
+            Instruction::Drop { value, function: drop } => {
+                let ty = self.place_type(function, value).clone();
+                let value = self.place(value);
+                let release = release(&ty).expect("a managed value");
+                let _ = writeln!(
+                    self.out,
+                    "    if ({}) {{ {}({}); {}({}); {} = NULL; }}",
+                    value,
+                    function_name(*drop),
+                    value,
+                    release,
+                    value,
+                    value
+                );
+            }
             Instruction::MakeClosure { dest, function: code, environment } => {
                 let environment = match environment {
                     Some(environment) => format!("koji_record_share({})", self.operand(environment)),

@@ -861,6 +861,185 @@ from main from shapes 3\n\
 }
 
 #[test]
+fn drops() {
+    assert_same(
+        "drops",
+        "type Conn = {\n\
+    name: string\n\
+}\n\
+\n\
+function Conn.drop(mut self) {\n\
+    print(`close ${self.name}`)\n\
+}\n\
+\n\
+function Conn.open(name: string): Conn {\n\
+    print(`open ${name}`)\n\
+    return { name: name }\n\
+}\n\
+\n\
+function Conn.label(self): string {\n\
+    return self.name\n\
+}\n\
+\n\
+type Pool = {\n\
+    main: Conn\n\
+    size: int\n\
+}\n\
+\n\
+function use(take c: Conn) {\n\
+    print('using', c.name)\n\
+}\n\
+\n\
+function peek(c: Conn): string {\n\
+    return c.name\n\
+}\n\
+\n\
+function make(name: string): Conn {\n\
+    immut c = Conn.open(name)\n\
+    return c\n\
+}\n\
+\n\
+function early(stop: boolean) {\n\
+    immut a = Conn.open('early-a')\n\
+\n\
+    if (stop) {\n\
+        immut b = Conn.open('early-b')\n\
+        return\n\
+    }\n\
+\n\
+    print('not stopped')\n\
+}\n\
+\n\
+immut first = Conn.open('first')\n\
+\n\
+if (true) {\n\
+    immut inner = Conn.open('inner')\n\
+    immut second = Conn.open('second')\n\
+    print('in block')\n\
+}\n\
+\n\
+mut replaced = Conn.open('old')\n\
+replaced = Conn.open('new')\n\
+print(peek(Conn.open('temp')), Conn.open('temp2').label())\n\
+\n\
+immut moved = Conn.open('moved')\n\
+use(moved)\n\
+immut kept = make('made')\n\
+early(true)\n\
+early(false)\n\
+\n\
+for i in range(3) {\n\
+    immut loop = Conn.open(`loop ${i}`)\n\
+\n\
+    if (i == 1) { break }\n\
+}\n\
+\n\
+immut pool: Pool = { main: Conn.open('pooled'), size: 1 }\n\
+print('end')\n\
+",
+        "open first\n\
+open inner\n\
+open second\n\
+in block\n\
+close second\n\
+close inner\n\
+open old\n\
+open new\n\
+close old\n\
+open temp\n\
+close temp\n\
+open temp2\n\
+close temp2\n\
+temp temp2\n\
+open moved\n\
+using moved\n\
+close moved\n\
+open made\n\
+open early-a\n\
+open early-b\n\
+close early-b\n\
+close early-a\n\
+open early-a\n\
+not stopped\n\
+close early-a\n\
+open loop 0\n\
+close loop 0\n\
+open loop 1\n\
+close loop 1\n\
+open pooled\n\
+end\n\
+close pooled\n\
+close made\n\
+close new\n\
+close first\n\
+",
+    );
+}
+
+#[test]
+fn drops_nested() {
+    assert_same(
+        "drops_nested",
+        "type Conn = {\n\
+    name: string\n\
+}\n\
+\n\
+function Conn.drop(mut self) {\n\
+    print(`close ${self.name}`)\n\
+}\n\
+\n\
+type Session = {\n\
+    Active(conn: Conn, user: string)\n\
+    Closed\n\
+}\n\
+\n\
+function Session.drop(mut self) {\n\
+    print('session ends')\n\
+}\n\
+\n\
+type Wrapper = {\n\
+    inner: Conn\n\
+}\n\
+\n\
+function Wrapper.drop(mut self) {\n\
+    self.inner.name = `${self.inner.name} (renamed)`\n\
+    print('wrapper ends')\n\
+}\n\
+\n\
+function Conn.finish(take self): string {\n\
+    return `finished ${self.name}`\n\
+}\n\
+\n\
+function run() {\n\
+    immut session: Session = Active({ name: 'db' }, 'ana')\n\
+    immut idle: Session = Closed\n\
+    mut pool: Conn[] = [{ name: 'a' }]\n\
+    pool.push({ name: 'b' })\n\
+    immut wrapper: Wrapper = { inner: { name: 'w' } }\n\
+    immut solo: Conn = { name: 'solo' }\n\
+    print(solo.finish())\n\
+    print('run ends')\n\
+}\n\
+\n\
+run()\n\
+print('after run')\n\
+",
+        "close solo\n\
+finished solo\n\
+run ends\n\
+wrapper ends\n\
+close w (renamed)\n\
+close a\n\
+close b\n\
+session ends\n\
+session ends\n\
+close db\n\
+after run\n\
+",
+    );
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));

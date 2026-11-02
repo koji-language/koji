@@ -407,12 +407,13 @@ It compiles a first subset of the language:
 -   lists of all those values: literals, indexing and assigning items (also `grid[0][1] = 5`), slices, `+`, `==`, `in`, `for` over a list, `length`, `push`, `insert`, `sort` and `join`;
 -   every operator on those types, with the same panics as the interpreter (overflow, division by zero, `float` overflow, invalid shifts and powers);
 -   string interpolation, `print`, `string(x)`, `float(n)`, `text.length()` and `in` on strings;
--   functions with parameters and a return value, recursion, `mut` parameters (`reset(mut count)`) and `take` parameters (without `drop`);
+-   functions with parameters and a return value, recursion, `mut` parameters (`reset(mut count)`) and `take` parameters;
+-   move-only values and `drop`: a value is dropped at the end of its block (also when leaving it with `return`, `break`, `continue` or `?`), when its variable gets a new value, after a temporary is used, and at the end of the program, last declared first; a move leaves the variable empty, so it is not dropped twice; dropping runs the type's `drop` method, then drops what the value holds (fields, items of lists);
 -   methods, `mut self` and associated functions (`Point.origin()`);
 -   generic functions and methods of generic types (also with their own type parameters, `Pair.mapFirst[C]`), with one instance for each set of type arguments they are called with (monomorphization), and the constraints `equatable` and `orderable`; a type's `display` method in `print`, interpolation and `string(x)`, and the built-in `display()` and `debug()`;
 -   `if` (also as an expression), `while`, `for` over `range`, `break`, `continue` and `return`.
 
-Anything else (`char`, generic functions used as values, imports inside a block, types with `drop`, `input` and the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
+Anything else (`char`, generic functions used as values, imports inside a block, a `match` on a move-only temporary, `input` and the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
 
 **Memory**: strings, lists and records (the values of declared types) are reference-counted. A variable owns one reference, and copying a value only adds a reference (value semantics with copy-on-write); changing a list that is shared copies it first, so the other variables never see the change. Assigning a variable releases its old value, and a function releases its values when it returns. Each item of a list and each field of a record takes an 8-byte slot, and the generated code describes their types to the runtime (how to retain, release, show, compare and order them). A generic type gets one description for each set of type arguments (`Option[int]`, `Option[string]`). Maps find their keys with a hash, which the description of each type also gives.
 
@@ -426,7 +427,9 @@ The checker records the type arguments it infers for each call of a generic func
 
 Each module has its own names: two files can declare a function with the same name. A function takes the file of its module for the messages of its panics. Function signatures come from the types the checker gave them, so a type is never looked up by its name.
 
-**Next steps**, in order: move-only values and `drop`; then the standard library modules, calling the Rust implementations.
+Dropping a type is a generated function: it calls the `drop` method (`mut self`, so it may change the value), then the functions that drop each field or item that needs it. The checker says where values are declared, moved, replaced and used as temporaries; the compiler emits the drops at those points.
+
+**Next steps**, in order: the standard library modules, calling the Rust implementations.
 
 ---
 

@@ -72,6 +72,8 @@ pub struct Ownership {
     pub mutating_calls: HashSet<usize>,
     /// The type of each expression, as checked (used by the compiler).
     pub types: HashMap<usize, Type>,
+    /// The `drop` method of each type that declares one: its module and its name.
+    pub drop_methods: HashMap<TypeId, (PathBuf, String)>,
     /// The type of each function declaration (with `self` first for a method; a generic one
     /// uses `Type::Param` for its type parameters, the owner's first).
     pub function_types: HashMap<usize, Type>,

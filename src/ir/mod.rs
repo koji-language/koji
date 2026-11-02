@@ -238,6 +238,12 @@ pub enum Instruction {
     FieldSet { record: Target, field: usize, value: Operand, line: usize },
     /// `dest = list.pop()` or `list.removeAt(index)`: `dest` is an `Option` record.
     ListRemove { dest: LocalId, list: Target, index: Option<Operand>, line: usize },
+    /// Moves the value of a variable into `dest`: the variable is left empty (`NULL`), so it is
+    /// not dropped again.
+    Take { dest: LocalId, source: Place },
+    /// Drops the value of a variable, if it still has one: calls `function` (the type's drop,
+    /// which runs its `drop` method and drops what it holds), then empties the variable.
+    Drop { value: Place, function: FuncId },
     /// A closure of `function` (whose first parameter is the environment), with the captured
     /// values in `environment` (a record), or none.
     MakeClosure { dest: LocalId, function: FuncId, environment: Option<Operand> },

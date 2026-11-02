@@ -141,6 +141,8 @@ impl fmt::Display for Instruction {
                 write!(f, "{}call {}({})", dest, closure, list(args))
             }
             Instruction::ListSortBy { list, comparison, .. } => write!(f, "sort {} by {}", list, comparison),
+            Instruction::Take { dest, source } => write!(f, "l{} = take {}", dest, source),
+            Instruction::Drop { value, function } => write!(f, "drop {} with f{}", value, function),
             Instruction::MapNew { dest, entries } => {
                 let entries: Vec<String> = entries.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
                 write!(f, "l{} = map [{}]", dest, entries.join(", "))

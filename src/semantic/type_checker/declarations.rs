@@ -234,6 +234,9 @@ impl Checker {
             other => other,
         };
         self.ownership.function_types.insert(node_id(statement), ty.clone());
+        if name == "drop" {
+            self.ownership.drop_methods.insert(id, (self.state.path.clone(), full.clone()));
+        }
         let info = MethodInfo {
             ty,
             has_self,
