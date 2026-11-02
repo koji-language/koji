@@ -1,7 +1,0 @@
-mut count = 0
-
-if (true) {
-    count = 1 // changes the outer 'count'
-}
-
-print(count) // 1
