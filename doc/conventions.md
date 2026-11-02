@@ -30,4 +30,5 @@
     ```koji
     immut count = 0 // number of items
     immut total = 0.0 // sum of the prices
-```
+    ```
+-   A file ends with exactly one line break: the last line is terminated, and no blank lines follow it.

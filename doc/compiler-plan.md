@@ -91,7 +91,7 @@ Everything in a module is private by default. Only declarations marked with `exp
     export function increment() {
         count += 1
     }
-```
+    ```
 
     ```koji
     import { count, increment } from 'counter.kj'
@@ -101,7 +101,7 @@ Everything in a module is private by default. Only declarations marked with `exp
     print(count) // 1
 
     count = 5 // Error! 'count' is read-only outside 'counter.kj'
-```
+    ```
 
 -   Importing something that is not exported is an error: `'helper' is not exported by 'math.kj'`.
 -   A public signature cannot use a private type (e.g. `export function f(): Helper` with a private `Helper`).
@@ -207,7 +207,7 @@ Implemented in the interpreter: assignments and `mut` write-backs go through a p
     function addItem(mut list: int[], item: int) { ... }
 
     addItem(mut items, 2)
-```
+    ```
 
     An `immut` variable can never be passed as `mut`. Parameters without `mut` (and `self`) are read-only. Implemented; see [Functions](functions.md#mut-parameters).
 -   **Move-only types**, including user types: values that cannot be copied (resources). Assigning moves them, and using the previous variable is a compile error.
@@ -232,7 +232,7 @@ Move-only types and `drop` are implemented:
     type Mode = { Read  Write  Append }
 
     immut f = file.open('notes.txt', Read)?
-```
+    ```
 
 -   `print(error)` (and string interpolation) shows a human-readable message for standard library errors, e.g. `file 'notes.txt' not found` instead of `NotFound('notes.txt')`. The same text is available as `error.display()`.
 
