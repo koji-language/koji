@@ -52,7 +52,13 @@ impl Interpreter {
             AstNode::ObjectLiteral(entries) => {
                 let mut fields = Vec::with_capacity(entries.len());
                 for entry in entries {
-                    fields.push((entry.key.clone(), self.eval(&entry.value, env)?));
+                    let value = self.eval(&entry.value, env)?;
+                    let value = coerce(value, self.ownership.to_float.contains(&node_id(&entry.value)));
+                    fields.push((entry.key.clone(), value));
+                }
+                // In the order of the type's declaration, whatever the order of the literal.
+                if let Some(order) = self.ownership.field_orders.get(&node_id(node)) {
+                    fields.sort_by_key(|(name, _)| order.iter().position(|field| field == name));
                 }
                 let object = Value::object(fields);
                 // A value of a type with `drop` remembers the method.

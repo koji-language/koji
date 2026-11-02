@@ -94,6 +94,11 @@ impl Checker {
             AstNode::MapLiteral(entries) => self.check_map_literal(entries, expected),
             AstNode::ObjectLiteral(entries) => {
                 let ty = self.check_object(entries, expected)?;
+                // The fields are kept in the order of the type's declaration.
+                if let Some(fields) = self.table.fields_of(&ty) {
+                    let order = fields.into_iter().map(|(name, _)| name).collect();
+                    self.ownership.field_orders.insert(node_id(node), order);
+                }
                 // A value of a type with `drop` remembers its type, to call it.
                 if let Type::Named { id, .. } = &ty {
                     if let Some(info) = self.methods.get(&(*id, "drop".to_string())) {
@@ -649,6 +654,9 @@ impl Checker {
                             let wanted = field_ty.substitute(&generic);
                             let value_ty = self.check_value(&entry.value, Some(&wanted))?;
                             self.consume(&entry.value, &value_ty)?;
+                            if wanted == Type::Float && value_ty == Type::Int {
+                                self.ownership.to_float.insert(node_id(&entry.value));
+                            }
                             self.unify(field_ty, &value_ty, &mut generic);
                             let wanted = field_ty.substitute(&generic);
                             if !self.assignable(&wanted, &value_ty) {

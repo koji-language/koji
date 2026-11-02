@@ -43,6 +43,8 @@ pub struct Program {
     pub entry: PathBuf,
     pub modules: HashMap<PathBuf, Rc<Vec<AstNode>>>,
     pub ownership: Ownership,
+    /// The declared types (used by the compiler).
+    pub table: Rc<TypeTable>,
 }
 
 /// What the interpreter needs to know about move-only values, found by the type checker. AST
@@ -70,6 +72,8 @@ pub struct Ownership {
     pub mutating_calls: HashSet<usize>,
     /// The type of each expression, as checked (used by the compiler).
     pub types: HashMap<usize, Type>,
+    /// The fields of each object literal, in the order of its type's declaration.
+    pub field_orders: HashMap<usize, Vec<String>>,
     /// `int` expressions stored as `float` (the items of `[1, 2.5]`).
     pub to_float: HashSet<usize>,
     /// The type of each declared variable (`VarDecl`), after the later uses that refine it
@@ -314,6 +318,7 @@ impl Checker {
             entry,
             modules: self.asts,
             ownership: self.ownership,
+            table: Rc::new(self.table),
         })
     }
 
@@ -325,6 +330,7 @@ impl Checker {
             entry,
             modules: self.asts,
             ownership: self.ownership,
+            table: Rc::new(self.table),
         })
     }
 

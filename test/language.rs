@@ -2728,3 +2728,11 @@ fn int_to_float_conversions() {
     assert_error("immut counts = [1, 2]\nimmut values: float[] = counts", "cannot assign a value of type int[] to 'values' of type float[]");
     assert_error("print([[1], [2.5]])", "list elements must have the same type: found int[] and float[]");
 }
+
+#[test]
+fn object_fields_follow_the_declaration() {
+    assert_eq!(
+        run("type Point = {\n    x: float\n    y: int\n}\n\nimmut p: Point = { y: 1, x: 2 }\nprint(p, p.x / 4)"),
+        "{ x: 2.0, y: 1 } 0.5\n"
+    );
+}
