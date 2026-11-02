@@ -516,7 +516,14 @@ impl Checker {
                 }
                 SymbolKind::Value if symbol.generics > 0 => {
                     let generic = vec![Type::Unknown; symbol.generics];
-                    self.check_generic_call(&symbol.ty, generic, &symbol.constraints, &symbol.modes, args, expected, name)
+                    let callee = GenericCallee {
+                        signature: &symbol.ty,
+                        generic,
+                        constraints: &symbol.constraints,
+                        modes: &symbol.modes,
+                        name,
+                    };
+                    self.check_generic_call(callee, args, expected)
                 }
                 SymbolKind::Value => self.check_function_call_mut(&symbol.ty, &symbol.modes, args),
             };

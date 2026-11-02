@@ -8,6 +8,17 @@
 
 use super::*;
 
+/// A generic function being called: its signature (with `Type::Param`), what is already known
+/// of its type parameters (those of the type, for a method), their constraints, how each
+/// parameter is passed, and its name for messages.
+pub(super) struct GenericCallee<'a> {
+    pub signature: &'a Type,
+    pub generic: Vec<Type>,
+    pub constraints: &'a [Constraint],
+    pub modes: &'a [ParamMode],
+    pub name: &'a str,
+}
+
 impl Checker {
     /// `Type::Param(0..n)`, for a signature.
     pub(super) fn signature_params(count: usize) -> Vec<Type> {
@@ -175,18 +186,21 @@ impl Checker {
         Ok(())
     }
 
-    /// A call to a generic function whose signature is `signature`, with `generic` holding what
-    /// is already known of its type parameters (those of the type, for a method).
+    /// A call to a generic function: the type arguments are inferred from the arguments and the
+    /// expected type, then checked against the constraints.
     pub(super) fn check_generic_call(
         &mut self,
-        signature: &Type,
-        mut generic: Vec<Type>,
-        constraints: &[Constraint],
-        modes: &[ParamMode],
+        callee: GenericCallee,
         args: &[AstNode],
         expected: Option<&Type>,
-        what: &str,
     ) -> CheckResult<Type> {
+        let GenericCallee {
+            signature,
+            mut generic,
+            constraints,
+            modes,
+            name: what,
+        } = callee;
         let (params, ret) = match signature {
             Type::Function { params, ret } => (params, ret),
             _ => return self.err("a value of this type cannot be called".to_string()),

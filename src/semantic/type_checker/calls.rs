@@ -27,15 +27,14 @@ impl Checker {
                         }
                         SymbolKind::Value if symbol.generics > 0 => {
                             let generic = vec![Type::Unknown; symbol.generics];
-                            return self.check_generic_call(
-                                &symbol.ty,
+                            let callee = GenericCallee {
+                                signature: &symbol.ty,
                                 generic,
-                                &symbol.constraints,
-                                &symbol.modes,
-                                args,
-                                expected,
+                                constraints: &symbol.constraints,
+                                modes: &symbol.modes,
                                 name,
-                            );
+                            };
+                            return self.check_generic_call(callee, args, expected);
                         }
                         SymbolKind::Value if !symbol.modes.is_empty() => {
                             return self.check_function_call_mut(&symbol.ty, &symbol.modes, args)
@@ -178,7 +177,14 @@ impl Checker {
         if info.generics > 0 {
             // `Pair.create(1, 'a')`: the type arguments are inferred, like a generic function.
             let generic = vec![Type::Unknown; info.generics];
-            return self.check_generic_call(&info.ty, generic, &info.constraints, &info.modes, args, expected, &full);
+            let callee = GenericCallee {
+                signature: &info.ty,
+                generic,
+                constraints: &info.constraints,
+                modes: &info.modes,
+                name: &full,
+            };
+            return self.check_generic_call(callee, args, expected);
         }
         self.check_function_call_mut(&info.ty, &info.modes, args)
     }
@@ -234,7 +240,14 @@ impl Checker {
             // The type arguments of the value (`Pair[int, string]`), then the method's own.
             let mut generic = receiver_args;
             generic.resize(info.generics, Type::Unknown);
-            return self.check_generic_call(&ty, generic, &info.constraints, modes, args, expected, &full);
+            let callee = GenericCallee {
+                signature: &ty,
+                generic,
+                constraints: &info.constraints,
+                modes,
+                name: &full,
+            };
+            return self.check_generic_call(callee, args, expected);
         }
         self.check_function_call_mut(&ty, modes, args)
     }

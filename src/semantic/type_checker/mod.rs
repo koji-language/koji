@@ -22,6 +22,7 @@ mod declarations;
 mod statements;
 mod functions;
 mod generics;
+use generics::GenericCallee;
 mod expressions;
 mod calls;
 mod ownership;
