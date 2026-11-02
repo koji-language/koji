@@ -153,6 +153,7 @@ impl Interpreter {
                         as_float(&left).partial_cmp(&as_float(&right))
                     }
                     (Value::Str(a), Value::Str(b)) => a.partial_cmp(b),
+                    (Value::Char(a), Value::Char(b)) => a.partial_cmp(b),
                     _ => {
                         return Err(self.error(format!(
                             "cannot compare {} with {}",
@@ -198,6 +199,7 @@ impl Interpreter {
     pub(super) fn contains(&self, collection: &Value, item: &Value) -> Exec<bool> {
         match (collection, item) {
             (Value::Str(haystack), Value::Str(needle)) => Ok(haystack.contains(&**needle)),
+            (Value::Str(haystack), Value::Char(needle)) => Ok(haystack.contains(*needle)),
             (Value::List(items), _) => Ok(items.borrow().iter().any(|v| v.equals(item))),
             (Value::Object(object), Value::Str(key)) => Ok(object.borrow().get(key).is_some()),
             _ => Err(self.error(format!(

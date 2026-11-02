@@ -12,6 +12,7 @@ pub enum Value {
     Float(f64),
     /// Strings have value semantics too: `+=` appends in place when the string is not shared.
     Str(Rc<String>),
+    Char(char),
     Bool(bool),
     Void,
     /// Lists and objects have value semantics: copies share their memory until one of them
@@ -235,6 +236,7 @@ impl Value {
             Value::Float(_) => "float",
             Value::Str(_) => "string",
             Value::Bool(_) => "boolean",
+            Value::Char(_) => "char",
             Value::Void => "void",
             Value::List(_) => "list",
             Value::Object(_) => "object",
@@ -254,6 +256,7 @@ impl Value {
     pub fn display(&self) -> String {
         match self {
             Value::Str(s) => s.to_string(),
+            Value::Char(c) => c.to_string(),
             Value::Variant(variant) => crate::runtime::stdlib::error_message(variant)
                 .unwrap_or_else(|| self.repr()),
             other => other.repr(),
@@ -284,6 +287,18 @@ impl Value {
                         '\r' => out.push_str("\\r"),
                         other => out.push(other),
                     }
+                }
+                out.push('\'');
+            }
+            Value::Char(c) => {
+                out.push('\'');
+                match c {
+                    '\'' => out.push_str("\\'"),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\t' => out.push_str("\\t"),
+                    '\r' => out.push_str("\\r"),
+                    other => out.push(*other),
                 }
                 out.push('\'');
             }
@@ -368,6 +383,7 @@ impl Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => *a as f64 == *b,
             (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Char(a), Value::Char(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Void, Value::Void) => true,
             (Value::List(a), Value::List(b)) => {

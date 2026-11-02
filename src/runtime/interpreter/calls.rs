@@ -241,6 +241,7 @@ impl Interpreter {
                 self.call_value(&member, args)
             }
             Value::Str(s) => stdlib::string_method(self, s, name, args),
+            Value::Char(c) if name == "code" => Ok(Value::Int(*c as i64)),
             Value::List(items) => match name {
                 "length" => Ok(Value::Int(items.borrow().len() as i64)),
                 "join" => {

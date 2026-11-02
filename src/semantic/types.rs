@@ -9,6 +9,8 @@ pub enum Type {
     Int,
     Float,
     String,
+    /// A Unicode character (a code point).
+    Char,
     Boolean,
     Void,
     /// Not known yet (`None`, `[]`): compatible with anything and refined on later assignments.
@@ -215,6 +217,7 @@ impl fmt::Display for TypeDisplay<'_> {
             Type::Float => write!(f, "float"),
             Type::String => write!(f, "string"),
             Type::Boolean => write!(f, "boolean"),
+            Type::Char => write!(f, "char"),
             Type::Void => write!(f, "void"),
             Type::Unknown => write!(f, "?"),
             Type::Never => write!(f, "never"),

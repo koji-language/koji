@@ -122,7 +122,7 @@ impl Checker {
                 Ok(())
             }
             Pattern::Literal(literal) => {
-                let literal_ty = self.check_expr(literal, None)?;
+                let literal_ty = self.check_expr(literal, Some(ty))?;
                 if !self.assignable(ty, &literal_ty) && !self.assignable(&literal_ty, ty) {
                     return self.err(format!(
                         "pattern of type {} does not match a value of type {}",

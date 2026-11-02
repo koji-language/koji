@@ -56,6 +56,14 @@ pub fn string_method(interpreter: &mut Interpreter, s: &str, name: &str, args: V
             }
             Value::str(&s.replace(old, new))
         }
+        "startsWith" => Value::Bool(s.starts_with(str_arg(interpreter, &args, 0)?)),
+        "endsWith" => Value::Bool(s.ends_with(str_arg(interpreter, &args, 0)?)),
+        // A position in characters, like indexing and `length()`.
+        "indexOf" => match s.find(str_arg(interpreter, &args, 0)?) {
+            Some(byte) => some(Value::Int(s[..byte].chars().count() as i64)),
+            None => none(),
+        },
+        "chars" => Value::list(s.chars().map(Value::Char).collect()),
         other => return Err(interpreter.error(format!("strings have no method '{}'", other))),
     })
 }

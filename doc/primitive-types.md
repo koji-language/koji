@@ -27,6 +27,29 @@ When a numeric result does not fit in an `int` or a `float` (a representation li
 name: string = 'Mary'
 ```
 
+## Characters
+
+-   `char`: a single Unicode character (a code point).
+
+```koji
+initial: char = 'K' // a one-character literal is a char where a char is expected
+print(initial.code()) // 75
+print(char(97)) // Some('a'): None for a code that is not a character
+```
+
+Indexing a string gives a `char`, and so does going through it with `for`:
+
+```koji
+name = 'Koji'
+print(name[0]) // K
+for c in name {
+    print(c.code())
+}
+print(name[0] == 'K') // true
+```
+
+Characters can be compared (`<`, `>`), by their code. They are not numbers: `'a' + 1` is an error; use `c.code()` and `char(code)`.
+
 ## Boolean
 
 -   `boolean`: logical values (`true`, `false`).

@@ -28,6 +28,16 @@ For a standard library error, `display()` is a readable message (`'abc' is not a
 | `str.isTitle()`         | Whether every word starts with an uppercase letter followed by lowercase ones | `'Hello World'.isTitle() → true` |
 | `str.split(sep)`        | Splits at every `sep`                        | `'a b'.split(' ') → ['a', 'b']`         |
 | `str.replace(old, new)` | Replaces every `old` with `new`              | `'hello'.replace('l', 'L') → 'heLLo'`   |
+| `str.startsWith(s)`     | Whether it starts with `s`                   | `'Koji'.startsWith('Ko') → true`        |
+| `str.endsWith(s)`       | Whether it ends with `s`                     | `'Koji'.endsWith('ji') → true`          |
+| `str.indexOf(s)`        | Position (in characters) of the first `s`    | `'Koji'.indexOf('j') → Some(2)`         |
+| `str.chars()`           | Its characters                               | `'ab'.chars() → ['a', 'b']`             |
+
+## Char Methods
+
+| Method       | Description             | Example              |
+| ------------ | ----------------------- | -------------------- |
+| `c.code()`   | The code of the character | `'A'.code() → 65`  |
 
 The `is...` methods return `false` for an empty string.
 

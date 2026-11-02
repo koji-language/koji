@@ -2241,3 +2241,30 @@ fn building_text() {
     assert_eq!(run(source), "1000\nab abc\na, b, c x\nAna & Bia\n");
     assert_error("print([1, 2].join(','))", "'join' needs a list of strings, found int[]");
 }
+
+#[test]
+fn chars() {
+    let source = r#"
+        text = 'Hello, Koji'
+        c = text[0]
+        print(c, c.code(), c.debug(), c == 'H', c < 'Z')
+        d: char = 'k'
+        letters: char[] = ['a', 'b']
+        print(d, letters, char(75), char(-1))
+        for ch in 'ab' {
+            print(ch.code())
+        }
+        print(text.chars().length(), text.startsWith('Hello'), text.endsWith('Koji'), text.indexOf('Koji'), text.indexOf('x'))
+        print('o' in text, `${c}!`, string(c) + 'i')
+        match (text[7]) {
+            'K' => print('K!')
+            _ => print('other')
+        }
+    "#;
+    assert_eq!(
+        run(source),
+        "H 72 'H' true true\nk ['a', 'b'] Some('K') None\n97\n98\n11 true true Some(7) None\ntrue H! Hi\nK!\n"
+    );
+    assert_error("c: char = 'ab'", "'ab' is not a char: a char literal has exactly one character");
+    assert_error("x = 'a'[0] + 1", "operator '+' cannot be applied to char and int");
+}

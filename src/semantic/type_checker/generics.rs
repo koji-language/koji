@@ -117,7 +117,7 @@ impl Checker {
             Constraint::None => true,
             Constraint::Equatable => self.equatable(ty, &mut HashSet::new()),
             Constraint::Orderable => match ty {
-                Type::Int | Type::Float | Type::String | Type::Unknown | Type::Never => true,
+                Type::Int | Type::Float | Type::String | Type::Char | Type::Unknown | Type::Never => true,
                 Type::Named { id, .. } => {
                     matches!(self.table.get(*id).kind, TypeKind::Param(Constraint::Orderable))
                 }

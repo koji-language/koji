@@ -7,7 +7,7 @@ These functions are available in every file, without `import`.
 | `print(values...)` | Shows the values, separated by spaces, followed by a new line |
 | `input(prompt)` | Reads a line typed by the user |
 | `range(...)` | A list of consecutive integers |
-| `int(x)`, `float(x)`, `string(x)` | Conversions |
+| `int(x)`, `float(x)`, `string(x)`, `char(code)` | Conversions |
 | `panic(message)` | Stops the program |
 
 ## `print`
@@ -53,6 +53,7 @@ In a `for` loop, the numbers are produced one at a time: `for i in range(1000000
 | `int(x)`    | Converts to an integer  | `int(3.9) → 3`    |
 | `float(x)`  | Converts to a float     | `float(2) → 2.0`  |
 | `string(x)` | Converts to a string    | `string(0) → '0'` |
+| `char(code)` | The character with that code | `char(65) → Some('A')` |
 
 `int` truncates toward zero. A float too large for an `int` panics (see [Primitive Types](primitive-types.md)).
 

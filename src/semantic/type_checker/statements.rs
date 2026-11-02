@@ -162,7 +162,7 @@ impl Checker {
                 let iterable_ty = self.check_value(iterable, None)?;
                 let item = match &iterable_ty {
                     Type::List(inner) => (**inner).clone(),
-                    Type::String => Type::String,
+                    Type::String => Type::Char,
                     Type::Unknown => Type::Unknown,
                     Type::Named { id, .. } => match &self.table.get(*id).kind {
                         TypeKind::Dict { key, .. } => key.clone(),

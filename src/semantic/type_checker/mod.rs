@@ -62,6 +62,8 @@ pub struct Ownership {
     pub owning_matches: HashSet<usize>,
     /// Object literals of a type with a `drop` method, with that method (module, `Type.drop`).
     pub drops: HashMap<usize, (PathBuf, String)>,
+    /// String literals that are `char` values (`c: char = 'a'`).
+    pub char_literals: HashSet<usize>,
 }
 
 /// Identity of an AST node, for the `Ownership` tables.

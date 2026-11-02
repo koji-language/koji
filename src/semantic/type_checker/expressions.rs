@@ -26,6 +26,17 @@ impl Checker {
             }
             AstNode::IntLiteral(_) => Ok(Type::Int),
             AstNode::FloatLiteral(_) => Ok(Type::Float),
+            // `'a'` is a char where a char is expected.
+            AstNode::StringLiteral(text) if expected == Some(&Type::Char) => {
+                if text.chars().count() != 1 {
+                    return self.err(format!(
+                        "'{}' is not a char: a char literal has exactly one character",
+                        text
+                    ));
+                }
+                self.ownership.char_literals.insert(node_id(node));
+                Ok(Type::Char)
+            }
             AstNode::StringLiteral(_) => Ok(Type::String),
             AstNode::BooleanLiteral(_) => Ok(Type::Boolean),
             AstNode::TemplateString(parts) => {
@@ -105,8 +116,16 @@ impl Checker {
                         ),
                     };
                 }
-                let left_ty = self.check_value(left, None)?;
-                let right_ty = self.check_value(right, None)?;
+                // In `c == 'a'`, the literal takes the type of the other side (a char).
+                let (left_ty, right_ty) = if matches!(left.unlocated(), AstNode::StringLiteral(_)) {
+                    let right_ty = self.check_value(right, None)?;
+                    let expected = (right_ty == Type::Char).then_some(Type::Char);
+                    (self.check_value(left, expected.as_ref())?, right_ty)
+                } else {
+                    let left_ty = self.check_value(left, None)?;
+                    let expected = (left_ty == Type::Char).then_some(Type::Char);
+                    (left_ty.clone(), self.check_value(right, expected.as_ref())?)
+                };
                 // A type parameter only has the comparisons its constraint allows.
                 let comparison = matches!(
                     op,
@@ -160,7 +179,7 @@ impl Checker {
                     }
                     Type::String => {
                         self.expect_type(&Type::Int, &index_ty, "string index")?;
-                        Ok(Type::String)
+                        Ok(Type::Char)
                     }
                     Type::Unknown => Ok(Type::Unknown),
                     Type::Named { id, .. } => match &self.table.get(*id).kind {
@@ -482,7 +501,9 @@ impl Checker {
                 _ => None,
             },
             Greater | GreaterEqual | Less | LessEqual
-                if numeric || (*left == Type::String && *right == Type::String) =>
+                if numeric
+                    || (*left == Type::String && *right == Type::String)
+                    || (*left == Type::Char && *right == Type::Char) =>
             {
                 Some(Type::Boolean)
             }
@@ -507,7 +528,7 @@ impl Checker {
             }
             And | Or if *left == Type::Boolean && *right == Type::Boolean => Some(Type::Boolean),
             In => match right {
-                Type::String if *left == Type::String => Some(Type::Boolean),
+                Type::String if *left == Type::String || *left == Type::Char => Some(Type::Boolean),
                 Type::List(element) if self.assignable(element, left) || self.assignable(left, element) => {
                     if !self.satisfies(element, Constraint::Equatable) {
                         return self.err(self.not_equatable(op, element));

@@ -55,6 +55,13 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
             other => Err(interpreter.error(format!("cannot convert {} to float", other.type_name()))),
         },
         "string" => Ok(Value::str(&args[0].display())),
+        "char" => {
+            let code = int_arg(interpreter, &args, 0)?;
+            Ok(match u32::try_from(code).ok().and_then(char::from_u32) {
+                Some(c) => some(Value::Char(c)),
+                None => none(),
+            })
+        }
         other => Err(interpreter.error(format!("unknown built-in function '{}'", other))),
     }
 }

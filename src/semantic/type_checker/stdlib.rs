@@ -183,13 +183,14 @@ impl Checker {
     /// Scope with the built-in functions, types and constructors.
     pub(super) fn prelude(&self) -> Scope {
         let mut scope = Scope::default();
-        for name in ["print", "input", "range", "int", "float", "string", "panic"] {
+        for name in ["print", "input", "range", "int", "float", "string", "char", "panic"] {
             scope.vars.insert(name.to_string(), Symbol::builtin(name));
         }
         let primitives = [
             ("int", Type::Int),
             ("float", Type::Float),
             ("string", Type::String),
+            ("char", Type::Char),
             ("boolean", Type::Boolean),
             ("bool", Type::Boolean),
             ("void", Type::Void),
@@ -400,6 +401,11 @@ impl Checker {
                 self.arity(name, &types, 1, 1)?;
                 Ok(Type::String)
             }
+            // `char(72)`: the character with that code, or `None` if no character has it.
+            "char" => {
+                check(self, &[Type::Int])?;
+                Ok(self.option_of(Type::Char))
+            }
 
             "time.sleep" => {
                 self.arity(name, &types, 1, 1)?;
@@ -544,6 +550,13 @@ impl Checker {
                 | "isTitle" => Some((vec![], Type::Boolean)),
                 "split" => Some((vec![s.clone()], Type::List(Box::new(Type::String)))),
                 "replace" => Some((vec![s.clone(), s], Type::String)),
+                "startsWith" | "endsWith" => Some((vec![s], Type::Boolean)),
+                "indexOf" => Some((vec![s], self.option_of(Type::Int))),
+                "chars" => Some((vec![], Type::List(Box::new(Type::Char)))),
+                _ => None,
+            },
+            Type::Char => match name {
+                "code" => Some((vec![], Type::Int)),
                 _ => None,
             },
             Type::List(element) => match name {

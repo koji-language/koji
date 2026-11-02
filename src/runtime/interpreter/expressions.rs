@@ -13,6 +13,9 @@ impl Interpreter {
             AstNode::Try { value, wrap } => self.eval_try(value, wrap, env),
             AstNode::IntLiteral(n) => Ok(Value::Int(*n)),
             AstNode::FloatLiteral(n) => Ok(Value::Float(*n)),
+            AstNode::StringLiteral(s) if self.ownership.char_literals.contains(&node_id(node)) => {
+                Ok(Value::Char(s.chars().next().unwrap_or_default()))
+            }
             AstNode::StringLiteral(s) => Ok(Value::str(s)),
             AstNode::BooleanLiteral(b) => Ok(Value::Bool(*b)),
             AstNode::TemplateString(parts) => {
@@ -155,7 +158,7 @@ impl Interpreter {
                 let iterable = self.eval(iterable, env)?;
                 let items: Vec<Value> = match &iterable {
                     Value::List(items) => items.borrow().clone(),
-                    Value::Str(s) => s.chars().map(|c| Value::str(&c.to_string())).collect(),
+                    Value::Str(s) => s.chars().map(Value::Char).collect(),
                     Value::Object(object) => object
                         .borrow()
                         .fields
@@ -321,7 +324,7 @@ impl Interpreter {
             Value::Str(s) => {
                 let chars: Vec<char> = s.chars().collect();
                 let position = self.list_position(chars.len(), index)?;
-                Ok(Value::str(&chars[position].to_string()))
+                Ok(Value::Char(chars[position]))
             }
             Value::Object(object) => match index {
                 Value::Str(key) => match object.borrow().get(key) {
