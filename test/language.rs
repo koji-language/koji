@@ -170,9 +170,14 @@ fn declarations_need_a_keyword() {
     assert_error("count = 1", "'count' is not declared: declare it with 'mut count = ...' (or 'immut' if it never changes)");
     assert_error("mut count = 0\ncuont = 1", "'cuont' is not declared");
     assert_error("name: string = 'Ana'", "declare 'name' with 'mut' or 'immut'");
-    assert_error("var x = 1", "Koji has no 'var': declare with 'mut name = ...'");
-    assert_error("const x = 1", "Koji has no 'const': declare with 'immut name = ...'");
-    assert_error("imut x = 1", "Koji has no 'imut': declare with 'immut name = ...'");
+    for word in ["var", "const", "let"] {
+        assert_error(
+            &format!("{} x = 1", word),
+            &format!("Koji has no '{}': declare with 'mut name = ...' for a variable that changes", word),
+        );
+    }
+    // `imut` is not reserved: it is an ordinary name.
+    assert_eq!(run("immut imut = 1\nprint(imut)"), "1\n");
 }
 
 #[test]

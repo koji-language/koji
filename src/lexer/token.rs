@@ -9,7 +9,9 @@ pub enum Token {
     Boolean(bool),
     Var,
     Const,
-    Imut,
+    /// Reserved, like `var` and `const`, for a clear error: Koji declares with `mut` and
+    /// `immut`.
+    Let,
     Immut,
     Mut,
     Take,
@@ -91,7 +93,7 @@ impl Token {
         let name = match self {
             Token::Var => "var",
             Token::Const => "const",
-            Token::Imut => "imut",
+            Token::Let => "let",
             Token::Immut => "immut",
             Token::Mut => "mut",
             Token::Take => "take",

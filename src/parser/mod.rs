@@ -250,15 +250,15 @@ impl Parser {
                 let name = self.expect_identifier("variable name")?;
                 self.finish_declaration(name, true, true)
             }
-            Token::Var | Token::Const | Token::Imut => {
-                let (word, instead) = match self.current() {
-                    Token::Var => ("var", "mut"),
-                    Token::Const => ("const", "immut"),
-                    _ => ("imut", "immut"),
+            Token::Var | Token::Const | Token::Let => {
+                let word = match self.current() {
+                    Token::Var => "var",
+                    Token::Const => "const",
+                    _ => "let",
                 };
                 self.error_here(format!(
-                    "Koji has no '{}': declare with '{} name = ...' ('mut' for a variable that changes, 'immut' for one that does not)",
-                    word, instead
+                    "Koji has no '{}': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not",
+                    word
                 ))
             }
             // `name: type = value` without `mut` or `immut`.

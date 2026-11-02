@@ -27,6 +27,8 @@ mut count = 0
 cuont = 1 // Error! 'cuont' is not declared: declare it with 'mut cuont = ...' (or 'immut' if it never changes)
 ```
 
+`var`, `const` and `let`, which other languages use, are reserved words: using one gives an error that points to `mut` and `immut`.
+
 ## `mut`
 
 A `mut` variable can be changed in any way: given a new value, or changed in its contents (a field, an element, `push`...).

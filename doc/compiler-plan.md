@@ -412,7 +412,7 @@ Decided:
 -   **Display**: `display()` is readable (a `display(self): string` method of the type, when declared) and is what `print` and interpolation use; `debug()` shows the structure (see [Custom Types](custom-types.md#display)).
 -   **`regex.compile`**, with `RegexError = { InvalidPattern(pattern, message) }` (see [Typed errors in the standard library](#typed-errors-in-the-standard-library)).
 -   **`for` and `match` variables are immut**, with `for mut` to opt out.
--   **`mut` and `immut`** replace `var`, `const` and `imut`; every declaration has one of them.
+-   **`mut` and `immut`** replace `var`, `const` and `imut`; every declaration has one of them. `var`, `const` and `let` stay reserved, for an error that points to `mut` and `immut`; `imut` is an ordinary name.
 -   **`take` parameters** take ownership of a move-only argument (like `owned` in Mojo or `sink` in Hylo); see [Values and Memory](memory.md#taking-ownership).
 -   **`RegexError`** has `InvalidPattern`, `Unsupported` and `TooLarge`.
 -   **`range` is lazy** in a `for` loop.
