@@ -146,3 +146,35 @@ pub extern "C" fn koji_string_hash(string: *const KojiString) -> u64 {
     string_text(string).hash(&mut hasher);
     hasher.finish()
 }
+
+fn char_of(code: u32) -> char {
+    char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER)
+}
+
+/// The text of a char (`print`).
+#[no_mangle]
+pub extern "C" fn koji_string_from_char(code: u32) -> *mut KojiString {
+    new_string(char_of(code).to_string())
+}
+
+/// A char as written in code: `'a'`, `'\n'`.
+#[no_mangle]
+pub extern "C" fn koji_char_repr(code: u32) -> *mut KojiString {
+    let mut text = String::from("'");
+    match char_of(code) {
+        '\'' => text.push_str("\\'"),
+        '\\' => text.push_str("\\\\"),
+        '\n' => text.push_str("\\n"),
+        '\t' => text.push_str("\\t"),
+        '\r' => text.push_str("\\r"),
+        other => text.push(other),
+    }
+    text.push('\'');
+    new_string(text)
+}
+
+/// `c in text`.
+#[no_mangle]
+pub extern "C" fn koji_string_contains_char(haystack: *const KojiString, code: u32) -> bool {
+    string_text(haystack).contains(char_of(code))
+}

@@ -1088,6 +1088,48 @@ bye\n\
 }
 
 #[test]
+fn chars() {
+    let source = "immut initial: char = 'K'\n\
+immut text = 'olá, Koji'\n\
+immut letters: char[] = ['b', 'a', '\\'']\n\
+mut sorted = letters\n\
+sorted.sort()\n\
+print(initial, initial.code(), char(97), char(-1), initial.debug(), letters, sorted)\n\
+print(text[2], text[5..9], text[..3], text.chars(), 'K' in text, 'z' in text, initial == 'K', 'a' < 'b')\n\
+\n\
+mut vowels = 0\n\
+\n\
+for c in text {\n\
+    if (c in 'aeiouá') { vowels += 1 }\n\
+}\n\
+\n\
+print(vowels, `${initial}!`, string(initial))\n\
+mut counts: Map[char, int] = [:]\n\
+\n\
+for c in 'banana' {\n\
+    if (c in counts) {\n\
+        counts[c] += 1\n\
+    } else {\n\
+        counts[c] = 1\n\
+    }\n\
+}\n\
+\n\
+print(counts)\n\
+print(text[20])\n\
+";
+    let path = source_file("chars", source);
+    let interpreted = interpret(&path, source);
+    let compiled = compile_and_run(&path);
+    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert_eq!(compiled.output, "K 75 Some('a') None 'K' ['b', 'a', '\\''] ['\\'', 'a', 'b']\n\
+á Koji olá ['o', 'l', 'á', ',', ' ', 'K', 'o', 'j', 'i'] true false true true\n\
+4 K! K\n\
+['b': 1, 'a': 3, 'n': 2]\n\
+");
+    assert!(compiled.error.ends_with("chars.kj:27: index 20 out of range (length 9)"), "{}", compiled.error);
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions", "input", "modules", "types"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));
@@ -1102,10 +1144,10 @@ fn examples_that_compile() {
 
 #[test]
 fn unsupported_constructs_are_reported() {
-    let path = source_file("unsupported", "immut c: char = 'a'\nprint(c)\n");
+    let path = source_file("unsupported", "import json\nprint(json.stringify(json.Null))\n");
     let error = kojic::build_file(&path, &path.with_extension(""), kojic::Emit::Executable).unwrap_err();
     assert!(
-        error.to_string().ends_with("unsupported.kj:1: the type 'char' is not supported by 'kojic build' yet (use 'kojic run')"),
+        error.to_string().contains("is not supported by 'kojic build' yet (use 'kojic run')"),
         "{}",
         error
     );

@@ -311,7 +311,7 @@ impl<'a> Lowerer<'a> {
             Type::String => Ok(Ty::Str),
             Type::Void | Type::Never => Ok(Ty::Void),
             Type::List(element) => Ok(Ty::List(Box::new(self.ty(element)?))),
-            Type::Char => self.unsupported("the type 'char'"),
+            Type::Char => Ok(Ty::Char),
             Type::Function { params, ret } => {
                 let mut types = Vec::new();
                 for param in params {
@@ -398,6 +398,7 @@ impl<'a> Lowerer<'a> {
                 "float" => Ok(Ty::Float),
                 "boolean" => Ok(Ty::Bool),
                 "string" => Ok(Ty::Str),
+                "char" => Ok(Ty::Char),
                 "void" => Ok(Ty::Void),
                 _ => match self.type_names.iter().position(|param| param == name) {
                     Some(index) => Ok(self.substitution[index].clone()),
@@ -1501,7 +1502,19 @@ impl<'a> Lowerer<'a> {
                 let map = self.expr(builder, iterable)?.expect("a map");
                 (list_type.clone(), self.unary(builder, UnaryOp::MapKeys, map, list_type))
             }
-            _ => return self.unsupported("a 'for' loop over a string (char)"),
+            // A string gives its characters.
+            Ty::Str => {
+                let list_type = Ty::List(Box::new(Ty::Char));
+                let text = self.expr(builder, iterable)?.expect("a string");
+                let dest = builder.local(list_type.clone(), None);
+                builder.emit(Instruction::StdCall {
+                    dest: Some(dest),
+                    function: "koji_std_string_chars",
+                    args: vec![StdArg::Value(text), StdArg::Element(Ty::Char)],
+                });
+                (list_type, Operand::Local(dest))
+            }
+            _ => return self.unsupported("a 'for' loop over this value"),
         };
         let element = list_type.element().clone();
         let list = builder.local(list_type.clone(), None);
@@ -1903,6 +1916,7 @@ impl<'a> Lowerer<'a> {
             Ty::Int => UnaryOp::IntToStr,
             Ty::Float => UnaryOp::FloatToStr,
             Ty::Bool => UnaryOp::BoolToStr,
+            Ty::Char => UnaryOp::CharToStr,
             Ty::List(_) => UnaryOp::ListToStr,
             Ty::Record(_) => UnaryOp::RecordToStr,
             Ty::Map(..) | Ty::Set(_) => UnaryOp::MapToStr,
@@ -1916,6 +1930,7 @@ impl<'a> Lowerer<'a> {
     fn debug(&mut self, builder: &mut Builder, value: Operand, ty: &Ty) -> Lower<Operand> {
         match ty {
             Ty::Str => Ok(self.unary(builder, UnaryOp::StrRepr, value, Ty::Str)),
+            Ty::Char => Ok(self.unary(builder, UnaryOp::CharRepr, value, Ty::Str)),
             Ty::Record(_) => Ok(self.unary(builder, UnaryOp::RecordRepr, value, Ty::Str)),
             other => self.display(builder, value, other),
         }
@@ -1960,8 +1975,9 @@ impl<'a> Lowerer<'a> {
             AstNode::FloatLiteral(f) => Ok(Some(Operand::Float(*f))),
             AstNode::BooleanLiteral(b) => Ok(Some(Operand::Bool(*b))),
             AstNode::StringLiteral(text) => {
-                if self.type_in(builder, node)? != Ty::Str {
-                    return self.unsupported("a char");
+                // `'a'` where a char is expected.
+                if self.type_in(builder, node)? == Ty::Char {
+                    return Ok(Some(Operand::Char(text.chars().next().unwrap_or_default())));
                 }
                 Ok(Some(self.string(text)))
             }
@@ -2070,8 +2086,14 @@ impl<'a> Lowerer<'a> {
                 Ok(Some(Operand::Local(dest)))
             }
             AstNode::Index { target, index } => {
+                if self.type_in(builder, target)? == Ty::Str {
+                    let text = self.expr(builder, target)?.expect("a string");
+                    let index = self.value_as(builder, index, &Ty::Int)?.expect("an int");
+                    let line = self.line;
+                    return self.std(builder, node, "koji_std_string_char_at", vec![StdArg::Value(text), StdArg::Value(index), StdArg::Location(line)]);
+                }
                 let Ty::List(element) = self.type_in(builder, target)? else {
-                    return self.unsupported("indexing a string (char)");
+                    return self.unsupported("indexing this value");
                 };
                 let list = self.expr(builder, target)?.expect("a list");
                 let index = self.value_as(builder, index, &Ty::Int)?.expect("an int");
@@ -2086,9 +2108,6 @@ impl<'a> Lowerer<'a> {
             }
             AstNode::Slice { target, start, end } => {
                 let ty = self.type_in(builder, target)?;
-                if !matches!(ty, Ty::List(_)) {
-                    return self.unsupported("slicing a string");
-                }
                 let list = self.expr(builder, target)?.expect("a list");
                 let start = match start {
                     Some(start) => Some(self.index(builder, start)?),
@@ -2098,6 +2117,17 @@ impl<'a> Lowerer<'a> {
                     Some(end) => Some(self.index(builder, end)?),
                     None => None,
                 };
+                if ty == Ty::Str {
+                    let bound = |bound: Option<Operand>| match bound {
+                        Some(bound) => [StdArg::Mode(1), StdArg::Value(bound)],
+                        None => [StdArg::Mode(0), StdArg::Value(Operand::Int(0))],
+                    };
+                    let mut args = vec![StdArg::Value(list)];
+                    args.extend(bound(start));
+                    args.extend(bound(end));
+                    args.push(StdArg::Location(self.line));
+                    return self.std(builder, node, "koji_std_string_slice", args);
+                }
                 let dest = builder.local(ty, None);
                 builder.emit(Instruction::ListSlice {
                     dest,
@@ -2308,6 +2338,11 @@ impl<'a> Lowerer<'a> {
                 let map = self.expr(builder, collection)?.expect("a map");
                 Ok(self.binary(builder, BinaryOp::MapContains, key, map, Ty::Bool))
             }
+            Ty::Str if self.type_in(builder, item)? == Ty::Char => {
+                let needle = self.expr(builder, item)?.expect("a char");
+                let haystack = self.expr(builder, collection)?.expect("a string");
+                Ok(self.binary(builder, BinaryOp::StrContainsChar, needle, haystack, Ty::Bool))
+            }
             Ty::Str if self.type_in(builder, item)? == Ty::Str => {
                 let needle = self.expr(builder, item)?.expect("a string");
                 let haystack = self.expr(builder, collection)?.expect("a string");
@@ -2381,6 +2416,10 @@ impl<'a> Lowerer<'a> {
             },
             (Ty::Str, Ty::Int) if op == B::Multiply => (BinaryOp::StrRepeat, left, right, Ty::Str),
             (Ty::Int, Ty::Str) if op == B::Multiply => (BinaryOp::StrRepeat, right, left, Ty::Str),
+            (Ty::Char, Ty::Char) => match comparison {
+                Some(comparison) => (BinaryOp::CharCompare(comparison), left, right, Ty::Bool),
+                None => return self.unsupported(&format!("'{}' on chars", op.symbol())),
+            },
             (Ty::Bool, Ty::Bool) => match comparison {
                 Some(comparison @ (Comparison::Equal | Comparison::NotEqual)) => {
                     (BinaryOp::BoolCompare(comparison), left, right, Ty::Bool)
@@ -2585,6 +2624,14 @@ impl<'a> Lowerer<'a> {
                     }
                 };
                 self.std(builder, call, function, arguments)
+            }
+            (Ty::Str, "chars") => {
+                let text = self.expr(builder, object)?.expect("a string");
+                self.std(builder, call, "koji_std_string_chars", vec![StdArg::Value(text), StdArg::Element(Ty::Char)])
+            }
+            (Ty::Char, "code") => {
+                let c = self.expr(builder, object)?.expect("a char");
+                Ok(Some(self.unary(builder, UnaryOp::CharCode, c, Ty::Int)))
             }
             (Ty::Str, "length") => {
                 let text = self.expr(builder, object)?.expect("a string");
@@ -3079,6 +3126,11 @@ impl<'a> Lowerer<'a> {
                     }
                     _ => self.unsupported(&format!("'{}' of this value", name)),
                 }
+            }
+            "char" if args.len() == 1 => {
+                let code = self.value_as(builder, &args[0], &Ty::Int)?.expect("an int");
+                let Ty::Record(option) = self.type_in(builder, call)? else { unreachable!("an Option") };
+                self.std(builder, call, "koji_std_char", vec![StdArg::Value(code), StdArg::Record(option)])
             }
             "input" => {
                 let prompt = match args.first() {

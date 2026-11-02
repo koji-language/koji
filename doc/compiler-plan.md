@@ -398,7 +398,7 @@ A compiler is a large program, with many data structures and many operations tha
 
 It compiles a first subset of the language:
 
--   `int`, `float`, `boolean` and `string` values, `mut` and `immut` variables, top-level variables used by functions;
+-   `int`, `float`, `boolean`, `char` and `string` values (also indexing and slicing strings, `for` over the characters of a string, `chars`, `code` and `char(n)`), `mut` and `immut` variables, top-level variables used by functions;
 -   object types and sum types (also generic, such as `Option[int]`, and recursive), with object literals, constructors, fields (reading and assigning, also `people[0].age += 1`), `==`, `match` (variants, literals, bindings, guards, as a statement or an expression), `is` and the narrowing it gives (`if (x is Some) { x.value }`);
 -   `Option` and `Result`: `?` (with the automatic wrapping of the error, and stopping the program at the top level), `mapErr` with a variant (`mapErr(Parse)`), and the list methods that give them (`pop`, `removeAt`, `indexOf`);
 -   closures: lambdas, which capture a copy of the local variables they use (top-level variables are read directly), named functions used as values, function types (`(int) => int`), calls of any expression that gives a function (`makeAdder(5)(1)`), `sortBy` and `mapErr` with a function;
@@ -432,7 +432,7 @@ Dropping a type is a generated function: it calls the `drop` method (`mut self`,
 
 The standard library is in the runtime: the generated code calls a Rust function for each library function, giving it the description of the `Option`, `Result` or error it must build. The messages of errors and the conversions of text (`int('42')`) are the same functions in the interpreter and in the runtime.
 
-**Next steps**, in order: `char`; the modules `file`, `datetime`, `json`, `regex` and `http`.
+**Next steps**, in order: the modules `file`, `datetime`, `json`, `regex` and `http`.
 
 ---
 

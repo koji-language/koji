@@ -20,6 +20,9 @@ KojiString *koji_string_from_float(double value);
 KojiString *koji_string_from_bool(bool value);
 
 KojiString *koji_string_repr(const KojiString *string);
+KojiString *koji_string_from_char(uint32_t code);
+KojiString *koji_char_repr(uint32_t code);
+bool koji_string_contains_char(const KojiString *haystack, uint32_t code);
 int64_t koji_string_length(const KojiString *string);
 bool koji_string_contains(const KojiString *haystack, const KojiString *needle);
 
@@ -158,6 +161,12 @@ KojiRecord *koji_std_system_env(const KojiString *name, const KojiRecordType *op
 _Noreturn void koji_std_system_exit(int64_t code);
 KojiRecord *koji_std_system_run(const KojiString *command, const KojiList *arguments, const KojiRecordType *result);
 
+KojiRecord *koji_std_char(int64_t code, const KojiRecordType *option);
+KojiList *koji_std_string_chars(const KojiString *string, const KojiElementType *element);
+uint32_t koji_std_string_char_at(const KojiString *string, int64_t index, const char *location);
+KojiString *koji_std_string_slice(const KojiString *string, bool has_start, int64_t start, bool has_end, int64_t end,
+                                  const char *location);
+
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
 _Noreturn void koji_panic(const char *location, const char *message);
@@ -259,6 +268,18 @@ static uint64_t koji_hash_bool(const void *slot) { return *(const bool *)slot; }
 static const KojiElementType koji_element_bool = {
     sizeof(bool), NULL, NULL, koji_repr_bool, koji_equal_bool, koji_compare_bool, koji_hash_bool, NULL};
 
+static KojiString *koji_repr_char(const void *slot) { return koji_char_repr(*(const uint32_t *)slot); }
+static bool koji_equal_char(const void *a, const void *b) { return *(const uint32_t *)a == *(const uint32_t *)b; }
+static int32_t koji_compare_char(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return koji_order(x < y, x > y);
+}
+static uint64_t koji_hash_char(const void *slot) { return *(const uint32_t *)slot; }
+static KojiString *koji_display_char(const void *slot) { return koji_string_from_char(*(const uint32_t *)slot); }
+static const KojiElementType koji_element_char = {
+    sizeof(uint32_t), NULL, NULL, koji_repr_char, koji_equal_char, koji_compare_char, koji_hash_char,
+    koji_display_char};
+
 static void koji_retain_string(const void *slot) { koji_string_retain(*(KojiString *const *)slot); }
 static void koji_release_string(const void *slot) { koji_string_release(*(KojiString *const *)slot); }
 static KojiString *koji_repr_string(const void *slot) { return koji_string_repr(*(KojiString *const *)slot); }
@@ -326,6 +347,7 @@ static const KojiElementType koji_element_closure = {
 KOJI_BEFORE(int, int64_t)
 KOJI_BEFORE(float, double)
 KOJI_BEFORE(bool, bool)
+KOJI_BEFORE(char, uint32_t)
 KOJI_BEFORE(string, KojiString *)
 KOJI_BEFORE(list, KojiList *)
 KOJI_BEFORE(record, KojiRecord *)

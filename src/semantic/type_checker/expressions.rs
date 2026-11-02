@@ -145,8 +145,9 @@ impl Checker {
                 } else {
                     let left_ty = self.check_value(left, None)?;
                     // `floats + [3]`: a list literal takes the type of the other list.
+                    // In `c in 'aeiou'`, the string is not a char.
                     let expected = match &left_ty {
-                        Type::Char => Some(Type::Char),
+                        Type::Char if *op != BinaryOperator::In => Some(Type::Char),
                         Type::List(_) if matches!(right.unlocated(), AstNode::ArrayLiteral(_)) => Some(left_ty.clone()),
                         _ => None,
                     };

@@ -34,6 +34,7 @@ fn c_type(ty: &Ty) -> &'static str {
         Ty::Int => "int64_t",
         Ty::Float => "double",
         Ty::Bool => "bool",
+        Ty::Char => "uint32_t",
         Ty::Str => "KojiString *",
         Ty::List(_) => "KojiList *",
         Ty::Record(_) => "KojiRecord *",
@@ -84,6 +85,7 @@ fn element_type(ty: &Ty) -> &'static str {
         Ty::Int => "&koji_element_int",
         Ty::Float => "&koji_element_float",
         Ty::Bool => "&koji_element_bool",
+        Ty::Char => "&koji_element_char",
         Ty::Str => "&koji_element_string",
         Ty::List(_) => "&koji_element_list",
         Ty::Record(_) => "&koji_element_record",
@@ -309,6 +311,7 @@ impl Generator<'_> {
             Operand::Int(n) => format!("INT64_C({})", n),
             Operand::Float(x) => format!("{:?}", x),
             Operand::Bool(b) => b.to_string(),
+            Operand::Char(c) => format!("UINT32_C({})", *c as u32),
             Operand::Str(id) => format!("koji_s{}", id),
         }
     }
@@ -426,6 +429,7 @@ impl Generator<'_> {
             Operand::Int(_) => format!("&(int64_t){{ {} }}", self.operand(operand)),
             Operand::Float(_) => format!("&(double){{ {} }}", self.operand(operand)),
             Operand::Bool(_) => format!("&(bool){{ {} }}", self.operand(operand)),
+            Operand::Char(_) => format!("&(uint32_t){{ {} }}", self.operand(operand)),
             Operand::Str(_) => format!("&(KojiString *){{ {} }}", self.operand(operand)),
         }
     }
@@ -461,6 +465,9 @@ impl Generator<'_> {
                     UnaryOp::IntToStr => format!("koji_string_from_int({})", value),
                     UnaryOp::FloatToStr => format!("koji_string_from_float({})", value),
                     UnaryOp::BoolToStr => format!("koji_string_from_bool({})", value),
+                    UnaryOp::CharToStr => format!("koji_string_from_char({})", value),
+                    UnaryOp::CharRepr => format!("koji_char_repr({})", value),
+                    UnaryOp::CharCode => format!("(int64_t){}", value),
                     UnaryOp::ListToStr => format!("koji_list_repr({})", value),
                     UnaryOp::StrLength => format!("koji_string_length({})", value),
                     UnaryOp::StrRepr => format!("koji_string_repr({})", value),
@@ -739,6 +746,7 @@ impl Generator<'_> {
                     Ty::Int => "int",
                     Ty::Float => "float",
                     Ty::Bool => "bool",
+                    Ty::Char => "char",
                     Ty::Str => "string",
                     Ty::List(_) => "list",
                     Ty::Record(_) => "record",
@@ -919,6 +927,8 @@ impl Generator<'_> {
             BinaryOp::StrConcat => format!("koji_string_concat({}, {})", left, right),
             BinaryOp::StrRepeat => format!("koji_string_repeat({}, {})", left, right),
             BinaryOp::StrContains => format!("koji_string_contains({}, {})", right, left),
+            BinaryOp::StrContainsChar => format!("koji_string_contains_char({}, {})", right, left),
+            BinaryOp::CharCompare(comparison) => format!("({} {} {})", left, symbol(comparison), right),
             BinaryOp::ListConcat => format!("koji_list_concat({}, {})", left, right),
             BinaryOp::ListCompare(Comparison::NotEqual) => format!("!koji_list_equal({}, {})", left, right),
             BinaryOp::ListCompare(_) => format!("koji_list_equal({}, {})", left, right),
@@ -949,6 +959,7 @@ impl Generator<'_> {
             Operand::Int(_) => Ty::Int,
             Operand::Float(_) => Ty::Float,
             Operand::Bool(_) => Ty::Bool,
+            Operand::Char(_) => Ty::Char,
             Operand::Str(_) => Ty::Str,
         }
     }

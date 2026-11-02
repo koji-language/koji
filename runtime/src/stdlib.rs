@@ -471,3 +471,50 @@ pub extern "C" fn koji_std_system_run(command: *const KojiString, arguments: *co
         }
     }
 }
+
+// char
+
+/// `char(code)`: `Some` of the character with that code, or `None`.
+#[no_mangle]
+pub extern "C" fn koji_std_char(code: i64, option: *const KojiRecordType) -> *mut KojiRecord {
+    match u32::try_from(code).ok().and_then(char::from_u32) {
+        Some(c) => some(option, c as u32 as u64),
+        None => none(option),
+    }
+}
+
+/// `text.chars()`.
+#[no_mangle]
+pub extern "C" fn koji_std_string_chars(string: *const KojiString, element: *const KojiElementType) -> *mut KojiList {
+    new_list(element, text(string).chars().map(|c| c as u32 as u64).collect())
+}
+
+/// `text[index]`: the character at that position (in characters).
+#[no_mangle]
+pub extern "C" fn koji_std_string_char_at(string: *const KojiString, index: i64, location: *const c_char) -> u32 {
+    let s = text(string);
+    let length = s.chars().count();
+    if index < 0 || index as usize >= length {
+        panic_at(location, &format!("index {} out of range (length {})", index, length));
+    }
+    s.chars().nth(index as usize).expect("checked") as u32
+}
+
+/// `text[start..end]` (in characters); a missing bound is the start or the end.
+#[no_mangle]
+pub extern "C" fn koji_std_string_slice(
+    string: *const KojiString,
+    has_start: bool,
+    start: i64,
+    has_end: bool,
+    end: i64,
+    location: *const c_char,
+) -> *mut KojiString {
+    let s = text(string);
+    let length = s.chars().count() as i64;
+    let (start, end) = (if has_start { start } else { 0 }, if has_end { end } else { length });
+    if start < 0 || end > length || start > end {
+        panic_at(location, &format!("slice {}..{} out of range (length {})", start, end, length));
+    }
+    new_string(s.chars().skip(start as usize).take((end - start) as usize).collect())
+}

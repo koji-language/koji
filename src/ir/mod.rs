@@ -28,6 +28,8 @@ pub enum Ty {
     Int,
     Float,
     Bool,
+    /// A Unicode character (its code point).
+    Char,
     Str,
     List(Box<Ty>),
     /// A value of a declared type (`Program::records`).
@@ -63,6 +65,7 @@ pub enum Operand {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Char(char),
     /// A string literal of the program (`Program::strings`).
     Str(StrId),
 }
@@ -122,6 +125,11 @@ pub enum UnaryOp {
     BoolToStr,
     /// A list as written in code (`[1, 2]`).
     ListToStr,
+    CharToStr,
+    /// A char as written in code (`'a'`).
+    CharRepr,
+    /// The code of a char, as an `int`.
+    CharCode,
     /// The text `print` shows for a record: a readable message for an error of the standard
     /// library, otherwise the record as written in code.
     RecordToStr,
@@ -174,6 +182,9 @@ pub enum BinaryOp {
     StrRepeat,
     /// `needle in haystack`, with two strings.
     StrContains,
+    /// `c in text`: the left operand is the char.
+    StrContainsChar,
+    CharCompare(Comparison),
     ListConcat,
     /// `==` and `!=` on lists.
     ListCompare(Comparison),

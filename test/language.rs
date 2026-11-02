@@ -2736,3 +2736,8 @@ fn object_fields_follow_the_declaration() {
         "{ x: 2.0, y: 1 } 0.5\n"
     );
 }
+
+#[test]
+fn a_char_in_a_string() {
+    assert_eq!(run("immut c: char = 'a'\nprint(c in 'banana', c in 'xyz', 'an' in 'banana')"), "true false true\n");
+}

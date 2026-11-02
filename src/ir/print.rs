@@ -55,6 +55,7 @@ impl fmt::Display for Operand {
             Operand::Int(n) => write!(f, "{}", n),
             Operand::Float(x) => write!(f, "{:?}", x),
             Operand::Bool(b) => write!(f, "{}", b),
+            Operand::Char(c) => write!(f, "{:?}", c),
             Operand::Str(id) => write!(f, "s{}", id),
         }
     }
