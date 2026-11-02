@@ -203,7 +203,7 @@ Consequences:
 
 -   **`is` only tests variants** (`result is Some`). There is no reference identity; `==` compares values.
 -   **Two mutability levels**, as in Swift: `mut` (everything can change) and `immut` (neither the variable nor its contents can change). With value semantics, a third level that forbids replacing the value but allows changing its contents (the `const` of TypeScript) would mean little: both are ways of changing the variable's value. Every declaration has its keyword, and `x = 1` only changes an existing `mut` variable, so a typo is an error instead of a new variable (see [Variable Types](variable-types.md)). A separate keyword for compile-time constants is not needed: the compiler can recognize an `immut` with a literal value by itself.
--   **`defer` is not needed**: dropping releases resources. It may come back later as an optional feature, for cleanup that does not belong to any value.
+-   **No `defer`** (decided): dropping releases resources. It is not planned; it would only be reconsidered if a real need appears, for cleanup that does not belong to any value.
 -   **Resource types are move-only.** A `File` cannot be copied (two copies would close the same file): `g = f` moves it, and using `f` afterwards is a compile error. `f.close()` consumes `f`, so using a closed file is a compile error instead of a panic.
 
 Implemented in the interpreter: assignments and `mut` write-backs go through a place (a variable with fields and indices) that copies every shared level before changing it. See [Values and Memory](memory.md).
