@@ -120,6 +120,8 @@ pub enum UnaryOp {
     /// The tag (variant) of a record, as an `int`.
     RecordTag,
     StrLength,
+    /// A string as written in code, in quotes (`'it\\'s'`).
+    StrRepr,
     ListLength,
 }
 
@@ -182,7 +184,15 @@ pub enum Instruction {
     Copy { dest: Place, value: Operand },
     Unary { dest: LocalId, op: UnaryOp, value: Operand, line: usize },
     Binary { dest: LocalId, op: BinaryOp, left: Operand, right: Operand, line: usize },
-    Call { dest: Option<LocalId>, function: FuncId, args: Vec<Operand>, line: usize },
+    /// A call. Each `(parameter, target)` of `writebacks` is a `mut` parameter (or `mut self`):
+    /// when the function returns, the target gets the parameter's final value.
+    Call {
+        dest: Option<LocalId>,
+        function: FuncId,
+        args: Vec<Operand>,
+        writebacks: Vec<(usize, Target)>,
+        line: usize,
+    },
     /// A new list with `items` (the type of `dest` gives the type of the items).
     ListNew { dest: LocalId, items: Vec<Operand> },
     /// `dest = list[index]` (panics when out of range).
@@ -256,6 +266,8 @@ pub struct Function {
     pub name: String,
     /// The first locals are the parameters, in order.
     pub params: usize,
+    /// For each parameter, whether it is `mut`: its final value is given back to the caller.
+    pub writeback: Vec<bool>,
     pub ret: Ty,
     pub locals: Vec<Local>,
     /// The first block is the entry.

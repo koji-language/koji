@@ -191,9 +191,15 @@ impl Generator<'_> {
     }
 
     fn signature(&self, id: FuncId, function: &Function) -> String {
-        let params: Vec<String> = (0..function.params)
+        let mut params: Vec<String> = (0..function.params)
             .map(|param| format!("{} l{}", c_type(&function.locals[param].ty), param))
             .collect();
+        // A `mut` parameter gives its final value back through `out<n>`.
+        for (param, writeback) in function.writeback.iter().enumerate() {
+            if *writeback {
+                params.push(format!("{} *out{}", c_type(&function.locals[param].ty), param));
+            }
+        }
         let params = if params.is_empty() {
             "void".to_string()
         } else {
@@ -311,6 +317,38 @@ impl Generator<'_> {
         variable
     }
 
+    /// Writes `value` (a C variable that owns its value) to `target`, giving up its reference.
+    fn store(&mut self, target: &Target, ty: &Ty, value: &str, line: usize) {
+        let Some((last, steps)) = target.path.split_last() else {
+            let root = self.place(&target.root);
+            self.set(&root, ty, value);
+            return;
+        };
+        let container = Target {
+            root: target.root,
+            path: steps.to_vec(),
+        };
+        let call = match last {
+            Step::Index(index) => format!(
+                "koji_list_set((KojiList **){}, {}, &{}, {})",
+                self.path(&container, line),
+                self.operand(index),
+                value,
+                self.location(line)
+            ),
+            Step::Field(field) => format!(
+                "koji_record_set((KojiRecord **){}, {}, &{})",
+                self.path(&container, line),
+                field,
+                value
+            ),
+        };
+        let _ = writeln!(self.out, "    {};", call);
+        if let Some(release) = release(ty) {
+            let _ = writeln!(self.out, "    {}({});", release, value);
+        }
+    }
+
     /// The variable that holds the list of `target`, as a `KojiList **`.
     fn target(&self, target: &Target, line: usize) -> String {
         format!("(KojiList **){}", self.path(target, line))
@@ -349,6 +387,7 @@ impl Generator<'_> {
                     UnaryOp::BoolToStr => format!("koji_string_from_bool({})", value),
                     UnaryOp::ListToStr => format!("koji_list_repr({})", value),
                     UnaryOp::StrLength => format!("koji_string_length({})", value),
+                    UnaryOp::StrRepr => format!("koji_string_repr({})", value),
                     UnaryOp::ListLength => format!("koji_list_length({})", value),
                     UnaryOp::RecordToStr => format!("koji_record_repr({})", value),
                     UnaryOp::RecordTag => format!("koji_record_tag({})", value),
@@ -380,14 +419,34 @@ impl Generator<'_> {
                 };
                 self.set(&format!("l{}", dest), &function.locals[*dest].ty, &expression);
             }
-            Instruction::Call { dest, function: callee, args, .. } => {
-                let args: Vec<String> = args.iter().map(|arg| self.operand(arg)).collect();
-                let call = format!("{}({})", function_name(*callee), args.join(", "));
+            Instruction::Call { dest, function: callee, args, writebacks, line } => {
+                let mut values: Vec<String> = args.iter().map(|arg| self.operand(arg)).collect();
+                // The final values of the `mut` parameters, owned by the caller after the call
+                // (in a C block: the names are reused by the next call).
+                let mut given_back = Vec::new();
+                if !writebacks.is_empty() {
+                    self.out.push_str("    {\n");
+                }
+                for (param, target) in writebacks {
+                    let ty = self.operand_type(function, &args[*param]);
+                    let name = format!("back{}", param);
+                    let initial = if ty.is_managed() { "NULL" } else { "0" };
+                    let _ = writeln!(self.out, "    {} {} = {};", c_type(&ty), name, initial);
+                    values.push(format!("&{}", name));
+                    given_back.push((name, ty, target));
+                }
+                let call = format!("{}({})", function_name(*callee), values.join(", "));
                 match dest {
                     Some(dest) => self.set(&format!("l{}", dest), &function.locals[*dest].ty, &call),
                     None => {
                         let _ = writeln!(self.out, "    {};", call);
                     }
+                }
+                for (name, ty, target) in &given_back {
+                    self.store(target, ty, name, *line);
+                }
+                if !given_back.is_empty() {
+                    self.out.push_str("    }\n");
                 }
             }
             Instruction::ListNew { dest, items } => {
@@ -634,6 +693,13 @@ impl Generator<'_> {
                 );
             }
             Terminator::Return(value) => {
+                // The `mut` parameters give their final values back.
+                for (param, writeback) in function.writeback.iter().enumerate() {
+                    if *writeback {
+                        let ty = &function.locals[param].ty;
+                        let _ = writeln!(self.out, "    *out{} = {};", param, share(ty, format!("l{}", param)));
+                    }
+                }
                 let value = value.as_ref().map(|value| self.operand(value));
                 match value {
                     // The result is computed before the locals are released: it may be one of them.

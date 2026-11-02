@@ -100,6 +100,12 @@ impl fmt::Display for Instruction {
             Instruction::Binary { dest, op, left, right, .. } => {
                 write!(f, "l{} = {:?} {}, {}", dest, op, left, right)
             }
+            Instruction::Call { writebacks, .. } if !writebacks.is_empty() => {
+                let Instruction::Call { dest, function, args, .. } = self else { unreachable!() };
+                let dest = dest.map(|dest| format!("l{} = ", dest)).unwrap_or_default();
+                let targets: Vec<String> = writebacks.iter().map(|(param, target)| format!("{} -> {}", param, target)).collect();
+                write!(f, "{}call f{}({}) writeback {}", dest, function, list(args), targets.join(", "))
+            }
             Instruction::Call { dest: Some(dest), function, args, .. } => {
                 write!(f, "l{} = call f{}({})", dest, function, list(args))
             }

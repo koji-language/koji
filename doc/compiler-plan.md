@@ -404,14 +404,17 @@ It compiles a first subset of the language:
 -   lists of all those values: literals, indexing and assigning items (also `grid[0][1] = 5`), slices, `+`, `==`, `in`, `for` over a list, `length`, `push`, `insert`, `sort` and `join`;
 -   every operator on those types, with the same panics as the interpreter (overflow, division by zero, `float` overflow, invalid shifts and powers);
 -   string interpolation, `print`, `string(x)`, `float(n)`, `text.length()` and `in` on strings;
--   functions with parameters and a return value, recursion;
+-   functions with parameters and a return value, recursion, `mut` parameters (`reset(mut count)`) and `take` parameters (without `drop`);
+-   methods, `mut self` and associated functions (`Point.origin()`), of types that are not generic; a type's `display` method in `print`, interpolation and `string(x)`, and the built-in `display()` and `debug()`;
 -   `if` (also as an expression), `while`, `for` over `range`, `break`, `continue` and `return`.
 
-Anything else (`char`, `Map` and `Set`, methods and `display`, closures and functions as values, generic functions, imports, `mut` and `take` parameters, move-only values, the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
+Anything else (`char`, `Map` and `Set`, closures and functions as values, generic functions and methods of generic types, imports, types with `drop`, `input` and the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
 
 **Memory**: strings, lists and records (the values of declared types) are reference-counted. A variable owns one reference, and copying a value only adds a reference (value semantics with copy-on-write); changing a list that is shared copies it first, so the other variables never see the change. Assigning a variable releases its old value, and a function releases its values when it returns. Each item of a list and each field of a record takes an 8-byte slot, and the generated code describes their types to the runtime (how to retain, release, show, compare and order them). A generic type gets one description for each set of type arguments (`Option[int]`, `Option[string]`).
 
-**Next steps**, in order: methods and `display`; `Map` and `Set`; closures; generics (monomorphization); imports; move-only values and `drop`; then the standard library modules, calling the Rust implementations.
+A `mut` parameter is passed by value and its final value is written back to the caller's variable when the function returns, as in the interpreter: the C function gets a pointer for it (`out<n>`).
+
+**Next steps**, in order: `Map` and `Set`; closures; generics (monomorphization); imports; move-only values and `drop`; then the standard library modules, calling the Rust implementations.
 
 ---
 

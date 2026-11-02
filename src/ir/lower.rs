@@ -68,7 +68,18 @@ fn display_path(path: &Path) -> String {
 struct Signature {
     id: FuncId,
     params: Vec<Ty>,
+    /// Whether each parameter is `mut` (its value is given back to the caller).
+    writeback: Vec<bool>,
     ret: Ty,
+}
+
+/// The name of a function in `Lowerer::signatures`: `greet`, or `Person.greet` for a method
+/// (the key of the checker's `MethodRef`).
+fn function_key(owner: &Option<String>, name: &str) -> String {
+    match owner {
+        Some(owner) => format!("{}.{}", owner, name),
+        None => name.to_string(),
+    }
 }
 
 struct Lowerer<'a> {
@@ -173,10 +184,11 @@ impl Builder {
             .insert(name.to_string(), variable);
     }
 
-    fn finish(self, name: String, params: usize) -> Function {
+    fn finish(self, name: String, params: usize, writeback: Vec<bool>) -> Function {
         Function {
             name,
             params,
+            writeback,
             ret: self.ret,
             locals: self.locals,
             blocks: self.blocks,
@@ -379,20 +391,29 @@ impl Lowerer<'_> {
                 ..
             } = statement.unlocated()
             {
-                if owner.is_some() {
-                    return self.unsupported("a method");
-                }
                 if !type_params.is_empty() {
                     return self.unsupported("a generic function");
                 }
+                if owner.is_some() && name == "drop" {
+                    return self.unsupported("a type with 'drop'");
+                }
+                // The type of `self`.
+                let owner_type = match owner {
+                    Some(owner) => match self.table.types.iter().find(|info| info.name == *owner) {
+                        Some(info) if info.params > 0 => return self.unsupported("a method of a generic type"),
+                        _ => Some(self.named_type(owner, &[])?),
+                    },
+                    None => None,
+                };
                 let mut param_types = Vec::new();
+                let mut writeback = Vec::new();
                 for param in params {
-                    if param.is_mut || param.is_take {
-                        return self.unsupported("a 'mut' or 'take' parameter");
-                    }
-                    match &param.ty {
-                        Some(ty) => param_types.push(self.type_expr(ty)?),
-                        None => return self.unsupported("a parameter without a type"),
+                    // A `take` parameter owns its value; without `drop`, that is the same as a copy.
+                    writeback.push(param.is_mut);
+                    match (&param.ty, &owner_type) {
+                        (Some(ty), _) => param_types.push(self.type_expr(ty)?),
+                        (None, Some(owner)) if param.name == "self" => param_types.push(owner.clone()),
+                        (None, _) => return self.unsupported("a parameter without a type"),
                     }
                 }
                 let ret = match return_type {
@@ -401,10 +422,11 @@ impl Lowerer<'_> {
                 };
                 self.functions.push(None);
                 self.signatures.insert(
-                    name.clone(),
+                    function_key(owner, name),
                     Signature {
                         id: self.functions.len() - 1,
                         params: param_types,
+                        writeback,
                         ret,
                     },
                 );
@@ -437,7 +459,7 @@ impl Lowerer<'_> {
         self.line = 0;
         self.statements(&mut builder, statements)?;
         builder.terminate(Terminator::Return(None));
-        self.functions[0] = Some(builder.finish("main".to_string(), 0));
+        self.functions[0] = Some(builder.finish("main".to_string(), 0, Vec::new()));
         Ok(0)
     }
 
@@ -447,11 +469,17 @@ impl Lowerer<'_> {
                 self.line = *line;
             }
             if let AstNode::FunctionDecl {
-                name, params, body, ..
+                name,
+                owner,
+                params,
+                body,
+                ..
             } = statement.unlocated()
             {
-                let signature = &self.signatures[name];
+                let key = function_key(owner, name);
+                let signature = &self.signatures[&key];
                 let (id, param_types, ret) = (signature.id, signature.params.clone(), signature.ret.clone());
+                let writeback = signature.writeback.clone();
                 let mut builder = Builder::new(ret.clone(), false);
                 for (param, ty) in params.iter().zip(param_types) {
                     let local = builder.local(ty, Some(&param.name));
@@ -483,7 +511,7 @@ impl Lowerer<'_> {
                 if ret == Ty::Void {
                     builder.terminate(Terminator::Return(None));
                 }
-                self.functions[id] = Some(builder.finish(name.clone(), params.len()));
+                self.functions[id] = Some(builder.finish(key, params.len(), writeback));
             }
         }
         Ok(())
@@ -1114,6 +1142,14 @@ impl Lowerer<'_> {
         Ok(self.unary(builder, op, value, Ty::Str))
     }
 
+    /// The structure of a value, as written in code (`x.debug()`: strings in quotes).
+    fn debug(&mut self, builder: &mut Builder, value: Operand, ty: &Ty) -> Lower<Operand> {
+        match ty {
+            Ty::Str => Ok(self.unary(builder, UnaryOp::StrRepr, value, Ty::Str)),
+            other => self.display(builder, value, other),
+        }
+    }
+
     fn unary(&mut self, builder: &mut Builder, op: UnaryOp, value: Operand, ty: Ty) -> Operand {
         let dest = builder.local(ty, None);
         builder.emit(Instruction::Unary {
@@ -1164,12 +1200,8 @@ impl Lowerer<'_> {
                     let text = match part {
                         TemplatePart::Text(text) => self.string(text),
                         TemplatePart::Expression(expression, display) => {
-                            if display.borrow().is_some() {
-                                return self.unsupported("a 'display' method");
-                            }
-                            let ty = self.type_in(builder, expression)?;
-                            let value = self.expr(builder, expression)?.expect("a value");
-                            self.display(builder, value, &ty)?
+                            let display = display.borrow().clone();
+                            self.shown(builder, expression, display.as_ref())?
                         }
                     };
                     result = Some(match result {
@@ -1344,18 +1376,25 @@ impl Lowerer<'_> {
                 method,
                 displays,
             } => {
-                if method.borrow().is_some() {
-                    return self.unsupported("a method call");
+                // A method (`point.move(1, 2)`) or an associated function (`Point.origin()`).
+                let method = method.borrow().clone();
+                if let Some(method) = method {
+                    if !self.signatures.contains_key(&method.key) {
+                        return self.unsupported(&format!("'{}'", method.key));
+                    }
+                    let receiver = match (callee.unlocated(), method.has_self) {
+                        (AstNode::Member { object, .. }, true) => Some(&**object),
+                        _ => None,
+                    };
+                    return self.call_function(builder, &method.key, receiver, args);
                 }
-                if displays.borrow().iter().any(Option::is_some) {
-                    return self.unsupported("a 'display' method");
-                }
+                let displays = displays.borrow().clone();
                 match callee.unlocated() {
                     AstNode::Identifier(name) => {
                         if builder.lookup(name).is_some() || self.global_names.contains_key(name) {
                             return self.unsupported("calling a function stored in a variable");
                         }
-                        self.call(builder, name, args)
+                        self.call(builder, name, args, &displays)
                     }
                     AstNode::Member { object, name } => self.builtin_method(builder, node, object, name, args),
                     _ => self.unsupported("this call"),
@@ -1538,6 +1577,14 @@ impl Lowerer<'_> {
         let object_type = self.type_in(builder, object)?;
         let line = self.line;
         match (&object_type, name) {
+            (_, "display") => {
+                let value = self.expr(builder, object)?.expect("a value");
+                self.display(builder, value, &object_type).map(Some)
+            }
+            (_, "debug") => {
+                let value = self.expr(builder, object)?.expect("a value");
+                self.debug(builder, value, &object_type).map(Some)
+            }
             (Ty::Str, "length") => {
                 let text = self.expr(builder, object)?.expect("a string");
                 Ok(Some(self.unary(builder, UnaryOp::StrLength, text, Ty::Int)))
@@ -1874,29 +1921,78 @@ impl Lowerer<'_> {
         Ok(Some(Operand::Local(dest)))
     }
 
-    fn call(&mut self, builder: &mut Builder, name: &str, args: &[AstNode]) -> Lower<Option<Operand>> {
-        if let Some(signature) = self.signatures.get(name) {
-            let (id, params, ret) = (signature.id, signature.params.clone(), signature.ret.clone());
-            let mut values = Vec::new();
-            for (arg, param) in args.iter().zip(&params) {
+    /// Calls the function `key` (`greet`, `Person.greet`), with `receiver` as `self` for a
+    /// method. A `mut` parameter (or `mut self`) gives its final value back to the variable
+    /// that was passed.
+    fn call_function(
+        &mut self,
+        builder: &mut Builder,
+        key: &str,
+        receiver: Option<&AstNode>,
+        args: &[AstNode],
+    ) -> Lower<Option<Operand>> {
+        let signature = &self.signatures[key];
+        let (id, params, ret) = (signature.id, signature.params.clone(), signature.ret.clone());
+        let writeback = signature.writeback.clone();
+        let mut values = Vec::new();
+        let mut writebacks = Vec::new();
+        for (index, (arg, param)) in receiver.into_iter().chain(args).zip(&params).enumerate() {
+            let arg = match arg.unlocated() {
+                AstNode::MutArg(place) => place,
+                _ => arg,
+            };
+            if writeback[index] {
+                writebacks.push((index, self.target(builder, arg)?));
+                values.push(self.expr(builder, arg)?.expect("an argument"));
+            } else {
                 values.push(self.value_as(builder, arg, param)?.expect("an argument"));
             }
-            let dest = (ret != Ty::Void).then(|| builder.local(ret, None));
-            builder.emit(Instruction::Call {
-                dest,
-                function: id,
-                args: values,
-                line: self.line,
-            });
-            return Ok(dest.map(Operand::Local));
+        }
+        let dest = (ret != Ty::Void).then(|| builder.local(ret, None));
+        builder.emit(Instruction::Call {
+            dest,
+            function: id,
+            args: values,
+            writebacks,
+            line: self.line,
+        });
+        Ok(dest.map(Operand::Local))
+    }
+
+    /// The text of `value` for `print` and interpolation: its type's `display` method, when
+    /// the checker found one, or the built-in display.
+    fn shown(
+        &mut self,
+        builder: &mut Builder,
+        node: &AstNode,
+        display: Option<&crate::parser::ast::MethodRef>,
+    ) -> Lower<Operand> {
+        if let Some(display) = display {
+            if !self.signatures.contains_key(&display.key) {
+                return self.unsupported(&format!("'{}'", display.key));
+            }
+            return Ok(self.call_function(builder, &display.key, Some(node), &[])?.expect("a string"));
+        }
+        let ty = self.type_in(builder, node)?;
+        let value = self.expr(builder, node)?.expect("a value");
+        self.display(builder, value, &ty)
+    }
+
+    fn call(
+        &mut self,
+        builder: &mut Builder,
+        name: &str,
+        args: &[AstNode],
+        displays: &[Option<crate::parser::ast::MethodRef>],
+    ) -> Lower<Option<Operand>> {
+        if self.signatures.contains_key(name) {
+            return self.call_function(builder, name, None, args);
         }
         match name {
             "print" => {
                 let mut line: Option<Operand> = None;
-                for arg in args {
-                    let ty = self.type_in(builder, arg)?;
-                    let value = self.expr(builder, arg)?.expect("a value");
-                    let text = self.display(builder, value, &ty)?;
+                for (index, arg) in args.iter().enumerate() {
+                    let text = self.shown(builder, arg, displays.get(index).and_then(Option::as_ref))?;
                     line = Some(match line {
                         Some(left) => {
                             let space = self.string(" ");
@@ -1913,11 +2009,7 @@ impl Lowerer<'_> {
                 });
                 Ok(None)
             }
-            "string" if args.len() == 1 => {
-                let ty = self.type_in(builder, &args[0])?;
-                let value = self.expr(builder, &args[0])?.expect("a value");
-                self.display(builder, value, &ty).map(Some)
-            }
+            "string" if args.len() == 1 => self.shown(builder, &args[0], displays.first().and_then(Option::as_ref)).map(Some),
             "float" if args.len() == 1 && matches!(self.type_in(builder, &args[0])?, Ty::Int | Ty::Float) => {
                 self.value_as(builder, &args[0], &Ty::Float)
             }

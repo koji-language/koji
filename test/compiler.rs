@@ -417,6 +417,74 @@ Range(3) true Ok(4) Err(Parse('negative')) Ok(6) Err(Parse('negative'))\n\
 }
 
 #[test]
+fn methods_and_display() {
+    assert_same(
+        "methods",
+        "type Point = {\n\
+    x: float\n\
+    y: float\n\
+}\n\
+\n\
+type Account = {\n\
+    owner: string\n\
+    history: int[]\n\
+}\n\
+\n\
+function Point.origin(): Point {\n\
+    return { x: 0, y: 0 }\n\
+}\n\
+\n\
+function Point.move(mut self, dx: float, dy: float) {\n\
+    self.x += dx\n\
+    self.y += dy\n\
+}\n\
+\n\
+function Point.length(self): float {\n\
+    return (self.x ** 2 + self.y ** 2) ** 0.5\n\
+}\n\
+\n\
+function Point.display(self): string {\n\
+    return `(${self.x}, ${self.y})`\n\
+}\n\
+\n\
+function Account.deposit(mut self, amount: int): int {\n\
+    self.history.push(amount)\n\
+    return self.history.length()\n\
+}\n\
+\n\
+function reset(mut counter: int, mut names: string[]) {\n\
+    counter = 0\n\
+    names.push('reset')\n\
+}\n\
+\n\
+mut origin = Point.origin()\n\
+immut saved = origin\n\
+origin.move(3, 4)\n\
+print(origin, saved, origin.length(), origin.debug(), 'it\\'s'.debug(), [origin])\n\
+print(`at ${origin}`, string(origin), origin.display())\n\
+\n\
+mut points = [Point.origin(), Point.origin()]\n\
+points[1].move(1, 1)\n\
+print(points[1], points[0])\n\
+\n\
+mut account: Account = { owner: 'Ana', history: [] }\n\
+print(account.deposit(10), account.deposit(5), account)\n\
+\n\
+mut count = 7\n\
+mut log = ['start']\n\
+reset(mut count, mut log)\n\
+print(count, log)\n\
+",
+        "(3.0, 4.0) (0.0, 0.0) 5.0 { x: 3.0, y: 4.0 } 'it\\'s' [{ x: 3.0, y: 4.0 }]\n\
+at (3.0, 4.0) (3.0, 4.0) (3.0, 4.0)\n\
+(1.0, 1.0) (0.0, 0.0)\n\
+1 2 { owner: 'Ana', history: [10, 5] }\n\
+0 ['start', 'reset']\n\
+",
+    );
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));
