@@ -94,6 +94,8 @@ impl Checker {
                     // `Option[File]` is fine; a user generic type cannot hold a move-only value yet.
                     if id != self.builtins.option && id != self.builtins.result {
                         self.ensure_copyable_args(&args)?;
+                        let info = self.table.get(id);
+                        self.ensure_constraints(&args, &info.constraints, &info.name)?;
                     }
                     Ok(Type::Named { id, args })
                 }

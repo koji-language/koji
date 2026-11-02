@@ -116,9 +116,9 @@ impl Checker {
                     None => return self.err(format!("unknown method '{}'", full)),
                 };
                 // Inside the body, the type parameters are opaque types.
-                let opaque = self.opaque_params(&info.type_param_names);
+                let opaque = self.opaque_params(&info.type_params)?;
                 let signature = info.ty.substitute(&opaque);
-                self.with_type_params(&info.type_param_names, &opaque, |c| {
+                self.with_type_params(&info.type_params, &opaque, |c| {
                     c.check_function(&full, params, signature, body)
                 })?;
                 Ok(Type::Void)
@@ -137,7 +137,7 @@ impl Checker {
                         c.function_signature(name, params, return_type.as_ref(), true)
                     })?,
                 };
-                let opaque = self.opaque_params(type_params);
+                let opaque = self.opaque_params(type_params)?;
                 let signature = signature.substitute(&opaque);
                 self.with_type_params(type_params, &opaque, |c| c.check_function(name, params, signature, body))?;
                 Ok(Type::Void)

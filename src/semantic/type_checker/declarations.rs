@@ -69,6 +69,7 @@ impl Checker {
                     },
                     Some(id),
                 ) => {
+                    self.table.types[id].constraints = self.constraints(params)?;
                     let kind = self.with_type_params(params, &Self::signature_params(params.len()), |c| {
                         c.resolve_type_def(name, definition)
                     })?;
@@ -103,6 +104,7 @@ impl Checker {
                 })?;
                 let mut symbol = Symbol::value(ty, true);
                 symbol.generics = type_params.len();
+                symbol.constraints = self.constraints(type_params)?;
                 if params.iter().any(|p| p.mode() != ParamMode::Borrow) {
                     symbol.modes = params.iter().map(Param::mode).collect();
                 }
@@ -212,13 +214,14 @@ impl Checker {
                 ));
             }
         }
-        if let Some(clash) = type_params.iter().find(|p| owner_params.contains(p)) {
+        if let Some(clash) = type_params.iter().find(|p| owner_params.iter().any(|o| o.name == p.name)) {
             return self.err(format!(
                 "in '{}', the type parameter '{}' is already a type parameter of '{}'",
-                full, clash, owner
+                full, clash.name, owner
             ));
         }
-        let names: Vec<String> = owner_params.iter().chain(type_params).cloned().collect();
+        let names: Vec<TypeParam> = owner_params.iter().chain(type_params).cloned().collect();
+        let constraints = self.constraints(&names)?;
         let generic = Self::signature_params(names.len());
         let self_type = Type::Named {
             id,
@@ -241,7 +244,8 @@ impl Checker {
             modes: params.iter().map(Param::mode).collect(),
             module: self.state.path.clone(),
             generics: names.len(),
-            type_param_names: names,
+            type_params: names,
+            constraints,
         };
         self.methods.insert((id, name.to_string()), info);
         Ok(())

@@ -14,27 +14,45 @@ impl Checker {
         (0..count).map(Type::Param).collect()
     }
 
-    /// New opaque types named after `names`, for a body.
-    pub(super) fn opaque_params(&mut self, names: &[String]) -> Vec<Type> {
-        names
+    /// The constraint of each type parameter.
+    pub(super) fn constraints(&self, params: &[TypeParam]) -> CheckResult<Vec<Constraint>> {
+        params
             .iter()
-            .map(|name| Self::named(self.table.add(name, 0, TypeKind::Param)))
+            .map(|param| match param.constraint.as_deref() {
+                None => Ok(Constraint::None),
+                Some("equatable") => Ok(Constraint::Equatable),
+                Some("orderable") => Ok(Constraint::Orderable),
+                Some(other) => self.err(format!(
+                    "unknown constraint '{}' for '{}': the constraints are 'equatable' and 'orderable'",
+                    other, param.name
+                )),
+            })
             .collect()
     }
 
-    /// Runs `f` with the type names `names` meaning `types`.
+    /// New opaque types for `params`, for a body.
+    pub(super) fn opaque_params(&mut self, params: &[TypeParam]) -> CheckResult<Vec<Type>> {
+        let constraints = self.constraints(params)?;
+        Ok(params
+            .iter()
+            .zip(constraints)
+            .map(|(param, constraint)| Self::named(self.table.add(&param.name, 0, TypeKind::Param(constraint))))
+            .collect())
+    }
+
+    /// Runs `f` with the names of `params` meaning `types`.
     pub(super) fn with_type_params<R>(
         &mut self,
-        names: &[String],
+        params: &[TypeParam],
         types: &[Type],
         f: impl FnOnce(&mut Self) -> CheckResult<R>,
     ) -> CheckResult<R> {
-        if names.is_empty() {
+        if params.is_empty() {
             return f(self);
         }
         self.push_scope();
-        for (name, ty) in names.iter().zip(types) {
-            self.current_scope().types.insert(name.clone(), TypeRef::Type(ty.clone()));
+        for (param, ty) in params.iter().zip(types) {
+            self.current_scope().types.insert(param.name.clone(), TypeRef::Type(ty.clone()));
         }
         let result = f(self);
         self.pop_scope();
@@ -42,7 +60,7 @@ impl Checker {
     }
 
     pub(super) fn is_type_param(&self, ty: &Type) -> bool {
-        matches!(ty, Type::Named { id, .. } if matches!(self.table.get(*id).kind, TypeKind::Param))
+        matches!(ty, Type::Named { id, .. } if matches!(self.table.get(*id).kind, TypeKind::Param(_)))
     }
 
     /// Learns the type parameters of `pattern` (a signature type) from `actual`.
@@ -80,6 +98,69 @@ impl Checker {
         }
     }
 
+    /// Whether `ty` meets `constraint`. The compiler decides from the structure of the type: a
+    /// type is equatable when everything it holds is (no functions, no move-only values), and
+    /// orderable when it is a number or a string.
+    pub(super) fn satisfies(&self, ty: &Type, constraint: Constraint) -> bool {
+        match constraint {
+            Constraint::None => true,
+            Constraint::Equatable => self.equatable(ty, &mut HashSet::new()),
+            Constraint::Orderable => match ty {
+                Type::Int | Type::Float | Type::String | Type::Unknown | Type::Never => true,
+                Type::Named { id, .. } => {
+                    matches!(self.table.get(*id).kind, TypeKind::Param(Constraint::Orderable))
+                }
+                _ => false,
+            },
+        }
+    }
+
+    fn equatable(&self, ty: &Type, visited: &mut HashSet<TypeId>) -> bool {
+        if self.is_move_only(ty) {
+            return false;
+        }
+        match ty {
+            Type::List(inner) => self.equatable(inner, visited),
+            Type::Function { .. } | Type::Module(_) => false,
+            Type::Named { id, args } | Type::Variant { id, args, .. } => {
+                let b = self.builtins;
+                match &self.table.get(*id).kind {
+                    TypeKind::Param(constraint) => *constraint >= Constraint::Equatable,
+                    TypeKind::Builtin { .. } => [b.datetime, b.response, b.regex_match].contains(id),
+                    _ if !visited.insert(*id) => true,
+                    TypeKind::Shape(fields) => fields
+                        .iter()
+                        .all(|(_, field)| self.equatable(&field.substitute(args), visited)),
+                    TypeKind::Sum(variants) => variants.iter().all(|variant| {
+                        variant
+                            .fields
+                            .iter()
+                            .all(|(_, field)| self.equatable(&field.substitute(args), visited))
+                    }),
+                    TypeKind::Dict { value, .. } => self.equatable(&value.substitute(args), visited),
+                    TypeKind::Pending => true,
+                }
+            }
+            _ => true,
+        }
+    }
+
+    /// The type arguments `args` must meet the `constraints` of their parameters (`what` names
+    /// the generic function or type, for the message).
+    pub(super) fn ensure_constraints(&self, args: &[Type], constraints: &[Constraint], what: &str) -> CheckResult<()> {
+        for (arg, constraint) in args.iter().zip(constraints) {
+            if !self.satisfies(arg, *constraint) {
+                return self.err(format!(
+                    "{} is not {}, as '{}' requires",
+                    self.show(arg),
+                    constraint.name(),
+                    what
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Type parameters cannot stand for move-only values yet: a generic function could copy
     /// them.
     pub(super) fn ensure_copyable_args(&self, args: &[Type]) -> CheckResult<()> {
@@ -100,9 +181,11 @@ impl Checker {
         &mut self,
         signature: &Type,
         mut generic: Vec<Type>,
+        constraints: &[Constraint],
         modes: &[ParamMode],
         args: &[AstNode],
         expected: Option<&Type>,
+        what: &str,
     ) -> CheckResult<Type> {
         let (params, ret) = match signature {
             Type::Function { params, ret } => (params, ret),
@@ -152,6 +235,7 @@ impl Checker {
             }
         }
         self.ensure_copyable_args(&generic)?;
+        self.ensure_constraints(&generic, constraints, what)?;
         Ok(ret.substitute(&generic))
     }
 }

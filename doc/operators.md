@@ -46,7 +46,7 @@ To handle the `**` cases instead of panicking, use `math.pow`, which returns a `
 | `is`     | Variant check (whether a value is a given variant)         |
 | `in`     | Membership check (whether an element is in a collection)   |
 
-`==` compares values: two lists or objects are equal when their contents are equal.
+`==` compares values: two lists or objects are equal when their contents are equal. Values that hold functions or move-only values (such as files) cannot be compared (see [Constraints](generics.md#constraints)).
 
 ```koji
 type Person = {

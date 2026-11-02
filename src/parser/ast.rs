@@ -140,6 +140,13 @@ pub struct Param {
     pub is_take: bool,
 }
 
+/// A type parameter: `T`, or `T: orderable` with a constraint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    pub constraint: Option<String>,
+}
+
 /// How a function receives an argument.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ParamMode {
@@ -315,16 +322,16 @@ pub enum AstNode {
     FunctionDecl {
         name: String,
         owner: Option<String>,
-        /// `function first[T](...)`: the names of its type parameters.
-        type_params: Vec<String>,
+        /// `function first[T](...)`: its type parameters.
+        type_params: Vec<TypeParam>,
         params: Vec<Param>,
         return_type: Option<TypeExpr>,
         body: Rc<AstNode>,
     },
     TypeDecl {
         name: String,
-        /// `type Pair[A, B] = ...`: the names of its type parameters.
-        params: Vec<String>,
+        /// `type Pair[A, B] = ...`: its type parameters.
+        params: Vec<TypeParam>,
         definition: TypeDef,
     },
     Import {

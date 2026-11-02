@@ -243,6 +243,7 @@ impl Checker {
                         borrowed: None,
                         narrowed: false,
                         generics: 0,
+                        constraints: Vec::new(),
                     },
                 );
             }
@@ -515,7 +516,7 @@ impl Checker {
                 }
                 SymbolKind::Value if symbol.generics > 0 => {
                     let generic = vec![Type::Unknown; symbol.generics];
-                    self.check_generic_call(&symbol.ty, generic, &symbol.modes, args, expected)
+                    self.check_generic_call(&symbol.ty, generic, &symbol.constraints, &symbol.modes, args, expected, name)
                 }
                 SymbolKind::Value => self.check_function_call_mut(&symbol.ty, &symbol.modes, args),
             };

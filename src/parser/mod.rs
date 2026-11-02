@@ -8,7 +8,7 @@ use crate::lexer::token::{SpannedToken, Token};
 use crate::lexer::Lexer;
 use ast::{
     AssignOperator, AstNode, BinaryOperator, Field, ImportKind, MatchArm, ObjectEntry, Param,
-    Pattern, TemplatePart, TypeDef, TypeExpr, UnaryOperator, Variant,
+    Pattern, TemplatePart, TypeDef, TypeExpr, TypeParam, UnaryOperator, Variant,
 };
 
 static EOF_TOKEN: Token = Token::EOF;
@@ -668,20 +668,29 @@ impl Parser {
         })
     }
 
-    /// `[A, B]` after the name of a generic type or function (none: empty).
-    fn parse_type_params(&mut self) -> Result<Vec<String>, EzError> {
+    /// `[A, B: orderable]` after the name of a generic type or function (none: empty).
+    fn parse_type_params(&mut self) -> Result<Vec<TypeParam>, EzError> {
         if *self.current() != Token::LBracket {
             return Ok(Vec::new());
         }
         self.advance(); // [
-        let params = self.parse_comma_separated(&Token::RBracket, |p| p.expect_identifier("type parameter name"))?;
+        let params = self.parse_comma_separated(&Token::RBracket, |p| {
+            let name = p.expect_identifier("type parameter name")?;
+            let constraint = if *p.current() == Token::Colon {
+                p.advance();
+                Some(p.expect_identifier("constraint (equatable or orderable)")?)
+            } else {
+                None
+            };
+            Ok(TypeParam { name, constraint })
+        })?;
         self.expect(Token::RBracket, "']' after the type parameters")?;
         if params.is_empty() {
             return self.error_here("expected at least one type parameter between '[' and ']'".to_string());
         }
-        for (i, name) in params.iter().enumerate() {
-            if params[..i].contains(name) {
-                return self.error_here(format!("type parameter '{}' is declared twice", name));
+        for (i, param) in params.iter().enumerate() {
+            if params[..i].iter().any(|p| p.name == param.name) {
+                return self.error_here(format!("type parameter '{}' is declared twice", param.name));
             }
         }
         Ok(params)

@@ -92,6 +92,27 @@ pub struct VariantDef {
     pub fields: Vec<(String, Type)>,
 }
 
+/// What a type parameter requires of its type argument. Each level includes the previous one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Constraint {
+    #[default]
+    None,
+    /// `T: equatable`: values can be compared with `==` and `!=`.
+    Equatable,
+    /// `T: orderable`: also `<`, `<=`, `>` and `>=`.
+    Orderable,
+}
+
+impl Constraint {
+    pub fn name(self) -> &'static str {
+        match self {
+            Constraint::None => "unconstrained",
+            Constraint::Equatable => "equatable",
+            Constraint::Orderable => "orderable",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeKind {
     /// Declared but not resolved yet (between hoisting and resolution).
@@ -102,8 +123,9 @@ pub enum TypeKind {
     /// Index signature: `{ [key: string]: T }`.
     Dict { key: Type, value: Type },
     /// A type parameter seen from inside the generic function or type that declares it (`T`
-    /// in the body of `first[T]`): an opaque type, with no fields and no operators.
-    Param,
+    /// in the body of `first[T]`): an opaque type, with no fields, and only the operators its
+    /// constraint allows.
+    Param(Constraint),
     /// Built-in object (`File`, `DateTime`...): read-only fields and methods.
     Builtin {
         fields: Vec<(String, Type)>,
@@ -114,8 +136,10 @@ pub enum TypeKind {
 #[derive(Debug, Clone)]
 pub struct TypeInfo {
     pub name: String,
-    /// Number of generic parameters (only built-in types are generic).
+    /// Number of generic parameters.
     pub params: usize,
+    /// Their constraints (empty: none).
+    pub constraints: Vec<Constraint>,
     pub kind: TypeKind,
 }
 
@@ -130,6 +154,7 @@ impl TypeTable {
         self.types.push(TypeInfo {
             name: name.to_string(),
             params,
+            constraints: Vec::new(),
             kind,
         });
         self.types.len() - 1
@@ -193,6 +218,8 @@ impl fmt::Display for TypeDisplay<'_> {
             Type::Void => write!(f, "void"),
             Type::Unknown => write!(f, "?"),
             Type::Never => write!(f, "never"),
+            // `((int) => int)[]`: a list of functions needs parentheses.
+            Type::List(inner) if matches!(**inner, Type::Function { .. }) => write!(f, "({})[]", show(inner)),
             Type::List(inner) => write!(f, "{}[]", show(inner)),
             Type::Function { params, ret } => {
                 let params: Vec<String> = params.iter().map(show).collect();

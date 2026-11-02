@@ -254,7 +254,7 @@ It is kept for future functions, even though no current function returns it (`0 
 
 `type` covers what interfaces did: shape types describe the fields of a value. Shape types are **nominal**: two types with the same fields are different types (`Celsius` and `Fahrenheit` do not mix). An object literal is a value of the type expected where it is written (an annotation, a parameter, a return type); without an expected type, it is a compile error, so there are no anonymous objects.
 
-`interface` stays a reserved word, as a precaution, in case behavior contracts (e.g. constraints on generic types) are ever needed. Whether generics need constraints is still an [open decision](#open-decisions); without them, behavior is passed as functions (e.g. `sort(items, (a, b) => a.age < b.age)`).
+`interface` stays a reserved word, as a precaution. Generic constraints do not need it: `equatable` and `orderable` are names the compiler knows, deduced from the structure of each type, and any other behavior is passed as a function (e.g. `sort(items, (a, b) => a.age < b.age)`).
 
 ### No `try` / `catch`
 
@@ -364,7 +364,7 @@ Like Go and Rust: `int / int` gives an `int` truncated toward zero, a division w
 
 A compiler is a large program, with many data structures and many operations that can fail. These features are needed before writing `kojic` in Koji, in order of importance:
 
-1.  **User-defined generics**: `type Map[K, V]`, `function find[T](...)`, using the same bracket syntax as `Option[T]`: implemented, without constraints (see [Generics](generics.md)).
+1.  **User-defined generics**: `type Map[K: equatable, V]`, `function find[T](...)`, using the same bracket syntax as `Option[T]`: implemented, with the `equatable` and `orderable` constraints (see [Generics](generics.md)).
 2.  **Collections**:
     -   lists with `push`, `pop`, `insert` and slicing;
     -   maps with any comparable key type (index signatures only allow `string` keys today);
@@ -414,8 +414,7 @@ Notes:
 
 ## Open decisions
 
-1.  **Constraints on type parameters**: whether a type parameter can require operations (`==`, `<`, methods), and how to write it without `interface`. Today a type parameter supports none, and cannot be a move-only value (being copyable is a constraint too).
-2.  **Phase 1 APIs**: collections (`push`, `pop`, slicing, maps with any key type, sets), text (a character type, slicing, a string builder), system (command-line arguments, exit code, environment variables, processes) and FFI (`extern function`). Their syntax needs to be decided with them.
+1.  **Phase 1 APIs**: collections (`push`, `pop`, slicing, maps with any key type, sets), text (a character type, slicing, a string builder), system (command-line arguments, exit code, environment variables, processes) and FFI (`extern function`). Their syntax needs to be decided with them.
 
 Decided:
 
@@ -428,6 +427,7 @@ Decided:
 -   **`take` parameters** take ownership of a move-only argument (like `owned` in Mojo or `sink` in Hylo); see [Values and Memory](memory.md#taking-ownership).
 -   **`RegexError`** has `InvalidPattern`, `Unsupported` and `TooLarge`.
 -   **`range` is lazy** in a `for` loop.
+-   **Constraints**: `[T: equatable]` and `[T: orderable]`, names the compiler knows; types never declare them, the compiler decides from their structure (see [Generics](generics.md#constraints)). There are no method requirements, and type parameters cannot be move-only values yet.
 -   **Generics**: brackets after the name (`function first[T]`, `type Pair[A, B]`); type arguments are never written at a call, they are inferred from the arguments and the expected type; methods of a generic type see its type parameters (`function Pair.swap(self): Pair[B, A]`) and can add their own (`function Pair.mapFirst[C](...)`). See [Generics](generics.md).
 -   **Opaque types** (a type that other modules can use but not build with a literal) are postponed until they are needed.
 -   **No anonymous objects**: an object literal needs a known type (see [No `interface`](#no-interface)). Values are built with a literal or with an associated function (`Person.create(...)`); the language has no special constructors.

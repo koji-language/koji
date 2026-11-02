@@ -57,8 +57,9 @@ impl Checker {
                         }
                     };
                 }
+                // The expected element type wins (`float` for `[1, 2]`), unless it is still unknown.
                 if let Some(expected_element) = expected_element {
-                    if self.assignable(&expected_element, &element_ty) {
+                    if !expected_element.contains_unknown() && self.assignable(&expected_element, &element_ty) {
                         element_ty = expected_element;
                     }
                 }
@@ -106,13 +107,25 @@ impl Checker {
                 }
                 let left_ty = self.check_value(left, None)?;
                 let right_ty = self.check_value(right, None)?;
-                // Type parameters have no constraints, so no operator applies to them.
-                if let Some(param) = [&left_ty, &right_ty].into_iter().find(|ty| self.is_type_param(ty)) {
-                    return self.err(format!(
-                        "operator '{}' cannot be used on '{}': type parameters have no operators",
-                        op.symbol(),
-                        self.show(param)
-                    ));
+                // A type parameter only has the comparisons its constraint allows.
+                let comparison = matches!(
+                    op,
+                    BinaryOperator::Equal
+                        | BinaryOperator::NotEqual
+                        | BinaryOperator::Less
+                        | BinaryOperator::LessEqual
+                        | BinaryOperator::Greater
+                        | BinaryOperator::GreaterEqual
+                        | BinaryOperator::In
+                );
+                if !comparison {
+                    if let Some(param) = [&left_ty, &right_ty].into_iter().find(|ty| self.is_type_param(ty)) {
+                        return self.err(format!(
+                            "operator '{}' cannot be used on '{}': a type parameter only supports the comparisons of its constraint",
+                            op.symbol(),
+                            self.show(param)
+                        ));
+                    }
                 }
                 self.binary_type(*op, &left_ty, &right_ty)
             }
@@ -422,6 +435,25 @@ impl Checker {
         }
     }
 
+    /// Why `left op ...` cannot compare: the type is not equatable.
+    fn not_equatable(&self, op: BinaryOperator, ty: &Type) -> String {
+        if self.is_type_param(ty) {
+            let name = self.show(ty);
+            format!(
+                "operator '{}' needs '{}' to be equatable: declare it as '[{}: equatable]'",
+                op.symbol(),
+                name,
+                name
+            )
+        } else {
+            format!(
+                "values of type {} cannot be compared with '{}': it is not equatable (it holds functions or move-only values)",
+                self.show(ty),
+                op.symbol()
+            )
+        }
+    }
+
     pub fn binary_type(&self, op: BinaryOperator, left: &Type, right: &Type) -> CheckResult<Type> {
         use BinaryOperator::*;
         let comparison = matches!(op, Equal | NotEqual | Greater | GreaterEqual | Less | LessEqual | Is | In);
@@ -454,15 +486,32 @@ impl Checker {
             {
                 Some(Type::Boolean)
             }
+            Greater | GreaterEqual | Less | LessEqual if left == right && self.is_type_param(left) => {
+                if !self.satisfies(left, Constraint::Orderable) {
+                    return self.err(format!(
+                        "operator '{}' needs '{}' to be orderable: declare it as '[{}: orderable]'",
+                        op.symbol(),
+                        self.show(left),
+                        self.show(left)
+                    ));
+                }
+                Some(Type::Boolean)
+            }
             Equal | NotEqual | Is
                 if numeric || self.assignable(left, right) || self.assignable(right, left) =>
             {
+                if !numeric && !self.satisfies(left, Constraint::Equatable) {
+                    return self.err(self.not_equatable(op, left));
+                }
                 Some(Type::Boolean)
             }
             And | Or if *left == Type::Boolean && *right == Type::Boolean => Some(Type::Boolean),
             In => match right {
                 Type::String if *left == Type::String => Some(Type::Boolean),
                 Type::List(element) if self.assignable(element, left) || self.assignable(left, element) => {
+                    if !self.satisfies(element, Constraint::Equatable) {
+                        return self.err(self.not_equatable(op, element));
+                    }
                     Some(Type::Boolean)
                 }
                 Type::Named { id, .. } => match &self.table.get(*id).kind {
@@ -573,6 +622,8 @@ impl Checker {
                     ));
                 }
                 self.ensure_copyable_args(&generic)?;
+                let info = self.table.get(id);
+                self.ensure_constraints(&generic, &info.constraints, &info.name)?;
                 Ok(Type::Named { id, args: generic })
             }
             Some((ty, TypeKind::Dict { value, .. })) => {

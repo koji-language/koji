@@ -8,11 +8,12 @@ use std::rc::Rc;
 use crate::error::EzError;
 use crate::parser::ast::{
     AssignOperator, AstNode, BinaryOperator, Field, ImportKind, MatchArm, MethodRef, Param, ParamMode, Pattern,
+    TypeParam,
     TemplatePart, TryWrap, TypeDef, TypeExpr, UnaryOperator,
 };
 use crate::parser::parse_source;
 use crate::semantic::builtin_sums::{stdlib_functions, BUILTIN_SUMS};
-use crate::semantic::types::{ModuleId, Type, TypeId, TypeKind, TypeTable, VariantDef};
+use crate::semantic::types::{Constraint, ModuleId, Type, TypeId, TypeKind, TypeTable, VariantDef};
 
 mod modules;
 mod stdlib;
@@ -108,8 +109,10 @@ struct Symbol {
     /// A copy of a variable with a narrower type (`if (x is Some)`): moving it moves the
     /// original too.
     narrowed: bool,
-    /// For a generic function: the number of its type parameters (`Type::Param(0..)` in `ty`).
+    /// For a generic function: the number of its type parameters (`Type::Param(0..)` in `ty`),
+    /// and their constraints.
     generics: usize,
+    constraints: Vec<Constraint>,
 }
 
 impl Symbol {
@@ -125,6 +128,7 @@ impl Symbol {
             borrowed: None,
             narrowed: false,
             generics: 0,
+            constraints: Vec::new(),
         }
     }
 
@@ -140,6 +144,7 @@ impl Symbol {
             borrowed: None,
             narrowed: false,
             generics: 0,
+            constraints: Vec::new(),
         }
     }
 }
@@ -181,8 +186,9 @@ struct MethodInfo {
     /// Type parameters of the type (first) and of the method itself: `Type::Param(0..)` in
     /// `ty`.
     generics: usize,
-    /// Their names, to check the method's body.
-    type_param_names: Vec<String>,
+    /// The type parameters themselves, to check the method's body, and their constraints.
+    type_params: Vec<TypeParam>,
+    constraints: Vec<Constraint>,
 }
 
 struct ReturnContext {

@@ -82,8 +82,43 @@ print(p.mapFirst((n: int) => n * 10).first) // 10
 
 ## What a Type Parameter Can Do
 
-Inside a generic function or type, a value of type `T` can be stored, passed, returned, put in lists and other values, and printed (`print`, interpolation, `display()`, `debug()`). It has no fields and no operators: `a == b` or `a < b` on two `T` values is an error, because nothing says what `T` supports.
+Inside a generic function or type, a value of type `T` can be stored, passed, returned, put in lists and other values, and printed (`print`, interpolation, `display()`, `debug()`). It has no fields, and no operators except the comparisons its constraint allows.
 
-To give a generic function a behavior, pass it as a function, as `map` does with `f`.
+To give a generic function any other behavior, pass it as a function, as `map` does with `f`.
+
+## Constraints
+
+A type parameter can require that its type supports comparisons, with `[T: constraint]`:
+
+| Constraint | The type supports | Types |
+| --- | --- | --- |
+| `equatable` | `==`, `!=` and `in` | numbers, strings, booleans, and any type whose contents are equatable |
+| `orderable` | also `<`, `<=`, `>` and `>=` | `int`, `float` and `string` |
+
+```koji
+function max[T: orderable](items: T[]): T {
+    var best = items[0]
+    for item in items {
+        if (item > best) {
+            best = item
+        }
+    }
+    return best
+}
+
+print(max([3, 1, 2])) // 3
+print(max(['b', 'a'])) // b
+max([ana, bia]) // Error! Person is not orderable, as 'max' requires
+```
+
+Types never declare what they support: the compiler decides from their structure. A shape, a sum type, a list or a dictionary is equatable when everything it holds is, so `type Point = { x: int, y: int }` is equatable. Functions and move-only values (files, types with `drop`) are not. A type of your own is never orderable; to sort or compare values of it, pass the comparison as a function.
+
+Generic types can have constraints too: `type Set[T: equatable] = { ... }` only accepts equatable types (`Set[string]`, not `Set[(int) => int]`).
+
+`orderable` includes `equatable`, so a type parameter never needs both. Without a constraint, `a == b` on two `T` values is an error that suggests the constraint to add.
+
+Outside generic code, `==` follows the same rule: comparing functions or files is an error.
+
+## Move-Only Values
 
 Type parameters cannot be move-only values yet (a `File`, or a type with `drop`): `Box[file.File]` is an error. The built-in `Option` and `Result` accept them.

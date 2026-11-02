@@ -2105,7 +2105,7 @@ fn generic_functions_and_types() {
 #[test]
 fn generic_errors() {
     let errors = [
-        ("function eq[T](a: T, b: T): boolean { return a == b }", "operator '==' cannot be used on 'T': type parameters have no operators"),
+        ("function eq[T](a: T, b: T): boolean { return a == b }", "operator '==' needs 'T' to be equatable: declare it as '[T: equatable]'"),
         ("function f[T](a: T): int { return a.length }", "a value of type T has no field 'length'"),
         ("function id[T](a: T): T { return a }\ng = id", "'id' is generic and can only be called"),
         ("function id[T](a: T): T { return a }\nx: int = id('a')", "argument 1 must be int, found string"),
@@ -2154,4 +2154,70 @@ fn generics_across_modules() {
     let (output, result) = execute(source, "", &dir.join("main.kj"));
     result.unwrap();
     assert_eq!(output, "5 x true 2\n");
+}
+
+#[test]
+fn generic_constraints() {
+    let source = r#"
+        type Point = {
+            x: int
+            y: int
+        }
+
+        function max[T: orderable](items: T[]): T {
+            var best = items[0]
+            for item in items {
+                if (item > best) {
+                    best = item
+                }
+            }
+            return best
+        }
+
+        function count[T: equatable](items: T[], wanted: T): int {
+            var n = 0
+            for item in items {
+                if (item == wanted) {
+                    n += 1
+                }
+            }
+            return n
+        }
+
+        type Set[T: equatable] = {
+            items: T[]
+        }
+
+        function Set.has(self, item: T): boolean {
+            return item in self.items
+        }
+
+        print(max([3, 1, 2]), max(['b', 'a']), max([1.5, 0.5]))
+        p: Point = { x: 1, y: 2 }
+        print(count([p, p], { x: 1, y: 2 }), count([1, 2, 1], 1))
+        s: Set[string] = { items: ['a', 'b'] }
+        print(s.has('b'), s.has('z'))
+    "#;
+    assert_eq!(run(source), "3 b 1.5\n2 2\ntrue false\n");
+
+    let common = "type Person = { name: string }\n\
+        function max[T: orderable](items: T[]): T { return items[0] }\n\
+        function same[T: equatable](a: T, b: T): boolean { return a == b }\n\
+        type Set[T: equatable] = { items: T[] }\n";
+    let errors = [
+        ("a: Person = { name: 'a' }\nx = max([a])", "Person is not orderable, as 'max' requires"),
+        ("x = same([(n: int) => n], [(n: int) => n])", "((int) => int)[] is not equatable, as 'same' requires"),
+        ("f: (int) => int = (n: int) => n\nprint(f == f)", "values of type (int) => int cannot be compared with '=='"),
+        ("s: Set[(int) => int] = { items: [] }", "is not equatable, as 'Set' requires"),
+        ("function f[T: equatable](a: T, b: T): boolean { return a < b }", "operator '<' needs 'T' to be orderable: declare it as '[T: orderable]'"),
+        ("function f[T](a: T, b: T): boolean { return a == b }", "operator '==' needs 'T' to be equatable"),
+        ("function f[T: comparable](a: T): T { return a }", "unknown constraint 'comparable'"),
+        ("function f[T: orderable](a: T, b: T): T { return a + b }", "operator '+' cannot be used on 'T'"),
+        ("import file\nf = file.open('x', file.Read)?\ng = file.open('y', file.Read)?\nprint(f == g)", "values of type File cannot be compared"),
+    ];
+    for (code, fragment) in errors {
+        assert_error(&format!("{}{}", common, code), fragment);
+    }
+    // A shape of equatable fields is equatable.
+    assert_eq!(run(&format!("{}a: Person = {{ name: 'a' }}\nprint(same(a, a))", common)), "true\n");
 }
