@@ -1,6 +1,6 @@
 # Custom Types
 
-Custom types are declared with `type`. This page covers shape types (named fields), dictionaries (index signatures), intersections, and the methods of a type. Types with variants are covered in [Sum Types](sum-types.md).
+Custom types are declared with `type`. This page covers shape types (named fields), intersections, and the methods of a type. Types with variants are covered in [Sum Types](sum-types.md).
 
 ## Shape Types
 
@@ -12,7 +12,7 @@ type Person = {
     age: int
 }
 
-person: Person = {
+immut person: Person = {
     name: 'John',
     age: 20
 }
@@ -32,7 +32,7 @@ type User = {
     address: Address
 }
 
-user: User = {
+immut user: User = {
     id: 42,
     name: 'Bob',
     address: {
@@ -48,37 +48,49 @@ function printUser(user: User) {
 
 All fields are required, and an object literal cannot have extra fields. Fields can be separated by commas or new lines.
 
-Shape types are **nominal**: two types with the same fields are still different types. An object literal is accepted by any type whose fields it matches.
+Shape types are **nominal**: two types with the same fields are still different types. An object literal is a value of the type expected where it is written: the type of the variable, of the parameter, of the return value or of the list.
 
 ```koji
 type Celsius = { value: float }
+
 type Fahrenheit = { value: float }
 
-const celsius: Celsius = { value: 20.0 }
-fahrenheit: Fahrenheit = { value: 68.0 } // Ok
+immut celsius: Celsius = { value: 20.0 }
+mut fahrenheit: Fahrenheit = { value: 68.0 } // Ok
 
 fahrenheit = celsius // Error! Celsius is not Fahrenheit
 ```
 
-## Index Signatures
-
-Types with dynamic keys: every key is a `string`, and every value has the same type. They work as dictionaries.
+So an object literal always needs a known type. Without one, it is an error:
 
 ```koji
-type Dictionary = {
-    [key: string]: string
+immut point = { x: 1, y: 2 } // Error! this object literal needs a type
+
+type Point = {
+    x: int
+    y: int
 }
 
-translations: Dictionary = {
-    'hello': 'olá',
-    'world': 'mundo'
-}
+immut origin: Point = { x: 0, y: 0 } // Ok
 
-print(translations['hello']) // olá
-translations['thanks'] = 'obrigado'
+function move(point: Point) { ... }
+
+move({ x: 1, y: 2 }) // Ok: the parameter gives the type
 ```
 
-Reading a key that does not exist panics. To go through the keys, use `for key in translations`.
+## Dictionaries
+
+Koji has no index signatures (`{ [key: string]: string }`): a dictionary is a [`Map`](composite-types.md#map), which accepts any equatable key type. A type can name a map:
+
+```koji
+type Dictionary = Map[string, string]
+
+immut translations: Dictionary = [
+
+    'hello': 'olá',
+    'world': 'mundo'
+]
+```
 
 ## Type Union
 
@@ -111,7 +123,7 @@ type Dog = Animal & {
     breed: string
 }
 
-const rex: Dog = { name: 'Rex', breed: 'Beagle' }
+immut rex: Dog = { name: 'Rex', breed: 'Beagle' }
 ```
 
 ## No Subtyping
@@ -141,7 +153,7 @@ function Person.greet(self) {
     print(`Hello, I'm ${self.name}!`)
 }
 
-const person: Person = {
+immut person: Person = {
     name: 'John',
     age: 20
 }
@@ -159,7 +171,7 @@ function Rect.area(self): int {
     return self.width * self.height
 }
 
-const rect: Rect = {
+immut rect: Rect = {
     width: 3,
     height: 4
 }
@@ -203,7 +215,7 @@ print(Square(2.0).area()) // 4.0
 
 ### Methods That Change the Value
 
-A method that changes its value declares `mut self`. The call needs no marker, but the value must be a `var` or a `const` (or a field or element of one), not an `imut`:
+A method that changes its value declares `mut self`. The call needs no marker, but the value must be a `mut` variable (or a field or element of one), not an `immut`:
 
 ```koji
 type Counter = {
@@ -214,12 +226,38 @@ function Counter.increment(mut self) {
     self.count += 1
 }
 
-var counter: Counter = { count: 0 }
+mut counter: Counter = { count: 0 }
+
 counter.increment()
+
 print(counter.count) // 1
 ```
 
-`mut self` changes the contents of the value, not the value as a whole: `self = ...` is an error. So, as with `const`, the variable keeps the same value, only with different contents.
+`mut self` can also give the value a new value, which is useful for a sum type that changes state:
+
+```koji
+type Light = {
+    On
+    Off
+}
+
+function Light.toggle(mut self) {
+    self = match (self) {
+        On => Off
+        Off => On
+    }
+}
+
+mut light: Light = Off
+
+light.toggle()
+
+print(light) // On
+```
+
+### `drop`
+
+A type can declare `function Type.drop(mut self)`, which runs by itself when a value of the type goes out of scope (to close a connection, for example). Such a type is move-only: its values are moved, not copied. See [Values and Memory](memory.md#drop).
 
 ### Rules
 
@@ -241,7 +279,7 @@ function Person.display(self): string {
     return `${self.name} (${self.age})`
 }
 
-const ana: Person = { name: 'Ana', age: 30 }
+immut ana: Person = { name: 'Ana', age: 30 }
 
 print(ana) // Ana (30)
 print(`Hi, ${ana}!`) // Hi, Ana (30)!

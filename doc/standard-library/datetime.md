@@ -48,7 +48,7 @@ Dates and times are in UTC.
 ```koji
 import datetime
 
-date = datetime.today()
+immut date = datetime.today()
 
 print(date)
 
@@ -57,7 +57,7 @@ match (datetime.parse('2025-04-20', 'YYYY-MM-DD')) {
     Err(error) => print(error)
 }
 
-now = datetime.now()
+immut now = datetime.now()
 
 print(now.year)
 ```

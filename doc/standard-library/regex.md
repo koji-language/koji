@@ -30,7 +30,8 @@ match (regex.compile('(abc')) {
 
 // In a function that returns a Result, `?` is shorter:
 function countWords(text: string): Result[int, regex.RegexError] {
-    const word = regex.compile('[a-z]+')?
+    immut word = regex.compile('[a-z]+')?
+
     return Ok(word.findAll(text).length())
 }
 ```
@@ -53,7 +54,7 @@ In `repl`, `$1` (or `${1}`) is the text of the first group, `${name}` the text o
 ```koji
 import regex
 
-const digits = regex.compile('[0-9]+')?
+immut digits = regex.compile('[0-9]+')?
 
 print(digits.test('abc123')) // true
 print(digits.test('abc')) // false
@@ -74,7 +75,8 @@ print(digits.replace('a1b2', '#')) // a#b2
 print(digits.replaceAll('a1b2', '#')) // a#b#
 print(digits.split('a1b22c')) // ['a', 'b', 'c']
 
-const date = regex.compile('([0-9]{4})-([0-9]{2})')?
+immut date = regex.compile('([0-9]{4})-([0-9]{2})')?
+
 print(date.replaceAll('2025-10', '$2/$1')) // 10/2025
 ```
 

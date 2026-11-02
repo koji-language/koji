@@ -5,11 +5,11 @@
 An ordered list of elements of the same type. The type of a list of `T` is written `T[]`.
 
 ```koji
-numbers: int[] = [1, 2, 3]
+mut numbers: int[] = [1, 2, 3]
 
-coordinates: int[][] = [[1, 2], [3, 4]]
+mut coordinates: int[][] = [[1, 2], [3, 4]]
 
-positions: int[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+mut positions: int[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
 ```
 
 Elements are accessed by their index, starting at `0`. An index out of range panics.

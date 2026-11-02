@@ -11,7 +11,7 @@ Koji is implemented in Rust. To build it, install [Rust](https://www.rust-lang.o
 Clone the repository and build it in release mode:
 
 ```sh
-git clone <repository-url>
+git clone https://github.com/koji-language/koji.git
 cd koji
 cargo build --release
 ```
@@ -20,18 +20,6 @@ The executable is created at `target/release/kojic`. To call it as `kojic` from 
 
 ```sh
 cargo install --path .
-```
-
-With [Rust](https://www.rust-lang.org/tools/install) installed:
-
-```sh
-cargo build --release
-
-# check and run a program
-./target/release/kojic run examples/hello.kj
-
-# only check syntax and types
-./target/release/kojic check examples/hello.kj
 ```
 
 ## Your First Program
@@ -58,7 +46,7 @@ Hello, World!
 
 ## Checking a Program
 
-Every program is checked before it runs: syntax, types, `match` arms that are not handled, assignments to `const` or `imut` values and so on. A program with an error does not run at all.
+Every program is checked before it runs: syntax, types, `match` arms that are not handled, assignments to `immut` values, names that were never declared and so on. A program with an error does not run at all.
 
 To only check a program, without running it:
 
@@ -78,11 +66,11 @@ The message gives the file and the line of the error.
 
 | Command | Description |
 | --- | --- |
-| `kojic run <file.kj>` | Checks and runs a program |
+| `kojic run <file.kj> [arguments]` | Checks and runs a program; the arguments after the file are for the program (`system.args()`) |
 | `kojic check <file.kj>` | Only checks syntax and types |
 | `kojic help` | Shows the available commands |
 
-Programs currently run on an interpreter. Compiling to native binaries (`kojic build`) is planned.
+Programs currently run on an interpreter. Compiling to native binaries (`kojic build`) is planned; see the [compiler plan](compiler-plan.md).
 
 ## Examples
 

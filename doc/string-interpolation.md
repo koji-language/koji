@@ -3,7 +3,7 @@
 Only backtick supports interpolation.
 
 ```koji
-name: string = 'Emma'
+immut name: string = 'Emma'
 
 print(`Hello, ${name}!`) // Hello, Emma!
 print('Hello, ${name}!') // Hello, ${name}!

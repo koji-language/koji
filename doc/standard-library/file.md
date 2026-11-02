@@ -9,9 +9,9 @@ The `file` module provides functionality for working with files.
 
     ```koji
     type Mode = {
-        Read      // read
-        Write     // write (overwrites existing content)
-        Append    // write at the end
+        Read // read
+        Write // write (overwrites existing content)
+        Append // write at the end
     }
     ```
 
@@ -32,19 +32,19 @@ Reading a file opened for writing, writing to a file opened for reading, or usin
 
 ## Errors
 
-```ez
+```koji
 type FileError = {
     NotFound(path: string)
     PermissionDenied(path: string)
     IsDirectory(path: string)
-    InvalidUtf8(path: string)              // the content is not valid text
-    Io(path: string, message: string)      // any other failure of the operating system
+    InvalidUtf8(path: string) // the content is not valid text
+    Io(path: string, message: string) // any other failure of the operating system
 }
 ```
 
 Printing an error shows a readable message, also available as `error.display()`:
 
-```ez
+```koji
 match (file.open('missing.txt', file.Read)) {
     Ok(f) => print(f.read())
     Err(error) => print(error) // file 'missing.txt' not found
@@ -53,7 +53,7 @@ match (file.open('missing.txt', file.Read)) {
 
 ## Example
 
-```ez
+```koji
 import file
 
 match (file.open('notes.txt', file.Write)) {
@@ -80,12 +80,13 @@ match (file.open('notes.txt', file.Read)) {
 
 With the `?` operator (see [Error Handling](../error-handling.md)), inside a function:
 
-```ez
+```koji
 import file
 
 function readNotes(): Result[string, file.FileError] {
     f = file.open('notes.txt', file.Read)?
-    content = f.read()?
+    mut content = f.read()?
+    
     f.close()
 
     return Ok(content)

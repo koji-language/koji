@@ -16,21 +16,21 @@ export function subtract(a: int, b: int): int {
 }
 ```
 
-Everything in a module is private by default. Only declarations marked with `export` (functions, `var`, `const` and `imut` variables, and types) can be imported by other modules. Exporting a sum type also exports its variants, and the methods of an exported type are available wherever the type is.
+Everything in a module is private by default. Only declarations marked with `export` (functions, `mut` and `immut` variables, and types) can be imported by other modules. Exporting a sum type also exports its variants, and the methods of an exported type are available wherever the type is.
 
 ```koji
 // file: math.kj
 
 function clamp(x: int): int { ... } // private: only usable inside math.kj
 
-export const pi: float = 3.14159
+export immut pi: float = 3.14159
 ```
 
 ```koji
 import { clamp } from 'math.kj' // Error! 'clamp' is not exported by 'math.kj'
 ```
 
-`export` is only allowed at the top level of a file, and must be followed by `function`, `var`, `const`, `imut` or `type`. A declaration without a keyword (`x = 1`) cannot be exported.
+`export` is only allowed at the top level of a file, and must be followed by `function`, `mut`, `immut` or `type`.
 
 ## Importing a Module
 
@@ -39,7 +39,7 @@ import { clamp } from 'math.kj' // Error! 'clamp' is not exported by 'math.kj'
 
 import math from 'math.kj'
 
-result: int = math.add(5, 10)
+immut result: int = math.add(5, 10)
 
 print(result) // 15
 ```
@@ -51,7 +51,7 @@ The module is named after the file (`math`), and its items are used as `math.add
 
 import { add, subtract } from 'math.kj'
 
-result: int = add(5, 10)
+immut result: int = add(5, 10)
 
 print(result) // 15
 ```
@@ -62,12 +62,12 @@ Imports apply to the whole file, wherever they are written: types and functions 
 
 ## Exported Variables
 
-An exported `var` is read-only outside its module: only the module itself can assign to it. Importers always see its **current** value.
+An exported `mut` variable is read-only outside its module: only the module itself can assign to it. Importers always see its **current** value.
 
 ```koji
 // file: counter.kj
 
-export var count = 0
+export mut count = 0
 
 export function increment() {
 	count += 1
@@ -86,7 +86,7 @@ print(count) // 1
 count = 5 // Error! 'count' is read-only outside 'counter.kj'
 ```
 
-Like `const`, only the variable is read-only: the contents of an exported list or object can still be changed.
+Outside its module, it cannot be changed in any way: neither given a new value nor changed in its contents.
 
 ## Private Types in Public Declarations
 

@@ -15,7 +15,7 @@ These functions are available in every file, without `import`.
 Shows its arguments, separated by spaces. Each value is shown as its [`display()`](custom-types.md#display) text: strings without quotes, standard library errors as a readable message.
 
 ```koji
-name: string = 'John'
+immut name: string = 'John'
 
 print(`Hello, ${name}!`) // Hello, John!
 print('total:', 3, [1, 2]) // total: 3 [1, 2]
@@ -26,7 +26,7 @@ print('total:', 3, [1, 2]) // total: 3 [1, 2]
 Shows the optional `prompt` and reads a line. It returns an `Option[string]`: `None` when there is nothing more to read (the end of the input).
 
 ```koji
-name: Option[string] = input("What's your name? ")
+immut name: Option[string] = input("What's your name? ")
 
 match (name) {
 	Some(line) => print(`Hello, ${line}!`)

@@ -17,7 +17,7 @@ if (age > 18) {
 `if` can also be used as an expression. It then needs an `else`, and both branches must have the same type:
 
 ```koji
-const label: string = if (age > 18) { 'Adult' } else { 'Minor' }
+immut label: string = if (age > 18) { 'Adult' } else { 'Minor' }
 
 print(label)
 ```
@@ -59,7 +59,7 @@ This prints numbers from 0 to 9.
 #### Going Through a List
 
 ```koji
-names: string[] = ['Anna', 'Claire', 'Leon']
+immut names: string[] = ['Anna', 'Claire', 'Leon']
 
 // By index
 for i in range(0, names.length()) {
@@ -81,10 +81,11 @@ for name in names {
     name = name.upper() // Error! cannot modify 'name': the 'for' variable is imut (use 'for mut' to change it)
 }
 
-var rows = [[1, 2], [3, 4]]
+mut rows = [[1, 2], [3, 4]]
 
 for mut row in rows {
     row[0] = 0
+
     print(row) // [0, 2], then [0, 4]
 }
 
@@ -187,9 +188,9 @@ const label: int = match (result) {
 A guard, `if (condition)` after a pattern, makes the arm match only when the condition is true. `match` with guards replaces both `else if` chains and `switch` / `case` statements:
 
 ```koji
-age: int = 14
+immut age: int = 14
 
-const label: string = match (age) {
+immut label: string = match (age) {
     x if (x > 18) => 'Adult'
     x if (x > 12) => 'Teen'
     _             => 'Minor'

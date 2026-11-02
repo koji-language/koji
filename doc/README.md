@@ -6,7 +6,7 @@ Welcome to the **Koji documentation**. Here you will find the syntax, the types,
 
 ### Basics
 
--   [Getting Started](getting-started.md).
+-   [Getting Started](getting-started.md)
 -   [Conventions](conventions.md)
 -   [Comments](comments.md)
 -   [Variable Types](variable-types.md)

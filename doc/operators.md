@@ -46,11 +46,16 @@ To handle the `**` cases instead of panicking, use `math.pow`, which returns a `
 | `is`     | Variant check (whether a value is a given variant)         |
 | `in`     | Membership check (whether an element is in a collection)   |
 
-`==` compares values: two lists or objects are equal when their contents are equal.
+`==` compares values: two lists or objects are equal when their contents are equal. Values that hold functions or move-only values (such as files) cannot be compared (see [Constraints](generics.md#constraints)).
 
 ```koji
-const a = { name: 'Ana', age: 30 }
-const b = { name: 'Ana', age: 30 }
+type Person = {
+	name: string
+	age: int
+}
+
+immut a: Person = { name: 'Ana', age: 30 }
+immut b: Person = { name: 'Ana', age: 30 }
 
 a == b // true: the fields are equal
 ```
@@ -65,7 +70,7 @@ a == b // true: the fields are equal
 `is` checks the variant of a sum type value. Inside the `if`, the fields of the variant can be used:
 
 ```koji
-result = Some(1)
+immut result = Some(1)
 
 if (result is Some) {
 	print(result.value) // 1

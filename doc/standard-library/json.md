@@ -14,16 +14,13 @@ type Json = {
     Float(value: float)
     String(value: string)
     Array(items: Json[])
-    Object(fields: JsonObject)
-}
-
-type JsonObject = {
-    [key: string]: Json
+    Object(fields: Map[string, Json])
 }
 ```
 
 -   A number without `.`, `e` or `E` is an `Int` (`2025`); any other number is a `Float` (`2025.0`, `1e3`).
--   JSON `null` is the `Null` variant: koji itself has no `null`.
+-   JSON `null` is the `Null` variant: Koji itself has no `null`.
+-   An object is a `Map[string, Json]` (also named `json.JsonObject`), which keeps the order of its keys.
 -   `Int(1) == Float(1.0)` is `false`: they are different variants.
 
 ## Functions
@@ -48,7 +45,7 @@ type JsonObject = {
 ```koji
 type JsonError = {
     Syntax(message: string, line: int, column: int)
-    NumberOutOfRange(text: string, line: int, column: int)   // an integer too large for int
+    NumberOutOfRange(text: string, line: int, column: int) // an integer too large for int
 }
 ```
 
@@ -57,11 +54,11 @@ type JsonError = {
 ```koji
 import json
 
-text: string = '{"name": "kojilang", "year": 2025}'
+immut text: string = '{"name": "koji", "year": 2025}'
 
 match (json.parse(text)) {
     Ok(Object(fields)) => match (fields['name']) {
-        String(name) => print(name) // kojilang
+        String(name) => print(name) // koji
         _ => print('name is not a string')
     }
     Ok(_) => print('expected an object')
@@ -74,14 +71,14 @@ With the helper functions:
 ```koji
 import json
 
-match (json.parse('{"name": "kojilang", "year": 2025}')) {
+match (json.parse('{"name": "koji", "year": 2025}')) {
     Ok(data) => {
         match (json.get(data, 'year')) {
             Some(year) => print(json.asInt(year)) // Some(2025)
             None => print('no year')
         }
 
-        print(json.stringify(data)) // {"name":"kojilang","year":2025}
+        print(json.stringify(data)) // {"name":"koji","year":2025}
     }
     Err(error) => print(error)
 }
