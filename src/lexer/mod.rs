@@ -211,7 +211,7 @@ impl Lexer {
                 self.advance();
             } else if c == '.'
                 && !has_dot
-                && self.peek().map_or(false, |next| next.is_ascii_digit())
+                && self.peek().is_some_and(|next| next.is_ascii_digit())
             {
                 has_dot = true;
                 self.advance();

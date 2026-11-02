@@ -8,7 +8,10 @@ The **Koji standard library** provides a collection of built-in modules to help 
     Delay execution and measure elapsed time.
 
 -   [`file`](standard-library/file.md)  
-    Read from and write to files.
+    Read from and write to files, and list and create directories.
+
+-   [`path`](standard-library/path.md)  
+    Join paths and get their parts: parent directory, name and extension.
 
 -   [`datetime`](standard-library/datetime.md)  
     Get the current date and time, format and parse date strings.

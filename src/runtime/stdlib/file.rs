@@ -27,6 +27,31 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
                 Err(error) => Ok(err(file_error(&path, &error))),
             }
         }
+        // The names of the entries of a directory, sorted.
+        "file.list" => {
+            let path = str_arg(interpreter, &args, 0)?.to_string();
+            let entries = std::fs::read_dir(&path).and_then(|entries| {
+                entries
+                    .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().to_string()))
+                    .collect::<std::io::Result<Vec<String>>>()
+            });
+            Ok(match entries {
+                Ok(mut names) => {
+                    names.sort();
+                    ok(Value::list(names.iter().map(|name| Value::str(name)).collect()))
+                }
+                Err(error) => err(file_error(&path, &error)),
+            })
+        }
+        "file.exists" => Ok(Value::Bool(std::path::Path::new(str_arg(interpreter, &args, 0)?).exists())),
+        // Creates the directory and the ones above it that do not exist yet.
+        "file.createDir" => {
+            let path = str_arg(interpreter, &args, 0)?.to_string();
+            Ok(match std::fs::create_dir_all(&path) {
+                Ok(()) => ok(Value::Void),
+                Err(error) => err(file_error(&path, &error)),
+            })
+        }
         other => Err(interpreter.error(format!("unknown built-in function '{}'", other))),
     }
 }

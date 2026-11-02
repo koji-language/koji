@@ -370,7 +370,7 @@ A compiler is a large program, with many data structures and many operations tha
 4.  **Error propagation**: the `?` operator (implemented).
 5.  **Methods on types** (`Type.method()`, `mut self`): implemented.
 6.  **Complete type inference**: every variable must have a known type by the end of its block (implemented). An empty value (`[]`, `[:]`, `None`) gets its type from an annotation or from a later use (`push`, an assignment, `map[key] = value`, `set.add`); otherwise it is a compile error that suggests the annotation.
-7.  **System access**: command-line arguments, the exit code, environment variables and running processes (implemented in the `system` module); `panic` (implemented); path manipulation (still missing).
+7.  **System access**: command-line arguments, the exit code, environment variables and running processes (implemented in the `system` module); `panic` (implemented); path manipulation and directories (implemented in the `path` and `file` modules).
 8.  **FFI** (`extern function`), so the compiled standard library can call C functions.
 9.  **Module visibility**: covered by the mandatory `export` decision.
 10. **Testing framework** (on the roadmap): not required, but it speeds up compiler development a lot.

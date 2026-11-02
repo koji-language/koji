@@ -457,6 +457,31 @@ impl Checker {
                 check(self, &[s, Self::named(b.file_mode)])?;
                 Ok(result_with(Self::named(b.file), b.file_error))
             }
+            "file.list" => {
+                check(self, &[s])?;
+                Ok(result_with(Type::List(Box::new(Type::String)), b.file_error))
+            }
+            "file.exists" => {
+                check(self, &[s])?;
+                Ok(Type::Boolean)
+            }
+            "file.createDir" => {
+                check(self, &[s])?;
+                Ok(result_with(Type::Void, b.file_error))
+            }
+
+            "path.join" => {
+                check(self, &[s.clone(), s])?;
+                Ok(Type::String)
+            }
+            "path.parent" | "path.name" | "path.stem" | "path.extension" => {
+                check(self, &[s])?;
+                Ok(self.option_of(Type::String))
+            }
+            "path.isAbsolute" => {
+                check(self, &[s])?;
+                Ok(Type::Boolean)
+            }
 
             "datetime.now" => {
                 check(self, &[])?;

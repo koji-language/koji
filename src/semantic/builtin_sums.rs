@@ -138,7 +138,8 @@ pub fn builtin_sum(name: &str) -> &'static BuiltinSum {
 pub fn stdlib_functions(module: &str) -> &'static [&'static str] {
     match module {
         "time" => &["sleep", "now", "monotonic"],
-        "file" => &["open"],
+        "file" => &["open", "list", "exists", "createDir"],
+        "path" => &["join", "parent", "name", "stem", "extension", "isAbsolute"],
         "datetime" => &["now", "today", "format", "parse"],
         "math" => &["abs", "sqrt", "pow", "floor", "ceil", "round"],
         "http" => &["get", "post", "put", "delete"],

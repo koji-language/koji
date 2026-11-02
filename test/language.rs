@@ -2692,3 +2692,29 @@ fn every_variable_has_a_known_type() {
         assert_error(code, fragment);
     }
 }
+
+#[test]
+fn stdlib_path_and_directories() {
+    let dir = temp_dir("paths");
+    let source = r#"
+        import path
+        import file
+
+        print(path.join('src', 'main.kj'), path.join('/usr', '/etc'))
+        print(path.parent('src/main.kj'), path.parent('main.kj'), path.parent('/'))
+        print(path.name('src/main.kj'), path.stem('src/main.kj'), path.extension('src/main.kj'), path.extension('Makefile'))
+        print(path.isAbsolute('/tmp'), path.isAbsolute('src'))
+
+        immut out = path.join(DIR, 'out')
+        print(file.createDir(path.join(out, 'c')), file.exists(out), file.exists(path.join(DIR, 'nope')))
+        print(file.list(out), file.list(path.join(DIR, 'missing')) is Err)
+    "#
+    .replace("DIR", &format!("'{}'", dir.display().to_string().replace('\\', "/")));
+    let (output, result) = execute(&source, "", &dir.join("main.kj"));
+    result.unwrap();
+    assert_eq!(
+        output,
+        "src/main.kj /etc\nSome('src') Some('.') None\nSome('main.kj') Some('main') Some('kj') None\n\
+         true false\nOk(void) true false\nOk(['c']) true\n"
+    );
+}

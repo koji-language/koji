@@ -15,6 +15,7 @@ mod file;
 mod http;
 mod json;
 mod math;
+mod path;
 mod prelude;
 mod regex;
 mod string;
@@ -136,6 +137,7 @@ pub fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) -> Exec
         None => prelude::call(interpreter, name, args),
         Some("time") => time::call(interpreter, name, args),
         Some("file") => file::call(interpreter, name, args),
+        Some("path") => path::call(interpreter, name, args),
         Some("datetime") => datetime::call(interpreter, name, args),
         Some("math") => math::call(interpreter, name, args),
         Some("http") => http::call(interpreter, name, args),

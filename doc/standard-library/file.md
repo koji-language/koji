@@ -13,9 +13,20 @@ The `file` module provides functionality for working with files.
         Write // write (overwrites existing content)
         Append // write at the end
     }
-```
+    ```
 
     With `import file`, the modes are `file.Read`, `file.Write` and `file.Append`. With `import { Mode } from 'file'`, they can be written `Read`, `Write` and `Append`. Since the mode is a sum type, an invalid mode does not compile.
+
+## Directories
+
+-   `list(path: string) -> Result[string[], FileError]`  
+    The names of the entries (files and directories) in the directory at `path`, sorted. The names do not include `path`; use [`path.join`](path.md) to build full paths.
+
+-   `exists(path: string) -> boolean`  
+    Whether a file or directory exists at `path`.
+
+-   `createDir(path: string) -> Result[void, FileError]`  
+    Creates the directory at `path`, along with any missing parent directories. If it already exists, nothing changes.
 
 ## Methods of `File`
 

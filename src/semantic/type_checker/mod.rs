@@ -35,7 +35,7 @@ type CheckResult<T> = Result<T, EzError>;
 type Moves = HashMap<(usize, String), usize>;
 
 /// Names of the standard library modules (`import math`).
-pub const STDLIB_MODULES: &[&str] = &["time", "file", "datetime", "math", "http", "json", "regex", "system"];
+pub const STDLIB_MODULES: &[&str] = &["time", "file", "path", "datetime", "math", "http", "json", "regex", "system"];
 
 /// A checked program: the parsed modules, ready to be executed.
 #[derive(Debug, Clone)]
