@@ -83,6 +83,8 @@ pub struct Interpreter {
     pub(crate) out: Box<dyn Write>,
     pub(crate) input: Box<dyn BufRead>,
     pub(crate) started: Instant,
+    /// The program's command-line arguments (`system.args()`).
+    pub args: Vec<String>,
     current_module: Option<Rc<ModuleValue>>,
     /// Path of the module being run.
     module_path: PathBuf,
@@ -132,6 +134,7 @@ impl Interpreter {
             out,
             input,
             started: Instant::now(),
+            args: Vec::new(),
             current_module: None,
             module_path: PathBuf::new(),
             methods: HashMap::new(),

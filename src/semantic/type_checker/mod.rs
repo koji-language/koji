@@ -35,7 +35,7 @@ type CheckResult<T> = Result<T, EzError>;
 type Moves = HashMap<(usize, String), usize>;
 
 /// Names of the standard library modules (`import math`).
-pub const STDLIB_MODULES: &[&str] = &["time", "file", "datetime", "math", "http", "json", "regex"];
+pub const STDLIB_MODULES: &[&str] = &["time", "file", "datetime", "math", "http", "json", "regex", "system"];
 
 /// A checked program: the parsed modules, ready to be executed.
 #[derive(Debug, Clone)]
@@ -216,6 +216,8 @@ pub struct BuiltinTypes {
     pub http_error: TypeId,
     pub json: TypeId,
     pub map: TypeId,
+    pub output: TypeId,
+    pub system_error: TypeId,
     pub set: TypeId,
     pub json_error: TypeId,
     pub date_error: TypeId,

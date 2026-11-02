@@ -114,7 +114,18 @@ pub const BUILTIN_SUMS: &[BuiltinSum] = &[
             ("TooLarge", &[("pattern", "string")]),
         ],
     },
+    BuiltinSum {
+        name: "SystemError",
+        module: Some("system"),
+        params: 0,
+        variants: &[
+            ("NotFound", &[("command", "string")]),
+            ("PermissionDenied", &[("command", "string")]),
+            ("Io", &[("command", "string"), ("message", "string")]),
+        ],
+    },
 ];
+
 
 pub fn builtin_sum(name: &str) -> &'static BuiltinSum {
     BUILTIN_SUMS
@@ -133,6 +144,7 @@ pub fn stdlib_functions(module: &str) -> &'static [&'static str] {
         "http" => &["get", "post", "put", "delete"],
         "json" => &["parse", "stringify", "get", "asString", "asInt", "asFloat", "asBool"],
         "regex" => &["compile"],
+        "system" => &["args", "env", "exit", "run"],
         _ => &[],
     }
 }

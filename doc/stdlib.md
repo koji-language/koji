@@ -24,3 +24,6 @@ The **Koji standard library** provides a collection of built-in modules to help 
 
 -   [`regex`](standard-library/regex.md)  
     Work with regular expressions to search, match, and replace patterns in strings.
+
+-   [`system`](standard-library/system.md)  
+    Read the command-line arguments and the environment, end the program with an exit code, and run other programs.

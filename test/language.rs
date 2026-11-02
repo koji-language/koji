@@ -2358,3 +2358,29 @@ fn list_methods_and_slices() {
         assert_error(code, fragment);
     }
 }
+
+#[test]
+fn stdlib_system() {
+    let source = r#"
+        import system
+
+        print(system.args(), system.env('KOJI_NOT_SET'))
+        match (system.run('echo', ['hello', 'koji'])) {
+            Ok(output) => print(output.status, output.stdout.trim())
+            Err(error) => print(error)
+        }
+        match (system.run('kj-no-such-command', [])) {
+            Ok(_) => print('?')
+            Err(error) => print(error, '|', error.debug())
+        }
+        print('before exit')
+        system.exit(3)
+        print('not printed')
+    "#;
+    let (output, result) = execute(source, "", Path::new("test.kj"));
+    assert_eq!(result, Err(kojic::error::EzError::Exit(3)));
+    assert_eq!(
+        output,
+        "[] None\n0 hello koji\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nbefore exit\n"
+    );
+}

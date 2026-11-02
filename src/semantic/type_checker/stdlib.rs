@@ -99,6 +99,18 @@ impl Checker {
                 methods: vec![],
             },
         );
+        let output = table.add(
+            "Output",
+            0,
+            TypeKind::Builtin {
+                fields: vec![
+                    ("status".to_string(), Type::Int),
+                    ("stdout".to_string(), Type::String),
+                    ("stderr".to_string(), Type::String),
+                ],
+                methods: vec![],
+            },
+        );
         let regex_match = table.add(
             "Match",
             0,
@@ -149,6 +161,8 @@ impl Checker {
                 json,
                 map,
                 set,
+                output,
+                system_error: ids["SystemError"],
                 json_error: ids["JsonError"],
                 date_error: ids["DateError"],
                 file,
@@ -184,6 +198,7 @@ impl Checker {
             "Json" => b.json,
             "JsonError" => b.json_error,
             "DateError" => b.date_error,
+            "SystemError" => b.system_error,
             "RegexError" => b.regex_error,
             other => panic!("unknown built-in sum type '{}'", other),
         }
@@ -284,6 +299,7 @@ impl Checker {
             "file" => &[("File", b.file)],
             "datetime" => &[("DateTime", b.datetime)],
             "http" => &[("Response", b.response)],
+            "system" => &[("Output", b.output)],
             "json" => &[],
             "regex" => &[("Match", b.regex_match), ("Regex", b.regex)],
             _ => &[],
@@ -482,6 +498,23 @@ impl Checker {
                 Ok(Type::Int)
             }
 
+            "system.args" => {
+                check(self, &[])?;
+                Ok(Type::List(Box::new(Type::String)))
+            }
+            "system.env" => {
+                check(self, std::slice::from_ref(&s))?;
+                Ok(self.option_of(Type::String))
+            }
+            // Ends the program: the code after it does not run.
+            "system.exit" => {
+                check(self, &[Type::Int])?;
+                Ok(Type::Never)
+            }
+            "system.run" => {
+                check(self, &[s.clone(), Type::List(Box::new(Type::String))])?;
+                Ok(result_with(Self::named(b.output), b.system_error))
+            }
             "http.get" | "http.delete" => {
                 check(self, &[s])?;
                 Ok(result_with(Self::named(b.response), b.http_error))

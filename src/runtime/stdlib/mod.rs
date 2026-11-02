@@ -18,6 +18,7 @@ mod math;
 mod prelude;
 mod regex;
 mod string;
+mod system;
 mod time;
 
 pub use math::{real_pow, PowFailure};
@@ -140,6 +141,7 @@ pub fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) -> Exec
         Some("http") => http::call(interpreter, name, args),
         Some("json") => json::call(interpreter, name, args),
         Some("regex") => regex::call(interpreter, name, args),
+        Some("system") => system::call(interpreter, name, args),
         Some(_) => Err(interpreter.error(format!("unknown built-in function '{}'", name))),
     }
 }
@@ -153,6 +155,7 @@ pub const ERROR_TYPES: &[&str] = &[
     "JsonError",
     "DateError",
     "RegexError",
+    "SystemError",
 ];
 
 /// Human-readable text of a standard library error (`NotFound('a.txt')` → `file 'a.txt' not
@@ -162,6 +165,13 @@ pub fn error_message(error: &VariantValue) -> Option<String> {
         return None;
     }
     let text = |i: usize| error.values.get(i).map(Value::display).unwrap_or_default();
+    if error.sum.name == "SystemError" {
+        return Some(match error.name.as_str() {
+            "NotFound" => format!("command '{}' not found", text(0)),
+            "PermissionDenied" => format!("permission denied to run '{}'", text(0)),
+            _ => format!("cannot run '{}': {}", text(0), text(1)),
+        });
+    }
     let message = match error.name.as_str() {
         "InvalidNumber" => format!("'{}' is not a valid number", text(0)),
         "OutOfRange" => format!("'{}' is out of range", text(0)),

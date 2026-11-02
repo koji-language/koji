@@ -361,24 +361,12 @@ Like Go and Rust: `int / int` gives an `int` truncated toward zero, a division w
 A compiler is a large program, with many data structures and many operations that can fail. These features are needed before writing `kojic` in Koji, in order of importance:
 
 1.  **User-defined generics**: `type Map[K: equatable, V]`, `function find[T](...)`, using the same bracket syntax as `Option[T]`: implemented, with the `equatable` and `orderable` constraints (see [Generics](generics.md)).
-2.  **Collections**:
-    -   lists with `push`, `pop`, `insert` and slicing;
-    -   maps with any equatable key type (implemented: `Map[K, V]`, which replaced index signatures);
-    -   sets.
-3.  **Text processing**:
-    -   a `char` (or `byte`) type and conversion to and from character codes;
-    -   `substring`/slicing, `startsWith`, `indexOf` and a string builder;
-    -   efficient indexing (`s[i]` is O(n) today).
+2.  **Collections**: lists with `push`, `pop`, `insert`, `sort` and slicing; `Map[K, V]` with any equatable key; `Set[T]` (implemented).
+3.  **Text processing**: the `char` type, slicing, `startsWith`, `endsWith`, `indexOf`, and `+=` in place instead of a string builder (implemented); efficient indexing (`s[i]` is O(n) today, a matter for the compiled strings).
 4.  **Error propagation**: the `?` operator (implemented).
 5.  **Methods on types** (`Type.method()`, `mut self`): implemented.
 6.  **Complete type inference**: today the checker tolerates unresolved types (`x = None`, `[]`). Code generation needs every type resolved, which requires real unification.
-7.  **System access**:
-    -   command-line arguments;
-    -   the exit code (`exit`);
-    -   environment variables;
-    -   running processes (to call the C compiler);
-    -   path manipulation;
-    -   `panic`.
+7.  **System access**: command-line arguments, the exit code, environment variables and running processes (implemented in the `system` module); `panic` (implemented); path manipulation (still missing).
 8.  **FFI** (`extern function`), so the compiled standard library can call C functions.
 9.  **Module visibility**: covered by the mandatory `export` decision.
 10. **Testing framework** (on the roadmap): not required, but it speeds up compiler development a lot.
@@ -410,7 +398,7 @@ Notes:
 
 ## Open decisions
 
-1.  **Phase 1 APIs**: collections (`push`, `pop`, slicing, maps with any key type, sets), text (a character type, slicing, a string builder), system (command-line arguments, exit code, environment variables, processes) and FFI (`extern function`). Their syntax needs to be decided with them.
+1.  **FFI** (`extern function`), so the compiled standard library can call C functions: to decide with the C backend (phase 2).
 
 Decided:
 
@@ -428,6 +416,7 @@ Decided:
 -   **Maps and sets**: `Map[K: equatable, V]` with the literal `['Ana': 30]` (`[:]` when empty), and `Set[T: equatable]` from `Set.from(list)`. Index signatures are gone: a dictionary is a `Map`.
 -   **`char`** is a primitive type: a Unicode code point. A one-character literal is a `char` where a `char` is expected; indexing a string and `for c in text` give chars.
 -   **Lists**: `push`, `pop`, `insert`, `removeAt`, `sort` (orderable items) and `sortBy(comparison)` change the list like `mut self`; slices `items[1..3]` work on lists and strings.
+-   **`system` module**: `args()`, `env(name)`, `exit(code)` and `run(command, args)`, with `SystemError`.
 -   **No string builder**: text is built with `+=` (appending in place when the string is not shared, as in Swift) and `list.join(separator)`.
 -   **Opaque types** (a type that other modules can use but not build with a literal) are postponed until they are needed.
 -   **No anonymous objects**: an object literal needs a known type (see [No `interface`](#no-interface)). Values are built with a literal or with an associated function (`Person.create(...)`); the language has no special constructors.

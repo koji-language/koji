@@ -66,7 +66,7 @@ The message gives the file and the line of the error.
 
 | Command | Description |
 | --- | --- |
-| `kojic run <file.kj>` | Checks and runs a program |
+| `kojic run <file.kj> [arguments]` | Checks and runs a program; the arguments after the file are for the program (`system.args()`) |
 | `kojic check <file.kj>` | Only checks syntax and types |
 | `kojic help` | Shows the available commands |
 

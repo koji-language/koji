@@ -19,8 +19,9 @@ pub fn check_file(path: &Path) -> Result<Program, EzError> {
     Checker::new().check_file(path)
 }
 
-/// Checks and runs the file at `path`, using the process' standard input and output.
-pub fn run_file(path: &Path) -> Result<(), EzError> {
+/// Checks and runs the file at `path`, using the process' standard input and output. `args`
+/// are the program's command-line arguments (`system.args()`).
+pub fn run_file(path: &Path, args: Vec<String>) -> Result<(), EzError> {
     let program = check_file(path)?;
     let stdin = std::io::stdin();
     let mut interpreter = Interpreter::new(
@@ -28,6 +29,7 @@ pub fn run_file(path: &Path) -> Result<(), EzError> {
         Box::new(std::io::stdout()),
         Box::new(stdin.lock()),
     );
+    interpreter.args = args;
     interpreter.run()
 }
 

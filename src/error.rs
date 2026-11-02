@@ -9,6 +9,8 @@ pub enum EzError {
     ImportError(String),
     /// An `Err` or `None` propagated with `?` out of the main file.
     UnhandledError(String),
+    /// `system.exit(code)`: the program ends with this exit code.
+    Exit(i32),
 }
 
 impl fmt::Display for EzError {
@@ -20,6 +22,7 @@ impl fmt::Display for EzError {
             EzError::RuntimeError(message) => write!(f, "panic: {}", message),
             EzError::ImportError(message) => write!(f, "import error: {}", message),
             EzError::UnhandledError(message) => write!(f, "error: {}", message),
+            EzError::Exit(code) => write!(f, "exit code {}", code),
         }
     }
 }
