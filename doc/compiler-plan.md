@@ -80,7 +80,6 @@ Everything in a module is private by default. Only declarations marked with `exp
 -   Exportable: `export function`, `export mut`, `export immut` and `export type`.
 -   Exporting a sum type also exports its variants.
 -   `export` is only allowed at the top level of a file.
--   Implicit declarations (`x = 1`) cannot be exported.
 -   **`export mut`** is read-only outside its module:
     -   Importers always see the **current** value, not a copy taken at import time.
     -   Outside its module, it cannot be changed at all: neither given a new value nor changed in its contents.
