@@ -1676,6 +1676,10 @@ impl<'a> Lowerer<'a> {
         for (arg, ty) in args.iter().zip(&fields) {
             values.push(self.value_as(builder, arg, ty)?.expect("a field"));
         }
+        // `Ok()`: the field of type `void` has no value.
+        if args.is_empty() && fields.len() == 1 && fields[0] == Ty::Void {
+            values.push(Operand::Int(0));
+        }
         let dest = builder.local(Ty::Record(record), None);
         builder.emit(Instruction::RecordNew { dest, variant, fields: values });
         Ok(Operand::Local(dest))

@@ -623,6 +623,9 @@ impl Generator<'_> {
                     .map(|(_, ty)| ty.clone())
                     .collect();
                 for (index, (field, field_type)) in fields.iter().zip(&field_types).enumerate() {
+                    if *field_type == Ty::Void {
+                        continue;
+                    }
                     let call = format!("koji_record_init(l{}, {}, VALUE)", dest, index);
                     self.with_address(field_type, field, &call);
                 }

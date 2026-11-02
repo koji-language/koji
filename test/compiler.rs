@@ -1138,7 +1138,8 @@ import { Mode } from 'file'\n\
 \n\
 function save(path: string, text: string): Result[void, file.FileError] {\n\
     immut out = file.open(path, file.Write)?\n\
-    return out.write(text)\n\
+    out.write(text)?\n\
+    return Ok()\n\
 }\n\
 \n\
 function load(path: string): Result[string, file.FileError] {\n\

@@ -186,6 +186,8 @@ impl Interpreter {
             Value::Function(closure) => self.call_closure(closure, args),
             Value::Builtin(name) => stdlib::call(self, name, args),
             Value::Constructor(constructor) => {
+                // `Ok()`: the field of type `void`.
+                let args = if args.is_empty() && constructor.arity() == 1 { vec![Value::Void] } else { args };
                 if args.len() != constructor.arity() {
                     return Err(self.error(format!(
                         "'{}' expects {} argument(s), found {}",

@@ -401,6 +401,22 @@ impl Checker {
         if fields.is_empty() {
             return self.err(format!("variant '{}' has no fields and is used without '()'", variant));
         }
+        // Generic arguments: start from the expected type, then infer from the arguments.
+        let mut generic: Vec<Type> = match expected {
+            Some(Type::Named { id: expected_id, args }) if *expected_id == id => args.clone(),
+            _ => vec![Type::Unknown; info.params],
+        };
+        // `Ok()`: a single field of type `void` is written without an argument.
+        if args.is_empty() && fields.len() == 1 {
+            match &fields[0].1 {
+                Type::Param(index) if generic[*index].contains_unknown() || generic[*index] == Type::Void => {
+                    generic[*index] = Type::Void;
+                    return Ok(Type::Named { id, args: generic });
+                }
+                Type::Void => return Ok(Type::Named { id, args: generic }),
+                _ => {}
+            }
+        }
         if fields.len() != args.len() {
             return self.err(format!(
                 "'{}' expects {} argument(s), found {}",
@@ -409,11 +425,6 @@ impl Checker {
                 args.len()
             ));
         }
-        // Generic arguments: start from the expected type, then infer from the arguments.
-        let mut generic: Vec<Type> = match expected {
-            Some(Type::Named { id: expected_id, args }) if *expected_id == id => args.clone(),
-            _ => vec![Type::Unknown; info.params],
-        };
         for ((field, field_ty), arg) in fields.iter().zip(args) {
             let wanted = field_ty.substitute(&generic);
             let actual = self.check_value(arg, Some(&wanted))?;

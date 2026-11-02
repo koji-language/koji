@@ -460,6 +460,8 @@ Notes:
 
 Decided:
 
+-   **`Ok()`**: a `Result[void, E]` succeeds with `Ok()`, without an argument (there is no `void` value); it is shown as `Ok(void)`.
+
 -   **`int` to `float`**: only a single value is converted; an `int[]` where a `float[]` is expected is an error, since converting it would copy the list (see [Primitive Types](primitive-types.md#numeric-types)).
 -   **Backend**: C, with the runtime in Rust (see [Bootstrap strategy](#bootstrap-strategy)).
 

@@ -2741,3 +2741,12 @@ fn object_fields_follow_the_declaration() {
 fn a_char_in_a_string() {
     assert_eq!(run("immut c: char = 'a'\nprint(c in 'banana', c in 'xyz', 'an' in 'banana')"), "true false true\n");
 }
+
+#[test]
+fn ok_without_a_value() {
+    assert_eq!(
+        run("function save(ok: boolean): Result[void, string] {\n    if (not ok) { return Err('failed') }\n\n    return Ok()\n}\n\nprint(save(true), save(false), save(true) == Ok())"),
+        "Ok(void) Err('failed') true\n"
+    );
+    assert_error("immut x: Result[int, string] = Ok()", "'Ok' expects 1 argument(s), found 0");
+}

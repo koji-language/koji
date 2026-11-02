@@ -149,6 +149,8 @@ impl Checker {
                     let expected = match &left_ty {
                         Type::Char if *op != BinaryOperator::In => Some(Type::Char),
                         Type::List(_) if matches!(right.unlocated(), AstNode::ArrayLiteral(_)) => Some(left_ty.clone()),
+                        // `result == Ok()`: the other side tells the type arguments.
+                        Type::Named { .. } => Some(left_ty.clone()),
                         _ => None,
                     };
                     (left_ty.clone(), self.check_value(right, expected.as_ref())?)

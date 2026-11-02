@@ -30,6 +30,18 @@ match (int('abc')) {
 print(int('abc')) // Err(InvalidNumber('abc'))
 ```
 
+When there is no value to give on success, the type is `Result[void, E]`, and success is written `Ok()`:
+
+```koji
+import file
+
+function save(path: string, text: string): Result[void, file.FileError] {
+	immut out = file.open(path, file.Write)?
+	out.write(text)?
+	return Ok()
+}
+```
+
 ## The `?` Operator
 
 `?` propagates an error instead of handling it with `match`:
