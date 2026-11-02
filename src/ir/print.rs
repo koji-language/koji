@@ -9,6 +9,13 @@ impl fmt::Display for Program {
         for (id, text) in self.strings.iter().enumerate() {
             writeln!(f, "string s{} = {:?}", id, text)?;
         }
+        for (id, record) in self.records.iter().enumerate() {
+            writeln!(f, "record r{} {}", id, record.name)?;
+            for variant in &record.variants {
+                let fields: Vec<String> = variant.fields.iter().map(|(name, ty)| format!("{}: {:?}", name, ty)).collect();
+                writeln!(f, "    {} ({})", variant.name.as_deref().unwrap_or("{}"), fields.join(", "))?;
+            }
+        }
         for (id, global) in self.globals.iter().enumerate() {
             writeln!(f, "global g{}: {:?} // {}", id, global.ty, global.name)?;
         }
@@ -62,6 +69,15 @@ impl fmt::Display for Place {
     }
 }
 
+impl fmt::Display for Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Step::Index(index) => write!(f, "{}", index),
+            Step::Field(field) => write!(f, ".{}", field),
+        }
+    }
+}
+
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.root)?;
@@ -99,6 +115,16 @@ impl fmt::Display for Instruction {
                 write!(f, "insert {}, {}, {}", list, index, value)
             }
             Instruction::ListSort { list, .. } => write!(f, "sort {}", list),
+            Instruction::RecordNew { dest, variant, fields } => {
+                write!(f, "l{} = record variant {} ({})", dest, variant, list(fields))
+            }
+            Instruction::FieldGet { dest, record, field } => write!(f, "l{} = {}.{}", dest, record, field),
+            Instruction::FieldSet { record, field, value, .. } => write!(f, "{}.{} = {}", record, field, value),
+            Instruction::ListRemove { dest, list, index: Some(index), .. } => {
+                write!(f, "l{} = remove {}, {}", dest, list, index)
+            }
+            Instruction::ListRemove { dest, list, index: None, .. } => write!(f, "l{} = pop {}", dest, list),
+            Instruction::Fail { message, .. } => write!(f, "fail {}", message),
             Instruction::ListSlice { dest, list, start, end, .. } => {
                 let bound = |bound: &Option<Operand>| bound.as_ref().map(Operand::to_string).unwrap_or_default();
                 write!(f, "l{} = {}[{}..{}]", dest, list, bound(start), bound(end))

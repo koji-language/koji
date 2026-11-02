@@ -53,6 +53,36 @@ bool koji_list_contains(const KojiList *list, const void *value);
 KojiString *koji_list_repr(const KojiList *list);
 KojiString *koji_list_join(const KojiList *list, const KojiString *separator);
 
+bool koji_list_pop(KojiList **variable, void *out);
+bool koji_list_remove(KojiList **variable, int64_t index, void *out);
+int64_t koji_list_index_of(const KojiList *list, const void *value);
+
+typedef struct KojiRecord KojiRecord;
+
+typedef struct {
+    const char *name;
+    size_t field_count;
+    const char *const *field_names;
+    const KojiElementType *const *field_types;
+} KojiVariantType;
+
+typedef struct {
+    size_t variant_count;
+    const KojiVariantType *variants;
+} KojiRecordType;
+
+KojiRecord *koji_record_new(const KojiRecordType *type, size_t tag);
+void koji_record_init(KojiRecord *record, size_t index, const void *value);
+void koji_record_retain(const KojiRecord *record);
+void koji_record_release(KojiRecord *record);
+int64_t koji_record_tag(const KojiRecord *record);
+const void *koji_record_get(const KojiRecord *record, size_t index);
+void *koji_record_slot(KojiRecord **variable, size_t index);
+void koji_record_set(KojiRecord **variable, size_t index, const void *value);
+bool koji_record_equal(const KojiRecord *a, const KojiRecord *b);
+KojiString *koji_record_repr(const KojiRecord *record);
+
+_Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
 _Noreturn void koji_panic(const char *location, const char *message);
 _Noreturn void koji_panic_shift(const char *location, int64_t amount);
@@ -83,7 +113,18 @@ static inline KojiList *koji_list_share(KojiList *list) {
     return list;
 }
 
-/* The items of lists, by type. */
+static inline void koji_record_set_variable(KojiRecord **variable, KojiRecord *value) {
+    KojiRecord *old = *variable;
+    *variable = value;
+    koji_record_release(old);
+}
+
+static inline KojiRecord *koji_record_share(KojiRecord *record) {
+    koji_record_retain(record);
+    return record;
+}
+
+/* The items of lists and the fields of records, by type. */
 
 static int32_t koji_order(bool less, bool greater) { return less ? -1 : greater ? 1 : 0; }
 
@@ -133,6 +174,15 @@ static bool koji_equal_list(const void *a, const void *b) {
 }
 static const KojiElementType koji_element_list = {
     sizeof(KojiList *), koji_retain_list, koji_release_list, koji_repr_list, koji_equal_list, NULL};
+
+static void koji_retain_record(const void *slot) { koji_record_retain(*(KojiRecord *const *)slot); }
+static void koji_release_record(const void *slot) { koji_record_release(*(KojiRecord *const *)slot); }
+static KojiString *koji_repr_record(const void *slot) { return koji_record_repr(*(KojiRecord *const *)slot); }
+static bool koji_equal_record(const void *a, const void *b) {
+    return koji_record_equal(*(KojiRecord *const *)a, *(KojiRecord *const *)b);
+}
+static const KojiElementType koji_element_record = {
+    sizeof(KojiRecord *), koji_retain_record, koji_release_record, koji_repr_record, koji_equal_record, NULL};
 
 static inline int64_t koji_int_add(int64_t a, int64_t b, const char *location) {
     int64_t result;

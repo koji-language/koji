@@ -300,8 +300,125 @@ fn list_panics() {
 }
 
 #[test]
+fn objects_sum_types_and_match() {
+    let source = "type Person = {\n\
+    name: string\n\
+    age: int\n\
+    tags: string[]\n\
+}\n\
+\n\
+type Tree = {\n\
+    Leaf\n\
+    Node(left: Tree, value: int, right: Tree)\n\
+}\n\
+\n\
+type AppError = {\n\
+    Parse(message: string)\n\
+    Range(value: int)\n\
+}\n\
+\n\
+function insert(tree: Tree, value: int): Tree {\n\
+    return match (tree) {\n\
+        Leaf => Node(Leaf, value, Leaf)\n\
+        Node(left, v, right) => if (value < v) { Node(insert(left, value), v, right) } else { Node(left, v, insert(right, value)) }\n\
+    }\n\
+}\n\
+\n\
+function sum(tree: Tree): int {\n\
+    match (tree) {\n\
+        Leaf => return 0\n\
+        Node(left, value, right) => return sum(left) + value + sum(right)\n\
+    }\n\
+}\n\
+\n\
+function check(n: int): Result[int, string] {\n\
+    if (n < 0) { return Err('negative') }\n\
+\n\
+    return Ok(n * 2)\n\
+}\n\
+\n\
+function twice(n: int): Result[int, AppError] {\n\
+    immut a = check(n).mapErr(Parse)?\n\
+    return Ok(a * 2)\n\
+}\n\
+\n\
+function triple(n: int): Result[int, AppError] {\n\
+    immut a = check(n)?\n\
+    return Ok(a * 3)\n\
+}\n\
+\n\
+function first(items: int[]): Option[int] {\n\
+    if (items.length() == 0) { return None }\n\
+\n\
+    return Some(items[0])\n\
+}\n\
+\n\
+function addFirst(items: int[]): Option[int] {\n\
+    immut value = first(items)?\n\
+    return Some(value + 1)\n\
+}\n\
+\n\
+mut people: Person[] = [{ name: 'Ana', age: 30, tags: [] }]\n\
+people.push({ age: 25, name: 'Bia', tags: ['x'] })\n\
+people[0].age += 1\n\
+people[1].tags.push('y')\n\
+immut copy = people[1]\n\
+people[1].name = 'Bea'\n\
+print(people, copy.name, people[0] == people[0], people[0] != copy)\n\
+\n\
+mut tree = Leaf\n\
+\n\
+for n in [5, 2, 8, 1] {\n\
+    tree = insert(tree, n)\n\
+}\n\
+\n\
+print(tree, sum(tree))\n\
+print(check(2), check(-1), addFirst([4]), addFirst([]))\n\
+\n\
+mut items = [1, 2, 3]\n\
+print(items.pop(), items.removeAt(5), items.removeAt(0), items.indexOf(2), items.indexOf(9), items)\n\
+\n\
+immut maybe = first([7])\n\
+\n\
+if (maybe is Some) {\n\
+    print('got', maybe.value)\n\
+}\n\
+\n\
+for x in [0, 1, 2, 3] {\n\
+    immut label = match (x) {\n\
+        0 => 'zero'\n\
+        n if (n % 2 == 1) => `odd ${n}`\n\
+        _ => 'other'\n\
+    }\n\
+    print(label)\n\
+}\n\
+\n\
+print(Range(3), Parse('bad') == Parse('bad'), twice(1), twice(-1), triple(1), triple(-1))\n\
+immut value = check(-5)?\n\
+print('unreachable')\n\
+";
+    let path = source_file("records", source);
+    let interpreted = interpret(&path, source);
+    let compiled = compile_and_run(&path);
+    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert_eq!(compiled.output, "[{ name: 'Ana', age: 31, tags: [] }, { name: 'Bea', age: 25, tags: ['x', 'y'] }] Bia true true\n\
+Node(Node(Node(Leaf, 1, Leaf), 2, Leaf), 5, Node(Leaf, 8, Leaf)) 16\n\
+Ok(4) Err('negative') Some(5) None\n\
+Some(3) None Some(1) Some(0) None [2]\n\
+got 7\n\
+zero\n\
+odd 1\n\
+other\n\
+odd 3\n\
+Range(3) true Ok(4) Err(Parse('negative')) Ok(6) Err(Parse('negative'))\n\
+");
+    // `?` at the top level stops the program with the error.
+    assert_eq!(compiled.error, "error: target/tmp/compiler/records.kj:94: negative");
+}
+
+#[test]
 fn examples_that_compile() {
-    for example in ["hello", "booleans", "comments", "condition", "interpolation", "length"] {
+    for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));
         let source = std::fs::read_to_string(&path).unwrap();
         let interpreted = interpret(&path, &source);
@@ -314,10 +431,10 @@ fn examples_that_compile() {
 
 #[test]
 fn unsupported_constructs_are_reported() {
-    let path = source_file("unsupported", "mut items = [1, 2, 3]\nprint(items.pop())\n");
+    let path = source_file("unsupported", "immut ages = ['Ana': 30]\nprint(ages)\n");
     let error = kojic::build_file(&path, &path.with_extension(""), kojic::Emit::Executable).unwrap_err();
     assert!(
-        error.to_string().ends_with("unsupported.kj:2: a value of a declared or built-in type (Option, Result, Map, ...) is not supported by 'kojic build' yet (use 'kojic run')"),
+        error.to_string().ends_with("unsupported.kj:1: a Map is not supported by 'kojic build' yet (use 'kojic run')"),
         "{}",
         error
     );

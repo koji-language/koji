@@ -298,3 +298,41 @@ pub extern "C" fn koji_list_join(list: *const KojiList, separator: *const KojiSt
     }
     new_string(text)
 }
+
+/// `items.pop()`: copies the last item into `out` (the caller now owns its reference) and
+/// returns true, or returns false for an empty list.
+#[no_mangle]
+pub extern "C" fn koji_list_pop(variable: *mut *mut KojiList, out: *mut c_void) -> bool {
+    let list = unshare(variable);
+    match list.items.pop() {
+        Some(slot) => {
+            unsafe { std::ptr::copy_nonoverlapping(&slot as *const u64 as *const u8, out as *mut u8, list.element().size) };
+            true
+        }
+        None => false,
+    }
+}
+
+/// `items.removeAt(index)`: like `koji_list_pop`, for the item at `index`; false when `index`
+/// is out of range.
+#[no_mangle]
+pub extern "C" fn koji_list_remove(variable: *mut *mut KojiList, index: i64, out: *mut c_void) -> bool {
+    let list = unshare(variable);
+    if index < 0 || index as usize >= list.items.len() {
+        return false;
+    }
+    let slot = list.items.remove(index as usize);
+    unsafe { std::ptr::copy_nonoverlapping(&slot as *const u64 as *const u8, out as *mut u8, list.element().size) };
+    true
+}
+
+/// `items.indexOf(value)`: the position of the first equal item, or -1.
+#[no_mangle]
+pub extern "C" fn koji_list_index_of(list: *const KojiList, value: *const c_void) -> i64 {
+    let list = self::list(list);
+    let slot = list.read(value);
+    let value = &slot as *const u64 as *const c_void;
+    (0..list.items.len())
+        .position(|index| unsafe { (list.element().equal)(list.slot(index), value) })
+        .map_or(-1, |index| index as i64)
+}

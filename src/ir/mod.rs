@@ -21,6 +21,7 @@ pub type GlobalId = usize;
 pub type BlockId = usize;
 pub type FuncId = usize;
 pub type StrId = usize;
+pub type RecordId = usize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
@@ -29,13 +30,15 @@ pub enum Ty {
     Bool,
     Str,
     List(Box<Ty>),
+    /// A value of a declared type (`Program::records`).
+    Record(RecordId),
     Void,
 }
 
 impl Ty {
     /// Whether values of this type are reference-counted.
     pub fn is_managed(&self) -> bool {
-        matches!(self, Ty::Str | Ty::List(_))
+        matches!(self, Ty::Str | Ty::List(_) | Ty::Record(_))
     }
 
     /// The type of the items of a list type.
@@ -66,12 +69,37 @@ pub enum Place {
     Global(GlobalId),
 }
 
-/// A list that an instruction changes: a variable, or an item of a list in a variable
-/// (`grid[0]` is `{ root: grid, path: [0] }`).
+/// A value that an instruction changes in place: a variable, or a part of the value in a
+/// variable (`people[0].tags` is `{ root: people, path: [Index(0), Field(tags)] }`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
     pub root: Place,
-    pub path: Vec<Operand>,
+    pub path: Vec<Step>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Step {
+    /// An item of a list.
+    Index(Operand),
+    /// A field of a record (its position).
+    Field(usize),
+}
+
+/// A declared type, with its type arguments applied (`Option[int]` and `Option[string]` are
+/// two records).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Record {
+    /// How the type is written (`Option[int]`).
+    pub name: String,
+    /// The variants of a sum type, in order (the tag of a value is its position), or one
+    /// variant without a name for an object type.
+    pub variants: Vec<Variant>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Variant {
+    pub name: Option<String>,
+    pub fields: Vec<(String, Ty)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,6 +115,10 @@ pub enum UnaryOp {
     BoolToStr,
     /// A list as written in code (`[1, 2]`).
     ListToStr,
+    /// A record as written in code (`{ x: 1 }`, `Some(2)`).
+    RecordToStr,
+    /// The tag (variant) of a record, as an `int`.
+    RecordTag,
     StrLength,
     ListLength,
 }
@@ -128,6 +160,10 @@ pub enum BinaryOp {
     ListContains,
     /// `list.join(separator)`.
     ListJoin,
+    /// `==` and `!=` on records.
+    RecordCompare(Comparison),
+    /// The position of `right` in the list `left`, or -1.
+    ListIndexOf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -164,6 +200,17 @@ pub enum Instruction {
         end: Option<Operand>,
         line: usize,
     },
+    /// A new record of the variant `variant` (the type of `dest` gives the record).
+    RecordNew { dest: LocalId, variant: usize, fields: Vec<Operand> },
+    /// `dest = record.field` (the field at position `field`).
+    FieldGet { dest: LocalId, record: Operand, field: usize },
+    /// `target.field = value`.
+    FieldSet { record: Target, field: usize, value: Operand, line: usize },
+    /// `dest = list.pop()` or `list.removeAt(index)`: `dest` is an `Option` record.
+    ListRemove { dest: LocalId, list: Target, index: Option<Operand>, line: usize },
+    /// Ends the program because an `Err` or `None` reached the top level with `?`: prints
+    /// `error: <location>: <message>` and exits with code 1.
+    Fail { message: Operand, line: usize },
     /// Writes a string and a line break to the standard output.
     Print { value: Operand, line: usize },
     /// One step of `for i in range(...)`: when `next` has not passed `end` (in the direction
@@ -231,4 +278,5 @@ pub struct Program {
     /// Top-level variables of the main file.
     pub globals: Vec<Global>,
     pub strings: Vec<String>,
+    pub records: Vec<Record>,
 }

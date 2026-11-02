@@ -8,6 +8,7 @@
 //! produce exactly the same output.
 
 mod list;
+mod record;
 mod numbers;
 mod output;
 mod string;

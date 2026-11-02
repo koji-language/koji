@@ -37,3 +37,13 @@ pub extern "C" fn koji_print(text: *const KojiString, location: *const c_char) {
         panic_at(location, &format!("cannot write output: {}", error));
     }
 }
+
+/// An `Err` or `None` that reached the top level of the program with `?`.
+#[no_mangle]
+pub extern "C" fn koji_fail(location: *const c_char, message: *const KojiString) -> ! {
+    let location = unsafe { CStr::from_ptr(location) }.to_string_lossy();
+    let message = unsafe { &*message }.as_str();
+    let _ = std::io::stdout().flush();
+    eprintln!("error: {}: {}", location, message);
+    std::process::exit(1)
+}

@@ -33,6 +33,7 @@ fn c_type(ty: &Ty) -> &'static str {
         Ty::Bool => "bool",
         Ty::Str => "KojiString *",
         Ty::List(_) => "KojiList *",
+        Ty::Record(_) => "KojiRecord *",
         Ty::Void => "void",
     }
 }
@@ -42,6 +43,7 @@ fn share(ty: &Ty, expression: String) -> String {
     match ty {
         Ty::Str => format!("koji_string_share({})", expression),
         Ty::List(_) => format!("koji_list_share({})", expression),
+        Ty::Record(_) => format!("koji_record_share({})", expression),
         _ => expression,
     }
 }
@@ -50,6 +52,7 @@ fn release(ty: &Ty) -> Option<&'static str> {
     match ty {
         Ty::Str => Some("koji_string_release"),
         Ty::List(_) => Some("koji_list_release"),
+        Ty::Record(_) => Some("koji_record_release"),
         _ => None,
     }
 }
@@ -62,6 +65,7 @@ fn element_type(ty: &Ty) -> &'static str {
         Ty::Bool => "&koji_element_bool",
         Ty::Str => "&koji_element_string",
         Ty::List(_) => "&koji_element_list",
+        Ty::Record(_) => "&koji_element_record",
         Ty::Void => unreachable!("a list of void"),
     }
 }
@@ -96,6 +100,7 @@ impl Generator<'_> {
         for (id, text) in self.program.strings.iter().enumerate() {
             let _ = writeln!(self.out, "static KojiString *koji_s{}; // {:?}", id, text);
         }
+        self.records();
         for (id, global) in self.program.globals.iter().enumerate() {
             let _ = writeln!(self.out, "static {} koji_g{}; // {}", c_type(&global.ty), id, global.name);
         }
@@ -122,6 +127,67 @@ impl Generator<'_> {
         }
         let _ = writeln!(self.out, "    {}();", function_name(self.program.main));
         self.out.push_str("    return 0;\n}\n");
+    }
+
+    /// The descriptions of the declared types, for the runtime.
+    fn records(&mut self) {
+        for (id, record) in self.program.records.iter().enumerate() {
+            let _ = writeln!(self.out, "// {}", record.name);
+            for (index, variant) in record.variants.iter().enumerate() {
+                let names: Vec<String> = variant.fields.iter().map(|(name, _)| c_string(name)).collect();
+                let types: Vec<&str> = variant.fields.iter().map(|(_, ty)| element_type(ty)).collect();
+                if !variant.fields.is_empty() {
+                    let _ = writeln!(
+                        self.out,
+                        "static const char *const koji_record_{}_{}_names[] = {{ {} }};",
+                        id,
+                        index,
+                        names.join(", ")
+                    );
+                    let _ = writeln!(
+                        self.out,
+                        "static const KojiElementType *const koji_record_{}_{}_types[] = {{ {} }};",
+                        id,
+                        index,
+                        types.join(", ")
+                    );
+                }
+            }
+            let variants: Vec<String> = record
+                .variants
+                .iter()
+                .enumerate()
+                .map(|(index, variant)| {
+                    let name = variant.name.as_deref().map(c_string).unwrap_or_else(|| "NULL".to_string());
+                    if variant.fields.is_empty() {
+                        format!("{{ {}, 0, NULL, NULL }}", name)
+                    } else {
+                        format!(
+                            "{{ {}, {}, koji_record_{}_{}_names, koji_record_{}_{}_types }}",
+                            name,
+                            variant.fields.len(),
+                            id,
+                            index,
+                            id,
+                            index
+                        )
+                    }
+                })
+                .collect();
+            let _ = writeln!(
+                self.out,
+                "static const KojiVariantType koji_record_{}_variants[] = {{ {} }};",
+                id,
+                variants.join(", ")
+            );
+            let _ = writeln!(
+                self.out,
+                "static const KojiRecordType koji_record_{} = {{ {}, koji_record_{}_variants }};",
+                id,
+                record.variants.len(),
+                id
+            );
+        }
     }
 
     fn signature(&self, id: FuncId, function: &Function) -> String {
@@ -155,19 +221,17 @@ impl Generator<'_> {
         // Parameters are borrowed from the caller; a reference of their own keeps them alive
         // even if the caller's variable changes during the call.
         for (param, local) in function.locals.iter().enumerate().take(function.params) {
-            match local.ty {
-                Ty::Str => {
-                    let _ = writeln!(self.out, "    koji_string_retain(l{});", param);
-                }
-                Ty::List(_) => {
-                    let _ = writeln!(self.out, "    koji_list_retain(l{});", param);
-                }
-                _ => {}
-            }
+            let retain = match local.ty {
+                Ty::Str => "koji_string_retain",
+                Ty::List(_) => "koji_list_retain",
+                Ty::Record(_) => "koji_record_retain",
+                _ => continue,
+            };
+            let _ = writeln!(self.out, "    {}(l{});", retain, param);
         }
         for (local_id, local) in function.locals.iter().enumerate().skip(function.params) {
             let initial = match local.ty {
-                Ty::Str | Ty::List(_) => "NULL",
+                Ty::Str | Ty::List(_) | Ty::Record(_) => "NULL",
                 Ty::Bool => "false",
                 Ty::Float => "0.0",
                 _ => "0",
@@ -220,24 +284,36 @@ impl Generator<'_> {
             Ty::List(_) => {
                 let _ = writeln!(self.out, "    koji_list_set_variable(&{}, {});", dest, expression);
             }
+            Ty::Record(_) => {
+                let _ = writeln!(self.out, "    koji_record_set_variable(&{}, {});", dest, expression);
+            }
             _ => {
                 let _ = writeln!(self.out, "    {} = {};", dest, expression);
             }
         }
     }
 
-    /// The variable that holds the list of `target`, as a `KojiList **`.
-    fn target(&self, target: &Target, line: usize) -> String {
-        let mut variable = format!("&{}", self.place(&target.root));
-        for index in &target.path {
-            variable = format!(
-                "(KojiList **)koji_list_slot({}, {}, {})",
-                variable,
-                self.operand(index),
-                self.location(line)
-            );
+    /// The variable that holds the value of `target`, as a `void **` (each step copies a
+    /// shared list or record before giving the slot inside it).
+    fn path(&self, target: &Target, line: usize) -> String {
+        let mut variable = format!("(void **)&{}", self.place(&target.root));
+        for step in &target.path {
+            variable = match step {
+                Step::Index(index) => format!(
+                    "(void **)koji_list_slot((KojiList **){}, {}, {})",
+                    variable,
+                    self.operand(index),
+                    self.location(line)
+                ),
+                Step::Field(field) => format!("(void **)koji_record_slot((KojiRecord **){}, {})", variable, field),
+            };
         }
         variable
+    }
+
+    /// The variable that holds the list of `target`, as a `KojiList **`.
+    fn target(&self, target: &Target, line: usize) -> String {
+        format!("(KojiList **){}", self.path(target, line))
     }
 
     /// Calls `call`, where `VALUE` is the address of `value` (the list makes its own copy).
@@ -274,11 +350,22 @@ impl Generator<'_> {
                     UnaryOp::ListToStr => format!("koji_list_repr({})", value),
                     UnaryOp::StrLength => format!("koji_string_length({})", value),
                     UnaryOp::ListLength => format!("koji_list_length({})", value),
+                    UnaryOp::RecordToStr => format!("koji_record_repr({})", value),
+                    UnaryOp::RecordTag => format!("koji_record_tag({})", value),
                 };
                 self.set(&format!("l{}", dest), &function.locals[*dest].ty, &expression);
             }
             Instruction::Binary { dest, op, left, right, line } => {
                 let expression = match op {
+                    BinaryOp::ListIndexOf => {
+                        let item_type = self.operand_type(function, left).element().clone();
+                        format!(
+                            "({{ {} item = {}; koji_list_index_of({}, &item); }})",
+                            c_type(&item_type),
+                            self.operand(right),
+                            self.operand(left)
+                        )
+                    }
                     // The item needs an address.
                     BinaryOp::ListContains => {
                         let item_type = self.operand_type(function, right).element().clone();
@@ -366,6 +453,67 @@ impl Generator<'_> {
                 );
                 self.set(&format!("l{}", dest), &function.locals[*dest].ty, &slice);
             }
+            Instruction::RecordNew { dest, variant, fields } => {
+                let ty = function.locals[*dest].ty.clone();
+                let Ty::Record(record) = ty else { unreachable!("a record") };
+                let new = format!("koji_record_new(&koji_record_{}, {})", record, variant);
+                self.set(&format!("l{}", dest), &ty, &new);
+                let field_types: Vec<Ty> = self.program.records[record].variants[*variant]
+                    .fields
+                    .iter()
+                    .map(|(_, ty)| ty.clone())
+                    .collect();
+                for (index, (field, field_type)) in fields.iter().zip(&field_types).enumerate() {
+                    let call = format!("koji_record_init(l{}, {}, VALUE)", dest, index);
+                    self.with_address(field_type, field, &call);
+                }
+            }
+            Instruction::FieldGet { dest, record, field } => {
+                let ty = function.locals[*dest].ty.clone();
+                let value = format!("*({} const *)koji_record_get({}, {})", c_type(&ty), self.operand(record), field);
+                self.set(&format!("l{}", dest), &ty, &share(&ty, value));
+            }
+            Instruction::FieldSet { record, field, value, line } => {
+                let ty = self.operand_type(function, value);
+                let call = format!(
+                    "koji_record_set((KojiRecord **){}, {}, VALUE)",
+                    self.path(record, *line),
+                    field
+                );
+                self.with_address(&ty, value, &call);
+            }
+            Instruction::ListRemove { dest, list, index, line } => {
+                let ty = function.locals[*dest].ty.clone();
+                let Ty::Record(option) = ty else { unreachable!("an Option") };
+                let variants = &self.program.records[option].variants;
+                let position = |name: &str| variants.iter().position(|v| v.name.as_deref() == Some(name)).expect("Option");
+                let (some, none) = (position("Some"), position("None"));
+                let item_type = variants[some].fields[0].1.clone();
+                let remove = match index {
+                    Some(index) => format!("koji_list_remove({}, {}, &item)", self.target(list, *line), self.operand(index)),
+                    None => format!("koji_list_pop({}, &item)", self.target(list, *line)),
+                };
+                // The list gives its reference to the item; the record takes its own.
+                let release_item = match release(&item_type) {
+                    Some(release) => format!(" {}(item);", release),
+                    None => String::new(),
+                };
+                let _ = writeln!(
+                    self.out,
+                    "    {{ {} item; KojiRecord *option; if ({}) {{ option = koji_record_new(&koji_record_{}, {}); koji_record_init(option, 0, &item);{} }} else {{ option = koji_record_new(&koji_record_{}, {}); }} koji_record_set_variable(&l{}, option); }}",
+                    c_type(&item_type),
+                    remove,
+                    option,
+                    some,
+                    release_item,
+                    option,
+                    none,
+                    dest
+                );
+            }
+            Instruction::Fail { message, line } => {
+                let _ = writeln!(self.out, "    koji_fail({}, {});", self.location(*line), self.operand(message));
+            }
             Instruction::Print { value, line } => {
                 let _ = writeln!(
                     self.out,
@@ -443,7 +591,9 @@ impl Generator<'_> {
             BinaryOp::ListConcat => format!("koji_list_concat({}, {})", left, right),
             BinaryOp::ListCompare(Comparison::NotEqual) => format!("!koji_list_equal({}, {})", left, right),
             BinaryOp::ListCompare(_) => format!("koji_list_equal({}, {})", left, right),
-            BinaryOp::ListContains => unreachable!("generated by the caller"),
+            BinaryOp::ListContains | BinaryOp::ListIndexOf => unreachable!("generated by the caller"),
+            BinaryOp::RecordCompare(Comparison::NotEqual) => format!("!koji_record_equal({}, {})", left, right),
+            BinaryOp::RecordCompare(_) => format!("koji_record_equal({}, {})", left, right),
             BinaryOp::ListJoin => format!("koji_list_join({}, {})", left, right),
         }
     }

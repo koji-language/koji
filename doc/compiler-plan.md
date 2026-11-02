@@ -399,17 +399,19 @@ A compiler is a large program, with many data structures and many operations tha
 It compiles a first subset of the language:
 
 -   `int`, `float`, `boolean` and `string` values, `mut` and `immut` variables, top-level variables used by functions;
--   lists of those values and of lists: literals, indexing and assigning items (also `grid[0][1] = 5`), slices, `+`, `==`, `in`, `for` over a list, `length`, `push`, `insert`, `sort` and `join`;
+-   object types and sum types (also generic, such as `Option[int]`, and recursive), with object literals, constructors, fields (reading and assigning, also `people[0].age += 1`), `==`, `match` (variants, literals, bindings, guards, as a statement or an expression), `is` and the narrowing it gives (`if (x is Some) { x.value }`);
+-   `Option` and `Result`: `?` (with the automatic wrapping of the error, and stopping the program at the top level), `mapErr` with a variant (`mapErr(Parse)`), and the list methods that give them (`pop`, `removeAt`, `indexOf`);
+-   lists of all those values: literals, indexing and assigning items (also `grid[0][1] = 5`), slices, `+`, `==`, `in`, `for` over a list, `length`, `push`, `insert`, `sort` and `join`;
 -   every operator on those types, with the same panics as the interpreter (overflow, division by zero, `float` overflow, invalid shifts and powers);
 -   string interpolation, `print`, `string(x)`, `float(n)`, `text.length()` and `in` on strings;
 -   functions with parameters and a return value, recursion;
 -   `if` (also as an expression), `while`, `for` over `range`, `break`, `continue` and `return`.
 
-Anything else (objects, sum types, `Option` and `Result` with the list methods that give them, `match`, methods, closures, generics, imports, the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
+Anything else (`char`, `Map` and `Set`, methods and `display`, closures and functions as values, generic functions, imports, `mut` and `take` parameters, move-only values, the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
 
-**Memory**: strings and lists are reference-counted. A variable owns one reference, and copying a value only adds a reference (value semantics with copy-on-write); changing a list that is shared copies it first, so the other variables never see the change. Assigning a variable releases its old value, and a function releases its values when it returns. Each item of a list takes an 8-byte slot, and the generated code describes the type of the items to the runtime (how to retain, release, show, compare and order them).
+**Memory**: strings, lists and records (the values of declared types) are reference-counted. A variable owns one reference, and copying a value only adds a reference (value semantics with copy-on-write); changing a list that is shared copies it first, so the other variables never see the change. Assigning a variable releases its old value, and a function releases its values when it returns. Each item of a list and each field of a record takes an 8-byte slot, and the generated code describes their types to the runtime (how to retain, release, show, compare and order them). A generic type gets one description for each set of type arguments (`Option[int]`, `Option[string]`).
 
-**Next steps**, in order: objects and sum types with `match`; `Option`, `Result` and `?`; methods; `Map` and `Set`; closures; generics (monomorphization); imports; move-only values and `drop`; then the standard library modules, calling the Rust implementations.
+**Next steps**, in order: methods and `display`; `Map` and `Set`; closures; generics (monomorphization); imports; move-only values and `drop`; then the standard library modules, calling the Rust implementations.
 
 ---
 
