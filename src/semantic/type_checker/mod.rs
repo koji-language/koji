@@ -70,6 +70,11 @@ pub struct Ownership {
     pub mutating_calls: HashSet<usize>,
     /// The type of each expression, as checked (used by the compiler).
     pub types: HashMap<usize, Type>,
+    /// `int` expressions stored as `float` (the items of `[1, 2.5]`).
+    pub to_float: HashSet<usize>,
+    /// The type of each declared variable (`VarDecl`), after the later uses that refine it
+    /// (`mut items = []` then `items.push(1)`).
+    pub variable_types: HashMap<usize, Type>,
 }
 
 /// Identity of an AST node, for the `Ownership` tables.
@@ -122,6 +127,9 @@ struct Symbol {
     /// and their constraints.
     generics: usize,
     constraints: Vec<Constraint>,
+    /// The `VarDecl` that declared it, so its final type can be recorded
+    /// (`Ownership::variable_types`).
+    decl: Option<usize>,
     /// Line where it is declared.
     line: usize,
 }
@@ -140,6 +148,7 @@ impl Symbol {
             narrowed: false,
             generics: 0,
             constraints: Vec::new(),
+            decl: None,
             line: 0,
         }
     }
@@ -157,6 +166,7 @@ impl Symbol {
             narrowed: false,
             generics: 0,
             constraints: Vec::new(),
+            decl: None,
             line: 0,
         }
     }
@@ -391,11 +401,26 @@ impl Checker {
             .find_map(|scope| scope.types.get(name))
     }
 
+    /// Gives a better-known type to a variable, and records it for the compiler.
+    fn set_variable_type(&mut self, name: &str, ty: Type) {
+        let mut decl = None;
+        if let Some(symbol) = self.lookup_mut(name) {
+            symbol.ty = ty.clone();
+            decl = symbol.decl;
+        }
+        if let Some(decl) = decl {
+            self.ownership.variable_types.insert(decl, ty);
+        }
+    }
+
     fn declare(&mut self, name: &str, mut symbol: Symbol) -> CheckResult<()> {
         if self.current_scope().vars.contains_key(name) {
             return self.err(format!("'{}' is already declared in this scope", name));
         }
         symbol.line = self.state.line;
+        if let Some(decl) = symbol.decl {
+            self.ownership.variable_types.insert(decl, symbol.ty.clone());
+        }
         self.current_scope().vars.insert(name.to_string(), symbol);
         Ok(())
     }

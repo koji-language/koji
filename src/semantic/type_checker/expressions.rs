@@ -61,9 +61,13 @@ impl Checker {
                     _ => None,
                 };
                 let mut element_ty = Type::Unknown;
+                let mut ints = Vec::new();
                 for element in elements {
                     let ty = self.check_value(element, expected_element.as_ref())?;
                     self.consume(element, &ty)?;
+                    if ty == Type::Int {
+                        ints.push(node_id(element));
+                    }
                     element_ty = match self.join(&element_ty, &ty) {
                         Some(joined) => joined,
                         None => {
@@ -80,6 +84,10 @@ impl Checker {
                     if !expected_element.contains_unknown() && self.assignable(&expected_element, &element_ty) {
                         element_ty = expected_element;
                     }
+                }
+                // `[1, 2.5]` and `xs: float[] = [1]`: the ints are stored as floats.
+                if element_ty == Type::Float {
+                    self.ownership.to_float.extend(ints);
                 }
                 Ok(Type::List(Box::new(element_ty)))
             }
@@ -131,7 +139,12 @@ impl Checker {
                     (self.check_value(left, expected.as_ref())?, right_ty)
                 } else {
                     let left_ty = self.check_value(left, None)?;
-                    let expected = (left_ty == Type::Char).then_some(Type::Char);
+                    // `floats + [3]`: a list literal takes the type of the other list.
+                    let expected = match &left_ty {
+                        Type::Char => Some(Type::Char),
+                        Type::List(_) if matches!(right.unlocated(), AstNode::ArrayLiteral(_)) => Some(left_ty.clone()),
+                        _ => None,
+                    };
                     (left_ty.clone(), self.check_value(right, expected.as_ref())?)
                 };
                 // A type parameter only has the comparisons its constraint allows.

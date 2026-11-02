@@ -269,20 +269,7 @@ impl Value {
                 let _ = write!(out, "{}", n);
             }
             Value::Float(f) => out.push_str(&format_float(*f)),
-            Value::Str(s) => {
-                out.push('\'');
-                for c in s.chars() {
-                    match c {
-                        '\'' => out.push_str("\\'"),
-                        '\\' => out.push_str("\\\\"),
-                        '\n' => out.push_str("\\n"),
-                        '\t' => out.push_str("\\t"),
-                        '\r' => out.push_str("\\r"),
-                        other => out.push(other),
-                    }
-                }
-                out.push('\'');
-            }
+            Value::Str(s) => out.push_str(&koji_runtime::repr_string(s)),
             Value::Char(c) => {
                 out.push('\'');
                 match c {

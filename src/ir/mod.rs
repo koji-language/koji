@@ -5,10 +5,11 @@
 //! operation is explicit and typed (`IntAdd`, `FloatAdd` and `StrConcat` are different
 //! operations), so a code generator never needs the types of the source language.
 //!
-//! Memory: a local of type `Str` owns one reference to its string, except parameters, which
-//! borrow the caller's. Writing a local releases its previous string, and a function releases
-//! the strings of its locals when it returns. The code generator applies these rules; the IR
-//! does not spell out the reference counting.
+//! Memory: strings and lists are reference-counted, and copying one only adds a reference
+//! (value semantics with copy-on-write). A local of type `Str` or `List` owns one reference.
+//! Writing a local releases its previous value, and a function releases the values of its
+//! locals when it returns. The code generator applies these rules; the IR does not spell out
+//! the reference counting.
 
 mod lower;
 mod print;
@@ -21,13 +22,29 @@ pub type BlockId = usize;
 pub type FuncId = usize;
 pub type StrId = usize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
     Int,
     Float,
     Bool,
     Str,
+    List(Box<Ty>),
     Void,
+}
+
+impl Ty {
+    /// Whether values of this type are reference-counted.
+    pub fn is_managed(&self) -> bool {
+        matches!(self, Ty::Str | Ty::List(_))
+    }
+
+    /// The type of the items of a list type.
+    pub fn element(&self) -> &Ty {
+        match self {
+            Ty::List(element) => element,
+            other => panic!("{:?} is not a list type", other),
+        }
+    }
 }
 
 /// A value read by an instruction.
@@ -49,6 +66,14 @@ pub enum Place {
     Global(GlobalId),
 }
 
+/// A list that an instruction changes: a variable, or an item of a list in a variable
+/// (`grid[0]` is `{ root: grid, path: [0] }`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    pub root: Place,
+    pub path: Vec<Operand>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     /// Panics on overflow (`-(-9223372036854775807 - 1)`).
@@ -60,6 +85,10 @@ pub enum UnaryOp {
     IntToStr,
     FloatToStr,
     BoolToStr,
+    /// A list as written in code (`[1, 2]`).
+    ListToStr,
+    StrLength,
+    ListLength,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -90,6 +119,15 @@ pub enum BinaryOp {
     StrConcat,
     /// `text * count`.
     StrRepeat,
+    /// `needle in haystack`, with two strings.
+    StrContains,
+    ListConcat,
+    /// `==` and `!=` on lists.
+    ListCompare(Comparison),
+    /// `item in list`: the left operand is the item.
+    ListContains,
+    /// `list.join(separator)`.
+    ListJoin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -109,6 +147,23 @@ pub enum Instruction {
     Unary { dest: LocalId, op: UnaryOp, value: Operand, line: usize },
     Binary { dest: LocalId, op: BinaryOp, left: Operand, right: Operand, line: usize },
     Call { dest: Option<LocalId>, function: FuncId, args: Vec<Operand>, line: usize },
+    /// A new list with `items` (the type of `dest` gives the type of the items).
+    ListNew { dest: LocalId, items: Vec<Operand> },
+    /// `dest = list[index]` (panics when out of range).
+    ListGet { dest: LocalId, list: Operand, index: Operand, line: usize },
+    /// `list[index] = value`.
+    ListSet { list: Target, index: Operand, value: Operand, line: usize },
+    ListPush { list: Target, value: Operand, line: usize },
+    ListInsert { list: Target, index: Operand, value: Operand, line: usize },
+    ListSort { list: Target, line: usize },
+    /// `dest = list[start..end]`; a missing bound is the start or the end of the list.
+    ListSlice {
+        dest: LocalId,
+        list: Operand,
+        start: Option<Operand>,
+        end: Option<Operand>,
+        line: usize,
+    },
     /// Writes a string and a line break to the standard output.
     Print { value: Operand, line: usize },
     /// One step of `for i in range(...)`: when `next` has not passed `end` (in the direction

@@ -19,6 +19,40 @@ KojiString *koji_string_from_int(int64_t value);
 KojiString *koji_string_from_float(double value);
 KojiString *koji_string_from_bool(bool value);
 
+KojiString *koji_string_repr(const KojiString *string);
+int64_t koji_string_length(const KojiString *string);
+bool koji_string_contains(const KojiString *haystack, const KojiString *needle);
+
+typedef struct KojiList KojiList;
+
+/* How the generated code describes the items of a list (see runtime/src/list.rs). */
+typedef struct {
+    size_t size;
+    void (*retain)(const void *slot);
+    void (*release)(const void *slot);
+    KojiString *(*repr)(const void *slot);
+    bool (*equal)(const void *a, const void *b);
+    int32_t (*compare)(const void *a, const void *b);
+} KojiElementType;
+
+KojiList *koji_list_new(const KojiElementType *element, size_t capacity);
+void koji_list_retain(const KojiList *list);
+void koji_list_release(KojiList *list);
+int64_t koji_list_length(const KojiList *list);
+const void *koji_list_get(const KojiList *list, int64_t index, const char *location);
+void *koji_list_slot(KojiList **variable, int64_t index, const char *location);
+void koji_list_set(KojiList **variable, int64_t index, const void *value, const char *location);
+void koji_list_push(KojiList **variable, const void *value);
+void koji_list_insert(KojiList **variable, int64_t index, const void *value, const char *location);
+void koji_list_sort(KojiList **variable);
+KojiList *koji_list_concat(const KojiList *a, const KojiList *b);
+KojiList *koji_list_slice(const KojiList *list, bool has_start, int64_t start, bool has_end,
+                          int64_t end, const char *location);
+bool koji_list_equal(const KojiList *a, const KojiList *b);
+bool koji_list_contains(const KojiList *list, const void *value);
+KojiString *koji_list_repr(const KojiList *list);
+KojiString *koji_list_join(const KojiList *list, const KojiString *separator);
+
 void koji_print(const KojiString *text, const char *location);
 _Noreturn void koji_panic(const char *location, const char *message);
 _Noreturn void koji_panic_shift(const char *location, int64_t amount);
@@ -37,6 +71,68 @@ static inline KojiString *koji_string_share(KojiString *string) {
     koji_string_retain(string);
     return string;
 }
+
+static inline void koji_list_set_variable(KojiList **variable, KojiList *value) {
+    KojiList *old = *variable;
+    *variable = value;
+    koji_list_release(old);
+}
+
+static inline KojiList *koji_list_share(KojiList *list) {
+    koji_list_retain(list);
+    return list;
+}
+
+/* The items of lists, by type. */
+
+static int32_t koji_order(bool less, bool greater) { return less ? -1 : greater ? 1 : 0; }
+
+static KojiString *koji_repr_int(const void *slot) { return koji_string_from_int(*(const int64_t *)slot); }
+static bool koji_equal_int(const void *a, const void *b) { return *(const int64_t *)a == *(const int64_t *)b; }
+static int32_t koji_compare_int(const void *a, const void *b) {
+    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+    return koji_order(x < y, x > y);
+}
+static const KojiElementType koji_element_int = {
+    sizeof(int64_t), NULL, NULL, koji_repr_int, koji_equal_int, koji_compare_int};
+
+static KojiString *koji_repr_float(const void *slot) { return koji_string_from_float(*(const double *)slot); }
+static bool koji_equal_float(const void *a, const void *b) { return *(const double *)a == *(const double *)b; }
+static int32_t koji_compare_float(const void *a, const void *b) {
+    double x = *(const double *)a, y = *(const double *)b;
+    return koji_order(x < y, x > y);
+}
+static const KojiElementType koji_element_float = {
+    sizeof(double), NULL, NULL, koji_repr_float, koji_equal_float, koji_compare_float};
+
+static KojiString *koji_repr_bool(const void *slot) { return koji_string_from_bool(*(const bool *)slot); }
+static bool koji_equal_bool(const void *a, const void *b) { return *(const bool *)a == *(const bool *)b; }
+/* Like the interpreter, booleans keep their order when sorted. */
+static int32_t koji_compare_bool(const void *a, const void *b) { (void)a; (void)b; return 0; }
+static const KojiElementType koji_element_bool = {
+    sizeof(bool), NULL, NULL, koji_repr_bool, koji_equal_bool, koji_compare_bool};
+
+static void koji_retain_string(const void *slot) { koji_string_retain(*(KojiString *const *)slot); }
+static void koji_release_string(const void *slot) { koji_string_release(*(KojiString *const *)slot); }
+static KojiString *koji_repr_string(const void *slot) { return koji_string_repr(*(KojiString *const *)slot); }
+static bool koji_equal_string(const void *a, const void *b) {
+    return koji_string_equal(*(KojiString *const *)a, *(KojiString *const *)b);
+}
+static int32_t koji_compare_string(const void *a, const void *b) {
+    return koji_string_compare(*(KojiString *const *)a, *(KojiString *const *)b);
+}
+static const KojiElementType koji_element_string = {
+    sizeof(KojiString *), koji_retain_string, koji_release_string, koji_repr_string,
+    koji_equal_string, koji_compare_string};
+
+static void koji_retain_list(const void *slot) { koji_list_retain(*(KojiList *const *)slot); }
+static void koji_release_list(const void *slot) { koji_list_release(*(KojiList *const *)slot); }
+static KojiString *koji_repr_list(const void *slot) { return koji_list_repr(*(KojiList *const *)slot); }
+static bool koji_equal_list(const void *a, const void *b) {
+    return koji_list_equal(*(KojiList *const *)a, *(KojiList *const *)b);
+}
+static const KojiElementType koji_element_list = {
+    sizeof(KojiList *), koji_retain_list, koji_release_list, koji_repr_list, koji_equal_list, NULL};
 
 static inline int64_t koji_int_add(int64_t a, int64_t b, const char *location) {
     int64_t result;

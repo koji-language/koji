@@ -207,8 +207,101 @@ fn panics() {
 }
 
 #[test]
+fn lists() {
+    assert_same(
+        "lists",
+        "\
+mut numbers = [3, 1, 2]
+numbers.push(5)
+numbers.insert(0, 10)
+print(numbers, numbers.length(), numbers[1])
+
+immut copy = numbers
+numbers[0] = 99
+numbers.sort()
+print(numbers, copy, copy == [10, 3, 1, 2, 5], copy != numbers, 3 in copy, 7 in copy)
+
+mut grid: int[][] = [[1, 2], [3]]
+immut row = grid[1]
+grid[1].push(4)
+grid[0][1] += 18
+print(grid, row, grid[1][1])
+
+mut names = []
+names.push('Ana')
+names.push('Bia')
+names.sort()
+print(names, names.join(', '), `${names}`, 'ab' in 'cab', string(['it\\'s']))
+
+immut floats: float[] = [1, 2.5]
+print(floats, floats + [3], [1, 2.5], numbers[1..3], numbers[..2], numbers[3..])
+
+mut empty: string[] = []
+print(empty, empty.length(), [[1], []], 'koji'.length())
+",
+        "[10, 3, 1, 2, 5] 5 3\n\
+[1, 2, 3, 5, 99] [10, 3, 1, 2, 5] true true true false\n\
+[[1, 20], [3, 4]] [3] 4\n\
+['Ana', 'Bia'] Ana, Bia ['Ana', 'Bia'] true ['it\\'s']\n\
+[1.0, 2.5] [1.0, 2.5, 3.0] [1.0, 2.5] [2, 3] [1, 2] [5, 99]\n\
+[] 0 [[1], []] 4\n",
+    );
+}
+
+#[test]
+fn lists_in_functions_and_loops() {
+    assert_same(
+        "list_functions",
+        "\
+mut log: string[] = []
+
+function total(items: int[]): int {
+    mut sum = 0
+
+    for item in items {
+        sum += item
+    }
+
+    return sum
+}
+
+function doubled(items: int[]): int[] {
+    mut result: int[] = []
+
+    for item in items {
+        result.push(item * 2)
+    }
+
+    log.push('doubled')
+    return result
+}
+
+mut numbers = [1, 2, 3]
+
+for n in numbers {
+    // The loop goes through the list as it was.
+    numbers.push(n * 10)
+
+    if (n == 2) { break }
+}
+
+print(numbers, total(numbers), doubled(numbers), log)
+",
+        "[1, 2, 3, 10, 20] 36 [2, 4, 6, 20, 40] ['doubled']\n",
+    );
+}
+
+#[test]
+fn list_panics() {
+    assert_same_panic("list_index", "immut items = [1, 2]\nprint(items[2])\n", "index 2 out of range (length 2)");
+    assert_same_panic("list_negative", "mut items = [1]\nitems[-1] = 0\n", "index -1 out of range (length 1)");
+    assert_same_panic("list_insert", "mut items = [1]\nitems.insert(3, 0)\n", "index 3 out of range (length 1)");
+    assert_same_panic("list_slice", "immut items = [1, 2]\nprint(items[1..5])\n", "slice 1..5 out of range (length 2)");
+}
+
+#[test]
 fn examples_that_compile() {
-    for example in ["hello", "booleans", "comments", "condition", "interpolation"] {
+    for example in ["hello", "booleans", "comments", "condition", "interpolation", "length"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));
         let source = std::fs::read_to_string(&path).unwrap();
         let interpreted = interpret(&path, &source);
@@ -221,10 +314,10 @@ fn examples_that_compile() {
 
 #[test]
 fn unsupported_constructs_are_reported() {
-    let path = source_file("unsupported", "immut items = [1, 2, 3]\nprint(items)\n");
+    let path = source_file("unsupported", "mut items = [1, 2, 3]\nprint(items.pop())\n");
     let error = kojic::build_file(&path, &path.with_extension(""), kojic::Emit::Executable).unwrap_err();
     assert!(
-        error.to_string().ends_with("unsupported.kj:1: a list is not supported by 'kojic build' yet (use 'kojic run')"),
+        error.to_string().ends_with("unsupported.kj:2: a value of a declared or built-in type (Option, Result, Map, ...) is not supported by 'kojic build' yet (use 'kojic run')"),
         "{}",
         error
     );

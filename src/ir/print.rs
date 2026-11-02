@@ -62,6 +62,16 @@ impl fmt::Display for Place {
     }
 }
 
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.root)?;
+        for index in &self.path {
+            write!(f, "[{}]", index)?;
+        }
+        Ok(())
+    }
+}
+
 fn list(operands: &[Operand]) -> String {
     operands.iter().map(Operand::to_string).collect::<Vec<_>>().join(", ")
 }
@@ -81,6 +91,18 @@ impl fmt::Display for Instruction {
                 write!(f, "call f{}({})", function, list(args))
             }
             Instruction::Print { value, .. } => write!(f, "print {}", value),
+            Instruction::ListNew { dest, items } => write!(f, "l{} = list [{}]", dest, list(items)),
+            Instruction::ListGet { dest, list, index, .. } => write!(f, "l{} = {}[{}]", dest, list, index),
+            Instruction::ListSet { list, index, value, .. } => write!(f, "{}[{}] = {}", list, index, value),
+            Instruction::ListPush { list, value, .. } => write!(f, "push {}, {}", list, value),
+            Instruction::ListInsert { list, index, value, .. } => {
+                write!(f, "insert {}, {}, {}", list, index, value)
+            }
+            Instruction::ListSort { list, .. } => write!(f, "sort {}", list),
+            Instruction::ListSlice { dest, list, start, end, .. } => {
+                let bound = |bound: &Option<Operand>| bound.as_ref().map(Operand::to_string).unwrap_or_default();
+                write!(f, "l{} = {}[{}..{}]", dest, list, bound(start), bound(end))
+            }
             Instruction::RangeNext { has_value, value, next, end, step, done } => write!(
                 f,
                 "l{}, l{} = range_next l{}, {}, {}, l{}",

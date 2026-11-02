@@ -387,7 +387,7 @@ A compiler is a large program, with many data structures and many operations tha
 
 ### Semantics to settle before compiling
 
--   **`int` to `float` coercion** is inconsistent today (an `int` stored in a `float` field of an object stays an `int`). With complete types, every conversion is explicit in the generated code.
+-   **`int` to `float` coercion** is inconsistent today (an `int` stored in a `float` field of an object stays an `int`). With complete types, every conversion is explicit in the generated code. The items of a list literal are converted (`[1, 2.5]` is `[1.0, 2.5]`), and an `int[]` value is still accepted where a `float[]` is expected without converting its items (see [Open decisions](#open-decisions)).
 -   **Memory management**: ownership with value semantics, copy-on-write and drop (see [Memory management](#memory-management-ownership-value-semantics-and-drop)).
 
 ---
@@ -399,16 +399,17 @@ A compiler is a large program, with many data structures and many operations tha
 It compiles a first subset of the language:
 
 -   `int`, `float`, `boolean` and `string` values, `mut` and `immut` variables, top-level variables used by functions;
+-   lists of those values and of lists: literals, indexing and assigning items (also `grid[0][1] = 5`), slices, `+`, `==`, `in`, `for` over a list, `length`, `push`, `insert`, `sort` and `join`;
 -   every operator on those types, with the same panics as the interpreter (overflow, division by zero, `float` overflow, invalid shifts and powers);
--   string interpolation, `print`, `string(x)` and `float(n)`;
+-   string interpolation, `print`, `string(x)`, `float(n)`, `text.length()` and `in` on strings;
 -   functions with parameters and a return value, recursion;
 -   `if` (also as an expression), `while`, `for` over `range`, `break`, `continue` and `return`.
 
-Anything else (lists, objects, sum types, `match`, methods, generics, imports, the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
+Anything else (objects, sum types, `Option` and `Result` with the list methods that give them, `match`, methods, closures, generics, imports, the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
 
-**Memory**: a string variable owns one reference to a reference-counted string, and copying a string only adds a reference (value semantics with copy-on-write). Assigning a variable releases its old string, and a function releases its strings when it returns.
+**Memory**: strings and lists are reference-counted. A variable owns one reference, and copying a value only adds a reference (value semantics with copy-on-write); changing a list that is shared copies it first, so the other variables never see the change. Assigning a variable releases its old value, and a function releases its values when it returns. Each item of a list takes an 8-byte slot, and the generated code describes the type of the items to the runtime (how to retain, release, show, compare and order them).
 
-**Next steps**, in order: lists and `for` over lists; objects and sum types with `match`; `Option`, `Result` and `?`; methods; `Map` and `Set`; closures; generics (monomorphization); imports; move-only values and `drop`; then the standard library modules, calling the Rust implementations.
+**Next steps**, in order: objects and sum types with `match`; `Option`, `Result` and `?`; methods; `Map` and `Set`; closures; generics (monomorphization); imports; move-only values and `drop`; then the standard library modules, calling the Rust implementations.
 
 ---
 
@@ -433,6 +434,8 @@ Notes:
 ## Open decisions
 
 1.  **FFI** (`extern function`), so the compiled standard library can call C functions. With the runtime in Rust, the standard library itself does not need it; it is for calling C libraries from Koji code.
+
+2.  **`int[]` where `float[]` is expected**: today the checker accepts it, but the items stay `int`. Either it becomes an error (an explicit conversion is needed, as in Rust, Go and Swift), or the list is converted, which copies it.
 
 Decided:
 

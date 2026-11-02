@@ -35,7 +35,8 @@ impl Interpreter {
             AstNode::ArrayLiteral(elements) => {
                 let mut items = Vec::with_capacity(elements.len());
                 for element in elements {
-                    items.push(self.eval(element, env)?);
+                    let value = self.eval(element, env)?;
+                    items.push(coerce(value, self.ownership.to_float.contains(&node_id(element))));
                 }
                 Ok(Value::list(items))
             }

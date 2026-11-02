@@ -21,14 +21,14 @@ impl KojiString {
     }
 }
 
-fn new(text: String) -> *mut KojiString {
+pub(crate) fn new_string(text: String) -> *mut KojiString {
     Box::into_raw(Box::new(KojiString {
         references: Cell::new(1),
         text,
     }))
 }
 
-fn text<'a>(string: *const KojiString) -> &'a str {
+pub(crate) fn string_text<'a>(string: *const KojiString) -> &'a str {
     unsafe { &(*string).text }
 }
 
@@ -36,7 +36,7 @@ fn text<'a>(string: *const KojiString) -> &'a str {
 #[no_mangle]
 pub extern "C" fn koji_string_new(bytes: *const u8, length: usize) -> *mut KojiString {
     let bytes = unsafe { std::slice::from_raw_parts(bytes, length) };
-    new(String::from_utf8_lossy(bytes).into_owned())
+    new_string(String::from_utf8_lossy(bytes).into_owned())
 }
 
 #[no_mangle]
@@ -61,28 +61,28 @@ pub extern "C" fn koji_string_release(string: *mut KojiString) {
 
 #[no_mangle]
 pub extern "C" fn koji_string_concat(a: *const KojiString, b: *const KojiString) -> *mut KojiString {
-    let (a, b) = (text(a), text(b));
+    let (a, b) = (string_text(a), string_text(b));
     let mut result = String::with_capacity(a.len() + b.len());
     result.push_str(a);
     result.push_str(b);
-    new(result)
+    new_string(result)
 }
 
 /// `text * count` (an empty string for a count below 1).
 #[no_mangle]
 pub extern "C" fn koji_string_repeat(string: *const KojiString, count: i64) -> *mut KojiString {
-    new(text(string).repeat(count.max(0) as usize))
+    new_string(string_text(string).repeat(count.max(0) as usize))
 }
 
 #[no_mangle]
 pub extern "C" fn koji_string_equal(a: *const KojiString, b: *const KojiString) -> bool {
-    text(a) == text(b)
+    string_text(a) == string_text(b)
 }
 
 /// -1, 0 or 1, comparing the bytes.
 #[no_mangle]
 pub extern "C" fn koji_string_compare(a: *const KojiString, b: *const KojiString) -> i32 {
-    match text(a).cmp(text(b)) {
+    match string_text(a).cmp(string_text(b)) {
         Ordering::Less => -1,
         Ordering::Equal => 0,
         Ordering::Greater => 1,
@@ -91,15 +91,50 @@ pub extern "C" fn koji_string_compare(a: *const KojiString, b: *const KojiString
 
 #[no_mangle]
 pub extern "C" fn koji_string_from_int(value: i64) -> *mut KojiString {
-    new(value.to_string())
+    new_string(value.to_string())
 }
 
 #[no_mangle]
 pub extern "C" fn koji_string_from_float(value: f64) -> *mut KojiString {
-    new(format_float(value))
+    new_string(format_float(value))
 }
 
 #[no_mangle]
 pub extern "C" fn koji_string_from_bool(value: bool) -> *mut KojiString {
-    new(value.to_string())
+    new_string(value.to_string())
+}
+
+/// The text as written in code: in quotes, with `\\`, `\'`, `\n`, `\t` and `\r` escaped.
+pub fn repr_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('\'');
+    for c in text.chars() {
+        match c {
+            '\'' => out.push_str("\\'"),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+#[no_mangle]
+pub extern "C" fn koji_string_repr(string: *const KojiString) -> *mut KojiString {
+    new_string(repr_string(string_text(string)))
+}
+
+/// The number of characters (not bytes).
+#[no_mangle]
+pub extern "C" fn koji_string_length(string: *const KojiString) -> i64 {
+    string_text(string).chars().count() as i64
+}
+
+/// `needle in haystack`.
+#[no_mangle]
+pub extern "C" fn koji_string_contains(haystack: *const KojiString, needle: *const KojiString) -> bool {
+    string_text(haystack).contains(string_text(needle))
 }

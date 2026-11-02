@@ -528,10 +528,8 @@ impl Checker {
             return;
         }
         if let AstNode::Identifier(name) = object.unlocated() {
-            if let Some(symbol) = self.lookup_mut(name) {
-                if symbol.ty.contains_unknown() {
-                    symbol.ty = ty;
-                }
+            if self.lookup_mut(name).is_some_and(|symbol| symbol.ty.contains_unknown()) {
+                self.set_variable_type(name, ty);
             }
         }
     }
