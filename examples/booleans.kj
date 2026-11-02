@@ -1,0 +1,28 @@
+mut count = 0
+
+if (true) {
+    count = 1
+}
+
+print(count)
+
+immut ready = count > 0
+immut empty = count == 0
+
+if (ready and not empty) {
+    print('ready') // ready
+}
+
+if (empty or false) {
+    print('empty')
+} else {
+    print('not empty') // not empty
+}
+
+mut attempts = 0
+
+while (attempts < 3 and not empty) {
+    attempts += 1
+}
+
+print(attempts)
