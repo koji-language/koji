@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Methods of lists (besides `length` and `join`); the first six change the list.
+const LIST_METHODS: &[&str] = &["push", "pop", "insert", "removeAt", "sort", "sortBy", "indexOf"];
+
 /// The value a method is called on: its expression, its type and the type's arguments.
 pub(super) struct Receiver<'a> {
     node: &'a AstNode,
@@ -49,6 +52,12 @@ impl Checker {
                     return self.check_associated_call(id, name, args, method, expected);
                 }
                 let object_ty = self.check_value(object, None)?;
+                if let Type::List(element) = &object_ty {
+                    if LIST_METHODS.contains(&name.as_str()) {
+                        let element = (**element).clone();
+                        return self.check_list_method(callee, object, element, name, args);
+                    }
+                }
                 let user_method = match &object_ty {
                     Type::Named { id, .. } | Type::Variant { id, .. } => {
                         self.methods.get(&(*id, name.clone())).cloned().map(|info| (*id, info))
@@ -412,5 +421,98 @@ impl Checker {
         let info = self.table.get(id);
         self.ensure_constraints(&generic, &info.constraints, &info.name)?;
         Ok(Type::Named { id, args: generic })
+    }
+
+    /// `items.push(x)`, `items.pop()`... The methods that change the list need a variable that
+    /// can change (like `mut self`), and change it in place.
+    fn check_list_method(
+        &mut self,
+        callee: &AstNode,
+        object: &AstNode,
+        element: Type,
+        name: &str,
+        args: &[AstNode],
+    ) -> CheckResult<Type> {
+        if name != "indexOf" {
+            self.check_mut_place(object, Some(name))?;
+            self.ownership.mutating_calls.insert(node_id(callee));
+        }
+        let expected = |count: usize| -> CheckResult<()> {
+            if args.len() == count {
+                Ok(())
+            } else {
+                self.err(format!("'{}' expects {} argument(s), found {}", name, count, args.len()))
+            }
+        };
+        expected(match name {
+            "push" | "removeAt" | "sortBy" | "indexOf" => 1,
+            "insert" => 2,
+            _ => 0,
+        })?;
+        let element_arg = |checker: &mut Self, arg: &AstNode| -> CheckResult<Type> {
+            let ty = checker.check_value(arg, Some(&element))?;
+            checker.expect_type(&element, &ty, "the item")?;
+            Ok(ty)
+        };
+        let index_arg = |checker: &mut Self, arg: &AstNode| -> CheckResult<()> {
+            let ty = checker.check_value(arg, None)?;
+            checker.expect_type(&Type::Int, &ty, "the position")
+        };
+        match name {
+            "push" => {
+                let ty = element_arg(self, &args[0])?;
+                self.consume(&args[0], &ty)?;
+                self.refine_list(object, &ty);
+                Ok(Type::Void)
+            }
+            "insert" => {
+                index_arg(self, &args[0])?;
+                let ty = element_arg(self, &args[1])?;
+                self.consume(&args[1], &ty)?;
+                self.refine_list(object, &ty);
+                Ok(Type::Void)
+            }
+            "pop" => Ok(self.option_of(element)),
+            "removeAt" => {
+                index_arg(self, &args[0])?;
+                Ok(self.option_of(element))
+            }
+            "sort" => {
+                if !self.satisfies(&element, Constraint::Orderable) {
+                    return self.err(format!(
+                        "'sort' needs orderable items, and {} is not: use 'sortBy' with a comparison",
+                        self.show(&element)
+                    ));
+                }
+                Ok(Type::Void)
+            }
+            "sortBy" => {
+                // `(a, b) => a.age < b.age`: whether `a` goes before `b`.
+                let comparison = Type::Function {
+                    params: vec![element.clone(), element],
+                    ret: Box::new(Type::Boolean),
+                };
+                self.check_args(&[comparison], args)?;
+                Ok(Type::Void)
+            }
+            _ => {
+                if !self.satisfies(&element, Constraint::Equatable) {
+                    return self.err(format!("'indexOf' needs equatable items, and {} is not", self.show(&element)));
+                }
+                element_arg(self, &args[0])?;
+                Ok(self.option_of(Type::Int))
+            }
+        }
+    }
+
+    /// `items = []` then `items.push(1)`: the variable becomes an `int[]`.
+    fn refine_list(&mut self, object: &AstNode, item: &Type) {
+        if let AstNode::Identifier(name) = object.unlocated() {
+            if let Some(symbol) = self.lookup_mut(name) {
+                if symbol.ty.contains_unknown() && !item.contains_unknown() {
+                    symbol.ty = Type::List(Box::new(item.clone()));
+                }
+            }
+        }
     }
 }

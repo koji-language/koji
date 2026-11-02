@@ -168,6 +168,21 @@ impl Checker {
                 }
                 Ok(ty)
             }
+            AstNode::Slice { target, start, end } => {
+                let target_ty = self.check_value(target, None)?;
+                for bound in [start, end].into_iter().flatten() {
+                    let ty = self.check_value(bound, None)?;
+                    self.expect_type(&Type::Int, &ty, "slice bound")?;
+                }
+                match &target_ty {
+                    Type::List(element) if self.is_move_only(element) => self.err(format!(
+                        "a slice copies the items, and {} is move-only",
+                        self.show(element)
+                    )),
+                    Type::List(_) | Type::String | Type::Unknown => Ok(target_ty),
+                    other => self.err(format!("cannot slice a value of type {}", self.show(other))),
+                }
+            }
             AstNode::MutArg(_) => self.err("'mut' is only used before a call argument: 'f(mut x)'".to_string()),
             AstNode::Index { target, index } => {
                 let target_ty = self.check_value(target, None)?;

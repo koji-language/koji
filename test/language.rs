@@ -2268,3 +2268,50 @@ fn chars() {
     assert_error("c: char = 'ab'", "'ab' is not a char: a char literal has exactly one character");
     assert_error("x = 'a'[0] + 1", "operator '+' cannot be applied to char and int");
 }
+
+#[test]
+fn list_methods_and_slices() {
+    let source = r#"
+        type Person = {
+            name: string
+            age: int
+        }
+
+        var items = [3, 1, 2]
+        items.push(4)
+        items.insert(0, 9)
+        print(items)
+        print(items.pop(), items.removeAt(0), items.removeAt(10), items)
+        items.sort()
+        print(items, items.indexOf(3), items.indexOf(7))
+        var people: Person[] = [{ name: 'Ana', age: 30 }, { name: 'Bia', age: 25 }, { name: 'Caio', age: 30 }]
+        people.sortBy((a: Person, b: Person) => a.age < b.age)
+        print(people[0].name, people[1].name, people[2].name)
+        copy = items
+        copy.push(100)
+        print(items, copy)
+        var empty = []
+        empty.push('x')
+        print(empty)
+
+        list = [10, 20, 30, 40]
+        print(list[1..3], list[..2], list[2..], list[..])
+        text = 'Hello, Koji'
+        print(text[0..5], text[7..])
+    "#;
+    assert_eq!(
+        run(source),
+        "[9, 3, 1, 2, 4]\nSome(4) Some(9) None [3, 1, 2]\n[1, 2, 3] Some(2) None\nBia Ana Caio\n\
+         [1, 2, 3] [1, 2, 3, 100]\n['x']\n[20, 30] [10, 20] [30, 40] [10, 20, 30, 40]\nHello Koji\n"
+    );
+    let errors = [
+        ("imut fixed = [1]\nfixed.push(2)", "cannot call 'push' on 'fixed', as it changes the value: it is imut"),
+        ("type P = { n: int }\nps: P[] = []\nps.sort()", "'sort' needs orderable items, and P is not: use 'sortBy'"),
+        ("items = [1]\nitems.push('a')", "the item must be int, found string"),
+        ("function f(items: int[]) { items.push(1) }", "parameters can only be modified when declared 'mut'"),
+        ("items = [1, 2]\nprint(items[2..1])", "slice 2..1 out of range"),
+    ];
+    for (code, fragment) in errors {
+        assert_error(code, fragment);
+    }
+}

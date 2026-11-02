@@ -62,6 +62,13 @@ impl Interpreter {
             return self.call_with_places(&Value::Function(closure), values, places, env);
         }
         if let AstNode::Member { object: object_node, name } = callee.unlocated() {
+            // `items.push(x)`: the list changes where it is (copied first if it is shared).
+            if self.ownership.mutating_calls.contains(&node_id(callee)) {
+                let place = self.resolve_place(object_node, env)?;
+                let (args, _, arg_temporaries) = self.eval_args(args, env)?;
+                temporaries.extend(arg_temporaries);
+                return self.change_list(&place, name, args, env);
+            }
             let object = self.eval(object_node, env)?;
             if self.is_temporary(object_node) {
                 temporaries.push(object.clone());
@@ -244,6 +251,13 @@ impl Interpreter {
             Value::Char(c) if name == "code" => Ok(Value::Int(*c as i64)),
             Value::List(items) => match name {
                 "length" => Ok(Value::Int(items.borrow().len() as i64)),
+                "indexOf" => {
+                    let wanted = args.first().cloned().unwrap_or(Value::Void);
+                    Ok(match items.borrow().iter().position(|item| item.equals(&wanted)) {
+                        Some(i) => some(Value::Int(i as i64)),
+                        None => stdlib::none(),
+                    })
+                }
                 "join" => {
                     let separator = match args.first() {
                         Some(Value::Str(separator)) => separator.to_string(),
@@ -276,5 +290,99 @@ impl Interpreter {
                 name
             ))),
         }
+    }
+
+    /// The list methods that change the list: `push`, `pop`, `insert`, `removeAt`, `sort` and
+    /// `sortBy`.
+    fn change_list(&mut self, place: &Place, name: &str, args: Vec<Value>, env: &Rc<Env>) -> Exec<Value> {
+        if name == "sort" || name == "sortBy" {
+            let items = match self.read_place(place, env)? {
+                Some(Value::List(items)) => items.borrow().clone(),
+                _ => return Err(self.error(format!("'{}' is only for lists", name))),
+            };
+            let sorted = match args.first() {
+                Some(comparison) => self.merge_sort(items, comparison)?,
+                None => {
+                    let mut items = items;
+                    items.sort_by(compare_values);
+                    items
+                }
+            };
+            self.write_place(place, Value::list(sorted), env)?;
+            return Ok(Value::Void);
+        }
+        let mut args = args.into_iter();
+        let (first, second) = (args.next(), args.next());
+        let position = |value: &Option<Value>, length: usize, allow_end: bool| -> Result<usize, String> {
+            match value {
+                Some(Value::Int(i)) if *i >= 0 && ((*i as usize) < length || (allow_end && *i as usize == length)) => {
+                    Ok(*i as usize)
+                }
+                Some(Value::Int(i)) => Err(format!("index {} out of range (length {})", i, length)),
+                _ => Err("the position must be an int".to_string()),
+            }
+        };
+        self.modify_place(place, env, |slot| {
+            let items = match slot {
+                Value::List(items) => items,
+                _ => return Err(format!("'{}' is only for lists", name)),
+            };
+            if Rc::strong_count(items) > 1 {
+                let copy = items.borrow().clone();
+                *items = Rc::new(RefCell::new(copy));
+            }
+            let mut items = items.borrow_mut();
+            Ok(match name {
+                "push" => {
+                    items.push(first.unwrap_or(Value::Void));
+                    Value::Void
+                }
+                "insert" => {
+                    let at = position(&first, items.len(), true)?;
+                    items.insert(at, second.unwrap_or(Value::Void));
+                    Value::Void
+                }
+                "pop" => match items.pop() {
+                    Some(item) => some(item),
+                    None => stdlib::none(),
+                },
+                "removeAt" => match position(&first, items.len(), false) {
+                    Ok(at) => some(items.remove(at)),
+                    Err(_) => stdlib::none(),
+                },
+                other => return Err(format!("lists have no method '{}'", other)),
+            })
+        })
+    }
+
+    /// A stable sort with `comparison(a, b)`: whether `a` goes before `b`.
+    fn merge_sort(&mut self, items: Vec<Value>, comparison: &Value) -> Exec<Vec<Value>> {
+        if items.len() <= 1 {
+            return Ok(items);
+        }
+        let mut left = items;
+        let right = left.split_off(left.len() / 2);
+        let left = self.merge_sort(left, comparison)?;
+        let right = self.merge_sort(right, comparison)?;
+        let mut merged = Vec::with_capacity(left.len() + right.len());
+        let (mut left, mut right) = (left.into_iter().peekable(), right.into_iter().peekable());
+        while let (Some(a), Some(b)) = (left.peek(), right.peek()) {
+            // Take from the right only when it goes strictly before: equal items keep their order.
+            let right_first = matches!(self.call_value(comparison, vec![b.clone(), a.clone()])?, Value::Bool(true));
+            merged.push(if right_first { right.next() } else { left.next() }.expect("peeked"));
+        }
+        merged.extend(left);
+        merged.extend(right);
+        Ok(merged)
+    }
+}
+
+/// The order of `int`, `float`, `string` and `char` values (`sort`).
+fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Str(x), Value::Str(y)) => x.cmp(y),
+        (Value::Char(x), Value::Char(y)) => x.cmp(y),
+        _ => as_float(a).partial_cmp(&as_float(b)).unwrap_or(std::cmp::Ordering::Equal),
     }
 }

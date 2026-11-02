@@ -179,7 +179,7 @@ impl Lexer {
             Some('[') => self.single(Token::LBracket),
             Some(']') => self.single(Token::RBracket),
             Some(',') => self.single(Token::Comma),
-            Some('.') => self.single(Token::Dot),
+            Some('.') => self.one_or_two('.', Token::DotDot, Token::Dot),
             Some(';') => self.single(Token::Semicolon),
             Some(':') => self.single(Token::Colon),
             Some('?') => self.single(Token::Question),

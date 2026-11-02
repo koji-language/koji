@@ -968,11 +968,34 @@ impl Parser {
 
     fn parse_index(&mut self, target: AstNode) -> Result<AstNode, EzError> {
         self.advance(); // '['
-        let index = self.grouped(|p| p.parse_expression(0))?;
+        let (start, is_slice, end) = self.grouped(|p| {
+            let start = if *p.current() == Token::DotDot {
+                None
+            } else {
+                Some(p.parse_expression(0)?)
+            };
+            if *p.current() != Token::DotDot {
+                return Ok((start, false, None));
+            }
+            p.advance(); // ..
+            let end = if *p.current() == Token::RBracket {
+                None
+            } else {
+                Some(p.parse_expression(0)?)
+            };
+            Ok((start, true, end))
+        })?;
         self.expect(Token::RBracket, "']' after the index")?;
+        if is_slice {
+            return Ok(AstNode::Slice {
+                target: Box::new(target),
+                start: start.map(Box::new),
+                end: end.map(Box::new),
+            });
+        }
         Ok(AstNode::Index {
             target: Box::new(target),
-            index: Box::new(index),
+            index: Box::new(start.expect("an index without '..' has an expression")),
         })
     }
 

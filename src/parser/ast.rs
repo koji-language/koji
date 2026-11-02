@@ -266,6 +266,13 @@ pub enum AstNode {
         target: Box<AstNode>,
         index: Box<AstNode>,
     },
+    /// `items[1..3]`, `items[..2]` or `items[2..]`: a copy of the part from `start` (included)
+    /// to `end` (excluded).
+    Slice {
+        target: Box<AstNode>,
+        start: Option<Box<AstNode>>,
+        end: Option<Box<AstNode>>,
+    },
     Member {
         object: Box<AstNode>,
         name: String,

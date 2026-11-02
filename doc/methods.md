@@ -41,12 +41,27 @@ For a standard library error, `display()` is a readable message (`'abc' is not a
 
 The `is...` methods return `false` for an empty string.
 
-## List and Dictionary Methods
+## List Methods
 
-| Method       | Description                                    | Example                 |
-| ------------ | ---------------------------------------------- | ----------------------- |
-| `x.length()` | Number of items (of keys, for a dictionary)    | `[1, 2, 3].length() → 3` |
-| `list.join(sep)` | Joins a list of strings, with `sep` between them | `['a', 'b'].join(', ') → 'a, b'` |
+| Method                | Description                                                    | Example                              |
+| --------------------- | -------------------------------------------------------------- | ------------------------------------ |
+| `list.length()`       | Number of items                                                | `[1, 2, 3].length() → 3`             |
+| `list.push(x)`        | Adds `x` at the end                                            | `[1, 2]` → `[1, 2, 3]`               |
+| `list.insert(i, x)`   | Adds `x` at position `i` (`i` can be the length)               | `insert(0, 9)` → `[9, 1, 2]`         |
+| `list.pop()`          | Removes the last item: `Some(item)`, or `None` if empty        | `[1, 2].pop() → Some(2)`             |
+| `list.removeAt(i)`    | Removes the item at `i`: `Some(item)`, or `None` out of range  | `[1, 2].removeAt(0) → Some(1)`       |
+| `list.sort()`         | Sorts the items, which must be orderable                       | `[3, 1, 2]` → `[1, 2, 3]`            |
+| `list.sortBy(f)`      | Sorts with `f(a, b)`: whether `a` goes before `b` (stable)     | `sortBy((a, b) => a.age < b.age)`    |
+| `list.indexOf(x)`     | Position of the first `x` (equatable items)                    | `[5, 6].indexOf(6) → Some(1)`        |
+| `list.join(sep)`      | Joins a list of strings, with `sep` between them               | `['a', 'b'].join(', ') → 'a, b'`     |
+
+`push`, `insert`, `pop`, `removeAt`, `sort` and `sortBy` change the list, like a `mut self` method: the variable must be a `var` or a `const`, not an `imut` or a parameter without `mut`. They change it in place; other copies of the list do not change. To check whether a list has an item, use `x in list`.
+
+## Dictionary Methods
+
+| Method       | Description       | Example |
+| ------------ | ----------------- | ------- |
+| `d.length()` | Number of keys    |         |
 
 ## Building Text
 

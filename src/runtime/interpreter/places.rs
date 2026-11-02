@@ -58,13 +58,27 @@ impl Interpreter {
 
     /// Stores `value` at `place`, copying the shared levels on the way.
     pub(super) fn write_place(&self, place: &Place, value: Value, env: &Rc<Env>) -> Exec<()> {
+        self.modify_place(place, env, move |slot| {
+            *slot = value;
+            Ok(())
+        })
+    }
+
+    /// Runs `f` on the value at `place` itself, copying the shared levels on the way (so `f`
+    /// can change it in place: `items.push(x)`).
+    pub(super) fn modify_place<R>(
+        &self,
+        place: &Place,
+        env: &Rc<Env>,
+        f: impl FnOnce(&mut Value) -> Result<R, String>,
+    ) -> Exec<R> {
         let result = match &place.base {
-            Base::Variable(name) => match env.with_slot(name, |slot| set_in(slot, &place.steps, value)) {
+            Base::Variable(name) => match env.with_slot(name, |slot| apply_in(slot, &place.steps, f)) {
                 Some(result) => result,
                 None => Err(format!("undefined variable '{}'", name)),
             },
             // A temporary value is discarded after the change.
-            Base::Temporary(temporary) => set_in(&mut temporary.clone(), &place.steps, value),
+            Base::Temporary(temporary) => apply_in(&mut temporary.clone(), &place.steps, f),
         };
         result.map_err(|message| self.error(message))
     }
@@ -85,13 +99,11 @@ fn unshare_object(object: &mut Rc<RefCell<Object>>) {
     }
 }
 
-fn set_in(slot: &mut Value, steps: &[Step], value: Value) -> Result<(), String> {
+/// Runs `f` on the value at the end of `steps`, starting at `slot`.
+fn apply_in<R>(slot: &mut Value, steps: &[Step], f: impl FnOnce(&mut Value) -> Result<R, String>) -> Result<R, String> {
     let (step, rest) = match steps.split_first() {
         Some(split) => split,
-        None => {
-            *slot = value;
-            return Ok(());
-        }
+        None => return f(slot),
     };
     match (slot, step) {
         (Value::List(items), Step::Index(index)) => {
@@ -102,18 +114,18 @@ fn set_in(slot: &mut Value, steps: &[Step], value: Value) -> Result<(), String> 
                 Value::Int(i) => return Err(format!("index {} out of range (length {})", i, items.len())),
                 other => return Err(format!("index must be int, found {}", other.type_name())),
             };
-            set_in(&mut items[position], rest, value)
+            apply_in(&mut items[position], rest, f)
         }
         (Value::Object(object), step) if step.key().is_some() => {
             let key = step.key().unwrap_or_default();
             unshare_object(object);
             let mut object = object.borrow_mut();
+            if object.get(key).is_none() && rest.is_empty() {
+                // `dictionary['new'] = value` adds the key.
+                object.set(key, Value::Void);
+            }
             match object.get_mut(key) {
-                Some(field) => set_in(field, rest, value),
-                None if rest.is_empty() => {
-                    object.set(key, value);
-                    Ok(())
-                }
+                Some(field) => apply_in(field, rest, f),
                 None => Err(format!("key '{}' not found", key)),
             }
         }

@@ -75,6 +75,19 @@ impl Interpreter {
                 let displays = displays.borrow().clone();
                 self.eval_call(callee, args, method, &displays, env)
             }
+            AstNode::Slice { target, start, end } => {
+                let target = self.eval(target, env)?;
+                let mut bounds = [None, None];
+                for (slot, bound) in bounds.iter_mut().zip([start, end]) {
+                    if let Some(bound) = bound {
+                        *slot = Some(match self.eval(bound, env)? {
+                            Value::Int(n) => n,
+                            other => return Err(self.error(format!("slice bounds must be int, found {}", other.type_name()))),
+                        });
+                    }
+                }
+                self.slice(&target, bounds[0], bounds[1])
+            }
             AstNode::MutArg(_) => Err(self.error("'mut' is only used before a call argument")),
             AstNode::Index { target, index } => {
                 let target = self.eval(target, env)?;
@@ -301,6 +314,26 @@ impl Interpreter {
                 other.type_name()
             ))),
         }
+    }
+
+    /// The part of a list or a string from `start` (included, default 0) to `end` (excluded,
+    /// default the length). Bounds out of range, or `start > end`, panic.
+    pub(super) fn slice(&self, target: &Value, start: Option<i64>, end: Option<i64>) -> Exec<Value> {
+        let length = match target {
+            Value::List(items) => items.borrow().len(),
+            Value::Str(text) => text.chars().count(),
+            other => return Err(self.error(format!("cannot slice a value of type {}", other.type_name()))),
+        } as i64;
+        let (start, end) = (start.unwrap_or(0), end.unwrap_or(length));
+        if start < 0 || end > length || start > end {
+            return Err(self.error(format!("slice {}..{} out of range (length {})", start, end, length)));
+        }
+        let (start, end) = (start as usize, end as usize);
+        Ok(match target {
+            Value::List(items) => Value::list(items.borrow()[start..end].to_vec()),
+            Value::Str(text) => Value::str(&text.chars().skip(start).take(end - start).collect::<String>()),
+            _ => unreachable!("checked above"),
+        })
     }
 
     pub(super) fn list_position(&self, len: usize, index: &Value) -> Exec<usize> {

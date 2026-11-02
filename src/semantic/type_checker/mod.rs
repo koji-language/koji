@@ -64,6 +64,9 @@ pub struct Ownership {
     pub drops: HashMap<usize, (PathBuf, String)>,
     /// String literals that are `char` values (`c: char = 'a'`).
     pub char_literals: HashSet<usize>,
+    /// Calls of built-in methods that change the value they are called on (`items.push(x)`),
+    /// by their callee (`items.push`).
+    pub mutating_calls: HashSet<usize>,
 }
 
 /// Identity of an AST node, for the `Ownership` tables.

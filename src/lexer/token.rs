@@ -73,6 +73,8 @@ pub enum Token {
     RBracket,
     Comma,
     Dot,
+    /// `..` in a slice: `items[1..3]`.
+    DotDot,
     Semicolon,
     Colon,
     /// `?`: error propagation.
