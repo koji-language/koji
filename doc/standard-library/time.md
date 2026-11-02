@@ -29,9 +29,9 @@ time.sleep(2)
 
 print('Done!')
 
-start = time.monotonic()
+immut start = time.monotonic()
 // Do something
-end = time.monotonic()
+immut end = time.monotonic()
 
 print(`Elapsed: ${end - start} seconds`)
 ```

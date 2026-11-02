@@ -39,7 +39,7 @@ print(int('abc')) // Err(InvalidNumber('abc'))
 
 ```koji
 function parseAge(text: string): Result[int, ParseError] {
-	age = int(text)?
+	immut age = int(text)?
 
 	return Ok(age)
 }
@@ -53,7 +53,7 @@ The function must declare its return type, and it must be a `Result` (for `?` on
 At the top level of the main file, an `Err` or a `None` stops the program, prints the error and exits with code 1:
 
 ```koji
-n = int('oops')? // error: main.kj:1: 'oops' is not a valid number
+immut n = int('oops')? // error: main.kj:1: 'oops' is not a valid number
 ```
 
 ### Combining Errors of Different Types
@@ -70,8 +70,8 @@ type ConfigError = {
 }
 
 function readConfig(path: string): Result[json.Json, ConfigError] {
-	f = file.open(path, file.Read)? // a FileError becomes File(...)
-	text = f.read()? // a FileError becomes File(...)
+	immut f = file.open(path, file.Read)? // a FileError becomes File(...)
+	immut text = f.read()? // a FileError becomes File(...)
 	f.close()
 
 	return Ok(json.parse(text)?) // a JsonError becomes Json(...)
@@ -97,7 +97,7 @@ function f(): Result[int, E] {
 
 ```koji
 function parse(text: string): Result[int, string] {
-	n = int(text).mapErr((error: ParseError) => `bad number: ${text}`)?
+	immut n = int(text).mapErr((error: ParseError) => `bad number: ${text}`)?
 
 	return Ok(n)
 }

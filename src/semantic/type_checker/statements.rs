@@ -182,7 +182,7 @@ impl Checker {
                 }
                 let mut symbol = Symbol::value(item, !is_mut);
                 symbol.is_imut = !is_mut;
-                symbol.reason = Some("the 'for' variable is imut (use 'for mut' to change it)");
+                symbol.reason = Some("the 'for' variable is immut (use 'for mut' to change it)");
                 symbol.borrowed = Some("the 'for' variable");
                 self.state.loop_scopes.push(self.state.scopes.len());
                 let result = self.check_block(body, None, vec![(variable.clone(), symbol)]);
@@ -287,17 +287,12 @@ impl Checker {
                 let existing = self.lookup(name).cloned();
                 let symbol = match existing {
                     Some(symbol) => symbol,
+                    // Declarations always have a keyword: `x = 1` only changes an existing `x`.
                     None => {
-                        if *op != AssignOperator::Assign {
-                            return self.err(format!("undefined variable '{}'", name));
-                        }
-                        // Assigning to a new name declares a mutable variable.
-                        let ty = self.check_value(value, None)?;
-                        self.consume(value, &ty)?;
-                        if self.is_move_only(&ty) {
-                            self.ownership.declares.insert(node_id(node));
-                        }
-                        return self.declare(name, Symbol::value(ty, false));
+                        return self.err(format!(
+                            "'{}' is not declared: declare it with 'mut {} = ...' (or 'immut' if it never changes)",
+                            name, name
+                        ))
                     }
                 };
                 if let Some(owner) = &symbol.owner {
@@ -307,14 +302,8 @@ impl Checker {
                 if !matches!(symbol.kind, SymbolKind::Value) || matches!(symbol.ty, Type::Module(_)) {
                     return self.err(format!("cannot assign to '{}'", name));
                 }
-                if symbol.is_imut {
+                if symbol.is_imut || symbol.is_const {
                     return self.err(format!("cannot modify '{}': {}", name, self.imut_reason(&symbol)));
-                }
-                if symbol.is_const {
-                    if let Some(reason) = symbol.reason {
-                        return self.err(format!("cannot modify '{}': {}", name, reason));
-                    }
-                    return self.err(format!("cannot modify a 'const' value ('{}')", name));
                 }
                 let new_ty = self.check_assigned_value(&symbol.ty, op, value, name)?;
                 self.consume(value, &new_ty)?;
@@ -411,15 +400,29 @@ impl Checker {
     }
 
     /// Changing a field or an element (`person.age = 31`, `items[0] = 1`) is not allowed when the
-    /// variable that holds the value is `imut`.
+    /// variable that holds the value is `immut`.
     pub(super) fn ensure_contents_mutable(&self, target: &AstNode) -> CheckResult<()> {
         let mut node = target.unlocated();
         loop {
             match node {
-                AstNode::Member { object, .. } => node = object.unlocated(),
+                // `module.items[0] = 1`: a variable of another module is read-only here.
+                AstNode::Member { object, name } => {
+                    if let AstNode::Identifier(module) = object.unlocated() {
+                        if let Some(Type::Module(id)) = self.lookup(module).map(|s| &s.ty) {
+                            return self.err(format!(
+                                "'{}' is read-only outside '{}'",
+                                name, self.modules[*id].display
+                            ));
+                        }
+                    }
+                    node = object.unlocated()
+                }
                 AstNode::Index { target, .. } => node = target.unlocated(),
                 AstNode::Identifier(name) => {
                     return match self.lookup(name) {
+                        Some(Symbol { owner: Some(owner), .. }) => {
+                            self.err(format!("'{}' is read-only outside '{}'", name, owner))
+                        }
                         Some(symbol) if symbol.is_imut && matches!(symbol.kind, SymbolKind::Value) => {
                             self.err(format!("cannot modify '{}': {}", name, self.imut_reason(symbol)))
                         }
@@ -435,14 +438,11 @@ impl Checker {
     }
 
     pub(super) fn imut_reason(&self, symbol: &Symbol) -> &'static str {
-        symbol.reason.unwrap_or("it is imut")
+        symbol.reason.unwrap_or("it is immut")
     }
 
-    /// What can be passed as `mut`: a `var` (not `const` or `imut`), or a field or an element
-    /// of a value that can be modified. Returns its type.
-    ///
-    /// For the value a `mut self` method is called on (`receiver` is the method), a `const` is
-    /// accepted too: the method can change the contents, not replace the value.
+    /// What can be passed as `mut`, or a `mut self` method called on (`receiver` is the
+    /// method): a `mut` variable (not `immut`), or a field or an element of one. Returns its type.
     pub(super) fn check_mut_place(&mut self, place: &AstNode, receiver: Option<&str>) -> CheckResult<Type> {
         let what = |name: &str| match receiver {
             Some(method) => format!("cannot call '{}' on '{}', as it changes the value", method, name),
@@ -462,11 +462,8 @@ impl Checker {
                 if !matches!(symbol.kind, SymbolKind::Value) || matches!(symbol.ty, Type::Module(_)) {
                     return self.err(what(name));
                 }
-                if symbol.is_imut {
+                if symbol.is_imut || symbol.is_const {
                     return self.err(format!("{}: {}", what(name), self.imut_reason(&symbol)));
-                }
-                if symbol.is_const && receiver.is_none() {
-                    return self.err(format!("{}: it is const", what(name)));
                 }
                 Ok(symbol.ty)
             }

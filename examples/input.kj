@@ -1,4 +1,4 @@
-name: Option[string] = input("What's your name?")
+immut name: Option[string] = input("What's your name?")
 
 match (name) {
 	Some(line) => print(`Hello, ${line}!`)

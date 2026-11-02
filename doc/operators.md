@@ -54,8 +54,8 @@ type Person = {
 	age: int
 }
 
-const a: Person = { name: 'Ana', age: 30 }
-const b: Person = { name: 'Ana', age: 30 }
+immut a: Person = { name: 'Ana', age: 30 }
+immut b: Person = { name: 'Ana', age: 30 }
 
 a == b // true: the fields are equal
 ```
@@ -70,7 +70,7 @@ a == b // true: the fields are equal
 `is` checks the variant of a sum type value. Inside the `if`, the fields of the variant can be used:
 
 ```koji
-result = Some(1)
+immut result = Some(1)
 
 if (result is Some) {
 	print(result.value) // 1

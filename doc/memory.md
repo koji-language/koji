@@ -10,8 +10,8 @@ Koji manages memory without a garbage collector and without manual frees. Two ru
 Assigning a value, passing it to a function or storing it in a list gives a **copy**: changing one of them never changes the other.
 
 ```koji
-a = [1, 2, 3]
-b = a
+immut a = [1, 2, 3]
+mut b = a
 b[0] = 9
 
 print(a) // [1, 2, 3]
@@ -31,8 +31,8 @@ A move-only value has exactly one owner. Assigning it to another variable, retur
 ```koji
 import file
 
-f = file.open('notes.txt', file.Read)?
-g = f        // the file moves to g
+immut f = file.open('notes.txt', file.Read)?
+immut g = f        // the file moves to g
 print(f.read()) // Error! 'f' cannot be used here: its value was moved (or closed) on line 4
 ```
 
@@ -47,7 +47,7 @@ function show(f: file.File) {
     print(f.read())
 }
 
-f = file.open('notes.txt', file.Read)?
+immut f = file.open('notes.txt', file.Read)?
 show(f)
 show(f) // still usable: show only borrowed it
 ```
@@ -65,8 +65,8 @@ function Logger.create(take out: file.File): Logger {
     return { out: out }
 }
 
-f = file.open('log.txt', file.Write)?
-logger = Logger.create(f) // the file moves into the logger
+immut f = file.open('log.txt', file.Write)?
+immut logger = Logger.create(f) // the file moves into the logger
 f.write('x') // Error! 'f' cannot be used here: its value was moved (or closed) on line 10
 ```
 
@@ -102,7 +102,7 @@ function Connection.open(name: string): Connection {
 }
 
 if (true) {
-    db = Connection.open('db')
+    immut db = Connection.open('db')
     print('working')
 } // closing db
 ```
@@ -121,7 +121,7 @@ A `File` is move-only, and it is closed when its owner goes out of scope, so mos
 import file
 
 function readNotes(): Result[string, file.FileError] {
-    f = file.open('notes.txt', file.Read)?
+    immut f = file.open('notes.txt', file.Read)?
     return f.read() // 'f' goes out of scope: the file is closed
 }
 ```

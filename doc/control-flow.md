@@ -17,7 +17,7 @@ if (age > 18) {
 `if` can also be used as an expression. It then needs an `else`, and both branches must have the same type:
 
 ```koji
-const label: string = if (age > 18) { 'Adult' } else { 'Minor' }
+immut label: string = if (age > 18) { 'Adult' } else { 'Minor' }
 
 print(label)
 ```
@@ -57,7 +57,7 @@ This prints numbers from 0 to 9.
 #### Going Through a List
 
 ```koji
-names: string[] = ['Anna', 'Claire', 'Leon']
+immut names: string[] = ['Anna', 'Claire', 'Leon']
 
 // By index
 for i in range(0, names.length()) {
@@ -72,14 +72,14 @@ for name in names {
 
 #### The Loop Variable
 
-The loop variable is `imut`: assigning to it, or changing its contents, is an error. With `for mut`, it can be changed, but it is a copy: the list does not change.
+The loop variable is `immut`: assigning to it, or changing its contents, is an error. With `for mut`, it can be changed, but it is a copy: the list does not change.
 
 ```koji
 for name in names {
-    name = name.upper() // Error! cannot modify 'name': the 'for' variable is imut (use 'for mut' to change it)
+    name = name.upper() // Error! cannot modify 'name': the 'for' variable is immut (use 'for mut' to change it)
 }
 
-var rows = [[1, 2], [3, 4]]
+mut rows = [[1, 2], [3, 4]]
 
 for mut row in rows {
     row[0] = 0
@@ -144,7 +144,7 @@ match (result) {
 }
 ```
 
-Each arm has the form `pattern => expression`. Arms are tried in order, and the first one that matches runs. Patterns can match variants, take their fields apart (`Ok(value)`), and be nested (`Err(NotFound(path))`). The variables bound by a pattern (`value`, `error`) are `imut`.
+Each arm has the form `pattern => expression`. Arms are tried in order, and the first one that matches runs. Patterns can match variants, take their fields apart (`Ok(value)`), and be nested (`Err(NotFound(path))`). The variables bound by a pattern (`value`, `error`) are `immut`.
 
 ```koji
 match (user) {
@@ -165,7 +165,7 @@ match (option) {
 A `match` is also an expression, so its value can be assigned to a variable:
 
 ```koji
-const label: string = match (result) {
+immut label: string = match (result) {
     Ok(value) => `Value: ${value}`
     Err(error) => `Error: ${error}`
 }
@@ -174,7 +174,7 @@ const label: string = match (result) {
 All arms must evaluate to the same type, which becomes the type of the expression.
 
 ```koji
-const label: int = match (result) {
+immut label: int = match (result) {
     Ok(value) => `Value: ${value}` // Error! string is not int
     Err(error) => `Error: ${error}`
 }
@@ -185,9 +185,9 @@ const label: int = match (result) {
 A guard, `if (condition)` after a pattern, makes the arm match only when the condition is true. `match` with guards replaces both `else if` chains and `switch` / `case` statements:
 
 ```koji
-age: int = 14
+immut age: int = 14
 
-const label: string = match (age) {
+immut label: string = match (age) {
     x if (x > 18) => 'Adult'
     x if (x > 12) => 'Teen'
     _             => 'Minor'

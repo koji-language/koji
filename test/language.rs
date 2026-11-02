@@ -75,10 +75,10 @@ fn temp_dir(name: &str) -> PathBuf {
 #[test]
 fn primitive_types() {
     let source = r#"
-        age: int = 23
-        const pi: float = 3.14
-        name: string = 'Mary'
-        isStudent: boolean = true
+        immut age: int = 23
+        immut pi: float = 3.14
+        immut name: string = 'Mary'
+        immut isStudent: boolean = true
         print(age, pi, name, isStudent)
     "#;
     assert_eq!(run(source), "23 3.14 Mary true\n");
@@ -87,8 +87,8 @@ fn primitive_types() {
 #[test]
 fn option_instead_of_null() {
     let source = r#"
-        name: Option[string] = None
-        x: Option[int] = None
+        immut name: Option[string] = None
+        mut x: Option[int] = None
 
         // Later in the code
         x = Some(42)
@@ -100,10 +100,10 @@ fn option_instead_of_null() {
 #[test]
 fn global_and_local_variables() {
     let source = r#"
-        globalVar = 1 // Global variable
+        immut globalVar = 1 // Global variable
 
         function test() {
-            var localVar = 2 // Local variable
+            mut localVar = 2 // Local variable
 
             print(globalVar) // 1 (accesses the global variable)
             print(localVar) // 2 (accesses the local variable within the function)
@@ -115,7 +115,7 @@ fn global_and_local_variables() {
     "#;
     assert_eq!(run(source), "1\n2\n1\n");
     assert_error(
-        "function test() {\n var localVar = 2\n}\nprint(localVar)",
+        "function test() {\n mut localVar = 2\n}\nprint(localVar)",
         "undefined variable 'localVar'",
     );
 }
@@ -123,7 +123,7 @@ fn global_and_local_variables() {
 #[test]
 fn functions_can_update_globals() {
     let source = r#"
-        count = 0
+        mut count = 0
         function increment() {
             count += 1
         }
@@ -135,31 +135,38 @@ fn functions_can_update_globals() {
 }
 
 #[test]
-fn const_cannot_be_reassigned() {
-    assert_error("const pi = 3.14159\npi = 3.14", "cannot modify a 'const' value");
-}
-
-#[test]
-fn const_reference_contents_can_change() {
+fn immut_cannot_change() {
+    assert_error("immut pi = 3.14159\npi = 3.14", "cannot modify 'pi': it is immut");
     let source = r#"
         type Person = {
             name: string
             age: int
         }
 
-        const person: Person = {
+        mut person: Person = {
             name: 'Ana',
             age: 30
         }
 
-        person.age = 31 // Change the value of person age
-        print(person.age)
+        person.age = 31
+        person = { name: 'Bia', age: 25 }
+        print(person.name, person.age)
     "#;
-    assert_eq!(run(source), "31\n");
+    assert_eq!(run(source), "Bia 25\n");
     assert_error(
-        "type Person = { name: string }\nconst person: Person = { name: 'Ana' }\nperson = { name: 'Bia' }",
-        "cannot modify a 'const' value",
+        "type Person = { name: string }\nimmut person: Person = { name: 'Ana' }\nperson = { name: 'Bia' }",
+        "cannot modify 'person': it is immut",
     );
+}
+
+#[test]
+fn declarations_need_a_keyword() {
+    assert_error("count = 1", "'count' is not declared: declare it with 'mut count = ...' (or 'immut' if it never changes)");
+    assert_error("mut count = 0\ncuont = 1", "'cuont' is not declared");
+    assert_error("name: string = 'Ana'", "declare 'name' with 'mut' or 'immut'");
+    assert_error("var x = 1", "Koji has no 'var': declare with 'mut name = ...'");
+    assert_error("const x = 1", "Koji has no 'const': declare with 'immut name = ...'");
+    assert_error("imut x = 1", "Koji has no 'imut': declare with 'immut name = ...'");
 }
 
 #[test]
@@ -169,21 +176,21 @@ fn imut_is_deeply_immutable() {
             name: string
             age: int
         }
-        imut person: Person = { name: 'Ana', age: 30 }
-        imut matrix = [[1, 2], [3, 4]]
+        immut person: Person = { name: 'Ana', age: 30 }
+        immut matrix = [[1, 2], [3, 4]]
         print(person.age, matrix[1][0])
     "#;
     assert_eq!(run(source), "30 3\n");
     assert_error(
-        "type P = { age: int }\nimut person: P = { age: 30 }\nperson.age = 31",
-        "cannot modify 'person': it is imut",
+        "type P = { age: int }\nimmut person: P = { age: 30 }\nperson.age = 31",
+        "cannot modify 'person': it is immut",
     );
-    assert_error("imut items = [1, 2]\nitems[0] = 5", "cannot modify 'items': it is imut");
-    assert_error("imut matrix = [[1]]\nmatrix[0][0] = 5", "cannot modify 'matrix': it is imut");
-    assert_error("imut x = 1\nx = 2", "cannot modify 'x': it is imut");
-    assert_error("imut x = 1\nx += 2", "cannot modify 'x': it is imut");
+    assert_error("immut items = [1, 2]\nitems[0] = 5", "cannot modify 'items': it is immut");
+    assert_error("immut matrix = [[1]]\nmatrix[0][0] = 5", "cannot modify 'matrix': it is immut");
+    assert_error("immut x = 1\nx = 2", "cannot modify 'x': it is immut");
+    assert_error("immut x = 1\nx += 2", "cannot modify 'x': it is immut");
     // const only forbids reassigning the variable.
-    assert_eq!(run("const items = [1, 2]\nitems[0] = 5\nprint(items)"), "[5, 2]\n");
+    assert_eq!(run("mut items = [1, 2]\nitems[0] = 5\nprint(items)"), "[5, 2]\n");
 }
 
 #[test]
@@ -195,13 +202,13 @@ fn comments() {
 #[test]
 fn lists() {
     let source = r#"
-        numbers: int[] = [1, 2, 3]
-        coordinates: int[][] = [[1, 2], [3, 4]]
-        positions: int[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+        immut numbers: int[] = [1, 2, 3]
+        immut coordinates: int[][] = [[1, 2], [3, 4]]
+        immut positions: int[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
         print(numbers, coordinates[1][0], positions[1][1][1], numbers.length())
     "#;
     assert_eq!(run(source), "[1, 2, 3] 3 8 3\n");
-    assert_error("numbers: int[] = [1, 'a']", "same type");
+    assert_error("immut numbers: int[] = [1, 'a']", "same type");
 }
 
 // ---------------------------------------------------------------------------
@@ -223,14 +230,14 @@ fn division_follows_the_operand_types() {
         run("print(7 / 2, -7 / 2, 7.0 / 2.0, 7 / 2.0, -7 % 2, 7.5 % 2.0)"),
         "3 -3 3.5 3.5 -1 1.5\n"
     );
-    assert_eq!(run("x: int = 17\nx /= 5\nprint(x)"), "3\n");
-    assert_error("x: int = 7 / 2.0", "cannot assign a value of type float");
+    assert_eq!(run("mut x: int = 17\nx /= 5\nprint(x)"), "3\n");
+    assert_error("immut x: int = 7 / 2.0", "cannot assign a value of type float");
     assert_error("print(1 / 0)", "division by zero");
 }
 
 #[test]
 fn double_slash_is_always_a_comment() {
-    assert_eq!(run("x = 7 //2\nprint(x)"), "7\n");
+    assert_eq!(run("immut x = 7 //2\nprint(x)"), "7\n");
 }
 
 #[test]
@@ -248,8 +255,8 @@ fn equality_and_membership() {
             name: string
             age: int
         }
-        const a: Person = { name: 'Ana', age: 30 }
-        const b: Person = { name: 'Ana', age: 30 }
+        immut a: Person = { name: 'Ana', age: 30 }
+        immut b: Person = { name: 'Ana', age: 30 }
 
         print(a == b) // true: the fields are equal
         print('a' in 'banana')
@@ -257,14 +264,14 @@ fn equality_and_membership() {
     "#;
     assert_eq!(run(source), "true\ntrue\ntrue false\n");
     // Values have no identity: `is` only checks variants.
-    assert_error("a = [1]\nb = a\nprint(a is b)", "'is' checks a variant");
-    assert_error("x = 1\nprint(x is 1)", "'is' checks a variant");
+    assert_error("immut a = [1]\nimmut b = a\nprint(a is b)", "'is' checks a variant");
+    assert_error("immut x = 1\nprint(x is 1)", "'is' checks a variant");
 }
 
 #[test]
 fn logical_operators() {
     let source = r#"
-        age = 20
+        immut age = 20
         if not (age > 18) { print('minor') } else { print('adult') }
         print(true and false, true or false, not true)
     "#;
@@ -274,14 +281,14 @@ fn logical_operators() {
 #[test]
 fn assignment_operators() {
     let source = r#"
-        e = 10
+        mut e = 10
         e += 1
         e -= 2
         e *= 3
         e /= 2
         e **= 2
         e %= 7
-        f = 1.0
+        mut f = 1.0
         f /= 4
         print(e, f)
     "#;
@@ -295,7 +302,7 @@ fn string_operators() {
 
 #[test]
 fn bitwise_operators() {
-    let source = "a = 5\nb = 3\nprint(a & b, a | b, a ^ b, ~a, a << 1, a >> 1)";
+    let source = "immut a = 5\nimmut b = 3\nprint(a & b, a | b, a ^ b, ~a, a << 1, a >> 1)";
     assert_eq!(run(source), "1 7 6 -6 10 2\n");
 }
 
@@ -312,7 +319,7 @@ fn operator_type_errors() {
 #[test]
 fn string_interpolation() {
     let source = r#"
-        name: string = 'Emma'
+        immut name: string = 'Emma'
 
         print(`Hello, ${name}!`) // Hello, Emma!
         print('Hello, ${name}!') // Hello, ${name}!
@@ -366,7 +373,7 @@ fn string_methods() {
 #[test]
 fn input_returns_an_option() {
     let source = r#"
-        name: Option[string] = input("What's your name?")
+        immut name: Option[string] = input("What's your name?")
 
         match (name) {
             Some(line) => print(`Hello, ${line}!`)
@@ -384,19 +391,19 @@ fn input_returns_an_option() {
 #[test]
 fn if_else_statement_and_expression() {
     let source = r#"
-        age = 20
+        immut age = 20
         if (age > 18) {
             print('Adult')
         } else {
             print('Minor')
         }
 
-        const label: string = if (age > 18) { 'Adult' } else { 'Minor' }
+        immut label: string = if (age > 18) { 'Adult' } else { 'Minor' }
 
         print(label)
     "#;
     assert_eq!(run(source), "Adult\nAdult\n");
-    assert_error("x = if (true) { 1 }", "no value");
+    assert_error("immut x = if (true) { 1 }", "no value");
     assert_error("if (1) { print(1) }", "must be boolean");
     assert_error("if (true) { } else if (false) { }", "does not have 'else if'");
 }
@@ -409,7 +416,7 @@ fn for_loops() {
         for i in range(2) { print(i) }
         for i in range(10, 0, -4) { print(i) }
 
-        names: string[] = ['Anna', 'Claire', 'Leon']
+        immut names: string[] = ['Anna', 'Claire', 'Leon']
 
         // By index
         for i in range(0, names.length()) {
@@ -430,7 +437,7 @@ fn for_loops() {
 #[test]
 fn while_break_and_continue() {
     let source = r#"
-        count = 0
+        mut count = 0
         while (count < 3) {
             print(count)
 
@@ -468,9 +475,9 @@ fn match_with_guards() {
                 _             => 'Minor'
             }
         }
-        age: int = 14
+        immut age: int = 14
 
-        const label: string = match (age) {
+        immut label: string = match (age) {
             x if (x > 18) => 'Adult'
             x if (x > 12) => 'Teen'
             _             => 'Minor'
@@ -485,8 +492,8 @@ fn match_with_guards() {
 #[test]
 fn match_arms_must_agree_with_the_declared_type() {
     let source = r#"
-        result = Ok(1)
-        const label: int = match (result) {
+        immut result = Ok(1)
+        immut label: int = match (result) {
             Ok(value) => `Value: ${value}` // Error! string is not int
             Err(error) => `Error: ${error}`
         }
@@ -497,12 +504,12 @@ fn match_arms_must_agree_with_the_declared_type() {
 #[test]
 fn match_must_be_exhaustive() {
     assert_error(
-        "option = Some(1)\nmatch (option) {\n Some(value) => print(value)\n}",
+        "immut option = Some(1)\nmatch (option) {\n Some(value) => print(value)\n}",
         "None is not handled",
     );
     assert_error("match (1) {\n 1 => print(1)\n}", "wildcard");
     let source = r#"
-        option = Some(1)
+        immut option = Some(1)
         match (option) {
             Some(value) => print(value)
             _ => print('No value')
@@ -534,7 +541,7 @@ fn match_literals_and_nested_patterns() {
             Circle(radius: float)
             Rectangle(width: float, height: float)
         }
-        shapes: Option[Shape][] = [Some(Circle(2.0)), None, Some(Rectangle(1.0, 2.0))]
+        immut shapes: Option[Shape][] = [Some(Circle(2.0)), None, Some(Rectangle(1.0, 2.0))]
         for s in shapes {
             match (s) {
                 Some(Circle(r)) => print(`circle ${r}`)
@@ -603,7 +610,7 @@ fn unit_variants() {
             Admin(name: string)
             Guest
         }
-        users: User[] = [Admin('Ana'), Guest]
+        immut users: User[] = [Admin('Ana'), Guest]
         for user in users {
             match (user) {
                 Admin(name) => print(`Admin: ${name}`)
@@ -640,16 +647,16 @@ fn shape_types() {
             age: int
         }
 
-        person: Person = {
+        immut person: Person = {
             name: 'John',
             age: 20
         }
         print(person.name, person.age, person)
     "#;
     assert_eq!(run(source), "John 20 { name: 'John', age: 20 }\n");
-    assert_error("type P = { a: int }\np: P = { a: 1, b: 2 }", "has no field 'b'");
-    assert_error("type P = { a: int  b: int }\np: P = { a: 1 }", "missing field(s) b");
-    assert_error("type P = { a: int }\np: P = { a: 'x' }", "must be int");
+    assert_error("type P = { a: int }\nimmut p: P = { a: 1, b: 2 }", "has no field 'b'");
+    assert_error("type P = { a: int  b: int }\nimmut p: P = { a: 1 }", "missing field(s) b");
+    assert_error("type P = { a: int }\nimmut p: P = { a: 'x' }", "must be int");
 }
 
 #[test]
@@ -657,7 +664,7 @@ fn maps_and_sets() {
     let source = r#"
         type Dictionary = Map[string, string]
 
-        translations: Dictionary = [
+        mut translations: Dictionary = [
             'hello': 'olá',
             'world': 'mundo'
         ]
@@ -665,29 +672,29 @@ fn maps_and_sets() {
         print(translations['hello'], 'world' in translations, translations.length())
         for key in translations { print(key) }
 
-        ages: Map[string, int] = ['Ana': 30, 'Bia': 25]
-        var copy = ages
+        immut ages: Map[string, int] = ['Ana': 30, 'Bia': 25]
+        mut copy = ages
         copy['Ana'] += 1
         print(ages['Ana'], copy['Ana'], ages.get('Bia'), ages.get('X'), ages.has('Ana'))
         print(copy.remove('Bia'), copy.remove('X'), copy, copy.keys(), copy.values())
-        empty: Map[int, string] = [:]
+        immut empty: Map[int, string] = [:]
         print(empty, [1: 'um'])
 
         type Point = {
             x: int
             y: int
         }
-        var seen: Set[Point] = Set.from([])
+        mut seen: Set[Point] = Set.from([])
         seen.add({ x: 1, y: 2 })
         seen.add({ x: 1, y: 2 })
-        p: Point = { x: 1, y: 2 }
+        immut p: Point = { x: 1, y: 2 }
         print(seen.length(), seen.has(p), p in seen)
-        s = Set.from([3, 1, 3, 2])
-        var t = s
+        immut s = Set.from([3, 1, 3, 2])
+        mut t = s
         print(t.remove(3), t.remove(9))
         print(s, t, s.values(), s == Set.from([1, 2, 3]))
 
-        counts: Map[char, int] = [:]
+        mut counts: Map[char, int] = [:]
         for c in 'banana' {
             if (c in counts) {
                 counts[c] += 1
@@ -705,12 +712,12 @@ fn maps_and_sets() {
     );
     let errors = [
         ("type D = { [key: string]: string }", "'D' cannot be an index signature: use a map"),
-        ("d: Map[string, int] = { 'a': 1 }", "a map is written with brackets, not braces"),
-        ("m = ['a': 1, 'b': 'x']", "map values must have the same type"),
-        ("m = [(n: int) => n: 1]", "map keys must be equatable"),
-        ("imut m = ['a': 1]\nm.remove('a')", "cannot call 'remove' on 'm', as it changes the value: it is imut"),
-        ("m = ['a': 1, 2]", "a map literal needs 'key: value' for every entry"),
-        ("s: Set[(int) => int] = Set.from([])", "is not equatable"),
+        ("immut d: Map[string, int] = { 'a': 1 }", "a map is written with brackets, not braces"),
+        ("immut m = ['a': 1, 'b': 'x']", "map values must have the same type"),
+        ("immut m = [(n: int) => n: 1]", "map keys must be equatable"),
+        ("immut m = ['a': 1]\nm.remove('a')", "cannot call 'remove' on 'm', as it changes the value: it is immut"),
+        ("immut m = ['a': 1, 2]", "a map literal needs 'key: value' for every entry"),
+        ("immut s: Set[(int) => int] = Set.from([])", "is not equatable"),
     ];
     for (code, fragment) in errors {
         assert_error(code, fragment);
@@ -737,7 +744,7 @@ fn type_intersection_and_no_subtyping() {
             print(animal.name)
         }
 
-        const dog: Dog = {
+        immut dog: Dog = {
             name: 'Rex',
             breed: 'Pug'
         }
@@ -766,7 +773,7 @@ fn nested_shapes() {
             address: Address
         }
 
-        user: User = {
+        immut user: User = {
             id: 42
             name: 'Bob'
             address: {
@@ -789,7 +796,7 @@ fn nested_shapes() {
         printProduct({ id: 1, name: 'Pen', price: 2.5 })
     "#;
     assert_eq!(run(source), "Exampleville\nProduct: Pen (1) - 2.5\n");
-    assert_error("type U = { id: int }\nu: U = { id: 1, extra: true }", "has no field 'extra'");
+    assert_error("type U = { id: int }\nimmut u: U = { id: 1, extra: true }", "has no field 'extra'");
 }
 
 #[test]
@@ -798,8 +805,8 @@ fn shapes_are_nominal() {
     let source = r#"
         type Celsius = { value: float }
         type Fahrenheit = { value: float }
-        const c: Celsius = { value: 20.0 }
-        f: Fahrenheit = c
+        immut c: Celsius = { value: 20.0 }
+        immut f: Fahrenheit = c
     "#;
     assert_error(source, "cannot assign a value of type Celsius to 'f' of type Fahrenheit");
 }
@@ -807,7 +814,7 @@ fn shapes_are_nominal() {
 #[test]
 fn interface_is_reserved() {
     assert_error("interface User { id: int }", "'interface' is a reserved word");
-    assert_error("interface = 1", "'interface' is a reserved word");
+    assert_error("immut interface = 1", "'interface' is a reserved word");
 }
 
 // ---------------------------------------------------------------------------
@@ -840,23 +847,23 @@ fn functions() {
 #[test]
 fn anonymous_functions_and_closures() {
     let source = r#"
-        const double = (x: int): int => {
+        immut double = (x: int): int => {
             return x * 2
         }
 
         // or simply
 
-        const triple = (x: int) => x * 3
+        immut triple = (x: int) => x * 3
 
         print(double(10), triple(10)) // 20 30
 
         function makeAdder(amount: int): (int) => int {
             return (x: int) => x + amount
         }
-        addFive = makeAdder(5)
+        immut addFive = makeAdder(5)
         print(addFive(1))
 
-        apply = (f: (int) => int, x: int) => f(x)
+        immut apply = (f: (int) => int, x: int) => f(x)
         print(apply(double, 21))
     "#;
     assert_eq!(run(source), "20 30\n6\n42\n");
@@ -867,13 +874,13 @@ fn closures_capture_a_read_only_copy() {
     // The captured value is the one at the moment the function is created.
     let source = r#"
         function make(): int[] {
-            results: int[] = []
-            x = 1
-            read = () => x
+            mut results: int[] = []
+            mut x = 1
+            immut read = () => x
             x = 2
             results += [read()]
 
-            fns: (() => int)[] = []
+            mut fns: (() => int)[] = []
             for i in range(3) {
                 fns += [() => i * 10]
             }
@@ -889,7 +896,7 @@ fn closures_capture_a_read_only_copy() {
         print(make())
 
         // Module variables are not captured: functions read and change them.
-        total = 0
+        mut total = 0
         function add(n: int) {
             total += n
         }
@@ -900,7 +907,7 @@ fn closures_capture_a_read_only_copy() {
     assert_eq!(run(source), "[1, 0, 10, 20, 2]\n5\n");
     let counter = r#"
         function makeCounter(): () => int {
-            count = 0
+            mut count = 0
             return () => {
                 count += 1
                 return count
@@ -909,7 +916,7 @@ fn closures_capture_a_read_only_copy() {
     "#;
     assert_error(counter, "cannot modify 'count' here: functions capture a read-only copy");
     assert_error(
-        "function f() {\n items = [1]\n g = () => { items[0] = 2 }\n}",
+        "function f() {\n mut items = [1]\n immut g = () => { items[0] = 2 }\n}",
         "cannot modify 'items' here",
     );
 }
@@ -927,7 +934,7 @@ fn functions_are_hoisted() {
 fn question_mark_operator() {
     let source = r#"
         function parseAge(text: string): Result[int, ParseError] {
-            age = int(text)?
+            immut age = int(text)?
             return Ok(age)
         }
         print(parseAge('42'), parseAge('x'))
@@ -937,7 +944,7 @@ fn question_mark_operator() {
             return Some(items[0])
         }
         function shout(items: string[]): Option[string] {
-            item = first(items)?
+            immut item = first(items)?
             return Some(item.upper())
         }
         print(shout(['hey']), shout([]))
@@ -958,7 +965,7 @@ fn question_mark_wraps_errors_automatically() {
 
         function load(text: string, count: string): Result[int, AppError] {
             json.parse(text)?
-            n = int(count)?
+            immut n = int(count)?
             return Ok(n)
         }
         print(load('[1]', '3'), load('[1', '3'), load('[1]', 'x'))
@@ -968,11 +975,11 @@ fn question_mark_wraps_errors_automatically() {
         "Ok(3) Err(Json(Syntax('expected \\',\\' or \\']\\'', 1, 3))) Err(Parse(InvalidNumber('x')))\n"
     );
     assert_error(
-        "function f(): Result[int, string] {\n x = int('1')?\n return Ok(x)\n}",
+        "function f(): Result[int, string] {\n immut x = int('1')?\n return Ok(x)\n}",
         "use '.mapErr(...)'",
     );
     assert_error(
-        "type E = { A(e: ParseError)  B(e: ParseError) }\nfunction f(): Result[int, E] {\n x = int('1')?\n return Ok(x)\n}",
+        "type E = { A(e: ParseError)  B(e: ParseError) }\nfunction f(): Result[int, E] {\n immut x = int('1')?\n return Ok(x)\n}",
         "the variants A, B all hold a ParseError",
     );
 }
@@ -1016,7 +1023,7 @@ fn readable_error_messages() {
 fn map_err() {
     let source = r#"
         function parse(text: string): Result[int, string] {
-            n = int(text).mapErr((error: ParseError) => `bad number: ${text}`)?
+            immut n = int(text).mapErr((error: ParseError) => `bad number: ${text}`)?
             return Ok(n)
         }
         type Wrapped = { Wrap(error: ParseError) }
@@ -1026,16 +1033,16 @@ fn map_err() {
         run(source),
         "Ok(1) Err('bad number: x') Err(Wrap(InvalidNumber('y')))\n"
     );
-    assert_error("x = int('1').mapErr(5)", "'mapErr' expects a function");
+    assert_error("immut x = int('1').mapErr(5)", "'mapErr' expects a function");
 }
 
 #[test]
 fn question_mark_rules() {
     assert_error("function f(): int {\n return int('1')?\n}", "needs the function to return a Result too");
-    assert_error("x = 5?", "can only be used on a Result or an Option");
-    assert_error("g = (s: string) => int(s)?", "needs the function to declare its return type");
+    assert_error("immut x = 5?", "can only be used on a Result or an Option");
+    assert_error("immut g = (s: string) => int(s)?", "needs the function to declare its return type");
     // At the top level of the main file, an error stops the program.
-    let (output, result) = execute("print(int('1')?)\nn = int('oops')?\nprint('never')", "", Path::new("test.kj"));
+    let (output, result) = execute("print(int('1')?)\nimmut n = int('oops')?\nprint('never')", "", Path::new("test.kj"));
     assert_eq!(output, "1\n");
     assert_eq!(result.unwrap_err().to_string(), "error: test.kj:2: 'oops' is not a valid number");
 }
@@ -1082,9 +1089,9 @@ fn modules_and_imports() {
             Square(side: float)
         }
 
-        export var count = 0
+        export mut count = 0
 
-        export imut origin = [0, 0]
+        export immut origin = [0, 0]
 
         export function increment() {
             count += 1
@@ -1098,12 +1105,12 @@ fn modules_and_imports() {
         import math from 'math.kj'
         import { add, subtract, Shape, count, increment } from 'math.kj'
 
-        result: int = math.add(5, 10)
+        immut result: int = math.add(5, 10)
 
         print(result) // 15
         print(add(5, 10), subtract(5, 10))
-        s: Shape = Circle(1.0)
-        t: math.Shape = math.Square(2.0)
+        immut s: Shape = Circle(1.0)
+        immut t: math.Shape = math.Square(2.0)
         print(s, t)
 
         increment()
@@ -1124,19 +1131,21 @@ fn modules_and_imports() {
     fails("import math from 'math.kj'\nprint(math.clamp(1))", "'clamp' is not exported by 'math.kj'");
     fails("import { count } from 'math.kj'\ncount = 5", "'count' is read-only outside 'math.kj'");
     fails("import math from 'math.kj'\nmath.count = 5", "'count' is read-only outside 'math.kj'");
-    fails("import { origin } from 'math.kj'\norigin[0] = 1", "cannot modify 'origin': it is imut");
+    fails("import { origin } from 'math.kj'\norigin[0] = 1", "'origin' is read-only outside 'math.kj'");
+    fails("import { count } from 'math.kj'\ncount += 1", "'count' is read-only outside 'math.kj'");
+    fails("import math from 'math.kj'\nmath.origin[0] = 1", "'origin' is read-only outside 'math.kj'");
 }
 
 #[test]
 fn export_rules() {
-    assert_error("function f() {\n export const x = 1\n}", "only allowed at the top level");
-    assert_error("export x = 1", "expected 'function', 'const', 'imut', 'var' or 'type'");
+    assert_error("function f() {\n export immut x = 1\n}", "only allowed at the top level");
+    assert_error("export x = 1", "expected 'function', 'mut', 'immut' or 'type' after 'export'");
     assert_error(
         "type Hidden = { value: int }\nexport function make(): Hidden { return { value: 1 } }",
         "uses the private type 'Hidden'",
     );
     // Exports of the main file are allowed (and simply unused).
-    assert_eq!(run("export const answer = 42\nprint(answer)"), "42\n");
+    assert_eq!(run("export immut answer = 42\nprint(answer)"), "42\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,9 +1163,9 @@ fn stdlib_time() {
 
         print('Done!')
 
-        start = time.monotonic()
+        immut start = time.monotonic()
         // Do something
-        end = time.monotonic()
+        immut end = time.monotonic()
 
         print(end - start >= 0.0, time.now() > 1700000000.0)
     "#;
@@ -1211,7 +1220,7 @@ fn stdlib_file() {
         run(&source),
         "Ok(void)\nHello world!\nnot found: /nonexistent/notes.txt\nOk('Hello world! Bye!')\n"
     );
-    assert_error("import file\nf = file.open('x', 'r')", "must be Mode, found string");
+    assert_error("import file\nimmut f = file.open('x', 'r')", "must be Mode, found string");
 }
 
 #[test]
@@ -1219,7 +1228,7 @@ fn stdlib_datetime() {
     let source = r#"
         import datetime
 
-        date = datetime.today()
+        immut date = datetime.today()
 
         print(date.length())
 
@@ -1235,7 +1244,7 @@ fn stdlib_datetime() {
         print(datetime.parse('2025-02-30', 'YYYY-MM-DD'), datetime.parse('20/04', 'YYYY-MM-DD'))
         print(datetime.parse('2025/02/03', 'YYYY-MM-DD'))
 
-        now = datetime.now()
+        immut now = datetime.now()
         print(now.year >= 2025, now.month >= 1 and now.month <= 12)
     "#;
     assert_eq!(
@@ -1277,11 +1286,11 @@ fn stdlib_math() {
 
 #[test]
 fn floats_have_no_nan_or_infinity() {
-    assert_error("x = 1e308 * 10.0", "float overflow");
-    assert_error("x = 1.5 / 0.0", "division by zero");
-    assert_error("x = (-8.0) ** 0.5", "not a real number");
-    assert_error("x = 0.0 ** -1.0", "division by zero");
-    assert_error("x = 1e400", "float literal is too large");
+    assert_error("immut x = 1e308 * 10.0", "float overflow");
+    assert_error("immut x = 1.5 / 0.0", "division by zero");
+    assert_error("immut x = (-8.0) ** 0.5", "not a real number");
+    assert_error("immut x = 0.0 ** -1.0", "division by zero");
+    assert_error("immut x = 1e400", "float literal is too large");
     assert_eq!(run("print(2.0 ** 0.5 > 1.41, 2 ** 3, (-8.0) ** 2.0)"), "true 8 64.0\n");
     // 0 ** 0 is 1: the value of the expression (the indeterminate form only concerns limits).
     assert_eq!(run("print(0 ** 0, 0.0 ** 0.0)"), "1 1.0\n");
@@ -1381,7 +1390,7 @@ fn stdlib_regex() {
         }
 
         function countWords(text: string): Result[int, regex.RegexError] {
-            const word = regex.compile('[a-z]+')?
+            immut word = regex.compile('[a-z]+')?
             return Ok(word.findAll(text).length())
         }
 
@@ -1529,9 +1538,9 @@ fn methods_and_associated_functions() {
             }
         }
 
-        const person: Person = { name: 'John', age: 20 }
+        immut person: Person = { name: 'John', age: 20 }
         person.greet()
-        const baby = Person.create('Ana')
+        immut baby = Person.create('Ana')
         baby.greet()
         print(person.olderThan(baby), Square(2.0).area())
     "#;
@@ -1548,7 +1557,7 @@ fn methods_and_associated_functions() {
     assert_error(&format!("{}function f() {{ function P.hi(self) {{}} }}", p), "must be declared at the top level");
     assert_error(&format!("{}function P.hi(self) {{}}\nP.hi()", p), "takes 'self'");
     assert_error(
-        &format!("{}function P.make(): P {{ return {{ name: 'a' }} }}\nconst x: P = {{ name: 'b' }}\nx.make()", p),
+        &format!("{}function P.make(): P {{ return {{ name: 'a' }} }}\nimmut x: P = {{ name: 'b' }}\nx.make()", p),
         "has no 'self'",
     );
 }
@@ -1587,7 +1596,7 @@ fn methods_of_imported_types() {
         import { Point, make, double } from 'geo.kj'
 
         print(geo.Point.origin().sum(), Point.origin().sum(), make(2, 3).sum())
-        var n = 3
+        mut n = 3
         geo.double(mut n)
         double(mut n)
         print(n)
@@ -1621,13 +1630,13 @@ fn mut_parameters() {
             p.age += 1
         }
 
-        var count = 5
+        mut count = 5
         reset(mut count)
-        var list = [1, 2]
+        mut list = [1, 2]
         replace(mut list)
-        var people: Person[] = [{ name: 'Ana', age: 30 }]
+        mut people: Person[] = [{ name: 'Ana', age: 30 }]
         birthday(mut people[0])
-        var data: Box = { inner: 3 }
+        mut data: Box = { inner: 3 }
         reset(mut data.inner)
         print(count, list, people[0].age, data.inner)
     "#;
@@ -1636,17 +1645,17 @@ fn mut_parameters() {
     let f = "function f(mut x: int) {}\n";
     assert_error("function f(x: int) { x = 1 }", "cannot modify 'x': parameters can only be modified when declared 'mut'");
     assert_error("function f(items: int[]) { items[0] = 1 }", "parameters can only be modified");
-    assert_error(&format!("{}const c = 1\nf(mut c)", f), "cannot pass 'c' as 'mut': it is const");
-    assert_error(&format!("{}imut c = [1]\nf(mut c[0])", f), "it is imut");
-    assert_error(&format!("{}var c = 1\nf(c)", f), "argument 1 is a 'mut' parameter");
-    assert_error("function f(x: int) {}\nvar c = 1\nf(mut c)", "argument 1 is not a 'mut' parameter");
-    assert_error("function f(mut x: float) {}\nvar c = 1\nf(mut c)", "must be exactly float, found int");
-    assert_error(&format!("{}const g = f", f), "can only be called, not used as a value");
-    assert_error("const g = (mut x: int) => x", "anonymous functions cannot have 'mut' parameters");
+    assert_error(&format!("{}immut c = 1\nf(mut c)", f), "cannot pass 'c' as 'mut': it is immut");
+    assert_error(&format!("{}immut c = [1]\nf(mut c[0])", f), "it is immut");
+    assert_error(&format!("{}mut c = 1\nf(c)", f), "argument 1 is a 'mut' parameter");
+    assert_error("function f(x: int) {}\nmut c = 1\nf(mut c)", "argument 1 is not a 'mut' parameter");
+    assert_error("function f(mut x: float) {}\nmut c = 1\nf(mut c)", "must be exactly float, found int");
+    assert_error(&format!("{}immut g = f", f), "can only be called, not used as a value");
+    assert_error("immut g = (mut x: int) => x", "anonymous functions cannot have 'mut' parameters");
     assert_error(&format!("{}f(mut 1 + 2)", f), "only a variable, a field or an element");
-    assert_error("var x = 1\nprint(mut x)", "'mut' is only used before a call argument");
+    assert_error("mut x = 1\nprint(mut x)", "'mut' is only used before a call argument");
     assert_error(
-        &format!("{}function outer() {{\nvar b = 1\nfunction inner() {{ f(mut b) }}\n}}", f),
+        &format!("{}function outer() {{\nmut b = 1\nfunction inner() {{ f(mut b) }}\n}}", f),
         "functions capture a read-only copy",
     );
 }
@@ -1667,28 +1676,45 @@ fn mut_self() {
             self.increment()
         }
 
-        var counter: Counter = { count: 0 }
+        mut counter: Counter = { count: 0 }
         counter.increment()
-        const fixed: Counter = { count: 10 }
+        mut fixed: Counter = { count: 10 }
         fixed.addTwice()
-        var counters: Counter[] = [{ count: 5 }]
+        mut counters: Counter[] = [{ count: 5 }]
         counters[0].increment()
         print(counter.count, fixed.count, counters[0].count)
     "#;
     assert_eq!(run(source), "1 12 6\n");
 
     let c = "type C = { count: int }\nfunction C.inc(mut self) { self.count += 1 }\n";
-    assert_error(&format!("{}imut c: C = {{ count: 0 }}\nc.inc()", c), "cannot call 'C.inc' on 'c', as it changes the value: it is imut");
+    assert_error(&format!("{}immut c: C = {{ count: 0 }}\nc.inc()", c), "cannot call 'C.inc' on 'c', as it changes the value: it is immut");
     assert_error(&format!("{}function f(c: C) {{ c.inc() }}", c), "parameters can only be modified");
     assert_error(&format!("{}function C.peek(self) {{ self.inc() }}", c), "cannot call 'C.inc' on 'self'");
     assert_error(
         &format!("{}function C.make(): C {{ return {{ count: 0 }} }}\nC.make().inc()", c),
         "call it on a variable, a field or an element",
     );
-    assert_error(
-        &format!("{}function C.reset(mut self) {{ self = {{ count: 0 }} }}", c),
-        "'mut self' can change its fields, not replace the value",
-    );
+    // `mut self` can also replace the value: useful for sum types that change state.
+    let source = r#"
+        type Light = {
+            On
+            Off
+        }
+
+        function Light.toggle(mut self) {
+            self = match (self) {
+                On => Off
+                Off => On
+            }
+        }
+
+        mut light: Light = Off
+        light.toggle()
+        print(light)
+        light.toggle()
+        print(light)
+    "#;
+    assert_eq!(run(source), "On\nOff\n");
 }
 
 #[test]
@@ -1715,7 +1741,7 @@ fn display_and_debug() {
             }
         }
 
-        const ana: Person = { name: 'Ana', age: 30 }
+        immut ana: Person = { name: 'Ana', age: 30 }
         print(ana)
         print(`Hi, ${ana}!`)
         print(string(ana), ana.display(), ana.debug())
@@ -1732,15 +1758,15 @@ fn display_and_debug() {
 
 #[test]
 fn loop_and_match_variables_are_imut() {
-    assert_error("for x in [1, 2] { x = 3 }", "cannot modify 'x': the 'for' variable is imut (use 'for mut' to change it)");
-    assert_error("for row in [[1]] { row[0] = 3 }", "the 'for' variable is imut");
+    assert_error("for x in [1, 2] { x = 3 }", "cannot modify 'x': the 'for' variable is immut (use 'for mut' to change it)");
+    assert_error("for row in [[1]] { row[0] = 3 }", "the 'for' variable is immut");
     assert_error(
         "match (Some(1)) {\nSome(n) => { n = 2 }\nNone => {}\n}",
-        "cannot modify 'n': variables bound by 'match' are imut",
+        "cannot modify 'n': variables bound by 'match' are immut",
     );
     // `for mut` changes a copy: the list keeps its values.
     let source = r#"
-        var rows = [[1, 2], [3, 4]]
+        mut rows = [[1, 2], [3, 4]]
         for mut row in rows {
             row[0] = 0
             print(row)
@@ -1766,10 +1792,10 @@ fn object_literals_need_a_type() {
             print(person.name, person.age)
         }
 
-        const a: Person = { name: 'Ana', age: 30 }
-        var people: Person[] = [{ name: 'Bia', age: 20 }]
+        immut a: Person = { name: 'Ana', age: 30 }
+        mut people: Person[] = [{ name: 'Bia', age: 20 }]
         people[0] = { name: 'Caio', age: 40 }
-        const maybe: Option[Person] = Some({ name: 'Duda', age: 10 })
+        immut maybe: Option[Person] = Some({ name: 'Duda', age: 10 })
         show(a)
         show(make('Eva'))
         show({ name: 'Fábio', age: 50 })
@@ -1780,11 +1806,11 @@ fn object_literals_need_a_type() {
         }
     "#;
     assert_eq!(run(source), "Ana 30\nEva 0\nFábio 50\nCaio 40\nDuda 10\n");
-    assert_error("const d = { name: 'Leo' }", "this object literal needs a type");
+    assert_error("immut d = { name: 'Leo' }", "this object literal needs a type");
     assert_error("print({ a: 1 })", "this object literal needs a type");
-    assert_error("x: int = { a: 1 }", "an object literal cannot be a value of type int");
+    assert_error("immut x: int = { a: 1 }", "an object literal cannot be a value of type int");
     assert_error(
-        "type S = { Circle(r: float) }\nconst s: S = { r: 1.0 }",
+        "type S = { Circle(r: float) }\nimmut s: S = { r: 1.0 }",
         "an object literal cannot be a value of type S",
     );
 }
@@ -1797,18 +1823,18 @@ fn value_semantics() {
             age: int
         }
 
-        a = [1, 2, 3]
-        b = a
+        immut a = [1, 2, 3]
+        mut b = a
         b[0] = 9
         print(a, b)
 
-        m = [[1, 2], [3, 4]]
-        n = m
+        immut m = [[1, 2], [3, 4]]
+        mut n = m
         n[1][0] = 0
         print(m, n)
 
-        const ana: Person = { name: 'Ana', age: 30 }
-        var people: Person[] = [ana]
+        immut ana: Person = { name: 'Ana', age: 30 }
+        mut people: Person[] = [ana]
         people[0].age = 31
         print(ana.age, people[0].age)
 
@@ -1821,16 +1847,16 @@ fn value_semantics() {
         function same(items: int[]): int[] {
             return items
         }
-        imut fixed = [1, 2]
-        var copy = same(fixed)
+        immut fixed = [1, 2]
+        mut copy = same(fixed)
         copy[0] = 100
         print(fixed, copy)
 
         function makeReader(items: int[]): () => int[] {
             return () => items
         }
-        var source = [1]
-        const read = makeReader(source)
+        mut source = [1]
+        immut read = makeReader(source)
         source[0] = 2
         print(read(), source)
     "#;
@@ -1869,24 +1895,24 @@ fn drop_runs_when_the_owner_goes_out_of_scope() {
         "{}{}",
         CONN,
         r#"
-        a = Conn.open('a')
+        immut a = Conn.open('a')
         if (true) {
-            b = Conn.open('b')
+            immut b = Conn.open('b')
             use(b)
         }
-        c = Conn.open('c')
-        d = c
+        immut c = Conn.open('c')
+        immut d = c
         use(Conn.open('temp'))
         Conn.open('statement')
-        e = Conn.open('e1')
+        mut e = Conn.open('e1')
         e = Conn.open('e2')
 
         function make(): Conn {
-            x = Conn.open('made')
-            y = Conn.open('local')
+            immut x = Conn.open('made')
+            immut y = Conn.open('local')
             return x
         }
-        m = make()
+        immut m = make()
         print('end')
     "#
     );
@@ -1918,9 +1944,9 @@ fn drop_runs_for_fields_after_the_owner() {
             Nothing
         }
 
-        p: Pool = { first: Conn.open('p1'), second: Conn.open('p2') }
-        list: Conn[] = [Conn.open('l1'), Conn.open('l2')]
-        maybe: Maybe = One(Conn.open('v'))
+        immut p: Pool = { first: Conn.open('p1'), second: Conn.open('p2') }
+        immut list: Conn[] = [Conn.open('l1'), Conn.open('l2')]
+        immut maybe: Maybe = One(Conn.open('v'))
     "#
     );
     assert_eq!(
@@ -1939,21 +1965,21 @@ fn files_are_closed_by_their_owner() {
         import file
 
         function save(path: string): Result[int, file.FileError] {{
-            f = file.open(path, file.Write)?
+            mut f = file.open(path, file.Write)?
             f.write('one ')?
-            g = f
+            immut g = f
             g.write('two')?
             return Ok(2)
         }}
 
         function load(path: string): Result[string, file.FileError] {{
-            f = file.open(path, file.Read)?
+            immut f = file.open(path, file.Read)?
             return f.read()
         }}
 
         print(save('{path}'))
         print(load('{path}'))
-        h = file.open('{path}', file.Read)?
+        immut h = file.open('{path}', file.Read)?
         h.close()
     "#
     );
@@ -1965,16 +1991,16 @@ fn files_are_closed_by_their_owner() {
 #[test]
 fn move_only_values_cannot_be_used_after_a_move() {
     let errors = [
-        ("c = Conn.open('a')\nd = c\nprint(c.name)", "'c' cannot be used here: its value was moved (or closed) on line"),
-        ("c = Conn.open('a')\nif (true) { d = c }\nprint(c.name)", "its value was moved"),
-        ("function f(c: Conn) { d = c }", "'c' cannot be moved: it is a parameter, which only borrows its value"),
-        ("c = Conn.open('a')\nfor i in range(2) { d = c }", "cannot be moved inside a loop"),
-        ("c = Conn.open('a')\nfunction g() { d = c }", "declared outside this function"),
-        ("function g() {\nc = Conn.open('a')\nh = () => c.name\n}", "functions capture a copy"),
-        ("c = Conn.open('a')\nx = if (true) { c } else { c }", "cannot be moved out of a variable inside an 'if'"),
-        ("type Pair = { a: Conn }\np: Pair = { a: Conn.open('x') }\nq = p.a", "cannot be copied out of a field"),
-        ("c = Conn.open('a')\nc.drop()", "'drop' cannot be called"),
-        ("cs: Conn[] = [Conn.open('a')]\nfor mut c in cs { print(c.name) }", "'for mut' would copy each item"),
+        ("immut c = Conn.open('a')\nimmut d = c\nprint(c.name)", "'c' cannot be used here: its value was moved (or closed) on line"),
+        ("immut c = Conn.open('a')\nif (true) { immut d = c }\nprint(c.name)", "its value was moved"),
+        ("function f(c: Conn) { immut d = c }", "'c' cannot be moved: it is a parameter, which only borrows its value"),
+        ("immut c = Conn.open('a')\nfor i in range(2) { immut d = c }", "cannot be moved inside a loop"),
+        ("immut c = Conn.open('a')\nfunction g() { immut d = c }", "declared outside this function"),
+        ("function g() {\nimmut c = Conn.open('a')\nimmut h = () => c.name\n}", "functions capture a copy"),
+        ("immut c = Conn.open('a')\nimmut x = if (true) { c } else { c }", "cannot be moved out of a variable inside an 'if'"),
+        ("type Pair = { a: Conn }\nimmut p: Pair = { a: Conn.open('x') }\nimmut q = p.a", "cannot be copied out of a field"),
+        ("immut c = Conn.open('a')\nc.drop()", "'drop' cannot be called"),
+        ("immut cs: Conn[] = [Conn.open('a')]\nfor mut c in cs { print(c.name) }", "'for mut' would copy each item"),
         ("type Other = { n: int }\nfunction Other.drop(self) {}", "'Other.drop' must be declared as 'function Other.drop(mut self)'"),
     ];
     for (code, fragment) in errors {
@@ -1985,18 +2011,18 @@ fn move_only_values_cannot_be_used_after_a_move() {
         "{}{}",
         CONN,
         r#"
-        c = Conn.open('a')
-        d = c
+        mut c = Conn.open('a')
+        immut d = c
         c = Conn.open('b')
         function pick(flag: boolean): Conn {
-            x = Conn.open('x')
+            immut x = Conn.open('x')
             if (flag) {
                 return x
             }
             print(x.name)
             return x
         }
-        p = pick(false)
+        immut p = pick(false)
         print(c.name, d.name, p.name)
     "#
     );
@@ -2005,7 +2031,7 @@ fn move_only_values_cannot_be_used_after_a_move() {
         "opening a\nopening b\nopening x\nx\nb a x\nclosing x\nclosing a\nclosing b\n"
     );
     assert_error(
-        "import file\nh = file.open('x', file.Read)?\nh.close()\nprint(h.read())",
+        "import file\nimmut h = file.open('x', file.Read)?\nh.close()\nprint(h.read())",
         "'h' cannot be used here",
     );
 }
@@ -2013,7 +2039,7 @@ fn move_only_values_cannot_be_used_after_a_move() {
 #[test]
 fn range_in_a_for_loop() {
     let source = r#"
-        total = 0
+        mut total = 0
         for i in range(100000) {
             total += i
         }
@@ -2049,12 +2075,12 @@ fn take_parameters() {
             print(`finishing ${self.name}`)
         }
 
-        c = Conn.open('a')
-        p = Pool.create(c)
-        d = Conn.open('b')
+        immut c = Conn.open('a')
+        immut p = Pool.create(c)
+        immut d = Conn.open('b')
         consume(d)
         consume(Conn.open('temp'))
-        e = Conn.open('e')
+        immut e = Conn.open('e')
         e.finish()
         print('end')
     "#
@@ -2065,10 +2091,10 @@ fn take_parameters() {
          opening e\nfinishing e\nclosing e\nend\nclosing a\n"
     );
     let errors = [
-        ("function consume(take conn: Conn) {}\nc = Conn.open('a')\nconsume(c)\nprint(c.name)", "'c' cannot be used here"),
+        ("function consume(take conn: Conn) {}\nimmut c = Conn.open('a')\nconsume(c)\nprint(c.name)", "'c' cannot be used here"),
         ("function consume(take conn: Conn) {}\nfunction f(c: Conn) { consume(c) }", "'c' cannot be moved: it is a parameter"),
-        ("function consume(take conn: Conn) {}\nconst g = consume", "has 'mut' or 'take' parameters"),
-        ("const g = (take c: Conn) => c.name", "anonymous functions cannot have 'take' parameters"),
+        ("function consume(take conn: Conn) {}\nimmut g = consume", "has 'mut' or 'take' parameters"),
+        ("immut g = (take c: Conn) => c.name", "anonymous functions cannot have 'take' parameters"),
     ];
     for (code, fragment) in errors {
         assert_error(&format!("{}{}", CONN, code), fragment);
@@ -2090,7 +2116,7 @@ fn generic_functions_and_types() {
         }
 
         function map[A, B](items: A[], f: (A) => B): B[] {
-            var result: B[] = []
+            mut result: B[] = []
             for item in items {
                 result = result + [f(item)]
             }
@@ -2127,16 +2153,16 @@ fn generic_functions_and_types() {
         }
 
         print(first([1, 2, 3]), first(['a']))
-        const nothing: Option[int] = first([])
+        immut nothing: Option[int] = first([])
         print(nothing)
         print(map([1, 2, 3], (x: int) => `#${x}`))
-        const p = Pair.create(1, 'one')
-        const q = p.swap()
-        const r = p.mapFirst((n: int) => n * 10)
+        immut p = Pair.create(1, 'one')
+        immut q = p.swap()
+        immut r = p.mapFirst((n: int) => n * 10)
         print(p.first, p.second, q.first, q.second, r.first, r.second)
-        const explicit: Pair[string, int] = { first: 'x', second: 2 }
+        immut explicit: Pair[string, int] = { first: 'x', second: 2 }
         print(explicit.swap().first)
-        const tree: Tree[int] = Node(1, Node(2, Leaf, Leaf), Leaf)
+        immut tree: Tree[int] = Node(1, Node(2, Leaf, Leaf), Leaf)
         print(tree.size())
     "#;
     assert_eq!(
@@ -2150,10 +2176,10 @@ fn generic_errors() {
     let errors = [
         ("function eq[T](a: T, b: T): boolean { return a == b }", "operator '==' needs 'T' to be equatable: declare it as '[T: equatable]'"),
         ("function f[T](a: T): int { return a.length }", "a value of type T has no field 'length'"),
-        ("function id[T](a: T): T { return a }\ng = id", "'id' is generic and can only be called"),
-        ("function id[T](a: T): T { return a }\nx: int = id('a')", "argument 1 must be int, found string"),
-        ("type Box[T] = { value: T }\nb: Box = { value: 1 }", "type 'Box' needs 1 type argument(s)"),
-        ("type Box[T] = { value: T }\nb: Box[int, int] = { value: 1 }", "expects 1 type argument(s), found 2"),
+        ("function id[T](a: T): T { return a }\nimmut g = id", "'id' is generic and can only be called"),
+        ("function id[T](a: T): T { return a }\nimmut x: int = id('a')", "argument 1 must be int, found string"),
+        ("type Box[T] = { value: T }\nimmut b: Box = { value: 1 }", "type 'Box' needs 1 type argument(s)"),
+        ("type Box[T] = { value: T }\nimmut b: Box[int, int] = { value: 1 }", "expects 1 type argument(s), found 2"),
         ("import file\ntype Box[T] = { value: T }\nfunction f(b: Box[file.File]) {}", "type parameters cannot be move-only values yet"),
         ("type Alias[T] = int", "the alias 'Alias' cannot have type parameters"),
         ("function f[T, T]() {}", "type parameter 'T' is declared twice"),
@@ -2189,9 +2215,9 @@ fn generics_across_modules() {
         import box from 'box.kj'
         import { Box, wrap } from 'box.kj'
 
-        b = wrap(5)
-        c: Box[string] = { value: 'x' }
-        d: box.Box[int] = box.wrap(2)
+        immut b = wrap(5)
+        immut c: Box[string] = { value: 'x' }
+        immut d: box.Box[int] = box.wrap(2)
         print(b.get(), c.get(), box.wrap(true).get(), d.value)
     "#;
     let (output, result) = execute(source, "", &dir.join("main.kj"));
@@ -2208,7 +2234,7 @@ fn generic_constraints() {
         }
 
         function max[T: orderable](items: T[]): T {
-            var best = items[0]
+            mut best = items[0]
             for item in items {
                 if (item > best) {
                     best = item
@@ -2218,7 +2244,7 @@ fn generic_constraints() {
         }
 
         function count[T: equatable](items: T[], wanted: T): int {
-            var n = 0
+            mut n = 0
             for item in items {
                 if (item == wanted) {
                     n += 1
@@ -2236,9 +2262,9 @@ fn generic_constraints() {
         }
 
         print(max([3, 1, 2]), max(['b', 'a']), max([1.5, 0.5]))
-        p: Point = { x: 1, y: 2 }
+        immut p: Point = { x: 1, y: 2 }
         print(count([p, p], { x: 1, y: 2 }), count([1, 2, 1], 1))
-        s: Set[string] = { items: ['a', 'b'] }
+        immut s: Set[string] = { items: ['a', 'b'] }
         print(s.has('b'), s.has('z'))
     "#;
     assert_eq!(run(source), "3 b 1.5\n2 2\ntrue false\n");
@@ -2248,37 +2274,37 @@ fn generic_constraints() {
         function same[T: equatable](a: T, b: T): boolean { return a == b }\n\
         type Set[T: equatable] = { items: T[] }\n";
     let errors = [
-        ("a: Person = { name: 'a' }\nx = max([a])", "Person is not orderable, as 'max' requires"),
-        ("x = same([(n: int) => n], [(n: int) => n])", "((int) => int)[] is not equatable, as 'same' requires"),
-        ("f: (int) => int = (n: int) => n\nprint(f == f)", "values of type (int) => int cannot be compared with '=='"),
-        ("s: Set[(int) => int] = { items: [] }", "is not equatable, as 'Set' requires"),
+        ("immut a: Person = { name: 'a' }\nimmut x = max([a])", "Person is not orderable, as 'max' requires"),
+        ("immut x = same([(n: int) => n], [(n: int) => n])", "((int) => int)[] is not equatable, as 'same' requires"),
+        ("immut f: (int) => int = (n: int) => n\nprint(f == f)", "values of type (int) => int cannot be compared with '=='"),
+        ("immut s: Set[(int) => int] = { items: [] }", "is not equatable, as 'Set' requires"),
         ("function f[T: equatable](a: T, b: T): boolean { return a < b }", "operator '<' needs 'T' to be orderable: declare it as '[T: orderable]'"),
         ("function f[T](a: T, b: T): boolean { return a == b }", "operator '==' needs 'T' to be equatable"),
         ("function f[T: comparable](a: T): T { return a }", "unknown constraint 'comparable'"),
         ("function f[T: orderable](a: T, b: T): T { return a + b }", "operator '+' cannot be used on 'T'"),
-        ("import file\nf = file.open('x', file.Read)?\ng = file.open('y', file.Read)?\nprint(f == g)", "values of type File cannot be compared"),
+        ("import file\nimmut f = file.open('x', file.Read)?\nimmut g = file.open('y', file.Read)?\nprint(f == g)", "values of type File cannot be compared"),
     ];
     for (code, fragment) in errors {
         assert_error(&format!("{}{}", common, code), fragment);
     }
     // A shape of equatable fields is equatable.
-    assert_eq!(run(&format!("{}a: Person = {{ name: 'a' }}\nprint(same(a, a))", common)), "true\n");
+    assert_eq!(run(&format!("{}immut a: Person = {{ name: 'a' }}\nprint(same(a, a))", common)), "true\n");
 }
 
 #[test]
 fn building_text() {
     let source = r#"
-        var text = ''
+        mut text = ''
         for i in range(1000) {
             text += 'x'
         }
         print(text.length())
-        a = 'ab'
-        b = a
+        immut a = 'ab'
+        mut b = a
         b += 'c'
         print(a, b)
         print(['a', 'b', 'c'].join(', '), ['x'].join(''))
-        names: string[] = ['Ana', 'Bia']
+        immut names: string[] = ['Ana', 'Bia']
         print(names.join(' & '))
     "#;
     assert_eq!(run(source), "1000\nab abc\na, b, c x\nAna & Bia\n");
@@ -2288,11 +2314,11 @@ fn building_text() {
 #[test]
 fn chars() {
     let source = r#"
-        text = 'Hello, Koji'
-        c = text[0]
+        immut text = 'Hello, Koji'
+        immut c = text[0]
         print(c, c.code(), c.debug(), c == 'H', c < 'Z')
-        d: char = 'k'
-        letters: char[] = ['a', 'b']
+        immut d: char = 'k'
+        immut letters: char[] = ['a', 'b']
         print(d, letters, char(75), char(-1))
         for ch in 'ab' {
             print(ch.code())
@@ -2308,8 +2334,8 @@ fn chars() {
         run(source),
         "H 72 'H' true true\nk ['a', 'b'] Some('K') None\n97\n98\n11 true true Some(7) None\ntrue H! Hi\nK!\n"
     );
-    assert_error("c: char = 'ab'", "'ab' is not a char: a char literal has exactly one character");
-    assert_error("x = 'a'[0] + 1", "operator '+' cannot be applied to char and int");
+    assert_error("immut c: char = 'ab'", "'ab' is not a char: a char literal has exactly one character");
+    assert_error("immut x = 'a'[0] + 1", "operator '+' cannot be applied to char and int");
 }
 
 #[test]
@@ -2320,26 +2346,26 @@ fn list_methods_and_slices() {
             age: int
         }
 
-        var items = [3, 1, 2]
+        mut items = [3, 1, 2]
         items.push(4)
         items.insert(0, 9)
         print(items)
         print(items.pop(), items.removeAt(0), items.removeAt(10), items)
         items.sort()
         print(items, items.indexOf(3), items.indexOf(7))
-        var people: Person[] = [{ name: 'Ana', age: 30 }, { name: 'Bia', age: 25 }, { name: 'Caio', age: 30 }]
+        mut people: Person[] = [{ name: 'Ana', age: 30 }, { name: 'Bia', age: 25 }, { name: 'Caio', age: 30 }]
         people.sortBy((a: Person, b: Person) => a.age < b.age)
         print(people[0].name, people[1].name, people[2].name)
-        copy = items
+        mut copy = items
         copy.push(100)
         print(items, copy)
-        var empty = []
+        mut empty = []
         empty.push('x')
         print(empty)
 
-        list = [10, 20, 30, 40]
+        immut list = [10, 20, 30, 40]
         print(list[1..3], list[..2], list[2..], list[..])
-        text = 'Hello, Koji'
+        immut text = 'Hello, Koji'
         print(text[0..5], text[7..])
     "#;
     assert_eq!(
@@ -2348,11 +2374,11 @@ fn list_methods_and_slices() {
          [1, 2, 3] [1, 2, 3, 100]\n['x']\n[20, 30] [10, 20] [30, 40] [10, 20, 30, 40]\nHello Koji\n"
     );
     let errors = [
-        ("imut fixed = [1]\nfixed.push(2)", "cannot call 'push' on 'fixed', as it changes the value: it is imut"),
-        ("type P = { n: int }\nps: P[] = []\nps.sort()", "'sort' needs orderable items, and P is not: use 'sortBy'"),
-        ("items = [1]\nitems.push('a')", "the item must be int, found string"),
+        ("immut fixed = [1]\nfixed.push(2)", "cannot call 'push' on 'fixed', as it changes the value: it is immut"),
+        ("type P = { n: int }\nmut ps: P[] = []\nps.sort()", "'sort' needs orderable items, and P is not: use 'sortBy'"),
+        ("mut items = [1]\nitems.push('a')", "the item must be int, found string"),
         ("function f(items: int[]) { items.push(1) }", "parameters can only be modified when declared 'mut'"),
-        ("items = [1, 2]\nprint(items[2..1])", "slice 2..1 out of range"),
+        ("immut items = [1, 2]\nprint(items[2..1])", "slice 2..1 out of range"),
     ];
     for (code, fragment) in errors {
         assert_error(code, fragment);

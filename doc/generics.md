@@ -20,7 +20,7 @@ Type arguments are never written at the call: they come from the arguments, or f
 
 ```koji
 function map[A, B](items: A[], f: (A) => B): B[] {
-    var result: B[] = []
+    mut result: B[] = []
     for item in items {
         result = result + [f(item)]
     }
@@ -29,7 +29,7 @@ function map[A, B](items: A[], f: (A) => B): B[] {
 
 print(map([1, 2, 3], (x: int) => `#${x}`)) // ['#1', '#2', '#3']
 
-const nothing: Option[int] = first([]) // T is int, from the expected type
+immut nothing: Option[int] = first([]) // T is int, from the expected type
 ```
 
 A generic function can only be called: it cannot be stored in a variable (`g = first` is an error), because its type arguments are only known at a call.
@@ -47,8 +47,8 @@ type Tree[T] = {
     Node(value: T, left: Tree[T], right: Tree[T])
 }
 
-const pair: Pair[string, int] = { first: 'x', second: 2 }
-const tree: Tree[int] = Node(1, Leaf, Leaf)
+immut pair: Pair[string, int] = { first: 'x', second: 2 }
+immut tree: Tree[int] = Node(1, Leaf, Leaf)
 ```
 
 Where a generic type is written, it needs its arguments: `Pair[string, int]`, not `Pair`. Aliases (`type Name = ...`) cannot have type parameters.
@@ -66,7 +66,7 @@ function Pair.swap(self): Pair[B, A] {
     return { first: self.second, second: self.first }
 }
 
-const p = Pair.create(1, 'one') // a Pair[int, string]
+immut p = Pair.create(1, 'one') // a Pair[int, string]
 print(p.swap().first) // one
 ```
 
@@ -97,7 +97,7 @@ A type parameter can require that its type supports comparisons, with `[T: const
 
 ```koji
 function max[T: orderable](items: T[]): T {
-    var best = items[0]
+    mut best = items[0]
     for item in items {
         if (item > best) {
             best = item

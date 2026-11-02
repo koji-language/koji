@@ -49,7 +49,7 @@ type Result[T, E] = {
 Use `is` to check a variant. Inside the `if`, its fields can be accessed directly:
 
 ```koji
-name: Option[string] = Some('Ana')
+immut name: Option[string] = Some('Ana')
 
 if (name is Some) {
 	print(name.value) // Ana

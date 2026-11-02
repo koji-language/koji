@@ -138,6 +138,7 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
+            Token::Interface => self.error_here("'interface' is a reserved word: it cannot be a name".to_string()),
             other => self.error_here(format!("expected {}, found {:?}", description, other)),
         }
     }
@@ -237,26 +238,34 @@ impl Parser {
                 self.error_here("'export' is only allowed at the top level of a file".to_string())
             }
             Token::Func => self.parse_function_declaration(),
-            Token::Var => {
+            // `mut count = 0`: a variable that can change.
+            Token::Mut => {
                 self.advance();
                 let name = self.expect_identifier("variable name")?;
                 self.finish_declaration(name, false, false)
             }
-            Token::Const => {
+            // `immut name = 'Ana'`: a variable that never changes, nor its contents.
+            Token::Immut => {
                 self.advance();
-                let name = self.expect_identifier("constant name")?;
-                self.finish_declaration(name, true, false)
-            }
-            Token::Imut => {
-                self.advance();
-                let name = self.expect_identifier("constant name")?;
+                let name = self.expect_identifier("variable name")?;
                 self.finish_declaration(name, true, true)
             }
-            // `name: type = value`
-            Token::Identifier(_) if *self.peek() == Token::Colon => {
-                let name = self.expect_identifier("variable name")?;
-                self.finish_declaration(name, false, false)
+            Token::Var | Token::Const | Token::Imut => {
+                let (word, instead) = match self.current() {
+                    Token::Var => ("var", "mut"),
+                    Token::Const => ("const", "immut"),
+                    _ => ("imut", "immut"),
+                };
+                self.error_here(format!(
+                    "Koji has no '{}': declare with '{} name = ...' ('mut' for a variable that changes, 'immut' for one that does not)",
+                    word, instead
+                ))
             }
+            // `name: type = value` without `mut` or `immut`.
+            Token::Identifier(name) if *self.peek() == Token::Colon => self.error_here(format!(
+                "declare '{}' with 'mut' or 'immut': 'mut {}: ... = ...'",
+                name, name
+            )),
             _ => self.parse_expression_statement(),
         }
     }
@@ -557,10 +566,10 @@ impl Parser {
         self.advance(); // export
         if !matches!(
             self.current(),
-            Token::Func | Token::Const | Token::Imut | Token::Var | Token::Type
+            Token::Func | Token::Mut | Token::Immut | Token::Type
         ) {
             return self.error_here(format!(
-                "expected 'function', 'const', 'imut', 'var' or 'type' after 'export', found {:?}",
+                "expected 'function', 'mut', 'immut' or 'type' after 'export', found {:?}",
                 self.current()
             ));
         }
@@ -1533,7 +1542,7 @@ mod tests {
 
     #[test]
     fn if_else_as_expression_in_const() {
-        let source = "const label: string = if (age > 18) { 'Adult' } else { 'Minor' }";
+        let source = "immut label: string = if (age > 18) { 'Adult' } else { 'Minor' }";
         let program = parse_program_str(source).unwrap();
         match &program[0] {
             AstNode::VarDecl {
@@ -1553,8 +1562,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_declaration_without_keyword() {
-        let program = parse_program_str("names: string[] = ['Anna', 'Claire']").unwrap();
+    fn typed_mut_declaration() {
+        assert!(parse_program_str("names: string[] = ['Anna']").is_err());
+        let program = parse_program_str("mut names: string[] = ['Anna', 'Claire']").unwrap();
         match &program[0] {
             AstNode::VarDecl {
                 ty,
@@ -1680,7 +1690,7 @@ mod tests {
     #[test]
     fn match_can_be_assigned_to_a_const() {
         let source = r#"
-            const label: string = match (result) {
+            immut label: string = match (result) {
                 Ok(value) => `Value: ${value}`
                 Err(error) => `Error: ${error}`
             }
@@ -1720,7 +1730,7 @@ mod tests {
 
     #[test]
     fn anonymous_functions() {
-        let program = parse_program_str("const double = (x: int) => x * 2").unwrap();
+        let program = parse_program_str("immut double = (x: int) => x * 2").unwrap();
         match &program[0] {
             AstNode::VarDecl { value, .. } => match &**value {
                 AstNode::Lambda {
@@ -1774,7 +1784,7 @@ mod tests {
 
     #[test]
     fn generic_and_function_types() {
-        let program = parse_program_str("f: (int) => Option[int][] = g").unwrap();
+        let program = parse_program_str("immut f: (int) => Option[int][] = g").unwrap();
         match &program[0] {
             AstNode::VarDecl { ty: Some(TypeExpr::Function { params, ret }), .. } => {
                 assert_eq!(params.len(), 1);

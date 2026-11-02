@@ -30,16 +30,10 @@ impl Checker {
                     param.name
                 ));
             }
-            // Only `mut` parameters can be modified; the others (and `self`) are imut. `mut self`
-            // can change the value's contents, but not replace it.
-            let is_mut_self = param.is_mut && param.name == "self";
-            let mut symbol = Symbol::value(ty.clone(), !param.is_mut || is_mut_self);
+            // Only `mut` parameters (and `mut self`) can be modified; the others are immut.
+            let mut symbol = Symbol::value(ty.clone(), !param.is_mut);
             symbol.is_imut = !param.is_mut;
-            symbol.reason = Some(if is_mut_self {
-                "'mut self' can change its fields, not replace the value"
-            } else {
-                "parameters can only be modified when declared 'mut'"
-            });
+            symbol.reason = Some("parameters can only be modified when declared 'mut'");
             // A `take` parameter owns its value; the others only borrow it.
             if !param.is_take {
                 symbol.borrowed = Some(if param.name == "self" { "'self'" } else { "a parameter" });

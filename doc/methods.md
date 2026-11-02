@@ -55,7 +55,7 @@ The `is...` methods return `false` for an empty string.
 | `list.indexOf(x)`     | Position of the first `x` (equatable items)                    | `[5, 6].indexOf(6) → Some(1)`        |
 | `list.join(sep)`      | Joins a list of strings, with `sep` between them               | `['a', 'b'].join(', ') → 'a, b'`     |
 
-`push`, `insert`, `pop`, `removeAt`, `sort` and `sortBy` change the list, like a `mut self` method: the variable must be a `var` or a `const`, not an `imut` or a parameter without `mut`. They change it in place; other copies of the list do not change. To check whether a list has an item, use `x in list`.
+`push`, `insert`, `pop`, `removeAt`, `sort` and `sortBy` change the list, like a `mut self` method: the variable must be `mut`, not `immut` or a parameter without `mut`. They change it in place; other copies of the list do not change. To check whether a list has an item, use `x in list`.
 
 ## Map and Set Methods
 
@@ -80,7 +80,7 @@ The `is...` methods return `false` for an empty string.
 There is no string builder: text is built with `+=`, which appends in place when the variable is the only owner of its string (strings have [value semantics](memory.md)), or with `join`:
 
 ```koji
-var line = ''
+mut line = ''
 for i in range(3) {
     line += `${i};`
 }

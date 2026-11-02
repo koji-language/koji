@@ -37,7 +37,7 @@ type SystemError = {
 ```koji
 import system
 
-const args = system.args()
+immut args = system.args()
 if (args.length() == 0) {
     print('usage: kojic run greet.kj <name>')
     system.exit(2)

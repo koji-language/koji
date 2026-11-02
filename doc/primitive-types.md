@@ -5,14 +5,14 @@
 -   `int`: 64-bit integer numbers.
 
 ```koji
-age: int = 23
+immut age: int = 23
 ```
 
 -   `float`: 64-bit floating-point numbers. A `float` is always a finite real number: there is no NaN and no infinity.
 
 ```koji
-const pi: float = 3.14
-const avogadro: float = 6.022e23 // scientific notation
+immut pi: float = 3.14
+immut avogadro: float = 6.022e23 // scientific notation
 ```
 
 A float literal too large to be represented (`1e400`) is a compile-time error.
@@ -24,7 +24,7 @@ When a numeric result does not fit in an `int` or a `float` (a representation li
 -   `string`: a sequence of characters.
 
 ```koji
-name: string = 'Mary'
+immut name: string = 'Mary'
 ```
 
 ## Characters
@@ -32,7 +32,7 @@ name: string = 'Mary'
 -   `char`: a single Unicode character (a code point).
 
 ```koji
-initial: char = 'K' // a one-character literal is a char where a char is expected
+immut initial: char = 'K' // a one-character literal is a char where a char is expected
 print(initial.code()) // 75
 print(char(97)) // Some('a'): None for a code that is not a character
 ```
@@ -40,7 +40,7 @@ print(char(97)) // Some('a'): None for a code that is not a character
 Indexing a string gives a `char`, and so does going through it with `for`:
 
 ```koji
-name = 'Koji'
+immut name = 'Koji'
 print(name[0]) // K
 for c in name {
     print(c.code())
@@ -55,7 +55,7 @@ Characters can be compared (`<`, `>`), by their code. They are not numbers: `'a'
 -   `boolean`: logical values (`true`, `false`).
 
 ```koji
-isStudent: boolean = true
+immut isStudent: boolean = true
 ```
 
 ## Missing Values
@@ -65,13 +65,13 @@ The Koji language does **not** include `null` or `undefined`.
 To represent the absence of a value, use the `Option[T]` sum type:
 
 ```koji
-name: Option[string] = None
+immut name: Option[string] = None
 ```
 
 A value that is only known later starts as `None` and is set afterwards:
 
 ```koji
-x: Option[int] = None
+mut x: Option[int] = None
 
 // Later in the code
 x = Some(42)

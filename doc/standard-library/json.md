@@ -54,7 +54,7 @@ type JsonError = {
 ```koji
 import json
 
-text: string = '{"name": "koji", "year": 2025}'
+immut text: string = '{"name": "koji", "year": 2025}'
 
 match (json.parse(text)) {
     Ok(Object(fields)) => match (fields['name']) {

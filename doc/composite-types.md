@@ -5,11 +5,11 @@
 An ordered list of elements of the same type. The type of a list of `T` is written `T[]`.
 
 ```koji
-numbers: int[] = [1, 2, 3]
+immut numbers: int[] = [1, 2, 3]
 
-coordinates: int[][] = [[1, 2], [3, 4]]
+immut coordinates: int[][] = [[1, 2], [3, 4]]
 
-positions: int[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+immut positions: int[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
 ```
 
 Elements are accessed by their index, starting at `0`. An index out of range panics.
@@ -30,7 +30,7 @@ Methods such as `push`, `pop`, `insert` and `sort` change a list (see [Built-in 
 `list[start..end]` is a copy of the items from `start` (included) to `end` (excluded). Either bound can be left out. Strings are sliced the same way, by characters:
 
 ```koji
-numbers = [10, 20, 30, 40]
+immut numbers = [10, 20, 30, 40]
 
 print(numbers[1..3]) // [20, 30]
 print(numbers[..2]) // [10, 20]
@@ -47,9 +47,9 @@ To go through a list, use a [`for` loop](control-flow.md#for-loop).
 `Map[K, V]` maps keys of type `K` to values of type `V`. Keys must be [equatable](generics.md#constraints): numbers, strings, chars, booleans, and types made of them. A map literal is written with brackets, and `[:]` is the empty map:
 
 ```koji
-ages: Map[string, int] = ['Ana': 30, 'Bia': 25]
-names = [1: 'one', 2: 'two'] // Map[int, string]
-var empty: Map[string, int] = [:]
+mut ages: Map[string, int] = ['Ana': 30, 'Bia': 25]
+immut names = [1: 'one', 2: 'two'] // Map[int, string]
+mut empty: Map[string, int] = [:]
 
 print(ages['Ana']) // 30: a missing key panics
 print(ages.get('Carl')) // None
@@ -71,7 +71,7 @@ Like lists, maps are values: assigning a map gives an independent copy. See the 
 `Set[T]` holds equatable items without repetition. It is created from a list:
 
 ```koji
-var seen: Set[string] = Set.from(['a', 'b', 'a'])
+mut seen: Set[string] = Set.from(['a', 'b', 'a'])
 
 seen.add('c')
 seen.remove('a')

@@ -39,7 +39,7 @@ The `datetime` module provides utilities to work with current date and time, and
         PatternMismatch(text: string, pattern: string) // the text does not follow the pattern
         InvalidDate(text: string) // e.g. 2025-02-30
     }
-    ```
+```
 
 Dates and times are in UTC.
 
@@ -48,7 +48,7 @@ Dates and times are in UTC.
 ```koji
 import datetime
 
-date = datetime.today()
+immut date = datetime.today()
 
 print(date)
 
@@ -57,7 +57,7 @@ match (datetime.parse('2025-04-20', 'YYYY-MM-DD')) {
     Err(error) => print(error)
 }
 
-now = datetime.now()
+immut now = datetime.now()
 
 print(now.year)
 ```

@@ -77,22 +77,22 @@ type Json = {
 
 Everything in a module is private by default. Only declarations marked with `export` can be imported.
 
--   Exportable: `export function`, `export var`, `export const`, `export imut` and `export type`.
+-   Exportable: `export function`, `export mut`, `export immut` and `export type`.
 -   Exporting a sum type also exports its variants.
 -   `export` is only allowed at the top level of a file.
 -   Implicit declarations (`x = 1`) cannot be exported.
--   **`export var`** is read-only outside its module:
+-   **`export mut`** is read-only outside its module:
     -   Importers always see the **current** value, not a copy taken at import time.
-    -   Only the **binding** is read-only: like `const`, the contents of a list or object can still be changed.
+    -   Outside its module, it cannot be changed at all: neither given a new value nor changed in its contents.
 
     ```koji
     // file: counter.kj
-    export var count = 0
+    export mut count = 0
 
     export function increment() {
         count += 1
     }
-    ```
+```
 
     ```koji
     import { count, increment } from 'counter.kj'
@@ -100,7 +100,7 @@ Everything in a module is private by default. Only declarations marked with `exp
     increment()
     print(count) // 1
     count = 5 // Error! 'count' is read-only outside 'counter.kj'
-    ```
+```
 
 -   Importing something that is not exported is an error: `'helper' is not exported by 'math.kj'`.
 -   A public signature cannot use a private type (e.g. `export function f(): Helper` with a private `Helper`).
@@ -126,8 +126,8 @@ type ConfigError = {
 }
 
 function readConfig(path: string): Result[json.Json, ConfigError] {
-    f = file.open(path, file.Read)? // FileError → File(...)
-    text = f.read()?
+    immut f = file.open(path, file.Read)? // FileError → File(...)
+    immut text = f.read()?
 
     return Ok(json.parse(text)?) // JsonError → Json(...)
 }
@@ -150,7 +150,7 @@ function Person.greet(self) {
     print(`Hello, I'm ${self.name}!`)
 }
 
-const person: Person = {
+immut person: Person = {
     name: 'John'
 }
 
@@ -159,7 +159,7 @@ person.greet()
 
 A function prefixed with its type but without `self` is an **associated function**, called on the type: `function Person.create(name: string): Person`, called as `Person.create('John')` (e.g. for constructors).
 
-A method that changes its value declares **`mut self`**. The call does not repeat the marker (`counter.increment()`), because the method is already called on the variable; the value must be a `var` or a `const` (or a field or element of one), never an `imut`. `mut self` changes the contents, but cannot replace the value (`self = ...` is an error), which is what makes calling it on a `const` consistent.
+A method that changes its value declares **`mut self`**. The call does not repeat the marker (`counter.increment()`), because the method is already called on the variable; the value must be a `mut` variable (or a field or element of one), never an `immut`. `mut self` can also replace the value (`self = Off`), which is useful for sum types that change state.
 
 Implemented; see [Custom Types](custom-types.md#methods).
 
@@ -169,8 +169,8 @@ Memory is managed with **ownership**, without a garbage collector. Every value h
 
 ```koji
 function readNotes(): Result[string, file.FileError] {
-    f = file.open('notes.txt', file.Read)?
-    content = f.read()? // on an error, '?' returns and 'f' is closed
+    immut f = file.open('notes.txt', file.Read)?
+    immut content = f.read()? // on an error, '?' returns and 'f' is closed
     return Ok(content) // 'f' goes out of scope: the file is closed
 }
 ```
@@ -178,8 +178,8 @@ function readNotes(): Result[string, file.FileError] {
 **Value semantics with copy-on-write**, as in Swift, Hylo and Mojo. Assigning or passing a value gives an independent copy: there is no aliasing, and no variable becomes unusable (unlike a move). Underneath, the memory is shared until one of the copies is modified, so copies are cheap.
 
 ```koji
-a = [1, 2, 3]
-b = a // nothing is copied yet
+immut a = [1, 2, 3]
+mut b = a // nothing is copied yet
 b[0] = 9 // the list is copied now, because b changes
 print(a) // [1, 2, 3]
 print(b) // [9, 2, 3]
@@ -188,7 +188,7 @@ print(b) // [9, 2, 3]
 Consequences:
 
 -   **`is` only tests variants** (`result is Some`). There is no reference identity; `==` compares values.
--   **Three mutability levels**: `var` (everything can change), `const` (the variable cannot be reassigned, its contents can change, as in TypeScript) and `imut` (neither the variable nor its contents can change). `imut` is checked at compile time. With value semantics, `const` only prevents replacing the value as a whole. A separate keyword for compile-time constants is not needed: the compiler can recognize an `imut` with a literal value by itself.
+-   **Two mutability levels**, as in Swift: `mut` (everything can change) and `immut` (neither the variable nor its contents can change). With value semantics, a third level that forbids replacing the value but allows changing its contents (the `const` of TypeScript) would mean little: both are ways of changing the variable's value. Every declaration has its keyword, and `x = 1` only changes an existing `mut` variable, so a typo is an error instead of a new variable (see [Variable Types](variable-types.md)). A separate keyword for compile-time constants is not needed: the compiler can recognize an `immut` with a literal value by itself.
 -   **`defer` is not needed**: dropping releases resources. It may come back later as an optional feature, for cleanup that does not belong to any value.
 -   **Resource types are move-only.** A `File` cannot be copied (two copies would close the same file): `g = f` moves it, and using `f` afterwards is a compile error. `f.close()` consumes `f`, so using a closed file is a compile error instead of a panic.
 
@@ -203,13 +203,13 @@ Implemented in the interpreter: assignments and `mut` write-backs go through a p
     function addItem(mut list: int[], item: int) { ... }
 
     addItem(mut items, 2)
-    ```
+```
 
-    An `imut` variable can never be passed as `mut`, and a `const` neither (the function could replace the value). Parameters without `mut` (and `self`) are read-only. Implemented; see [Functions](functions.md#mut-parameters).
+    An `immut` variable can never be passed as `mut`. Parameters without `mut` (and `self`) are read-only. Implemented; see [Functions](functions.md#mut-parameters).
 -   **Move-only types**, including user types: values that cannot be copied (resources). Assigning moves them, and using the previous variable is a compile error.
 -   **Only move-only types can have a `drop`** method, called automatically when the value is dropped. A copyable type with `drop` would run it once per copy.
 -   **Move-only is implicit**: a type is move-only when it declares a `drop` method, or when it has a field of a move-only type (a type holding a `File` cannot be copied either). There is no separate marker.
--   **`for` and `match` variables are `imut`**: `for x in items` gives an imut `x`; `for mut x in items` allows changing it (a copy: the list does not change). Variables bound by `match` patterns are always imut. Implemented.
+-   **`for` and `match` variables are `immut`**: `for x in items` gives an immut `x`; `for mut x in items` allows changing it (a copy: the list does not change). Variables bound by `match` patterns are always immut. Implemented.
 -   **Intentionally shared structures** (graphs, caches) use indices into a list ("arenas"). An explicit shared type may come later, only if arenas prove insufficient.
 
 Move-only types and `drop` are implemented:
@@ -227,8 +227,8 @@ Move-only types and `drop` are implemented:
     ```koji
     type Mode = { Read  Write  Append }
 
-    f = file.open('notes.txt', Read)?
-    ```
+    immut f = file.open('notes.txt', Read)?
+```
 
 -   `print(error)` (and string interpolation) shows a human-readable message for standard library errors, e.g. `file 'notes.txt' not found` instead of `NotFound('notes.txt')`. The same text is available as `error.display()`.
 
@@ -407,7 +407,8 @@ Decided:
 -   **Move-only types**: implicit, from `drop` (see [Value semantics details](#value-semantics-details)).
 -   **Display**: `display()` is readable (a `display(self): string` method of the type, when declared) and is what `print` and interpolation use; `debug()` shows the structure (see [Custom Types](custom-types.md#display)).
 -   **`regex.compile`**, with `RegexError = { InvalidPattern(pattern, message) }` (see [Typed errors in the standard library](#typed-errors-in-the-standard-library)).
--   **`for` and `match` variables are imut**, with `for mut` to opt out.
+-   **`for` and `match` variables are immut**, with `for mut` to opt out.
+-   **`mut` and `immut`** replace `var`, `const` and `imut`; every declaration has one of them.
 -   **`take` parameters** take ownership of a move-only argument (like `owned` in Mojo or `sink` in Hylo); see [Values and Memory](memory.md#taking-ownership).
 -   **`RegexError`** has `InvalidPattern`, `Unsupported` and `TooLarge`.
 -   **`range` is lazy** in a `for` loop.

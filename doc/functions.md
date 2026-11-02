@@ -33,7 +33,7 @@ function max(a: int, b: int): int {
 ## Anonymous Functions
 
 ```koji
-const double = (x: int): int => {
+immut double = (x: int): int => {
 	return x * 2
 }
 
@@ -43,7 +43,7 @@ print(double(10)) // 20
 When the body is a single expression, the braces and `return` can be left out, and the return type is inferred:
 
 ```koji
-const triple = (x: int) => x * 3
+immut triple = (x: int) => x * 3
 
 print(triple(10)) // 30
 ```
@@ -59,13 +59,13 @@ function makeAdder(amount: int): (int) => int {
 	return (x: int) => x + amount
 }
 
-const addFive = makeAdder(5)
+immut addFive = makeAdder(5)
 
 print(addFive(1)) // 6
 
 function count(): int {
-	total = 0
-	add = () => { total += 1 } // Error! cannot modify 'total' here: functions capture a read-only copy of the variables around them
+	mut total = 0
+	immut add = () => { total += 1 } // Error! cannot modify 'total' here: functions capture a read-only copy of the variables around them
 	return total
 }
 ```
@@ -73,7 +73,7 @@ function count(): int {
 Variables at the top level of a module are not captured: functions can read and change them.
 
 ```koji
-total = 0
+mut total = 0
 
 function add(n: int) {
 	total += n
@@ -106,16 +106,16 @@ function addFirst(mut items: int[], amount: int) {
 	items[0] += amount
 }
 
-var count = 5
+mut count = 5
 reset(mut count)
 print(count) // 0
 
-var numbers = [1, 2, 3]
+mut numbers = [1, 2, 3]
 addFirst(mut numbers, 10)
 print(numbers) // [11, 2, 3]
 ```
 
--   Only a `var` (not `const` or `imut`), or a field or element of a value that can be changed, can be passed as `mut`: `reset(mut person.age)`, `reset(mut numbers[0])`.
+-   Only a `mut` variable (not an `immut`), or a field or element of one, can be passed as `mut`: `reset(mut person.age)`, `reset(mut numbers[0])`.
 -   The argument must have exactly the type of the parameter: an `int` variable cannot be passed as `mut x: float`.
 -   A function with `mut` parameters can only be called, not stored in a variable, and anonymous functions cannot have `mut` parameters.
 -   Methods use `mut self` instead, and their call has no marker (`counter.increment()`); see [Custom Types](custom-types.md#methods).
@@ -148,7 +148,7 @@ function Person.greet(self) {
 	print(`Hello, I'm ${self.name}!`)
 }
 
-const person = Person.create('John')
+immut person = Person.create('John')
 person.greet() // Hello, I'm John!
 ```
 

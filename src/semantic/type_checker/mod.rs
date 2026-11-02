@@ -97,9 +97,9 @@ enum SymbolKind {
 #[derive(Debug, Clone)]
 struct Symbol {
     ty: Type,
-    /// The variable cannot be reassigned (`const`, `imut`, functions...).
+    /// The variable cannot be reassigned (`immut`, functions, parameters...).
     is_const: bool,
-    /// Its contents cannot change either (`imut`).
+    /// Its contents cannot change either (`immut`).
     is_imut: bool,
     kind: SymbolKind,
     /// Module that declared the symbol, when it was imported: it is read-only here.

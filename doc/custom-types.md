@@ -12,7 +12,7 @@ type Person = {
     age: int
 }
 
-person: Person = {
+immut person: Person = {
     name: 'John',
     age: 20
 }
@@ -32,7 +32,7 @@ type User = {
     address: Address
 }
 
-user: User = {
+immut user: User = {
     id: 42,
     name: 'Bob',
     address: {
@@ -54,8 +54,8 @@ Shape types are **nominal**: two types with the same fields are still different 
 type Celsius = { value: float }
 type Fahrenheit = { value: float }
 
-const celsius: Celsius = { value: 20.0 }
-fahrenheit: Fahrenheit = { value: 68.0 } // Ok
+immut celsius: Celsius = { value: 20.0 }
+mut fahrenheit: Fahrenheit = { value: 68.0 } // Ok
 
 fahrenheit = celsius // Error! Celsius is not Fahrenheit
 ```
@@ -63,14 +63,14 @@ fahrenheit = celsius // Error! Celsius is not Fahrenheit
 So an object literal always needs a known type. Without one, it is an error:
 
 ```koji
-const point = { x: 1, y: 2 } // Error! this object literal needs a type
+immut point = { x: 1, y: 2 } // Error! this object literal needs a type
 
 type Point = {
     x: int
     y: int
 }
 
-const origin: Point = { x: 0, y: 0 } // Ok
+immut origin: Point = { x: 0, y: 0 } // Ok
 
 function move(point: Point) { ... }
 
@@ -84,7 +84,7 @@ Koji has no index signatures (`{ [key: string]: string }`): a dictionary is a [`
 ```koji
 type Dictionary = Map[string, string]
 
-translations: Dictionary = [
+immut translations: Dictionary = [
     'hello': 'olá',
     'world': 'mundo'
 ]
@@ -121,7 +121,7 @@ type Dog = Animal & {
     breed: string
 }
 
-const rex: Dog = { name: 'Rex', breed: 'Beagle' }
+immut rex: Dog = { name: 'Rex', breed: 'Beagle' }
 ```
 
 ## No Subtyping
@@ -151,7 +151,7 @@ function Person.greet(self) {
     print(`Hello, I'm ${self.name}!`)
 }
 
-const person: Person = {
+immut person: Person = {
     name: 'John',
     age: 20
 }
@@ -169,7 +169,7 @@ function Rect.area(self): int {
     return self.width * self.height
 }
 
-const rect: Rect = {
+immut rect: Rect = {
     width: 3,
     height: 4
 }
@@ -213,7 +213,7 @@ print(Square(2.0).area()) // 4.0
 
 ### Methods That Change the Value
 
-A method that changes its value declares `mut self`. The call needs no marker, but the value must be a `var` or a `const` (or a field or element of one), not an `imut`:
+A method that changes its value declares `mut self`. The call needs no marker, but the value must be a `mut` variable (or a field or element of one), not an `immut`:
 
 ```koji
 type Counter = {
@@ -224,12 +224,30 @@ function Counter.increment(mut self) {
     self.count += 1
 }
 
-var counter: Counter = { count: 0 }
+mut counter: Counter = { count: 0 }
 counter.increment()
 print(counter.count) // 1
 ```
 
-`mut self` changes the contents of the value, not the value as a whole: `self = ...` is an error. So, as with `const`, the variable keeps the same value, only with different contents.
+`mut self` can also give the value a new value, which is useful for a sum type that changes state:
+
+```koji
+type Light = {
+    On
+    Off
+}
+
+function Light.toggle(mut self) {
+    self = match (self) {
+        On => Off
+        Off => On
+    }
+}
+
+mut light: Light = Off
+light.toggle()
+print(light) // On
+```
 
 ### `drop`
 
@@ -255,7 +273,7 @@ function Person.display(self): string {
     return `${self.name} (${self.age})`
 }
 
-const ana: Person = { name: 'Ana', age: 30 }
+immut ana: Person = { name: 'Ana', age: 30 }
 
 print(ana) // Ana (30)
 print(`Hi, ${ana}!`) // Hi, Ana (30)!

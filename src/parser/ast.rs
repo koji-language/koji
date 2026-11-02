@@ -302,7 +302,7 @@ pub enum AstNode {
         condition: Box<AstNode>,
         body: Box<AstNode>,
     },
-    /// `for x in items` (`x` is imut) or `for mut x in items`.
+    /// `for x in items` (`x` is immut) or `for mut x in items`.
     For {
         variable: String,
         is_mut: bool,
@@ -317,8 +317,7 @@ pub enum AstNode {
         op: AssignOperator,
         value: Box<AstNode>,
     },
-    /// `var` (mutable), `const` (cannot be reassigned, contents can change) or `imut` (nothing
-    /// can change).
+    /// `mut` (can change) or `immut` (nothing can change: `is_const` and `is_imut`).
     VarDecl {
         name: String,
         ty: Option<TypeExpr>,

@@ -5,6 +5,7 @@ pub fn lookup_ident(ident: &str) -> Token {
         "var" => Token::Var,
         "const" => Token::Const,
         "imut" => Token::Imut,
+        "immut" => Token::Immut,
         "mut" => Token::Mut,
         "take" => Token::Take,
         "type" => Token::Type,

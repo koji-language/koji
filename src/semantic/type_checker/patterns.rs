@@ -84,7 +84,7 @@ impl Checker {
                 }
                 let mut symbol = Symbol::value(ty.clone(), true);
                 symbol.is_imut = true;
-                symbol.reason = Some("variables bound by 'match' are imut");
+                symbol.reason = Some("variables bound by 'match' are immut");
                 if self.state.borrowing_match {
                     symbol.borrowed = Some("bound by 'match' to a part of a variable");
                 }

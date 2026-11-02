@@ -13,7 +13,7 @@ The `file` module provides functionality for working with files.
         Write // write (overwrites existing content)
         Append // write at the end
     }
-    ```
+```
 
     With `import file`, the modes are `file.Read`, `file.Write` and `file.Append`. With `import { Mode } from 'file'`, they can be written `Read`, `Write` and `Append`. Since the mode is a sum type, an invalid mode does not compile.
 
@@ -86,8 +86,8 @@ With the `?` operator (see [Error Handling](../error-handling.md)), inside a fun
 import file
 
 function readNotes(): Result[string, file.FileError] {
-    f = file.open('notes.txt', file.Read)?
-    content = f.read()?
+    immut f = file.open('notes.txt', file.Read)?
+    immut content = f.read()?
     f.close()
 
     return Ok(content)

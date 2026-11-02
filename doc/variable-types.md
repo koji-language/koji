@@ -1,113 +1,95 @@
 # Variable Types
 
-Koji provides three variable types that control mutability:
+Every variable is declared with one of two keywords:
 
-| Keyword | Reassign the variable | Change its contents |
-| ------- | --------------------- | ------------------- |
-| `var`   | yes                   | yes                 |
-| `const` | no                    | yes                 |
-| `imut`  | no                    | no                  |
-
-## `var`
-
--   **Mutability**: Mutable
--   **Scope**: Block
--   **Description**: `var` is the default: a variable declared without a keyword (`count = 0`) is a `var`. It can be changed at any time. A variable belongs to the block where it is declared: the file (global), a function, or any `{ ... }` block such as the body of an `if` or a loop. It is visible in that block and in the blocks inside it.
-
-**Example**:
+| Keyword | Change the variable | Change its contents |
+| ------- | ------------------- | ------------------- |
+| `mut`   | yes                 | yes                 |
+| `immut` | no                  | no                  |
 
 ```koji
-globalVar = 1 // Global variable
+mut count = 0
+immut name = 'Ana'
+mut items: int[] = [] // with a type annotation
 
-function test() {
-	var localVar = 2 // Local variable
-
-	print(globalVar) // 1 (accesses the global variable)
-	print(localVar) // 2 (accesses the local variable within the function)
-}
-
-test()
-
-print(globalVar) // 1 (global variable accessible outside the function)
-print(localVar) // Error! 'localVar' is not accessible outside the function
+count += 1
+items.push(2)
+name = 'Bia' // Error! cannot modify 'name': it is immut
 ```
 
-Other blocks work the same way:
+A declaration always has its keyword: `x = 1` only changes an existing `mut` variable. A name that was never declared is an error, so a typo (`cuont = 1`) is reported instead of creating a new variable:
 
 ```koji
-if (true) {
-	message = 'inside' // declared in the if block
-}
-
-print(message) // Error! 'message' is not accessible outside the block
+mut count = 0
+cuont = 1 // Error! 'cuont' is not declared: declare it with 'mut cuont = ...' (or 'immut' if it never changes)
 ```
 
-Assigning to a name that already exists in an outer block changes that variable instead of declaring a new one:
+## `mut`
+
+A `mut` variable can be changed in any way: given a new value, or changed in its contents (a field, an element, `push`...).
 
 ```koji
-count = 0
+type Person = {
+    name: string
+    age: int
+}
+
+mut person: Person = { name: 'Ana', age: 30 }
+
+person.age = 31 // changes a field
+person = { name: 'Bia', age: 25 } // gives it a new value
+```
+
+## `immut`
+
+An `immut` variable never changes: giving it a new value is an error, and so is changing a field, an element or a nested value.
+
+```koji
+immut person: Person = { name: 'Ana', age: 30 }
+person.age = 31 // Error! cannot modify 'person': it is immut
+
+immut matrix = [[1, 2], [3, 4]]
+matrix[0][0] = 5 // Error! cannot modify 'matrix': it is immut
+```
+
+Values are copied when they are assigned (see [Values and Memory](memory.md)), so changing a `mut` copy of an `immut` value is fine: the `immut` one does not change.
+
+```koji
+immut original = [1, 2]
+mut copy = original
+copy.push(3)
+print(original, copy) // [1, 2] [1, 2, 3]
+```
+
+Prefer `immut` for values that do not need to change: it tells the reader that the value stays the same.
+
+## Scope
+
+A variable belongs to the block where it is declared: the file, a function, or any `{ ... }` block such as the body of an `if` or a loop. It is visible in that block and in the blocks inside it.
+
+```koji
+mut total = 0 // in the file
+
+function add(n: int) {
+    immut doubled = n * 2 // in the function
+    total += doubled
+}
+
+add(1)
+print(total) // 2
+print(doubled) // Error! 'doubled' is not declared
+```
+
+Assigning to a variable of an outer block changes it:
+
+```koji
+mut count = 0
 
 if (true) {
-	count = 1 // changes the outer 'count'
+    count = 1 // changes the outer 'count'
 }
 
 print(count) // 1
-```
-
-## `const`
-
--   **Mutability**: The variable cannot be reassigned; its contents can change
--   **Scope**: Block (like `var`)
--   **Description**: A `const` variable cannot be reassigned after it is declared.
-
-**Example**:
-
-```koji
-const pi = 3.14159
-pi = 3.14 // Error! cannot modify a 'const' value ('pi')
-```
-
-If its value has contents (an object or a list), they can still be changed:
-
-```koji
-type Person = {
-	name: string
-	age: int
-}
-
-const person: Person = {
-	name: 'Ana',
-	age: 30
-}
-
-person.age = 31 // allowed: changes the contents
-person = { name: 'Bia', age: 25 } // Error! cannot modify a 'const' value ('person')
-```
-
-## `imut`
-
--   **Mutability**: Fully immutable: neither the variable nor its contents can change
--   **Scope**: Block (like `var`)
--   **Description**: For values that never change. Reassigning the variable is an error, and so is changing a field, an element or a nested value.
-
-**Example**:
-
-```koji
-type Person = {
-	name: string
-	age: int
-}
-
-imut person: Person = {
-	name: 'Ana',
-	age: 30
-}
-
-person.age = 31 // Error! cannot modify 'person': it is imut
-
-imut matrix = [[1, 2], [3, 4]]
-
-matrix[0][0] = 5 // Error! cannot modify 'matrix': it is imut
 ```
 
 ## Other Read-Only Variables

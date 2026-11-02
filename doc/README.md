@@ -11,7 +11,7 @@ New to Koji? Start with [Getting Started](getting-started.md).
 -   [Getting Started](getting-started.md)
 -   [Conventions](conventions.md)
 -   [Comments](comments.md)
--   [Variable Types](variable-types.md): `var`, `const` and `imut`
+-   [Variable Types](variable-types.md): `mut` and `immut`
 
 ### Types
 

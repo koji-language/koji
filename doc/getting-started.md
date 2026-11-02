@@ -46,7 +46,7 @@ Hello, World!
 
 ## Checking a Program
 
-Every program is checked before it runs: syntax, types, `match` arms that are not handled, assignments to `const` or `imut` values and so on. A program with an error does not run at all.
+Every program is checked before it runs: syntax, types, `match` arms that are not handled, assignments to `immut` values, names that were never declared and so on. A program with an error does not run at all.
 
 To only check a program, without running it:
 
@@ -93,7 +93,7 @@ See the [contributing guide](../CONTRIBUTING.md) for details.
 
 ## Next Steps
 
--   [Variable Types](variable-types.md): `var`, `const` and `imut`
+-   [Variable Types](variable-types.md): `mut` and `immut`
 -   [Primitive Types](primitive-types.md) and [Composite Types](composite-types.md)
 -   [Functions](functions.md)
 -   [Custom Types](custom-types.md) and [Sum Types](sum-types.md)
