@@ -26,7 +26,7 @@ The goal is to provide a language that any developer can quickly learn and use c
 
 ## Getting Started
 
-New to Koji? Start with [Getting Started](doc/getting-started.md).
+The [Getting Started](doc/getting-started.md) guide walks through your first program and every command.
 
 ---
 
@@ -40,6 +40,8 @@ Access the documentation [here](doc/README.md).
 
 For upcoming features and long-term goals, see the [roadmap](doc/roadmap.md).
 
-## Contributions
+---
 
-We welcome ideas, suggestions, and contributions! See the [contributing guide](CONTRIBUTING.md) for details.
+## Contributing
+
+Ideas, suggestions and contributions are welcome. See the [contributing guide](CONTRIBUTING.md).
