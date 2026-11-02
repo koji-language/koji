@@ -52,6 +52,7 @@ Shape types are **nominal**: two types with the same fields are still different 
 
 ```koji
 type Celsius = { value: float }
+
 type Fahrenheit = { value: float }
 
 immut celsius: Celsius = { value: 20.0 }
@@ -85,6 +86,7 @@ Koji has no index signatures (`{ [key: string]: string }`): a dictionary is a [`
 type Dictionary = Map[string, string]
 
 immut translations: Dictionary = [
+
     'hello': 'olá',
     'world': 'mundo'
 ]
@@ -225,7 +227,9 @@ function Counter.increment(mut self) {
 }
 
 mut counter: Counter = { count: 0 }
+
 counter.increment()
+
 print(counter.count) // 1
 ```
 
@@ -245,7 +249,9 @@ function Light.toggle(mut self) {
 }
 
 mut light: Light = Off
+
 light.toggle()
+
 print(light) // On
 ```
 

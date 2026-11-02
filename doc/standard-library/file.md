@@ -61,6 +61,7 @@ import file
 match (file.open('notes.txt', file.Write)) {
     Ok(f) => {
         f.write('Hello world!')
+
         f.close()
     }
     Err(error) => print(error)
@@ -88,6 +89,7 @@ import file
 function readNotes(): Result[string, file.FileError] {
     immut f = file.open('notes.txt', file.Read)?
     immut content = f.read()?
+
     f.close()
 
     return Ok(content)

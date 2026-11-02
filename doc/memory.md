@@ -12,6 +12,7 @@ Assigning a value, passing it to a function or storing it in a list gives a **co
 ```koji
 immut a = [1, 2, 3]
 mut b = a
+
 b[0] = 9
 
 print(a) // [1, 2, 3]
@@ -32,7 +33,8 @@ A move-only value has exactly one owner. Assigning it to another variable, retur
 import file
 
 immut f = file.open('notes.txt', file.Read)?
-immut g = f        // the file moves to g
+immut g = f // the file moves to g
+
 print(f.read()) // Error! 'f' cannot be used here: its value was moved (or closed) on line 4
 ```
 
@@ -48,6 +50,7 @@ function show(f: file.File) {
 }
 
 immut f = file.open('notes.txt', file.Read)?
+
 show(f)
 show(f) // still usable: show only borrowed it
 ```
@@ -67,6 +70,7 @@ function Logger.create(take out: file.File): Logger {
 
 immut f = file.open('log.txt', file.Write)?
 immut logger = Logger.create(f) // the file moves into the logger
+
 f.write('x') // Error! 'f' cannot be used here: its value was moved (or closed) on line 10
 ```
 
@@ -103,6 +107,7 @@ function Connection.open(name: string): Connection {
 
 if (true) {
     immut db = Connection.open('db')
+
     print('working')
 } // closing db
 ```
@@ -122,6 +127,7 @@ import file
 
 function readNotes(): Result[string, file.FileError] {
     immut f = file.open('notes.txt', file.Read)?
+
     return f.read() // 'f' goes out of scope: the file is closed
 }
 ```

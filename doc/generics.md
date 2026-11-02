@@ -9,6 +9,7 @@ function first[T](items: T[]): Option[T] {
     if (items.length() == 0) {
         return None
     }
+
     return Some(items[0])
 }
 
@@ -21,9 +22,11 @@ Type arguments are never written at the call: they come from the arguments, or f
 ```koji
 function map[A, B](items: A[], f: (A) => B): B[] {
     mut result: B[] = []
+
     for item in items {
         result = result + [f(item)]
     }
+
     return result
 }
 
@@ -67,6 +70,7 @@ function Pair.swap(self): Pair[B, A] {
 }
 
 immut p = Pair.create(1, 'one') // a Pair[int, string]
+
 print(p.swap().first) // one
 ```
 
@@ -98,16 +102,19 @@ A type parameter can require that its type supports comparisons, with `[T: const
 ```koji
 function max[T: orderable](items: T[]): T {
     mut best = items[0]
+
     for item in items {
         if (item > best) {
             best = item
         }
     }
+
     return best
 }
 
 print(max([3, 1, 2])) // 3
 print(max(['b', 'a'])) // b
+
 max([ana, bia]) // Error! Person is not orderable, as 'max' requires
 ```
 

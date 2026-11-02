@@ -97,7 +97,9 @@ Everything in a module is private by default. Only declarations marked with `exp
     import { count, increment } from 'counter.kj'
 
     increment()
+
     print(count) // 1
+
     count = 5 // Error! 'count' is read-only outside 'counter.kj'
 ```
 
@@ -170,6 +172,7 @@ Memory is managed with **ownership**, without a garbage collector. Every value h
 function readNotes(): Result[string, file.FileError] {
     immut f = file.open('notes.txt', file.Read)?
     immut content = f.read()? // on an error, '?' returns and 'f' is closed
+
     return Ok(content) // 'f' goes out of scope: the file is closed
 }
 ```
@@ -179,7 +182,9 @@ function readNotes(): Result[string, file.FileError] {
 ```koji
 immut a = [1, 2, 3]
 mut b = a // nothing is copied yet
+
 b[0] = 9 // the list is copied now, because b changes
+
 print(a) // [1, 2, 3]
 print(b) // [9, 2, 3]
 ```

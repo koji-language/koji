@@ -57,6 +57,7 @@ print('Bia' in ages) // true
 
 ages['Carl'] = 41 // adds or replaces
 ages['Ana'] += 1
+
 ages.remove('Bia')
 
 for name in ages {
@@ -74,7 +75,9 @@ Like lists, maps are values: assigning a map gives an independent copy. See the 
 mut seen: Set[string] = Set.from(['a', 'b', 'a'])
 
 seen.add('c')
+
 seen.remove('a')
+
 print(seen.has('b'), 'c' in seen) // true true
 print(seen) // Set(['b', 'c'])
 ```

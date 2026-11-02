@@ -33,6 +33,7 @@ match (regex.compile('(abc')) {
 // In a function that returns a Result, `?` is shorter:
 function countWords(text: string): Result[int, regex.RegexError] {
     immut word = regex.compile('[a-z]+')?
+
     return Ok(word.findAll(text).length())
 }
 ```
@@ -77,6 +78,7 @@ print(digits.replaceAll('a1b2', '#')) // a#b#
 print(digits.split('a1b22c')) // ['a', 'b', 'c']
 
 immut date = regex.compile('([0-9]{4})-([0-9]{2})')?
+
 print(date.replaceAll('2025-10', '$2/$1')) // 10/2025
 ```
 

@@ -80,7 +80,9 @@ export function increment() {
 import { count, increment } from 'counter.kj'
 
 increment()
+
 print(count) // 1
+
 count = 5 // Error! 'count' is read-only outside 'counter.kj'
 ```
 

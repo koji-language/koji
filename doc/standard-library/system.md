@@ -38,8 +38,10 @@ type SystemError = {
 import system
 
 immut args = system.args()
+
 if (args.length() == 0) {
     print('usage: kojic run greet.kj <name>')
+
     system.exit(2)
 }
 

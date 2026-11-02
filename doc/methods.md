@@ -81,9 +81,11 @@ There is no string builder: text is built with `+=`, which appends in place when
 
 ```koji
 mut line = ''
+
 for i in range(3) {
     line += `${i};`
 }
+
 print(line) // 0;1;2;
 
 print(['a', 'b', 'c'].join(', ')) // a, b, c

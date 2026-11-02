@@ -83,6 +83,7 @@ mut rows = [[1, 2], [3, 4]]
 
 for mut row in rows {
     row[0] = 0
+
     print(row) // [0, 2], then [0, 4]
 }
 

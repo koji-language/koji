@@ -66,6 +66,7 @@ print(addFive(1)) // 6
 function count(): int {
 	mut total = 0
 	immut add = () => { total += 1 } // Error! cannot modify 'total' here: functions capture a read-only copy of the variables around them
+
 	return total
 }
 ```
@@ -80,6 +81,7 @@ function add(n: int) {
 }
 
 add(2)
+
 print(total) // 2
 ```
 
@@ -107,11 +109,15 @@ function addFirst(mut items: int[], amount: int) {
 }
 
 mut count = 5
+
 reset(mut count)
+
 print(count) // 0
 
 mut numbers = [1, 2, 3]
+
 addFirst(mut numbers, 10)
+
 print(numbers) // [11, 2, 3]
 ```
 
@@ -149,6 +155,7 @@ function Person.greet(self) {
 }
 
 immut person = Person.create('John')
+
 person.greet() // Hello, I'm John!
 ```
 

@@ -13,7 +13,9 @@ immut name = 'Ana'
 mut items: int[] = [] // with a type annotation
 
 count += 1
+
 items.push(2)
+
 name = 'Bia' // Error! cannot modify 'name': it is immut
 ```
 
@@ -21,6 +23,7 @@ A declaration always has its keyword: `x = 1` only changes an existing `mut` var
 
 ```koji
 mut count = 0
+
 cuont = 1 // Error! 'cuont' is not declared: declare it with 'mut cuont = ...' (or 'immut' if it never changes)
 ```
 
@@ -46,9 +49,11 @@ An `immut` variable never changes: giving it a new value is an error, and so is 
 
 ```koji
 immut person: Person = { name: 'Ana', age: 30 }
+
 person.age = 31 // Error! cannot modify 'person': it is immut
 
 immut matrix = [[1, 2], [3, 4]]
+
 matrix[0][0] = 5 // Error! cannot modify 'matrix': it is immut
 ```
 
@@ -57,7 +62,9 @@ Values are copied when they are assigned (see [Values and Memory](memory.md)), s
 ```koji
 immut original = [1, 2]
 mut copy = original
+
 copy.push(3)
+
 print(original, copy) // [1, 2] [1, 2, 3]
 ```
 
@@ -72,10 +79,12 @@ mut total = 0 // in the file
 
 function add(n: int) {
     immut doubled = n * 2 // in the function
+
     total += doubled
 }
 
 add(1)
+
 print(total) // 2
 print(doubled) // Error! 'doubled' is not declared
 ```

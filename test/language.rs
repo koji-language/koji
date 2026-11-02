@@ -79,6 +79,7 @@ fn primitive_types() {
         immut pi: float = 3.14
         immut name: string = 'Mary'
         immut isStudent: boolean = true
+
         print(age, pi, name, isStudent)
     "#;
     assert_eq!(run(source), "23 3.14 Mary true\n");
@@ -92,6 +93,7 @@ fn option_instead_of_null() {
 
         // Later in the code
         x = Some(42)
+
         print(name, x)
     "#;
     assert_eq!(run(source), "None Some(42)\n");
@@ -124,11 +126,14 @@ fn global_and_local_variables() {
 fn functions_can_update_globals() {
     let source = r#"
         mut count = 0
+
         function increment() {
             count += 1
         }
+
         increment()
         increment()
+
         print(count)
     "#;
     assert_eq!(run(source), "2\n");
@@ -150,6 +155,7 @@ fn immut_cannot_change() {
 
         person.age = 31
         person = { name: 'Bia', age: 25 }
+
         print(person.name, person.age)
     "#;
     assert_eq!(run(source), "Bia 25\n");
@@ -176,8 +182,10 @@ fn imut_is_deeply_immutable() {
             name: string
             age: int
         }
+
         immut person: Person = { name: 'Ana', age: 30 }
         immut matrix = [[1, 2], [3, 4]]
+
         print(person.age, matrix[1][0])
     "#;
     assert_eq!(run(source), "30 3\n");
@@ -205,6 +213,7 @@ fn lists() {
         immut numbers: int[] = [1, 2, 3]
         immut coordinates: int[][] = [[1, 2], [3, 4]]
         immut positions: int[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+
         print(numbers, coordinates[1][0], positions[1][1][1], numbers.length())
     "#;
     assert_eq!(run(source), "[1, 2, 3] 3 8 3\n");
@@ -255,6 +264,7 @@ fn equality_and_membership() {
             name: string
             age: int
         }
+
         immut a: Person = { name: 'Ana', age: 30 }
         immut b: Person = { name: 'Ana', age: 30 }
 
@@ -272,7 +282,9 @@ fn equality_and_membership() {
 fn logical_operators() {
     let source = r#"
         immut age = 20
+
         if not (age > 18) { print('minor') } else { print('adult') }
+
         print(true and false, true or false, not true)
     "#;
     assert_eq!(run(source), "adult\nfalse true false\n");
@@ -282,14 +294,18 @@ fn logical_operators() {
 fn assignment_operators() {
     let source = r#"
         mut e = 10
+
         e += 1
         e -= 2
         e *= 3
         e /= 2
         e **= 2
         e %= 7
+
         mut f = 1.0
+
         f /= 4
+
         print(e, f)
     "#;
     assert_eq!(run(source), "1 0.25\n");
@@ -392,6 +408,7 @@ fn input_returns_an_option() {
 fn if_else_statement_and_expression() {
     let source = r#"
         immut age = 20
+
         if (age > 18) {
             print('Adult')
         } else {
@@ -412,8 +429,11 @@ fn if_else_statement_and_expression() {
 fn for_loops() {
     let source = r#"
         print(range(0, 5))
+
         for i in range(0, 3) { print(i) }
+
         for i in range(2) { print(i) }
+
         for i in range(10, 0, -4) { print(i) }
 
         immut names: string[] = ['Anna', 'Claire', 'Leon']
@@ -438,6 +458,7 @@ fn for_loops() {
 fn while_break_and_continue() {
     let source = r#"
         mut count = 0
+
         while (count < 3) {
             print(count)
 
@@ -475,6 +496,7 @@ fn match_with_guards() {
                 _             => 'Minor'
             }
         }
+
         immut age: int = 14
 
         immut label: string = match (age) {
@@ -493,6 +515,7 @@ fn match_with_guards() {
 fn match_arms_must_agree_with_the_declared_type() {
     let source = r#"
         immut result = Ok(1)
+
         immut label: int = match (result) {
             Ok(value) => `Value: ${value}` // Error! string is not int
             Err(error) => `Error: ${error}`
@@ -510,6 +533,7 @@ fn match_must_be_exhaustive() {
     assert_error("match (1) {\n 1 => print(1)\n}", "wildcard");
     let source = r#"
         immut option = Some(1)
+
         match (option) {
             Some(value) => print(value)
             _ => print('No value')
@@ -529,6 +553,7 @@ fn match_arms_on_separate_lines() {
                 _ => 'negative'
             }
         }
+
         print(sign(0), sign(-1), sign(5), sign(-9))
     "#;
     assert_eq!(run(source), "zero minus one positive negative\n");
@@ -541,7 +566,9 @@ fn match_literals_and_nested_patterns() {
             Circle(radius: float)
             Rectangle(width: float, height: float)
         }
+
         immut shapes: Option[Shape][] = [Some(Circle(2.0)), None, Some(Rectangle(1.0, 2.0))]
+
         for s in shapes {
             match (s) {
                 Some(Circle(r)) => print(`circle ${r}`)
@@ -549,6 +576,7 @@ fn match_literals_and_nested_patterns() {
                 None => print('nothing')
             }
         }
+
         match ('b') {
             'a' => print('A')
             'b' => print('B')
@@ -610,7 +638,9 @@ fn unit_variants() {
             Admin(name: string)
             Guest
         }
+
         immut users: User[] = [Admin('Ana'), Guest]
+
         for user in users {
             match (user) {
                 Admin(name) => print(`Admin: ${name}`)
@@ -628,12 +658,14 @@ fn recursive_sum_types() {
             Cons(head: int, tail: List)
             Nil
         }
+
         function total(list: List): int {
             match (list) {
                 Cons(head, tail) => head + total(tail)
                 Nil => 0
             }
         }
+
         print(total(Cons(1, Cons(2, Cons(3, Nil)))))
     "#;
     assert_eq!(run(source), "6\n");
@@ -651,6 +683,7 @@ fn shape_types() {
             name: 'John',
             age: 20
         }
+
         print(person.name, person.age, person)
     "#;
     assert_eq!(run(source), "John 20 { name: 'John', age: 20 }\n");
@@ -665,36 +698,51 @@ fn maps_and_sets() {
         type Dictionary = Map[string, string]
 
         mut translations: Dictionary = [
+
             'hello': 'olá',
             'world': 'mundo'
         ]
+
         translations['bye'] = 'tchau'
+
         print(translations['hello'], 'world' in translations, translations.length())
+
         for key in translations { print(key) }
 
         immut ages: Map[string, int] = ['Ana': 30, 'Bia': 25]
         mut copy = ages
+
         copy['Ana'] += 1
+
         print(ages['Ana'], copy['Ana'], ages.get('Bia'), ages.get('X'), ages.has('Ana'))
         print(copy.remove('Bia'), copy.remove('X'), copy, copy.keys(), copy.values())
+
         immut empty: Map[int, string] = [:]
+
         print(empty, [1: 'um'])
 
         type Point = {
             x: int
             y: int
         }
+
         mut seen: Set[Point] = Set.from([])
+
         seen.add({ x: 1, y: 2 })
         seen.add({ x: 1, y: 2 })
+
         immut p: Point = { x: 1, y: 2 }
+
         print(seen.length(), seen.has(p), p in seen)
+
         immut s = Set.from([3, 1, 3, 2])
         mut t = s
+
         print(t.remove(3), t.remove(9))
         print(s, t, s.values(), s == Set.from([1, 2, 3]))
 
         mut counts: Map[char, int] = [:]
+
         for c in 'banana' {
             if (c in counts) {
                 counts[c] += 1
@@ -702,6 +750,7 @@ fn maps_and_sets() {
                 counts[c] = 1
             }
         }
+
         print(counts)
     "#;
     assert_eq!(
@@ -793,6 +842,7 @@ fn nested_shapes() {
         }
 
         print(user.address.city)
+
         printProduct({ id: 1, name: 'Pen', price: 2.5 })
     "#;
     assert_eq!(run(source), "Exampleville\nProduct: Pen (1) - 2.5\n");
@@ -804,7 +854,9 @@ fn shapes_are_nominal() {
     // Two types with the same fields are still different types.
     let source = r#"
         type Celsius = { value: float }
+
         type Fahrenheit = { value: float }
+
         immut c: Celsius = { value: 20.0 }
         immut f: Fahrenheit = c
     "#;
@@ -860,10 +912,13 @@ fn anonymous_functions_and_closures() {
         function makeAdder(amount: int): (int) => int {
             return (x: int) => x + amount
         }
+
         immut addFive = makeAdder(5)
+
         print(addFive(1))
 
         immut apply = (f: (int) => int, x: int) => f(x)
+
         print(apply(double, 21))
     "#;
     assert_eq!(run(source), "20 30\n6\n42\n");
@@ -877,39 +932,50 @@ fn closures_capture_a_read_only_copy() {
             mut results: int[] = []
             mut x = 1
             immut read = () => x
+
             x = 2
             results += [read()]
 
             mut fns: (() => int)[] = []
+
             for i in range(3) {
                 fns += [() => i * 10]
             }
+
             for f in fns {
                 results += [f()]
             }
 
             function inner(): int { return x }
+
             x = 3
             results += [inner()]
+
             return results
         }
+
         print(make())
 
         // Module variables are not captured: functions read and change them.
         mut total = 0
+
         function add(n: int) {
             total += n
         }
+
         add(2)
         add(3)
+
         print(total)
     "#;
     assert_eq!(run(source), "[1, 0, 10, 20, 2]\n5\n");
     let counter = r#"
         function makeCounter(): () => int {
             mut count = 0
+
             return () => {
                 count += 1
+
                 return count
             }
         }
@@ -935,18 +1001,24 @@ fn question_mark_operator() {
     let source = r#"
         function parseAge(text: string): Result[int, ParseError] {
             immut age = int(text)?
+
             return Ok(age)
         }
+
         print(parseAge('42'), parseAge('x'))
 
         function first(items: string[]): Option[string] {
             if (items.length() == 0) { return None }
+
             return Some(items[0])
         }
+
         function shout(items: string[]): Option[string] {
             immut item = first(items)?
+
             return Some(item.upper())
         }
+
         print(shout(['hey']), shout([]))
     "#;
     assert_eq!(run(source), "Ok(42) Err(InvalidNumber('x'))\nSome('HEY') None\n");
@@ -965,9 +1037,12 @@ fn question_mark_wraps_errors_automatically() {
 
         function load(text: string, count: string): Result[int, AppError] {
             json.parse(text)?
+
             immut n = int(count)?
+
             return Ok(n)
         }
+
         print(load('[1]', '3'), load('[1', '3'), load('[1]', 'x'))
     "#;
     assert_eq!(
@@ -998,18 +1073,22 @@ fn readable_error_messages() {
                 print(`failed: ${error}`, error.display().length() > 0)
             }
         }
+
         match (int('abc')) {
             Ok(_) => print('?')
             Err(error) => print(error)
         }
+
         match (json.parse('[1,')) {
             Ok(_) => print('?')
             Err(error) => print(error)
         }
+
         match (math.sqrt(-1)) {
             Ok(_) => print('?')
             Err(error) => print(error.display(), '|', error.debug())
         }
+
         print(int('abc')) // a Result keeps its structural form
     "#;
     assert_eq!(
@@ -1024,9 +1103,12 @@ fn map_err() {
     let source = r#"
         function parse(text: string): Result[int, string] {
             immut n = int(text).mapErr((error: ParseError) => `bad number: ${text}`)?
+
             return Ok(n)
         }
+
         type Wrapped = { Wrap(error: ParseError) }
+
         print(parse('1'), parse('x'), int('y').mapErr(Wrap))
     "#;
     assert_eq!(
@@ -1051,10 +1133,13 @@ fn question_mark_rules() {
 fn imports_are_hoisted() {
     let source = r#"
         type Failure = { Bad(error: math.MathError) }
+
         print(root(16.0))
+
         function root(x: float): Result[float, Failure] {
             return Ok(math.sqrt(x)?)
         }
+
         import math
     "#;
     assert_eq!(run(source), "Ok(4.0)\n");
@@ -1109,12 +1194,16 @@ fn modules_and_imports() {
 
         print(result) // 15
         print(add(5, 10), subtract(5, 10))
+
         immut s: Shape = Circle(1.0)
         immut t: math.Shape = math.Square(2.0)
+
         print(s, t)
 
         increment()
+
         math.increment()
+
         print(count, math.count) // always the current value
     "#;
     let (output, result) = execute(source, "", &dir.join("main.kj"));
@@ -1206,10 +1295,12 @@ fn stdlib_file() {
         }}
 
         import {{ Mode }} from 'file'
+
         match (file.open('{path}', Append)) {{
             Ok(f) => f.write(' Bye!')
             Err(error) => Err(error)
         }}
+
         match (file.open('{path}', Read)) {{
             Ok(f) => print(f.read())
             Err(error) => print(error)
@@ -1241,10 +1332,12 @@ fn stdlib_datetime() {
             }
             Err(error) => print(error)
         }
+
         print(datetime.parse('2025-02-30', 'YYYY-MM-DD'), datetime.parse('20/04', 'YYYY-MM-DD'))
         print(datetime.parse('2025/02/03', 'YYYY-MM-DD'))
 
         immut now = datetime.now()
+
         print(now.year >= 2025, now.month >= 1 and now.month <= 12)
     "#;
     assert_eq!(
@@ -1271,6 +1364,7 @@ fn stdlib_math() {
             Err(Indeterminate) => print('indeterminate')
             Err(Infinite) => print('infinite')
         }
+
         print(math.sqrt(16), math.pow(-8, 0.5), math.pow(0, 0), math.pow(0, -1), math.pow(-2, 3))
         print(math.abs(-3), math.abs(-2.5), math.floor(2.7), math.ceil(2.1), math.round(2.5))
         print(math.e > 2.71)
@@ -1303,8 +1397,10 @@ fn panic_builtin() {
     let source = r#"
         function check(x: int): int {
             if (x > 0) { return x }
+
             panic('x must be positive')
         }
+
         print(check(2))
     "#;
     assert_eq!(run(source), "2\n");
@@ -1321,10 +1417,12 @@ fn stdlib_json() {
                     String(name) => print(name) // koji
                     _ => print('name is not a string')
                 }
+
                 match (fields['x']) {
                     Null => print('null')
                     _ => print('not null')
                 }
+
                 print(fields['year'], fields['tags'], fields['pi'])
             }
             Ok(_) => print('expected an object')
@@ -1334,16 +1432,19 @@ fn stdlib_json() {
         match (json.parse('{"year": 2025}')) {
             Ok(data) => {
                 print(json.get(data, 'year'), json.get(data, 'nope'))
+
                 match (json.get(data, 'year')) {
                     Some(year) => print(json.asInt(year), json.asFloat(year), json.asString(year))
                     None => print('no year')
                 }
+
                 print(json.stringify(data))
             }
             Err(error) => print(error)
         }
 
         print(json.stringify(json.Array([json.Float(2.0), json.Int(2), json.String('a'), json.Null, json.Bool(false), json.Float(6.022e23)])))
+
         // parse and stringify give back the same text; floats keep their decimal point
         for text in ['{"name":"koji","year":2025,"tags":[1,2.5,null]}', '[2.0, 1e3]'] {
             match (json.parse(text)) {
@@ -1351,6 +1452,7 @@ fn stdlib_json() {
                 Err(error) => print(error)
             }
         }
+
         print(json.parse('{"a": }'))
         print(json.parse('[1,\n 99999999999999999999]'))
     "#;
@@ -1370,13 +1472,16 @@ fn stdlib_regex() {
         match (regex.compile('[0-9]+')) {
             Ok(digits) => {
                 print(digits.test('abc123'), digits.test('abc'))
+
                 match (digits.find('Order number: 12345')) {
                     Some(found) => print(found.value, found.start, found.end)
                     None => print('no number')
                 }
+
                 for found in digits.findAll('a1b22c333') {
                     print(found.value)
                 }
+
                 print(digits.replace('a1b2', '#'), digits.replaceAll('a1b2', '#'))
                 print(digits.split('a1b22c'))
                 print(digits.find('abc'))
@@ -1391,6 +1496,7 @@ fn stdlib_regex() {
 
         function countWords(text: string): Result[int, regex.RegexError] {
             immut word = regex.compile('[a-z]+')?
+
             return Ok(word.findAll(text).length())
         }
 
@@ -1407,6 +1513,7 @@ fn stdlib_regex() {
 
         print(regex.compile('(?=a)b'))
         print(regex.compile('a{1000}{1000}'))
+
         match (regex.compile('(a)\\1')) {
             Ok(_) => print('valid?')
             Err(error) => print(error)
@@ -1471,10 +1578,12 @@ fn stdlib_http() {
             Ok(res) => if (res.status == 200) {{ print(res.body) }}
             Err(error) => print(error)
         }}
+
         match (http.post('http://127.0.0.1:{port}/items', 'data')) {{
             Ok(res) => print(res.body)
             Err(error) => print(error)
         }}
+
         match (http.get('http://127.0.0.1:1/closed')) {{
             Ok(_) => print('connected?')
             Err(ConnectionFailed(_, _)) => print('connection failed')
@@ -1539,9 +1648,13 @@ fn methods_and_associated_functions() {
         }
 
         immut person: Person = { name: 'John', age: 20 }
+
         person.greet()
+
         immut baby = Person.create('Ana')
+
         baby.greet()
+
         print(person.olderThan(baby), Square(2.0).area())
     "#;
     assert_eq!(run(source), "Hello, I'm John!\nHello, I'm Ana!\ntrue 4.0\n");
@@ -1596,9 +1709,13 @@ fn methods_of_imported_types() {
         import { Point, make, double } from 'geo.kj'
 
         print(geo.Point.origin().sum(), Point.origin().sum(), make(2, 3).sum())
+
         mut n = 3
+
         geo.double(mut n)
+
         double(mut n)
+
         print(n)
     "#;
     let (output, result) = execute(source, "", &dir.join("main.kj"));
@@ -1631,13 +1748,21 @@ fn mut_parameters() {
         }
 
         mut count = 5
+
         reset(mut count)
+
         mut list = [1, 2]
+
         replace(mut list)
+
         mut people: Person[] = [{ name: 'Ana', age: 30 }]
+
         birthday(mut people[0])
+
         mut data: Box = { inner: 3 }
+
         reset(mut data.inner)
+
         print(count, list, people[0].age, data.inner)
     "#;
     assert_eq!(run(source), "0 [9, 9] 31 0\n");
@@ -1677,11 +1802,17 @@ fn mut_self() {
         }
 
         mut counter: Counter = { count: 0 }
+
         counter.increment()
+
         mut fixed: Counter = { count: 10 }
+
         fixed.addTwice()
+
         mut counters: Counter[] = [{ count: 5 }]
+
         counters[0].increment()
+
         print(counter.count, fixed.count, counters[0].count)
     "#;
     assert_eq!(run(source), "1 12 6\n");
@@ -1709,9 +1840,13 @@ fn mut_self() {
         }
 
         mut light: Light = Off
+
         light.toggle()
+
         print(light)
+
         light.toggle()
+
         print(light)
     "#;
     assert_eq!(run(source), "On\nOff\n");
@@ -1742,6 +1877,7 @@ fn display_and_debug() {
         }
 
         immut ana: Person = { name: 'Ana', age: 30 }
+
         print(ana)
         print(`Hi, ${ana}!`)
         print(string(ana), ana.display(), ana.debug())
@@ -1767,10 +1903,13 @@ fn loop_and_match_variables_are_imut() {
     // `for mut` changes a copy: the list keeps its values.
     let source = r#"
         mut rows = [[1, 2], [3, 4]]
+
         for mut row in rows {
             row[0] = 0
+
             print(row)
         }
+
         print(rows)
     "#;
     assert_eq!(run(source), "[0, 2]\n[0, 4]\n[[1, 2], [3, 4]]\n");
@@ -1794,12 +1933,16 @@ fn object_literals_need_a_type() {
 
         immut a: Person = { name: 'Ana', age: 30 }
         mut people: Person[] = [{ name: 'Bia', age: 20 }]
+
         people[0] = { name: 'Caio', age: 40 }
+
         immut maybe: Option[Person] = Some({ name: 'Duda', age: 10 })
+
         show(a)
         show(make('Eva'))
         show({ name: 'Fábio', age: 50 })
         show(people[0])
+
         match (maybe) {
             Some(person) => show(person)
             None => print('none')
@@ -1825,39 +1968,53 @@ fn value_semantics() {
 
         immut a = [1, 2, 3]
         mut b = a
+
         b[0] = 9
+
         print(a, b)
 
         immut m = [[1, 2], [3, 4]]
         mut n = m
+
         n[1][0] = 0
+
         print(m, n)
 
         immut ana: Person = { name: 'Ana', age: 30 }
         mut people: Person[] = [ana]
+
         people[0].age = 31
+
         print(ana.age, people[0].age)
 
         function birthday(mut p: Person) {
             p.age += 1
         }
+
         birthday(mut people[0])
+
         print(ana.age, people[0].age)
 
         function same(items: int[]): int[] {
             return items
         }
+
         immut fixed = [1, 2]
         mut copy = same(fixed)
+
         copy[0] = 100
+
         print(fixed, copy)
 
         function makeReader(items: int[]): () => int[] {
             return () => items
         }
+
         mut source = [1]
         immut read = makeReader(source)
+
         source[0] = 2
+
         print(read(), source)
     "#;
     assert_eq!(
@@ -1881,6 +2038,7 @@ const CONN: &str = r#"
 
     function Conn.open(name: string): Conn {
         print(`opening ${name}`)
+
         return { name: name }
     }
 
@@ -1896,23 +2054,33 @@ fn drop_runs_when_the_owner_goes_out_of_scope() {
         CONN,
         r#"
         immut a = Conn.open('a')
+
         if (true) {
             immut b = Conn.open('b')
+
             use(b)
         }
+
         immut c = Conn.open('c')
         immut d = c
+
         use(Conn.open('temp'))
+
         Conn.open('statement')
+
         mut e = Conn.open('e1')
+
         e = Conn.open('e2')
 
         function make(): Conn {
             immut x = Conn.open('made')
             immut y = Conn.open('local')
+
             return x
         }
+
         immut m = make()
+
         print('end')
     "#
     );
@@ -1966,20 +2134,27 @@ fn files_are_closed_by_their_owner() {
 
         function save(path: string): Result[int, file.FileError] {{
             mut f = file.open(path, file.Write)?
+
             f.write('one ')?
+
             immut g = f
+
             g.write('two')?
+
             return Ok(2)
         }}
 
         function load(path: string): Result[string, file.FileError] {{
             immut f = file.open(path, file.Read)?
+
             return f.read()
         }}
 
         print(save('{path}'))
         print(load('{path}'))
+
         immut h = file.open('{path}', file.Read)?
+
         h.close()
     "#
     );
@@ -2013,16 +2188,23 @@ fn move_only_values_cannot_be_used_after_a_move() {
         r#"
         mut c = Conn.open('a')
         immut d = c
+
         c = Conn.open('b')
+
         function pick(flag: boolean): Conn {
             immut x = Conn.open('x')
+
             if (flag) {
                 return x
             }
+
             print(x.name)
+
             return x
         }
+
         immut p = pick(false)
+
         print(c.name, d.name, p.name)
     "#
     );
@@ -2040,13 +2222,17 @@ fn move_only_values_cannot_be_used_after_a_move() {
 fn range_in_a_for_loop() {
     let source = r#"
         mut total = 0
+
         for i in range(100000) {
             total += i
         }
+
         print(total)
+
         for i in range(10, 0, -3) {
             print(i)
         }
+
         print(range(3))
     "#;
     assert_eq!(run(source), "4999950000\n10\n7\n4\n1\n[0, 1, 2]\n");
@@ -2078,10 +2264,14 @@ fn take_parameters() {
         immut c = Conn.open('a')
         immut p = Pool.create(c)
         immut d = Conn.open('b')
+
         consume(d)
         consume(Conn.open('temp'))
+
         immut e = Conn.open('e')
+
         e.finish()
+
         print('end')
     "#
     );
@@ -2112,14 +2302,17 @@ fn generic_functions_and_types() {
             if (items.length() == 0) {
                 return None
             }
+
             return Some(items[0])
         }
 
         function map[A, B](items: A[], f: (A) => B): B[] {
             mut result: B[] = []
+
             for item in items {
                 result = result + [f(item)]
             }
+
             return result
         }
 
@@ -2153,16 +2346,24 @@ fn generic_functions_and_types() {
         }
 
         print(first([1, 2, 3]), first(['a']))
+
         immut nothing: Option[int] = first([])
+
         print(nothing)
         print(map([1, 2, 3], (x: int) => `#${x}`))
+
         immut p = Pair.create(1, 'one')
         immut q = p.swap()
         immut r = p.mapFirst((n: int) => n * 10)
+
         print(p.first, p.second, q.first, q.second, r.first, r.second)
+
         immut explicit: Pair[string, int] = { first: 'x', second: 2 }
+
         print(explicit.swap().first)
+
         immut tree: Tree[int] = Node(1, Node(2, Leaf, Leaf), Leaf)
+
         print(tree.size())
     "#;
     assert_eq!(
@@ -2218,6 +2419,7 @@ fn generics_across_modules() {
         immut b = wrap(5)
         immut c: Box[string] = { value: 'x' }
         immut d: box.Box[int] = box.wrap(2)
+
         print(b.get(), c.get(), box.wrap(true).get(), d.value)
     "#;
     let (output, result) = execute(source, "", &dir.join("main.kj"));
@@ -2235,21 +2437,25 @@ fn generic_constraints() {
 
         function max[T: orderable](items: T[]): T {
             mut best = items[0]
+
             for item in items {
                 if (item > best) {
                     best = item
                 }
             }
+
             return best
         }
 
         function count[T: equatable](items: T[], wanted: T): int {
             mut n = 0
+
             for item in items {
                 if (item == wanted) {
                     n += 1
                 }
             }
+
             return n
         }
 
@@ -2262,9 +2468,13 @@ fn generic_constraints() {
         }
 
         print(max([3, 1, 2]), max(['b', 'a']), max([1.5, 0.5]))
+
         immut p: Point = { x: 1, y: 2 }
+
         print(count([p, p], { x: 1, y: 2 }), count([1, 2, 1], 1))
+
         immut s: Set[string] = { items: ['a', 'b'] }
+
         print(s.has('b'), s.has('z'))
     "#;
     assert_eq!(run(source), "3 b 1.5\n2 2\ntrue false\n");
@@ -2295,16 +2505,23 @@ fn generic_constraints() {
 fn building_text() {
     let source = r#"
         mut text = ''
+
         for i in range(1000) {
             text += 'x'
         }
+
         print(text.length())
+
         immut a = 'ab'
         mut b = a
+
         b += 'c'
+
         print(a, b)
         print(['a', 'b', 'c'].join(', '), ['x'].join(''))
+
         immut names: string[] = ['Ana', 'Bia']
+
         print(names.join(' & '))
     "#;
     assert_eq!(run(source), "1000\nab abc\na, b, c x\nAna & Bia\n");
@@ -2316,15 +2533,21 @@ fn chars() {
     let source = r#"
         immut text = 'Hello, Koji'
         immut c = text[0]
+
         print(c, c.code(), c.debug(), c == 'H', c < 'Z')
+
         immut d: char = 'k'
         immut letters: char[] = ['a', 'b']
+
         print(d, letters, char(75), char(-1))
+
         for ch in 'ab' {
             print(ch.code())
         }
+
         print(text.chars().length(), text.startsWith('Hello'), text.endsWith('Koji'), text.indexOf('Koji'), text.indexOf('x'))
         print('o' in text, `${c}!`, string(c) + 'i')
+
         match (text[7]) {
             'K' => print('K!')
             _ => print('other')
@@ -2347,25 +2570,42 @@ fn list_methods_and_slices() {
         }
 
         mut items = [3, 1, 2]
+
         items.push(4)
+
         items.insert(0, 9)
+
         print(items)
         print(items.pop(), items.removeAt(0), items.removeAt(10), items)
+
         items.sort()
+
         print(items, items.indexOf(3), items.indexOf(7))
+
         mut people: Person[] = [{ name: 'Ana', age: 30 }, { name: 'Bia', age: 25 }, { name: 'Caio', age: 30 }]
+
         people.sortBy((a: Person, b: Person) => a.age < b.age)
+
         print(people[0].name, people[1].name, people[2].name)
+
         mut copy = items
+
         copy.push(100)
+
         print(items, copy)
+
         mut empty = []
+
         empty.push('x')
+
         print(empty)
 
         immut list = [10, 20, 30, 40]
+
         print(list[1..3], list[..2], list[2..], list[..])
+
         immut text = 'Hello, Koji'
+
         print(text[0..5], text[7..])
     "#;
     assert_eq!(
@@ -2391,16 +2631,21 @@ fn stdlib_system() {
         import system
 
         print(system.args(), system.env('KOJI_NOT_SET'))
+
         match (system.run('echo', ['hello', 'koji'])) {
             Ok(output) => print(output.status, output.stdout.trim())
             Err(error) => print(error)
         }
+
         match (system.run('kj-no-such-command', [])) {
             Ok(_) => print('?')
             Err(error) => print(error, '|', error.debug())
         }
+
         print('before exit')
+
         system.exit(3)
+
         print('not printed')
     "#;
     let (output, result) = execute(source, "", Path::new("test.kj"));

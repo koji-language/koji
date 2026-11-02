@@ -72,6 +72,7 @@ type ConfigError = {
 function readConfig(path: string): Result[json.Json, ConfigError] {
 	immut f = file.open(path, file.Read)? // a FileError becomes File(...)
 	immut text = f.read()? // a FileError becomes File(...)
+
 	f.close()
 
 	return Ok(json.parse(text)?) // a JsonError becomes Json(...)

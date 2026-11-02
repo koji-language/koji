@@ -33,6 +33,7 @@ immut name: string = 'Mary'
 
 ```koji
 immut initial: char = 'K' // a one-character literal is a char where a char is expected
+
 print(initial.code()) // 75
 print(char(97)) // Some('a'): None for a code that is not a character
 ```
@@ -41,10 +42,13 @@ Indexing a string gives a `char`, and so does going through it with `for`:
 
 ```koji
 immut name = 'Koji'
+
 print(name[0]) // K
+
 for c in name {
     print(c.code())
 }
+
 print(name[0] == 'K') // true
 ```
 
