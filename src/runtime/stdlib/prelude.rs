@@ -66,35 +66,20 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
     }
 }
 
-/// `int('...')`: `Ok(n)`, `Err(InvalidNumber(text))` or `Err(OutOfRange(text))`.
+/// `int('...')`: `Ok(n)`, `Err(InvalidNumber(text))` or `Err(OutOfRange(text))` (shared with
+/// the runtime of compiled programs).
 fn parse_int(text: &str) -> Value {
-    let trimmed = text.trim();
-    match trimmed.parse::<i64>() {
+    match koji_runtime::parse_int(text) {
         Ok(n) => ok(Value::Int(n)),
-        Err(_) => {
-            let digits = trimmed.strip_prefix(['-', '+']).unwrap_or(trimmed);
-            let failure = if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-                "OutOfRange"
-            } else {
-                "InvalidNumber"
-            };
-            err(variant("ParseError", failure, vec![Value::str(text)]))
-        }
+        Err(failure) => err(variant("ParseError", failure, vec![Value::str(text)])),
     }
 }
 
 /// `float('...')`: only decimal notation is accepted (no `nan` or `inf`).
 fn parse_float(text: &str) -> Value {
-    let trimmed = text.trim();
-    let well_formed = !trimmed.is_empty()
-        && trimmed.chars().any(|c| c.is_ascii_digit())
-        && trimmed
-            .chars()
-            .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E'));
-    match trimmed.parse::<f64>() {
-        Ok(n) if well_formed && n.is_finite() => ok(Value::Float(n)),
-        Ok(_) if well_formed => err(variant("ParseError", "OutOfRange", vec![Value::str(text)])),
-        _ => err(variant("ParseError", "InvalidNumber", vec![Value::str(text)])),
+    match koji_runtime::parse_float(text) {
+        Ok(n) => ok(Value::Float(n)),
+        Err(failure) => err(variant("ParseError", failure, vec![Value::str(text)])),
     }
 }
 

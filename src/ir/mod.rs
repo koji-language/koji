@@ -122,8 +122,11 @@ pub enum UnaryOp {
     BoolToStr,
     /// A list as written in code (`[1, 2]`).
     ListToStr,
-    /// A record as written in code (`{ x: 1 }`, `Some(2)`).
+    /// The text `print` shows for a record: a readable message for an error of the standard
+    /// library, otherwise the record as written in code.
     RecordToStr,
+    /// A record as written in code (`{ x: 1 }`, `Some(2)`).
+    RecordRepr,
     /// The tag (variant) of a record, as an `int`.
     RecordTag,
     MapLength,
@@ -238,6 +241,8 @@ pub enum Instruction {
     FieldSet { record: Target, field: usize, value: Operand, line: usize },
     /// `dest = list.pop()` or `list.removeAt(index)`: `dest` is an `Option` record.
     ListRemove { dest: LocalId, list: Target, index: Option<Operand>, line: usize },
+    /// Calls a function of the standard library in the runtime (`koji_std_math_sqrt`).
+    StdCall { dest: Option<LocalId>, function: &'static str, args: Vec<StdArg> },
     /// Moves the value of a variable into `dest`: the variable is left empty (`NULL`), so it is
     /// not dropped again.
     Take { dest: LocalId, source: Place },
@@ -280,6 +285,22 @@ pub enum Instruction {
     },
     /// Panics if `step` is 0 (`range(0, 10, 0)`).
     RangeCheck { step: Operand, line: usize },
+}
+
+/// An argument of a function of the standard library.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StdArg {
+    Value(Operand),
+    /// A constant that chooses what the function does (`math.floor` or `math.ceil`).
+    Mode(i32),
+    /// The description of a record the function builds (an `Option`, a `Result`).
+    Record(RecordId),
+    /// The description of the items of a list the function builds.
+    Element(Ty),
+    /// Where the call is, for its panics.
+    Location(usize),
+    /// No value (`input()` without a prompt).
+    Null,
 }
 
 #[derive(Debug, Clone, PartialEq)]

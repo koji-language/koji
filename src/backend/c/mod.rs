@@ -138,7 +138,8 @@ impl Generator<'_> {
             self.function(id, function);
         }
 
-        self.out.push_str("\nint main(void) {\n");
+        self.out.push_str("\nint main(int argc, char **argv) {\n");
+        self.out.push_str("    koji_init(argc, (const char *const *)argv);\n");
         for (id, text) in self.program.strings.iter().enumerate() {
             let _ = writeln!(
                 self.out,
@@ -154,6 +155,10 @@ impl Generator<'_> {
 
     /// The descriptions of the declared types, for the runtime.
     fn records(&mut self) {
+        // Declared first: a field can be of a record declared later.
+        for id in 0..self.program.records.len() {
+            let _ = writeln!(self.out, "static const KojiRecordType koji_record_{};", id);
+        }
         for (id, record) in self.program.records.iter().enumerate() {
             let _ = writeln!(self.out, "// {}", record.name);
             for (index, variant) in record.variants.iter().enumerate() {
@@ -174,6 +179,21 @@ impl Generator<'_> {
                         index,
                         types.join(", ")
                     );
+                    let records: Vec<String> = variant
+                        .fields
+                        .iter()
+                        .map(|(_, ty)| match ty {
+                            Ty::Record(record) => format!("&koji_record_{}", record),
+                            _ => "NULL".to_string(),
+                        })
+                        .collect();
+                    let _ = writeln!(
+                        self.out,
+                        "static const KojiRecordType *const koji_record_{}_{}_records[] = {{ {} }};",
+                        id,
+                        index,
+                        records.join(", ")
+                    );
                 }
             }
             let variants: Vec<String> = record
@@ -183,12 +203,14 @@ impl Generator<'_> {
                 .map(|(index, variant)| {
                     let name = variant.name.as_deref().map(c_string).unwrap_or_else(|| "NULL".to_string());
                     if variant.fields.is_empty() {
-                        format!("{{ {}, 0, NULL, NULL }}", name)
+                        format!("{{ {}, 0, NULL, NULL, NULL }}", name)
                     } else {
                         format!(
-                            "{{ {}, {}, koji_record_{}_{}_names, koji_record_{}_{}_types }}",
+                            "{{ {}, {}, koji_record_{}_{}_names, koji_record_{}_{}_types, koji_record_{}_{}_records }}",
                             name,
                             variant.fields.len(),
+                            id,
+                            index,
                             id,
                             index,
                             id,
@@ -203,10 +225,13 @@ impl Generator<'_> {
                 id,
                 variants.join(", ")
             );
+            // The name without type arguments (`Result`, `MathError`).
+            let base = record.name.split('[').next().unwrap_or_default();
             let _ = writeln!(
                 self.out,
-                "static const KojiRecordType koji_record_{} = {{ {}, koji_record_{}_variants }};",
+                "static const KojiRecordType koji_record_{} = {{ {}, {}, koji_record_{}_variants }};",
                 id,
+                c_string(base),
                 record.variants.len(),
                 id
             );
@@ -440,7 +465,8 @@ impl Generator<'_> {
                     UnaryOp::StrLength => format!("koji_string_length({})", value),
                     UnaryOp::StrRepr => format!("koji_string_repr({})", value),
                     UnaryOp::ListLength => format!("koji_list_length({})", value),
-                    UnaryOp::RecordToStr => format!("koji_record_repr({})", value),
+                    UnaryOp::RecordToStr => format!("koji_record_display({})", value),
+                    UnaryOp::RecordRepr => format!("koji_record_repr({})", value),
                     UnaryOp::RecordTag => format!("koji_record_tag({})", value),
                     UnaryOp::MapLength => format!("koji_map_length({})", value),
                     UnaryOp::MapToStr => format!("koji_map_repr({})", value),
@@ -627,6 +653,26 @@ impl Generator<'_> {
                     none,
                     dest
                 );
+            }
+            Instruction::StdCall { dest, function: name, args } => {
+                let args: Vec<String> = args
+                    .iter()
+                    .map(|arg| match arg {
+                        StdArg::Value(value) => self.operand(value),
+                        StdArg::Mode(mode) => mode.to_string(),
+                        StdArg::Record(record) => format!("&koji_record_{}", record),
+                        StdArg::Element(ty) => element_type(ty).to_string(),
+                        StdArg::Location(line) => self.location(*line),
+                        StdArg::Null => "NULL".to_string(),
+                    })
+                    .collect();
+                let call = format!("{}({})", name, args.join(", "));
+                match dest {
+                    Some(dest) => self.set(&format!("l{}", dest), &function.locals[*dest].ty, &call),
+                    None => {
+                        let _ = writeln!(self.out, "    {};", call);
+                    }
+                }
             }
             Instruction::Take { dest, source } => {
                 let ty = function.locals[*dest].ty.clone();

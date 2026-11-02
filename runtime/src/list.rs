@@ -31,6 +31,9 @@ pub struct KojiElementType {
     pub compare: Option<unsafe extern "C" fn(*const c_void, *const c_void) -> i32>,
     /// A hash that agrees with `equal` (for the keys of maps).
     pub hash: unsafe extern "C" fn(*const c_void) -> u64,
+    /// The text `print` shows, when it is not the value as written in code (a string shows
+    /// its text, not quotes), or `NULL`.
+    pub display: Option<unsafe extern "C" fn(*const c_void) -> *mut KojiString>,
 }
 
 pub struct KojiList {

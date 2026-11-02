@@ -2,29 +2,7 @@
 
 use super::*;
 
-/// Python-like `istitle`: every word starts with an uppercase letter followed by lowercase ones.
-fn is_title(s: &str) -> bool {
-    let mut cased = false;
-    let mut previous_cased = false;
-    for c in s.chars() {
-        if c.is_uppercase() {
-            if previous_cased {
-                return false;
-            }
-            previous_cased = true;
-            cased = true;
-        } else if c.is_lowercase() {
-            if !previous_cased {
-                return false;
-            }
-            previous_cased = true;
-            cased = true;
-        } else {
-            previous_cased = false;
-        }
-    }
-    cased
-}
+use koji_runtime::is_title;
 
 pub fn string_method(interpreter: &mut Interpreter, s: &str, name: &str, args: Vec<Value>) -> Exec<Value> {
     let all = |predicate: fn(char) -> bool| !s.is_empty() && s.chars().all(predicate);

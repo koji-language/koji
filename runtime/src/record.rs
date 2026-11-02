@@ -16,11 +16,16 @@ pub struct KojiVariantType {
     pub field_count: usize,
     pub field_names: *const *const c_char,
     pub field_types: *const *const KojiElementType,
+    /// For each field of a declared type, its description (`NULL` for the others), so the
+    /// runtime can build the values of the standard library (`Err(InvalidNumber('x'))`).
+    pub field_records: *const *const KojiRecordType,
 }
 
 /// A declared type, as described by the generated code.
 #[repr(C)]
 pub struct KojiRecordType {
+    /// The name of the type, without type arguments (`Result`, `MathError`).
+    pub name: *const c_char,
     pub variant_count: usize,
     pub variants: *const KojiVariantType,
 }
@@ -247,4 +252,62 @@ pub extern "C" fn koji_record_hash(record: *const KojiRecord) -> u64 {
         unsafe { (record.field_type(index).hash)(record.slot(index)) }.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+/// The position of the variant `name` of `ty` (0 for an object type).
+pub(crate) fn variant_index(ty: *const KojiRecordType, name: &str) -> usize {
+    let ty = unsafe { &*ty };
+    (0..ty.variant_count)
+        .find(|&index| {
+            let variant = unsafe { &*ty.variants.add(index) };
+            !variant.name.is_null() && unsafe { CStr::from_ptr(variant.name) }.to_bytes() == name.as_bytes()
+        })
+        .unwrap_or(0)
+}
+
+/// The description of field `field` of variant `variant` of `ty`, a declared type.
+pub(crate) fn field_record(ty: *const KojiRecordType, variant: &str, field: usize) -> *const KojiRecordType {
+    let index = variant_index(ty, variant);
+    unsafe { *(*(*ty).variants.add(index)).field_records.add(field) }
+}
+
+/// A new value of variant `name` of `ty`, which takes the references of `fields`.
+pub(crate) fn make(ty: *const KojiRecordType, name: &str, fields: &[u64]) -> *mut KojiRecord {
+    let record = koji_record_new(ty, variant_index(ty, name));
+    unsafe { (*record).fields.copy_from_slice(fields) };
+    record
+}
+
+fn type_name(record: &KojiRecord) -> String {
+    let name = unsafe { (*record.ty).name };
+    if name.is_null() {
+        return String::new();
+    }
+    unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned()
+}
+
+/// The text `print` shows: a readable message for an error of the standard library
+/// (`'x' is not a valid number`), otherwise the value as written in code.
+#[no_mangle]
+pub extern "C" fn koji_record_display(record: *const KojiRecord) -> *mut KojiString {
+    let value = self::record(record);
+    if let Some(variant) = unsafe { value.variant().name.as_ref() } {
+        let variant = unsafe { CStr::from_ptr(variant) }.to_string_lossy();
+        let texts: Vec<String> = (0..value.fields.len())
+            .map(|index| {
+                let field = value.field_type(index);
+                let text = match field.display {
+                    Some(display) => unsafe { display(value.slot(index)) },
+                    None => unsafe { (field.repr)(value.slot(index)) },
+                };
+                let result = string_text(text).to_string();
+                crate::string::koji_string_release(text);
+                result
+            })
+            .collect();
+        if let Some(message) = crate::stdlib::error_message(&type_name(value), &variant, &texts) {
+            return new_string(message);
+        }
+    }
+    koji_record_repr(record)
 }

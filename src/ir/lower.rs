@@ -111,6 +111,10 @@ enum Item {
     Function(String),
     /// A module imported whole (`import math from 'math.kj'`).
     Module(usize),
+    /// A module of the standard library (`import math`), or one of its functions (`import
+    /// { sqrt } from 'math'`).
+    Std(String),
+    StdFunction(String, String),
 }
 
 /// The file name used in messages: relative to the current directory when possible, like the
@@ -355,6 +359,8 @@ impl<'a> Lowerer<'a> {
                 .map(|variant| (Some(variant.name.clone()), variant.fields.clone()))
                 .collect::<Vec<_>>(),
             TypeKind::Shape(fields) => vec![(None, fields.clone())],
+            // `Output`: the fields of a built-in object.
+            TypeKind::Builtin { fields, methods } if methods.is_empty() => vec![(None, fields.clone())],
             TypeKind::Map { .. } => return self.unsupported("a Map"),
             TypeKind::Set { .. } => return self.unsupported("a Set"),
             _ => return self.unsupported(&format!("the type '{}'", info.name)),
@@ -478,12 +484,13 @@ impl<'a> Lowerer<'a> {
     /// The type of a declared variable, after the uses that refine it (`mut items = []` then
     /// `items.push(1)`).
     fn variable_type(&mut self, declaration: &AstNode, annotation: &Option<TypeExpr>, value: &AstNode) -> Lower<Ty> {
-        if let Some(ty) = annotation {
-            return self.type_expr(ty);
-        }
+        // The checker resolved the annotation (an alias, a type of another module).
         match self.variable_types.get(&node_id(declaration)) {
             Some(ty) => self.ty(&ty.clone()),
-            None => self.type_of(value),
+            None => match annotation {
+                Some(ty) => self.type_expr(ty),
+                None => self.type_of(value),
+            },
         }
     }
 
@@ -535,8 +542,10 @@ impl<'a> Lowerer<'a> {
                 self.file = self.modules[id].file.clone();
             }
             if let AstNode::Import { path: import, .. } = statement.unlocated() {
+                // The standard library is in the runtime.
                 if !import.ends_with(".kj") {
-                    return self.unsupported(&format!("the standard library module '{}'", import));
+                    imports.push(usize::MAX);
+                    continue;
                 }
                 let resolved = crate::semantic::type_checker::resolve_module_path(&directory, import);
                 imports.push(self.load_module(program, &resolved)?);
@@ -552,7 +561,9 @@ impl<'a> Lowerer<'a> {
             return;
         }
         for import in self.modules[module].imports.clone() {
-            self.load_order(import, order);
+            if import != usize::MAX {
+                self.load_order(import, order);
+            }
         }
         if !order.contains(&module) {
             order.push(module);
@@ -641,10 +652,24 @@ impl<'a> Lowerer<'a> {
             if let AstNode::Located { line, .. } = statement {
                 self.line = *line;
             }
-            let AstNode::Import { kind, .. } = statement.unlocated() else {
+            let AstNode::Import { kind, path } = statement.unlocated() else {
                 continue;
             };
             let module = imports.next().expect("each import was loaded");
+            if module == usize::MAX {
+                match kind {
+                    crate::parser::ast::ImportKind::Module(name) => {
+                        self.modules[self.module].names.insert(name.clone(), Item::Std(path.clone()));
+                    }
+                    crate::parser::ast::ImportKind::Names(names) => {
+                        for name in names {
+                            let item = Item::StdFunction(path.clone(), name.clone());
+                            self.modules[self.module].names.insert(name.clone(), item);
+                        }
+                    }
+                }
+                continue;
+            }
             match kind {
                 crate::parser::ast::ImportKind::Module(name) => {
                     self.modules[self.module].names.insert(name.clone(), Item::Module(module));
@@ -796,7 +821,12 @@ impl<'a> Lowerer<'a> {
     fn lower_module_body(&mut self) -> Lower<()> {
         let module = &self.modules[self.module];
         let (statements, init, initialized) = (module.statements, module.init, module.initialized);
-        let imports: Vec<FuncId> = module.imports.iter().map(|id| self.modules[*id].init).collect();
+        let imports: Vec<FuncId> = module
+            .imports
+            .iter()
+            .filter(|id| **id != usize::MAX)
+            .map(|id| self.modules[*id].init)
+            .collect();
         let mut builder = Builder::new(Ty::Void, true);
         if let Some(initialized) = initialized {
             let (done, run) = (builder.new_block(), builder.new_block());
@@ -1886,6 +1916,7 @@ impl<'a> Lowerer<'a> {
     fn debug(&mut self, builder: &mut Builder, value: Operand, ty: &Ty) -> Lower<Operand> {
         match ty {
             Ty::Str => Ok(self.unary(builder, UnaryOp::StrRepr, value, Ty::Str)),
+            Ty::Record(_) => Ok(self.unary(builder, UnaryOp::RecordRepr, value, Ty::Str)),
             other => self.display(builder, value, other),
         }
     }
@@ -1964,6 +1995,18 @@ impl<'a> Lowerer<'a> {
                     return self.unsupported("an object of this type");
                 };
                 self.object_literal(builder, entries, record).map(Some)
+            }
+            AstNode::Member { object, name } if self.std_module_of(builder, object).is_some() => {
+                let module = self.std_module_of(builder, object).expect("a module");
+                match (module.as_str(), name.as_str()) {
+                    ("math", "pi") => Ok(Some(Operand::Float(std::f64::consts::PI))),
+                    ("math", "e") => Ok(Some(Operand::Float(std::f64::consts::E))),
+                    _ => match self.type_in(builder, node)? {
+                        // `file.Read`: a variant of a type of the module.
+                        Ty::Record(record) => self.construct(builder, record, name, &[]).map(Some),
+                        _ => self.unsupported(&format!("'{}.{}'", module, name)),
+                    },
+                }
             }
             AstNode::Member { object, name } if self.module_of(builder, object).is_some() => {
                 let module = self.module_of(builder, object).expect("a module");
@@ -2180,6 +2223,10 @@ impl<'a> Lowerer<'a> {
                         }
                         self.call(builder, node, name, args, &displays)
                     }
+                    AstNode::Member { object, name } if self.std_module_of(builder, object).is_some() => {
+                        let module = self.std_module_of(builder, object).expect("a module");
+                        self.std_call(builder, node, &module, name, args)
+                    }
                     AstNode::Member { object, name } if self.module_of(builder, object).is_some() => {
                         let module = self.module_of(builder, object).expect("a module");
                         self.module_call(builder, node, module, name, args)
@@ -2367,6 +2414,17 @@ impl<'a> Lowerer<'a> {
 
     /// The module `node` names, when it is the name of an imported module (`calc` in
     /// `calc.add(1, 2)`).
+    /// The standard library module `node` names (`math` in `math.sqrt(2)`).
+    fn std_module_of(&self, builder: &Builder, node: &AstNode) -> Option<String> {
+        match node.unlocated() {
+            AstNode::Identifier(name) if builder.lookup(name).is_none() => match self.item(name) {
+                Some(Item::Std(module)) => Some(module.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn module_of(&self, builder: &Builder, node: &AstNode) -> Option<usize> {
         match node.unlocated() {
             AstNode::Identifier(name) if builder.lookup(name).is_none() => match self.item(name) {
@@ -2482,6 +2540,51 @@ impl<'a> Lowerer<'a> {
                 let dest = builder.local(dest_type, None);
                 builder.emit(Instruction::MapRemove { dest, map, key, line });
                 Ok(Some(Operand::Local(dest)))
+            }
+            (Ty::Str, "trim" | "upper" | "lower") => {
+                let text = self.expr(builder, object)?.expect("a string");
+                let function = match name {
+                    "trim" => "koji_std_string_trim",
+                    "upper" => "koji_std_string_upper",
+                    _ => "koji_std_string_lower",
+                };
+                self.std(builder, call, function, vec![StdArg::Value(text)])
+            }
+            (Ty::Str, "isSpace" | "isNumeric" | "isAlpha" | "isAlphaNumeric" | "isUpper" | "isLower" | "isTitle") => {
+                let text = self.expr(builder, object)?.expect("a string");
+                let test = ["isSpace", "isNumeric", "isAlpha", "isAlphaNumeric", "isUpper", "isLower", "isTitle"]
+                    .iter()
+                    .position(|test| *test == name)
+                    .expect("a test") as i32;
+                self.std(builder, call, "koji_std_string_is", vec![StdArg::Value(text), StdArg::Mode(test)])
+            }
+            (Ty::Str, "split") => {
+                let text = self.expr(builder, object)?.expect("a string");
+                let separator = self.value_as(builder, &args[0], &Ty::Str)?.expect("a string");
+                let args = vec![StdArg::Value(text), StdArg::Value(separator), StdArg::Element(Ty::Str), StdArg::Location(line)];
+                self.std(builder, call, "koji_std_string_split", args)
+            }
+            (Ty::Str, "replace") => {
+                let text = self.expr(builder, object)?.expect("a string");
+                let old = self.value_as(builder, &args[0], &Ty::Str)?.expect("a string");
+                let new = self.value_as(builder, &args[1], &Ty::Str)?.expect("a string");
+                let args = vec![StdArg::Value(text), StdArg::Value(old), StdArg::Value(new), StdArg::Location(line)];
+                self.std(builder, call, "koji_std_string_replace", args)
+            }
+            (Ty::Str, "startsWith" | "endsWith" | "indexOf") => {
+                let text = self.expr(builder, object)?.expect("a string");
+                let part = self.value_as(builder, &args[0], &Ty::Str)?.expect("a string");
+                let mut arguments = vec![StdArg::Value(text), StdArg::Value(part)];
+                let function = match name {
+                    "startsWith" => "koji_std_string_starts_with",
+                    "endsWith" => "koji_std_string_ends_with",
+                    _ => {
+                        let Ty::Record(option) = self.type_in(builder, call)? else { unreachable!("an Option") };
+                        arguments.push(StdArg::Record(option));
+                        "koji_std_string_index_of"
+                    }
+                };
+                self.std(builder, call, function, arguments)
             }
             (Ty::Str, "length") => {
                 let text = self.expr(builder, object)?.expect("a string");
@@ -2932,6 +3035,9 @@ impl<'a> Lowerer<'a> {
             let type_args = self.call_type_args(call)?;
             return self.call_function(builder, &key, type_args, None, args);
         }
+        if let Some(Item::StdFunction(module, function)) = self.item(name).cloned() {
+            return self.std_call(builder, call, &module, &function, args);
+        }
         match name {
             "print" => {
                 let mut line: Option<Operand> = None;
@@ -2954,11 +3060,147 @@ impl<'a> Lowerer<'a> {
                 Ok(None)
             }
             "string" if args.len() == 1 => self.shown(builder, &args[0], displays.first().and_then(Option::as_ref)).map(Some),
-            "float" if args.len() == 1 && matches!(self.type_in(builder, &args[0])?, Ty::Int | Ty::Float) => {
-                self.value_as(builder, &args[0], &Ty::Float)
+            "int" | "float" if args.len() == 1 => {
+                let ty = self.type_in(builder, &args[0])?;
+                let value = self.expr(builder, &args[0])?.expect("a value");
+                let line = self.line;
+                match (name, ty) {
+                    ("int", Ty::Int) | ("float", Ty::Float) => Ok(Some(value)),
+                    ("float", Ty::Int) => Ok(Some(self.unary(builder, UnaryOp::IntToFloat, value, Ty::Float))),
+                    ("int", Ty::Float) => self.std(builder, call, "koji_std_float_to_int", vec![StdArg::Value(value), StdArg::Location(line)]),
+                    ("int", Ty::Bool) => Ok(Some(self.choose(builder, value, Operand::Int(1), Operand::Int(0), Ty::Int))),
+                    ("float", Ty::Bool) => {
+                        Ok(Some(self.choose(builder, value, Operand::Float(1.0), Operand::Float(0.0), Ty::Float)))
+                    }
+                    (_, Ty::Str) => {
+                        let Ty::Record(result) = self.type_in(builder, call)? else { unreachable!("a Result") };
+                        let function = if name == "int" { "koji_std_int_from_string" } else { "koji_std_float_from_string" };
+                        self.std(builder, call, function, vec![StdArg::Value(value), StdArg::Record(result)])
+                    }
+                    _ => self.unsupported(&format!("'{}' of this value", name)),
+                }
+            }
+            "input" => {
+                let prompt = match args.first() {
+                    Some(prompt) => {
+                        let text = self.shown(builder, prompt, displays.first().and_then(Option::as_ref))?;
+                        StdArg::Value(text)
+                    }
+                    None => StdArg::Null,
+                };
+                let Ty::Record(option) = self.type_in(builder, call)? else { unreachable!("an Option") };
+                let line = self.line;
+                self.std(builder, call, "koji_std_input", vec![prompt, StdArg::Record(option), StdArg::Location(line)])
+            }
+            "panic" if args.len() == 1 => {
+                let message = self.value_as(builder, &args[0], &Ty::Str)?.expect("a string");
+                let line = self.line;
+                builder.emit(Instruction::StdCall {
+                    dest: None,
+                    function: "koji_std_panic",
+                    args: vec![StdArg::Value(message), StdArg::Location(line)],
+                });
+                builder.terminate(Terminator::Unreachable);
+                Ok(None)
             }
             _ => self.unsupported(&format!("'{}'", name)),
         }
+    }
+
+    /// `then` if `condition`, else `otherwise`.
+    fn choose(&mut self, builder: &mut Builder, condition: Operand, then: Operand, otherwise: Operand, ty: Ty) -> Operand {
+        let dest = builder.local(ty, None);
+        let (yes, no, exit) = (builder.new_block(), builder.new_block(), builder.new_block());
+        builder.terminate(Terminator::Branch { condition, then_block: yes, else_block: no });
+        for (block, value) in [(yes, then), (no, otherwise)] {
+            builder.switch_to(block);
+            builder.emit(Instruction::Copy { dest: Place::Local(dest), value });
+            builder.terminate(Terminator::Goto(exit));
+        }
+        builder.switch_to(exit);
+        Operand::Local(dest)
+    }
+
+    /// Calls a function of the runtime; the result has the type of `call`.
+    fn std(&mut self, builder: &mut Builder, call: &AstNode, function: &'static str, args: Vec<StdArg>) -> Lower<Option<Operand>> {
+        let ty = self.type_in(builder, call)?;
+        let dest = (!matches!(ty, Ty::Void)).then(|| builder.local(ty, None));
+        builder.emit(Instruction::StdCall { dest, function, args });
+        Ok(dest.map(Operand::Local))
+    }
+
+    /// `math.sqrt(2)` and the other functions of the standard library modules.
+    fn std_call(&mut self, builder: &mut Builder, call: &AstNode, module: &str, name: &str, args: &[AstNode]) -> Lower<Option<Operand>> {
+        let line = self.line;
+        let mut values = Vec::new();
+        for arg in args {
+            values.push(arg);
+        }
+        let value_as = |lowerer: &mut Self, builder: &mut Builder, index: usize, ty: Ty| -> Lower<StdArg> {
+            Ok(StdArg::Value(lowerer.value_as(builder, values[index], &ty)?.expect("an argument")))
+        };
+        let result = |lowerer: &mut Self, builder: &mut Builder| -> Lower<StdArg> {
+            match lowerer.type_in(builder, call)? {
+                Ty::Record(record) => Ok(StdArg::Record(record)),
+                _ => unreachable!("a record"),
+            }
+        };
+        let (function, arguments): (&'static str, Vec<StdArg>) = match (module, name) {
+            ("math", "abs") => match self.type_in(builder, &args[0])? {
+                Ty::Int => ("koji_std_math_abs_int", vec![value_as(self, builder, 0, Ty::Int)?, StdArg::Location(line)]),
+                _ => ("koji_std_math_abs_float", vec![value_as(self, builder, 0, Ty::Float)?]),
+            },
+            ("math", "sqrt") => ("koji_std_math_sqrt", vec![value_as(self, builder, 0, Ty::Float)?, result(self, builder)?]),
+            ("math", "pow") => (
+                "koji_std_math_pow",
+                vec![
+                    value_as(self, builder, 0, Ty::Float)?,
+                    value_as(self, builder, 1, Ty::Float)?,
+                    result(self, builder)?,
+                    StdArg::Location(line),
+                ],
+            ),
+            ("math", "floor" | "ceil" | "round") => {
+                let mode = match name {
+                    "floor" => 0,
+                    "ceil" => 1,
+                    _ => 2,
+                };
+                ("koji_std_math_round", vec![value_as(self, builder, 0, Ty::Float)?, StdArg::Mode(mode), StdArg::Location(line)])
+            }
+            ("time", "sleep") => ("koji_std_time_sleep", vec![value_as(self, builder, 0, Ty::Float)?]),
+            ("time", "now") => ("koji_std_time_now", Vec::new()),
+            ("time", "monotonic") => ("koji_std_time_monotonic", Vec::new()),
+            ("path", "join") => ("koji_std_path_join", vec![value_as(self, builder, 0, Ty::Str)?, value_as(self, builder, 1, Ty::Str)?]),
+            ("path", "parent" | "name" | "stem" | "extension") => {
+                let part = match name {
+                    "parent" => 0,
+                    "name" => 1,
+                    "stem" => 2,
+                    _ => 3,
+                };
+                ("koji_std_path_part", vec![value_as(self, builder, 0, Ty::Str)?, StdArg::Mode(part), result(self, builder)?])
+            }
+            ("path", "isAbsolute") => ("koji_std_path_is_absolute", vec![value_as(self, builder, 0, Ty::Str)?]),
+            ("system", "args") => ("koji_std_system_args", vec![StdArg::Element(Ty::Str)]),
+            ("system", "env") => ("koji_std_system_env", vec![value_as(self, builder, 0, Ty::Str)?, result(self, builder)?]),
+            ("system", "exit") => {
+                let code = value_as(self, builder, 0, Ty::Int)?;
+                builder.emit(Instruction::StdCall { dest: None, function: "koji_std_system_exit", args: vec![code] });
+                builder.terminate(Terminator::Unreachable);
+                return Ok(None);
+            }
+            ("system", "run") => (
+                "koji_std_system_run",
+                vec![
+                    value_as(self, builder, 0, Ty::Str)?,
+                    value_as(self, builder, 1, Ty::List(Box::new(Ty::Str)))?,
+                    result(self, builder)?,
+                ],
+            ),
+            _ => return self.unsupported(&format!("'{}.{}'", module, name)),
+        };
+        self.std(builder, call, function, arguments)
     }
 }
 

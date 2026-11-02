@@ -141,6 +141,10 @@ impl fmt::Display for Instruction {
                 write!(f, "{}call {}({})", dest, closure, list(args))
             }
             Instruction::ListSortBy { list, comparison, .. } => write!(f, "sort {} by {}", list, comparison),
+            Instruction::StdCall { dest, function, args } => {
+                let dest = dest.map(|dest| format!("l{} = ", dest)).unwrap_or_default();
+                write!(f, "{}{}({:?})", dest, function, args)
+            }
             Instruction::Take { dest, source } => write!(f, "l{} = take {}", dest, source),
             Instruction::Drop { value, function } => write!(f, "drop {} with f{}", value, function),
             Instruction::MapNew { dest, entries } => {

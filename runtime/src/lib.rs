@@ -11,9 +11,11 @@ mod closure;
 mod list;
 mod map;
 mod record;
+mod stdlib;
 mod numbers;
 mod output;
 mod string;
 
 pub use numbers::{float_pow, format_float, int_pow, PowFailure};
 pub use string::repr_string;
+pub use stdlib::{error_message, float_to_int, is_title, parse_float, parse_int};

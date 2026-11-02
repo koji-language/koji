@@ -1040,8 +1040,56 @@ after run\n\
 }
 
 #[test]
+fn standard_library() {
+    assert_same(
+        "standard_library",
+        "import math\n\
+import path\n\
+import system\n\
+import { sqrt } from 'math'\n\
+\n\
+print(math.sqrt(16), math.sqrt(-1), sqrt(2.25), math.pow(2, 10), math.pow(-8, 0.5), math.pow(0, -1))\n\
+print(math.abs(-3), math.abs(-2.5), math.floor(2.7), math.ceil(2.1), math.round(2.5), math.pi, math.e)\n\
+print(int('42'), int(' 7 '), int('x'), int('99999999999999999999'), float('2.5'), float('nan'), int(3.9), int(true), float(false))\n\
+\n\
+match (int('abc')) {\n\
+    Ok(n) => print(n)\n\
+    Err(error) => print('error:', error, error.debug())\n\
+}\n\
+\n\
+immut text = '  Hello, Koji World  '\n\
+print(`[${text.trim()}]`, text.upper(), text.lower(), 'Hello World'.isTitle(), '123'.isNumeric(), ''.isSpace())\n\
+print('a,b,,c'.split(','), 'banana'.replace('an', 'AN'), 'koji'.startsWith('ko'), 'koji'.endsWith('x'), 'olá mundo'.indexOf('mundo'), 'x'.indexOf('y'))\n\
+print(path.join('src', 'main.kj'), path.parent('src/main.kj'), path.parent('main.kj'), path.name('a/b.kj'), path.stem('a/b.kj'), path.extension('Makefile'), path.isAbsolute('/tmp'))\n\
+print(system.args(), system.env('KOJI_TEST_VARIABLE'), system.env('HOME') is Some)\n\
+\n\
+match (system.run('echo', ['hi', 'there'])) {\n\
+    Ok(output) => print(output.status, output.stdout.trim(), output.stderr)\n\
+    Err(error) => print(error)\n\
+}\n\
+\n\
+immut answer = input('name? ')\n\
+print(answer, input())\n\
+print('bye')\n\
+",
+        "Ok(4.0) Err(Complex) Ok(1.5) Ok(1024.0) Err(Complex) Err(Infinite)\n\
+3 2.5 2 3 3 3.141592653589793 2.718281828459045\n\
+Ok(42) Ok(7) Err(InvalidNumber('x')) Err(OutOfRange('99999999999999999999')) Ok(2.5) Err(InvalidNumber('nan')) 3 1 0.0\n\
+error: 'abc' is not a valid number InvalidNumber('abc')\n\
+[Hello, Koji World]   HELLO, KOJI WORLD     hello, koji world   true true false\n\
+['a', 'b', '', 'c'] bANANa true false Some(4) None\n\
+src/main.kj Some('src') Some('.') Some('b.kj') Some('b') None true\n\
+[] None true\n\
+0 hi there \n\
+name? None None\n\
+bye\n\
+",
+    );
+}
+
+#[test]
 fn examples_that_compile() {
-    for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions"] {
+    for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions", "input", "modules", "types"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));
         let source = std::fs::read_to_string(&path).unwrap();
         let interpreted = interpret(&path, &source);
