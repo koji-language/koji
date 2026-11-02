@@ -346,6 +346,10 @@ impl Checker {
                 _ => {}
             }
             let ty = self.check_value(arg, Some(param))?;
+            // An `int` passed for a `float` is converted (`Some(1)` for an `Option[float]`).
+            if *param == Type::Float && ty == Type::Int {
+                self.ownership.to_float.insert(node_id(arg));
+            }
             if mode == ParamMode::Take {
                 // The argument moves into the function, which owns it from now on.
                 self.consume(arg, &ty)?;
@@ -414,6 +418,9 @@ impl Checker {
             let wanted = field_ty.substitute(&generic);
             let actual = self.check_value(arg, Some(&wanted))?;
             self.consume(arg, &actual)?;
+            if wanted == Type::Float && actual == Type::Int {
+                self.ownership.to_float.insert(node_id(arg));
+            }
             if let Type::Param(i) = field_ty {
                 if generic[*i].contains_unknown() {
                     generic[*i] = self.join(&generic[*i], &actual).unwrap_or(actual.clone());

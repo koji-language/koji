@@ -2718,3 +2718,13 @@ fn stdlib_path_and_directories() {
          true false\nOk(void) true false\nOk(['c']) true\n"
     );
 }
+
+#[test]
+fn int_to_float_conversions() {
+    assert_eq!(
+        run("immut a: float[] = [1, 2.5]\nimmut b: Option[float] = Some(1)\nimmut c: Result[float, string] = Ok(3)\nprint(a, a[0] / 2, b, c, [1, 2.5])"),
+        "[1.0, 2.5] 0.5 Some(1.0) Ok(3.0) [1.0, 2.5]\n"
+    );
+    assert_error("immut counts = [1, 2]\nimmut values: float[] = counts", "cannot assign a value of type int[] to 'values' of type float[]");
+    assert_error("print([[1], [2.5]])", "list elements must have the same type: found int[] and float[]");
+}

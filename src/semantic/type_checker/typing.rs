@@ -3,17 +3,24 @@
 use super::*;
 
 impl Checker {
-    /// Whether a value of type `actual` can be used where `expected` is required.
+    /// Whether a value of type `actual` can be used where `expected` is required. An `int`
+    /// becomes a `float` only as a whole value: an `int[]` is not a `float[]`, since converting
+    /// it would copy the list (a literal is converted: `[1, 2]` can be a `float[]`).
     pub fn assignable(&self, expected: &Type, actual: &Type) -> bool {
+        self.compatible(expected, actual, true)
+    }
+
+    /// `assignable`, where `convert` allows an `int` for a `float` (only at the top).
+    fn compatible(&self, expected: &Type, actual: &Type, convert: bool) -> bool {
         match (expected, actual) {
             (_, Type::Never | Type::Unknown) | (Type::Unknown, _) => true,
-            (Type::Float, Type::Int) => true,
-            (Type::List(e), Type::List(a)) => self.assignable(e, a),
+            (Type::Float, Type::Int) => convert,
+            (Type::List(e), Type::List(a)) => self.compatible(e, a, false),
             (Type::Named { id: e, args: ea }, Type::Named { id: a, args: aa })
             | (Type::Named { id: e, args: ea }, Type::Variant { id: a, args: aa, .. })
                 if e == a =>
             {
-                ea.iter().zip(aa).all(|(x, y)| self.assignable(x, y))
+                ea.iter().zip(aa).all(|(x, y)| self.compatible(x, y, false))
             }
             (
                 Type::Variant {
@@ -26,14 +33,14 @@ impl Checker {
                     args: aa,
                     variant: av,
                 },
-            ) => e == a && ev == av && ea.iter().zip(aa).all(|(x, y)| self.assignable(x, y)),
+            ) => e == a && ev == av && ea.iter().zip(aa).all(|(x, y)| self.compatible(x, y, false)),
             (
                 Type::Function { params: ep, ret: er },
                 Type::Function { params: ap, ret: ar },
             ) => {
                 ep.len() == ap.len()
-                    && ep.iter().zip(ap).all(|(e, a)| self.assignable(a, e))
-                    && self.assignable(er, ar)
+                    && ep.iter().zip(ap).all(|(e, a)| self.compatible(a, e, false))
+                    && self.compatible(er, ar, false)
             }
             (e, a) => e == a,
         }
@@ -41,12 +48,17 @@ impl Checker {
 
     /// Common type of two branches, if there is one.
     pub(super) fn join(&self, a: &Type, b: &Type) -> Option<Type> {
+        self.join_types(a, b, true)
+    }
+
+    /// `join`, where `convert` allows `int` and `float` to join as `float` (only at the top).
+    fn join_types(&self, a: &Type, b: &Type, convert: bool) -> Option<Type> {
         match (a, b) {
             _ if a == b => Some(a.clone()),
             (Type::Never, other) | (other, Type::Never) => Some(other.clone()),
             (Type::Unknown, other) | (other, Type::Unknown) => Some(other.clone()),
-            (Type::Int, Type::Float) | (Type::Float, Type::Int) => Some(Type::Float),
-            (Type::List(x), Type::List(y)) => Some(Type::List(Box::new(self.join(x, y)?))),
+            (Type::Int, Type::Float) | (Type::Float, Type::Int) if convert => Some(Type::Float),
+            (Type::List(x), Type::List(y)) => Some(Type::List(Box::new(self.join_types(x, y, false)?))),
             (
                 Type::Named { id: x, args: xa } | Type::Variant { id: x, args: xa, .. },
                 Type::Named { id: y, args: ya } | Type::Variant { id: y, args: ya, .. },
@@ -54,12 +66,12 @@ impl Checker {
                 let args = xa
                     .iter()
                     .zip(ya)
-                    .map(|(p, q)| self.join(p, q))
+                    .map(|(p, q)| self.join_types(p, q, false))
                     .collect::<Option<Vec<_>>>()?;
                 Some(Type::Named { id: *x, args })
             }
-            _ if self.assignable(a, b) => Some(a.clone()),
-            _ if self.assignable(b, a) => Some(b.clone()),
+            _ if self.compatible(a, b, convert) => Some(a.clone()),
+            _ if self.compatible(b, a, convert) => Some(b.clone()),
             _ => None,
         }
     }

@@ -135,6 +135,7 @@ impl Interpreter {
                 }
                 other => {
                     let value = self.eval(other, env)?;
+                    let value = coerce(value, self.ownership.to_float.contains(&node_id(other)));
                     if self.is_temporary(other) {
                         temporaries.push(value.clone());
                     }

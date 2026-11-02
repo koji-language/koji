@@ -387,7 +387,7 @@ A compiler is a large program, with many data structures and many operations tha
 
 ### Semantics to settle before compiling
 
--   **`int` to `float` coercion** is inconsistent today (an `int` stored in a `float` field of an object stays an `int`). With complete types, every conversion is explicit in the generated code. The items of a list literal are converted (`[1, 2.5]` is `[1.0, 2.5]`), and an `int[]` value is still accepted where a `float[]` is expected without converting its items (see [Open decisions](#open-decisions)).
+-   **`int` to `float` coercion**: an `int` becomes a `float` as a single value (a variable, an argument, a field, the items of a list literal), never inside an existing value: an `int[]` is not a `float[]` (decided). The interpreter converts at the same places as the generated code.
 -   **Memory management**: ownership with value semantics, copy-on-write and drop (see [Memory management](#memory-management-ownership-value-semantics-and-drop)).
 
 ---
@@ -435,10 +435,9 @@ Notes:
 
 1.  **FFI** (`extern function`), so the compiled standard library can call C functions. With the runtime in Rust, the standard library itself does not need it; it is for calling C libraries from Koji code.
 
-2.  **`int[]` where `float[]` is expected**: today the checker accepts it, but the items stay `int`. Either it becomes an error (an explicit conversion is needed, as in Rust, Go and Swift), or the list is converted, which copies it.
-
 Decided:
 
+-   **`int` to `float`**: only a single value is converted; an `int[]` where a `float[]` is expected is an error, since converting it would copy the list (see [Primitive Types](primitive-types.md#numeric-types)).
 -   **Backend**: C, with the runtime in Rust (see [Bootstrap strategy](#bootstrap-strategy)).
 
 -   **Mutating methods**: `mut self`, with no marker at the call (see [Methods](#methods)).
