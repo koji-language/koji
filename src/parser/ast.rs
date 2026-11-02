@@ -136,6 +136,38 @@ pub struct Param {
     pub ty: Option<TypeExpr>,
     /// `mut items: int[]`: the function can modify the caller's variable.
     pub is_mut: bool,
+    /// `take file: File`: the function takes ownership of the argument (it is moved in).
+    pub is_take: bool,
+}
+
+/// A type parameter: `T`, or `T: orderable` with a constraint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    pub constraint: Option<String>,
+}
+
+/// How a function receives an argument.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParamMode {
+    /// The default: the function borrows the value (read-only).
+    Borrow,
+    /// `mut`: the function may change the caller's variable.
+    Mut,
+    /// `take`: the value is moved into the function, which owns it.
+    Take,
+}
+
+impl Param {
+    pub fn mode(&self) -> ParamMode {
+        if self.is_mut {
+            ParamMode::Mut
+        } else if self.is_take {
+            ParamMode::Take
+        } else {
+            ParamMode::Borrow
+        }
+    }
 }
 
 /// Method or associated function that a call resolves to (`person.greet()`,
@@ -208,6 +240,8 @@ pub enum AstNode {
     TemplateString(Vec<TemplatePart>),
     BooleanLiteral(bool),
     ArrayLiteral(Vec<AstNode>),
+    /// `['Ana': 30, 'Bia': 25]`, or `[:]`.
+    MapLiteral(Vec<(AstNode, AstNode)>),
     /// `{ name: 'Ana', age: 30 }` or `{ 'hello': 'olá' }`
     ObjectLiteral(Vec<ObjectEntry>),
     Identifier(String),
@@ -233,6 +267,13 @@ pub enum AstNode {
     Index {
         target: Box<AstNode>,
         index: Box<AstNode>,
+    },
+    /// `items[1..3]`, `items[..2]` or `items[2..]`: a copy of the part from `start` (included)
+    /// to `end` (excluded).
+    Slice {
+        target: Box<AstNode>,
+        start: Option<Box<AstNode>>,
+        end: Option<Box<AstNode>>,
     },
     Member {
         object: Box<AstNode>,
@@ -261,7 +302,7 @@ pub enum AstNode {
         condition: Box<AstNode>,
         body: Box<AstNode>,
     },
-    /// `for x in items` (`x` is imut) or `for mut x in items`.
+    /// `for x in items` (`x` is immut) or `for mut x in items`.
     For {
         variable: String,
         is_mut: bool,
@@ -276,8 +317,7 @@ pub enum AstNode {
         op: AssignOperator,
         value: Box<AstNode>,
     },
-    /// `var` (mutable), `const` (cannot be reassigned, contents can change) or `imut` (nothing
-    /// can change).
+    /// `mut` (can change) or `immut` (nothing can change: `is_const` and `is_imut`).
     VarDecl {
         name: String,
         ty: Option<TypeExpr>,
@@ -290,12 +330,16 @@ pub enum AstNode {
     FunctionDecl {
         name: String,
         owner: Option<String>,
+        /// `function first[T](...)`: its type parameters.
+        type_params: Vec<TypeParam>,
         params: Vec<Param>,
         return_type: Option<TypeExpr>,
         body: Rc<AstNode>,
     },
     TypeDecl {
         name: String,
+        /// `type Pair[A, B] = ...`: its type parameters.
+        params: Vec<TypeParam>,
         definition: TypeDef,
     },
     Import {

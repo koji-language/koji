@@ -22,8 +22,11 @@ A declaration always has its keyword: `x = 1` only changes an existing `mut` var
 
 ```koji
 mut count = 0
+
 cuont = 1 // Error! 'cuont' is not declared: declare it with 'mut cuont = ...' (or 'immut' if it never changes)
 ```
+
+`var`, `const` and `let`, which other languages use, are reserved words: using one gives an error that points to `mut` and `immut`.
 
 ## `mut`
 
@@ -67,6 +70,20 @@ print(original, copy) // [1, 2] [1, 2, 3]
 ```
 
 Prefer `immut` for values that do not need to change: it tells the reader that the value stays the same.
+
+## Types
+
+The type of a variable comes from its value, or from an annotation (`mut items: int[] = []`). Every variable must have a known type by the end of its block: an empty value needs an annotation, unless a later use tells its type.
+
+```koji
+mut items = []
+
+items.push(1) // items is an int[]
+
+mut names = [] // Error! the type of 'names' cannot be inferred (it is ?[]): annotate it, as in 'mut names: int[] = ...'
+
+mut found: Option[string] = None // the annotation gives the type
+```
 
 ## Scope
 

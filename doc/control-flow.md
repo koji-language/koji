@@ -28,16 +28,14 @@ Koji has no `else if`. For more than two branches, use a [`match` with guards](#
 
 ### `for` Loop
 
-The `for` loop runs a block once for each item of a list, each character of a string, or each key of a dictionary.
+The `for` loop runs a block once for each item of a list, each character (`char`) of a string, each key of a `Map`, or each item of a `Set`.
 
 #### Counting with `range`
 
-`range(start, end, step)` gives the integers from `start` up to, but not including, `end` (see [`range`](builtins.md#range) for the other forms):
+`range(start, end)` gives the integers from `start` up to, but not including, `end` (see [`range`](builtins.md#range) for the other forms):
 
 ```koji
 range(0, 5) // [0, 1, 2, 3, 4]
-
-range(0, 5, 2) // [0, 2, 4]
 ```
 
 #### Basic Syntax
@@ -74,11 +72,11 @@ for name in names {
 
 #### The Loop Variable
 
-The loop variable is `imut`: assigning to it, or changing its contents, is an error. With `for mut`, it can be changed, but it is a copy: the list does not change.
+The loop variable is `immut`: assigning to it, or changing its contents, is an error. With `for mut`, it can be changed, but it is a copy: the list does not change.
 
 ```koji
 for name in names {
-    name = name.upper() // Error! cannot modify 'name': the 'for' variable is imut (use 'for mut' to change it)
+    name = name.upper() // Error! cannot modify 'name': the 'for' variable is immut (use 'for mut' to change it)
 }
 
 mut rows = [[1, 2], [3, 4]]
@@ -147,7 +145,7 @@ match (result) {
 }
 ```
 
-Each arm has the form `pattern => expression`. Arms are tried in order, and the first one that matches runs. Patterns can match variants, take their fields apart (`Ok(value)`), and be nested (`Err(NotFound(path))`). The variables bound by a pattern (`value`, `error`) are `imut`.
+Each arm has the form `pattern => expression`. Arms are tried in order, and the first one that matches runs. Patterns can match variants, take their fields apart (`Ok(value)`), and be nested (`Err(NotFound(path))`). The variables bound by a pattern (`value`, `error`) are `immut`.
 
 ```koji
 match (user) {
@@ -168,7 +166,7 @@ match (option) {
 A `match` is also an expression, so its value can be assigned to a variable:
 
 ```koji
-const label: string = match (result) {
+immut label: string = match (result) {
     Ok(value) => `Value: ${value}`
     Err(error) => `Error: ${error}`
 }
@@ -177,7 +175,7 @@ const label: string = match (result) {
 All arms must evaluate to the same type, which becomes the type of the expression.
 
 ```koji
-const label: int = match (result) {
+immut label: int = match (result) {
     Ok(value) => `Value: ${value}` // Error! string is not int
     Err(error) => `Error: ${error}`
 }

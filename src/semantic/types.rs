@@ -9,6 +9,8 @@ pub enum Type {
     Int,
     Float,
     String,
+    /// A Unicode character (a code point).
+    Char,
     Boolean,
     Void,
     /// Not known yet (`None`, `[]`): compatible with anything and refined on later assignments.
@@ -31,8 +33,6 @@ pub enum Type {
         args: Vec<Type>,
         variant: String,
     },
-    /// Object literal without a declared type.
-    Record(Vec<(String, Type)>),
     Module(ModuleId),
     /// Generic parameter of a built-in type (`T` in `Option[T]`).
     Param(usize),
@@ -57,8 +57,29 @@ impl Type {
             Type::Named { args, .. } | Type::Variant { args, .. } => {
                 args.iter().any(Type::contains_unknown)
             }
-            Type::Record(fields) => fields.iter().any(|(_, t)| t.contains_unknown()),
             _ => false,
+        }
+    }
+
+    /// Replaces the unknown parts with `with`.
+    pub fn fill_unknown(&self, with: &Type) -> Type {
+        match self {
+            Type::Unknown => with.clone(),
+            Type::List(inner) => Type::List(Box::new(inner.fill_unknown(with))),
+            Type::Function { params, ret } => Type::Function {
+                params: params.iter().map(|p| p.fill_unknown(with)).collect(),
+                ret: Box::new(ret.fill_unknown(with)),
+            },
+            Type::Named { id, args } => Type::Named {
+                id: *id,
+                args: args.iter().map(|a| a.fill_unknown(with)).collect(),
+            },
+            Type::Variant { id, args, variant } => Type::Variant {
+                id: *id,
+                args: args.iter().map(|a| a.fill_unknown(with)).collect(),
+                variant: variant.clone(),
+            },
+            other => other.clone(),
         }
     }
 
@@ -84,12 +105,6 @@ impl Type {
                 args: inner.iter().map(|a| a.substitute(args)).collect(),
                 variant: variant.clone(),
             },
-            Type::Record(fields) => Type::Record(
-                fields
-                    .iter()
-                    .map(|(n, t)| (n.clone(), t.substitute(args)))
-                    .collect(),
-            ),
             other => other.clone(),
         }
     }
@@ -101,6 +116,27 @@ pub struct VariantDef {
     pub fields: Vec<(String, Type)>,
 }
 
+/// What a type parameter requires of its type argument. Each level includes the previous one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Constraint {
+    #[default]
+    None,
+    /// `T: equatable`: values can be compared with `==` and `!=`.
+    Equatable,
+    /// `T: orderable`: also `<`, `<=`, `>` and `>=`.
+    Orderable,
+}
+
+impl Constraint {
+    pub fn name(self) -> &'static str {
+        match self {
+            Constraint::None => "unconstrained",
+            Constraint::Equatable => "equatable",
+            Constraint::Orderable => "orderable",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeKind {
     /// Declared but not resolved yet (between hoisting and resolution).
@@ -108,8 +144,14 @@ pub enum TypeKind {
     Sum(Vec<VariantDef>),
     /// Nominal type with fixed fields.
     Shape(Vec<(String, Type)>),
-    /// Index signature: `{ [key: string]: T }`.
-    Dict { key: Type, value: Type },
+    /// The built-in `Map[K, V]` (`key` and `value` are `Type::Param(0)` and `Type::Param(1)`).
+    Map { key: Type, value: Type },
+    /// The built-in `Set[T]` (`item` is `Type::Param(0)`).
+    Set { item: Type },
+    /// A type parameter seen from inside the generic function or type that declares it (`T`
+    /// in the body of `first[T]`): an opaque type, with no fields, and only the operators its
+    /// constraint allows.
+    Param(Constraint),
     /// Built-in object (`File`, `DateTime`...): read-only fields and methods.
     Builtin {
         fields: Vec<(String, Type)>,
@@ -120,8 +162,10 @@ pub enum TypeKind {
 #[derive(Debug, Clone)]
 pub struct TypeInfo {
     pub name: String,
-    /// Number of generic parameters (only built-in types are generic).
+    /// Number of generic parameters.
     pub params: usize,
+    /// Their constraints (empty: none).
+    pub constraints: Vec<Constraint>,
     pub kind: TypeKind,
 }
 
@@ -136,6 +180,7 @@ impl TypeTable {
         self.types.push(TypeInfo {
             name: name.to_string(),
             params,
+            constraints: Vec::new(),
             kind,
         });
         self.types.len() - 1
@@ -148,7 +193,6 @@ impl TypeTable {
     /// Fields of a value of this type, with generic arguments applied.
     pub fn fields_of(&self, ty: &Type) -> Option<Vec<(String, Type)>> {
         match ty {
-            Type::Record(fields) => Some(fields.clone()),
             Type::Named { id, args } => match &self.get(*id).kind {
                 TypeKind::Shape(fields)
                 | TypeKind::Builtin { fields, .. } => Some(
@@ -197,9 +241,12 @@ impl fmt::Display for TypeDisplay<'_> {
             Type::Float => write!(f, "float"),
             Type::String => write!(f, "string"),
             Type::Boolean => write!(f, "boolean"),
+            Type::Char => write!(f, "char"),
             Type::Void => write!(f, "void"),
             Type::Unknown => write!(f, "?"),
             Type::Never => write!(f, "never"),
+            // `((int) => int)[]`: a list of functions needs parentheses.
+            Type::List(inner) if matches!(**inner, Type::Function { .. }) => write!(f, "({})[]", show(inner)),
             Type::List(inner) => write!(f, "{}[]", show(inner)),
             Type::Function { params, ret } => {
                 let params: Vec<String> = params.iter().map(show).collect();
@@ -215,13 +262,6 @@ impl fmt::Display for TypeDisplay<'_> {
                     write!(f, ".{}", variant)?;
                 }
                 Ok(())
-            }
-            Type::Record(fields) => {
-                let fields: Vec<String> = fields
-                    .iter()
-                    .map(|(n, t)| format!("{}: {}", n, show(t)))
-                    .collect();
-                write!(f, "{{ {} }}", fields.join(", "))
             }
             Type::Module(_) => write!(f, "module"),
             Type::Param(i) => write!(f, "T{}", i),

@@ -10,17 +10,18 @@ pub mod utils;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use error::KojiError;
+use error::EzError;
 use runtime::interpreter::Interpreter;
 use semantic::type_checker::{Checker, Program};
 
 /// Parses and type-checks the file at `path` and every module it imports.
-pub fn check_file(path: &Path) -> Result<Program, KojiError> {
+pub fn check_file(path: &Path) -> Result<Program, EzError> {
     Checker::new().check_file(path)
 }
 
-/// Checks and runs the file at `path`, using the process' standard input and output.
-pub fn run_file(path: &Path) -> Result<(), KojiError> {
+/// Checks and runs the file at `path`, using the process' standard input and output. `args`
+/// are the program's command-line arguments (`system.args()`).
+pub fn run_file(path: &Path, args: Vec<String>) -> Result<(), EzError> {
     let program = check_file(path)?;
     let stdin = std::io::stdin();
     let mut interpreter = Interpreter::new(
@@ -28,6 +29,7 @@ pub fn run_file(path: &Path) -> Result<(), KojiError> {
         Box::new(std::io::stdout()),
         Box::new(stdin.lock()),
     );
+    interpreter.args = args;
     interpreter.run()
 }
 
@@ -37,7 +39,7 @@ pub fn run_source(
     path: &Path,
     out: Box<dyn Write>,
     input: Box<dyn BufRead>,
-) -> Result<(), KojiError> {
+) -> Result<(), EzError> {
     let program = Checker::new().check_source(path, source)?;
     Interpreter::new(program, out, input).run()
 }

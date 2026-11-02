@@ -1,7 +1,7 @@
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum KojiError {
+pub enum EzError {
     LexerError(String),
     ParserError(String),
     TypeError(String),
@@ -9,19 +9,22 @@ pub enum KojiError {
     ImportError(String),
     /// An `Err` or `None` propagated with `?` out of the main file.
     UnhandledError(String),
+    /// `system.exit(code)`: the program ends with this exit code.
+    Exit(i32),
 }
 
-impl fmt::Display for KojiError {
+impl fmt::Display for EzError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            KojiError::LexerError(message) => write!(f, "syntax error: {}", message),
-            KojiError::ParserError(message) => write!(f, "syntax error: {}", message),
-            KojiError::TypeError(message) => write!(f, "type error: {}", message),
-            KojiError::RuntimeError(message) => write!(f, "panic: {}", message),
-            KojiError::ImportError(message) => write!(f, "import error: {}", message),
-            KojiError::UnhandledError(message) => write!(f, "error: {}", message),
+            EzError::LexerError(message) => write!(f, "syntax error: {}", message),
+            EzError::ParserError(message) => write!(f, "syntax error: {}", message),
+            EzError::TypeError(message) => write!(f, "type error: {}", message),
+            EzError::RuntimeError(message) => write!(f, "panic: {}", message),
+            EzError::ImportError(message) => write!(f, "import error: {}", message),
+            EzError::UnhandledError(message) => write!(f, "error: {}", message),
+            EzError::Exit(code) => write!(f, "exit code {}", code),
         }
     }
 }
 
-impl std::error::Error for KojiError {}
+impl std::error::Error for EzError {}

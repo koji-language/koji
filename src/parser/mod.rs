@@ -3,12 +3,12 @@ pub mod ast;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::error::KojiError;
+use crate::error::EzError;
 use crate::lexer::token::{SpannedToken, Token};
 use crate::lexer::Lexer;
 use ast::{
     AssignOperator, AstNode, BinaryOperator, Field, ImportKind, MatchArm, ObjectEntry, Param,
-    Pattern, TemplatePart, TypeDef, TypeExpr, UnaryOperator, Variant,
+    Pattern, TemplatePart, TypeDef, TypeExpr, TypeParam, UnaryOperator, Variant,
 };
 
 static EOF_TOKEN: Token = Token::EOF;
@@ -27,8 +27,8 @@ const MULTIPLICATIVE_BP: u8 = 11;
 const UNARY_BP: u8 = 12;
 const POWER_BP: u8 = 13;
 
-fn error<T>(message: String) -> Result<T, KojiError> {
-    Err(KojiError::ParserError(message))
+fn error<T>(message: String) -> Result<T, EzError> {
+    Err(EzError::ParserError(message))
 }
 
 pub struct Parser {
@@ -110,7 +110,7 @@ impl Parser {
         token
     }
 
-    fn error_here<T>(&self, message: String) -> Result<T, KojiError> {
+    fn error_here<T>(&self, message: String) -> Result<T, EzError> {
         let line = self.current_line();
         if line == 0 {
             error(message)
@@ -119,7 +119,7 @@ impl Parser {
         }
     }
 
-    fn expect(&mut self, expected: Token, description: &str) -> Result<(), KojiError> {
+    fn expect(&mut self, expected: Token, description: &str) -> Result<(), EzError> {
         if *self.current() == expected {
             self.advance();
             Ok(())
@@ -132,18 +132,19 @@ impl Parser {
         }
     }
 
-    fn expect_identifier(&mut self, description: &str) -> Result<String, KojiError> {
+    fn expect_identifier(&mut self, description: &str) -> Result<String, EzError> {
         match self.current().clone() {
             Token::Identifier(name) => {
                 self.advance();
                 Ok(name)
             }
+            Token::Interface => self.error_here("'interface' is a reserved word: it cannot be a name".to_string()),
             other => self.error_here(format!("expected {}, found {:?}", description, other)),
         }
     }
 
     /// Like `expect_identifier`, but also accepts keywords (`regex.match`, `{ type: 'x' }`).
-    fn expect_name(&mut self, description: &str) -> Result<String, KojiError> {
+    fn expect_name(&mut self, description: &str) -> Result<String, EzError> {
         if let Some(name) = self.current().keyword_name() {
             self.advance();
             return Ok(name.to_string());
@@ -157,7 +158,7 @@ impl Parser {
     }
 
     /// Parses something enclosed in brackets, where line breaks never end an expression.
-    fn grouped<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T, KojiError>) -> Result<T, KojiError> {
+    fn grouped<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T, EzError>) -> Result<T, EzError> {
         let saved = std::mem::replace(&mut self.newline_ends_expression, false);
         let result = parse(self);
         self.newline_ends_expression = saved;
@@ -174,8 +175,8 @@ impl Parser {
     fn parse_comma_separated<T>(
         &mut self,
         close: &Token,
-        mut parse_item: impl FnMut(&mut Self) -> Result<T, KojiError>,
-    ) -> Result<Vec<T>, KojiError> {
+        mut parse_item: impl FnMut(&mut Self) -> Result<T, EzError>,
+    ) -> Result<Vec<T>, EzError> {
         let mut items = Vec::new();
         if self.current() != close {
             loop {
@@ -199,7 +200,7 @@ impl Parser {
     // ------------------------------------------------------------------
 
     /// Parses a statement, wrapping it with its line when positions are known.
-    fn parse_located_statement(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_located_statement(&mut self) -> Result<AstNode, EzError> {
         let line = self.current_line();
         let statement = self.parse_statement()?;
         if line == 0 {
@@ -212,7 +213,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_statement(&mut self) -> Result<AstNode, KojiError> {
+    pub fn parse_statement(&mut self) -> Result<AstNode, EzError> {
         match self.current().clone() {
             Token::Break => {
                 self.ensure_inside_loop("break")?;
@@ -237,31 +238,39 @@ impl Parser {
                 self.error_here("'export' is only allowed at the top level of a file".to_string())
             }
             Token::Func => self.parse_function_declaration(),
-            Token::Var => {
+            // `mut count = 0`: a variable that can change.
+            Token::Mut => {
                 self.advance();
                 let name = self.expect_identifier("variable name")?;
                 self.finish_declaration(name, false, false)
             }
-            Token::Const => {
+            // `immut name = 'Ana'`: a variable that never changes, nor its contents.
+            Token::Immut => {
                 self.advance();
-                let name = self.expect_identifier("constant name")?;
-                self.finish_declaration(name, true, false)
-            }
-            Token::Imut => {
-                self.advance();
-                let name = self.expect_identifier("constant name")?;
+                let name = self.expect_identifier("variable name")?;
                 self.finish_declaration(name, true, true)
             }
-            // `name: type = value`
-            Token::Identifier(_) if *self.peek() == Token::Colon => {
-                let name = self.expect_identifier("variable name")?;
-                self.finish_declaration(name, false, false)
+            Token::Var | Token::Const | Token::Let => {
+                let word = match self.current() {
+                    Token::Var => "var",
+                    Token::Const => "const",
+                    _ => "let",
+                };
+                self.error_here(format!(
+                    "Koji has no '{}': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not",
+                    word
+                ))
             }
+            // `name: type = value` without `mut` or `immut`.
+            Token::Identifier(name) if *self.peek() == Token::Colon => self.error_here(format!(
+                "declare '{}' with 'mut' or 'immut': 'mut {}: ... = ...'",
+                name, name
+            )),
             _ => self.parse_expression_statement(),
         }
     }
 
-    fn ensure_inside_loop(&self, keyword: &str) -> Result<(), KojiError> {
+    fn ensure_inside_loop(&self, keyword: &str) -> Result<(), EzError> {
         if self.loop_depth == 0 {
             self.error_here(format!("'{}' can only be used inside a loop", keyword))
         } else {
@@ -269,7 +278,7 @@ impl Parser {
         }
     }
 
-    fn parse_return(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_return(&mut self) -> Result<AstNode, EzError> {
         if self.function_depth == 0 {
             return self.error_here("'return' can only be used inside a function".to_string());
         }
@@ -285,7 +294,7 @@ impl Parser {
         Ok(AstNode::Return(Some(Box::new(value))))
     }
 
-    fn parse_expression_statement(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_expression_statement(&mut self) -> Result<AstNode, EzError> {
         let expression = self.parse_expression(0)?;
 
         let op = match self.current() {
@@ -321,7 +330,7 @@ impl Parser {
         name: String,
         is_const: bool,
         is_imut: bool,
-    ) -> Result<AstNode, KojiError> {
+    ) -> Result<AstNode, EzError> {
         let ty = if *self.current() == Token::Colon {
             self.advance();
             Some(self.parse_type()?)
@@ -339,7 +348,7 @@ impl Parser {
         })
     }
 
-    fn parse_type(&mut self) -> Result<TypeExpr, KojiError> {
+    fn parse_type(&mut self) -> Result<TypeExpr, EzError> {
         let mut ty = if *self.current() == Token::LParen {
             // Function type `(int, string) => boolean`, or a type in parentheses
             // (`(() => int)[]`, a list of functions).
@@ -380,11 +389,11 @@ impl Parser {
         Ok(ty)
     }
 
-    fn parse_block(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_block(&mut self) -> Result<AstNode, EzError> {
         self.grouped(Self::parse_block_inner)
     }
 
-    fn parse_block_inner(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_block_inner(&mut self) -> Result<AstNode, EzError> {
         self.expect(Token::LBrace, "'{'")?;
         let mut statements = Vec::new();
         loop {
@@ -401,7 +410,7 @@ impl Parser {
         Ok(AstNode::Block(statements))
     }
 
-    fn parse_loop_body(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_loop_body(&mut self) -> Result<AstNode, EzError> {
         self.loop_depth += 1;
         let body = self.parse_block();
         self.loop_depth -= 1;
@@ -409,7 +418,7 @@ impl Parser {
     }
 
     /// Parses a function body: `break`/`continue` do not cross function boundaries.
-    fn parse_function_body(&mut self, block_only: bool) -> Result<AstNode, KojiError> {
+    fn parse_function_body(&mut self, block_only: bool) -> Result<AstNode, EzError> {
         let saved_loops = std::mem::replace(&mut self.loop_depth, 0);
         self.function_depth += 1;
         let body = if block_only || *self.current() == Token::LBrace {
@@ -423,7 +432,7 @@ impl Parser {
     }
 
     /// Conditions must be parenthesized: `(x > 1)`, `not (x > 1)` or `(a) and (b)`.
-    fn parse_condition(&mut self, keyword: &str) -> Result<AstNode, KojiError> {
+    fn parse_condition(&mut self, keyword: &str) -> Result<AstNode, EzError> {
         let mut index = self.position;
         while matches!(self.token_at(index), Token::Not | Token::Bang) {
             index += 1;
@@ -437,7 +446,7 @@ impl Parser {
         self.parse_expression(0)
     }
 
-    fn parse_while(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_while(&mut self) -> Result<AstNode, EzError> {
         self.advance(); // while
         let condition = self.parse_condition("while")?;
         let body = self.parse_loop_body()?;
@@ -447,7 +456,7 @@ impl Parser {
         })
     }
 
-    fn parse_for(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_for(&mut self) -> Result<AstNode, EzError> {
         self.advance(); // for
         let is_mut = *self.current() == Token::Mut;
         if is_mut {
@@ -465,11 +474,12 @@ impl Parser {
         })
     }
 
-    fn parse_params(&mut self) -> Result<Vec<Param>, KojiError> {
+    fn parse_params(&mut self) -> Result<Vec<Param>, EzError> {
         self.expect(Token::LParen, "'(' before the parameters")?;
         let params = self.parse_comma_separated(&Token::RParen, |p| {
             let is_mut = *p.current() == Token::Mut;
-            if is_mut {
+            let is_take = *p.current() == Token::Take;
+            if is_mut || is_take {
                 p.advance();
             }
             let name = p.expect_identifier("parameter name")?;
@@ -479,13 +489,13 @@ impl Parser {
             } else {
                 None
             };
-            Ok(Param { name, ty, is_mut })
+            Ok(Param { name, ty, is_mut, is_take })
         })?;
         self.expect(Token::RParen, "')' after the parameters")?;
         Ok(params)
     }
 
-    fn parse_optional_return_type(&mut self) -> Result<Option<TypeExpr>, KojiError> {
+    fn parse_optional_return_type(&mut self) -> Result<Option<TypeExpr>, EzError> {
         if *self.current() == Token::Colon {
             self.advance();
             Ok(Some(self.parse_type()?))
@@ -494,7 +504,7 @@ impl Parser {
         }
     }
 
-    fn parse_function_declaration(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_function_declaration(&mut self) -> Result<AstNode, EzError> {
         self.advance(); // function
         let mut name = self.expect_identifier("function name")?;
         // `function Person.greet(self)`: a method (or associated function) of `Person`.
@@ -503,12 +513,14 @@ impl Parser {
             self.advance();
             owner = Some(std::mem::replace(&mut name, self.expect_name("method name")?));
         }
+        let type_params = self.parse_type_params()?;
         let params = self.parse_params()?;
         let return_type = self.parse_optional_return_type()?;
         let body = self.parse_function_body(true)?;
         Ok(AstNode::FunctionDecl {
             name,
             owner,
+            type_params,
             params,
             return_type,
             body: Rc::new(body),
@@ -536,7 +548,7 @@ impl Parser {
         matches!(self.token_at(index + 1), Token::FatArrow | Token::Colon)
     }
 
-    fn parse_lambda(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_lambda(&mut self) -> Result<AstNode, EzError> {
         let params = self.parse_params()?;
         let return_type = self.parse_optional_return_type()?;
         self.expect(Token::FatArrow, "'=>' in anonymous function")?;
@@ -549,15 +561,15 @@ impl Parser {
     }
 
     /// `export function`, `export const`, `export var` or `export type`.
-    fn parse_export(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_export(&mut self) -> Result<AstNode, EzError> {
         let line = self.current_line();
         self.advance(); // export
         if !matches!(
             self.current(),
-            Token::Func | Token::Const | Token::Imut | Token::Var | Token::Type
+            Token::Func | Token::Mut | Token::Immut | Token::Type
         ) {
             return self.error_here(format!(
-                "expected 'function', 'const', 'imut', 'var' or 'type' after 'export', found {:?}",
+                "expected 'function', 'mut', 'immut' or 'type' after 'export', found {:?}",
                 self.current()
             ));
         }
@@ -572,7 +584,7 @@ impl Parser {
         }
     }
 
-    fn parse_import(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_import(&mut self) -> Result<AstNode, EzError> {
         self.advance(); // import
         if *self.current() == Token::LBrace {
             self.advance();
@@ -600,7 +612,7 @@ impl Parser {
         })
     }
 
-    fn expect_string(&mut self, description: &str) -> Result<String, KojiError> {
+    fn expect_string(&mut self, description: &str) -> Result<String, EzError> {
         match self.current().clone() {
             Token::StringLiteral(s) => {
                 self.advance();
@@ -611,7 +623,7 @@ impl Parser {
     }
 
     /// Fields `name: type` separated by newlines or commas, up to and including `}`.
-    fn parse_fields(&mut self) -> Result<Vec<Field>, KojiError> {
+    fn parse_fields(&mut self) -> Result<Vec<Field>, EzError> {
         let mut fields: Vec<Field> = Vec::new();
         loop {
             while matches!(self.current(), Token::Comma | Token::Semicolon) {
@@ -635,9 +647,10 @@ impl Parser {
         Ok(fields)
     }
 
-    fn parse_type_declaration(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_type_declaration(&mut self) -> Result<AstNode, EzError> {
         self.advance(); // type
         let name = self.expect_identifier("type name")?;
+        let params = self.parse_type_params()?;
         self.expect(Token::Equal, "'=' in type declaration")?;
 
         let mut parts = vec![self.parse_type_part()?];
@@ -657,11 +670,43 @@ impl Parser {
         } else {
             TypeDef::Intersection(parts)
         };
-        Ok(AstNode::TypeDecl { name, definition })
+        Ok(AstNode::TypeDecl {
+            name,
+            params,
+            definition,
+        })
+    }
+
+    /// `[A, B: orderable]` after the name of a generic type or function (none: empty).
+    fn parse_type_params(&mut self) -> Result<Vec<TypeParam>, EzError> {
+        if *self.current() != Token::LBracket {
+            return Ok(Vec::new());
+        }
+        self.advance(); // [
+        let params = self.parse_comma_separated(&Token::RBracket, |p| {
+            let name = p.expect_identifier("type parameter name")?;
+            let constraint = if *p.current() == Token::Colon {
+                p.advance();
+                Some(p.expect_identifier("constraint (equatable or orderable)")?)
+            } else {
+                None
+            };
+            Ok(TypeParam { name, constraint })
+        })?;
+        self.expect(Token::RBracket, "']' after the type parameters")?;
+        if params.is_empty() {
+            return self.error_here("expected at least one type parameter between '[' and ']'".to_string());
+        }
+        for (i, param) in params.iter().enumerate() {
+            if params[..i].iter().any(|p| p.name == param.name) {
+                return self.error_here(format!("type parameter '{}' is declared twice", param.name));
+            }
+        }
+        Ok(params)
     }
 
     /// One operand of a type definition: a `{ ... }` body or a type name.
-    fn parse_type_part(&mut self) -> Result<TypeDef, KojiError> {
+    fn parse_type_part(&mut self) -> Result<TypeDef, EzError> {
         if *self.current() != Token::LBrace {
             return Ok(TypeDef::Alias(self.parse_type()?));
         }
@@ -709,7 +754,7 @@ impl Parser {
         }
     }
 
-    fn parse_variant(&mut self) -> Result<Variant, KojiError> {
+    fn parse_variant(&mut self) -> Result<Variant, EzError> {
         let name = self.expect_identifier("variant name")?;
         let mut fields = Vec::new();
         if *self.current() == Token::LParen {
@@ -761,7 +806,7 @@ impl Parser {
         Some((entry.0, entry.1, false))
     }
 
-    pub fn parse_expression(&mut self, min_bp: u8) -> Result<AstNode, KojiError> {
+    pub fn parse_expression(&mut self, min_bp: u8) -> Result<AstNode, EzError> {
         let mut left = self.parse_prefix()?;
 
         loop {
@@ -812,7 +857,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_prefix(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_prefix(&mut self) -> Result<AstNode, EzError> {
         if *self.current() == Token::LParen && self.is_lambda_start(self.position) {
             return self.parse_lambda();
         }
@@ -832,13 +877,7 @@ impl Parser {
             Token::TemplateString(raw) => parse_template(&raw, line),
             Token::Boolean(b) => Ok(AstNode::BooleanLiteral(b)),
             Token::Identifier(name) => Ok(AstNode::Identifier(name)),
-            Token::LBracket => {
-                let elements = self.grouped(|p| {
-                    p.parse_comma_separated(&Token::RBracket, |p| p.parse_expression(0))
-                })?;
-                self.expect(Token::RBracket, "']' at the end of the array")?;
-                Ok(AstNode::ArrayLiteral(elements))
-            }
+            Token::LBracket => self.grouped(Self::parse_brackets),
             Token::LBrace => self.grouped(Self::parse_object_literal),
             Token::If => self.parse_if(),
             Token::Match => self.parse_match(),
@@ -880,7 +919,7 @@ impl Parser {
     }
 
     /// Called after consuming `{`. Entries are separated by commas or newlines.
-    fn parse_object_literal(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_object_literal(&mut self) -> Result<AstNode, EzError> {
         let mut entries: Vec<ObjectEntry> = Vec::new();
         loop {
             while matches!(self.current(), Token::Comma | Token::Semicolon) {
@@ -910,7 +949,7 @@ impl Parser {
         Ok(AstNode::ObjectLiteral(entries))
     }
 
-    fn parse_call(&mut self, callee: AstNode) -> Result<AstNode, KojiError> {
+    fn parse_call(&mut self, callee: AstNode) -> Result<AstNode, EzError> {
         self.advance(); // '('
         let args = self.grouped(|p| {
             p.parse_comma_separated(&Token::RParen, |p| {
@@ -930,17 +969,71 @@ impl Parser {
         })
     }
 
-    fn parse_index(&mut self, target: AstNode) -> Result<AstNode, KojiError> {
+    /// After `[`: a list `[1, 2]`, or a map `['Ana': 30]` (`[:]` is the empty map).
+    fn parse_brackets(&mut self) -> Result<AstNode, EzError> {
+        if *self.current() == Token::Colon {
+            self.advance(); // :
+            self.expect(Token::RBracket, "']' after '[:'")?;
+            return Ok(AstNode::MapLiteral(Vec::new()));
+        }
+        let items = self.parse_comma_separated(&Token::RBracket, |p| {
+            let item = p.parse_expression(0)?;
+            if *p.current() == Token::Colon {
+                p.advance();
+                return Ok((item, Some(p.parse_expression(0)?)));
+            }
+            Ok((item, None))
+        })?;
+        self.expect(Token::RBracket, "']' at the end of the list")?;
+        let entries = items.iter().filter(|(_, value)| value.is_some()).count();
+        if entries == 0 {
+            return Ok(AstNode::ArrayLiteral(items.into_iter().map(|(item, _)| item).collect()));
+        }
+        if entries != items.len() {
+            return self.error_here("a map literal needs 'key: value' for every entry".to_string());
+        }
+        Ok(AstNode::MapLiteral(
+            items
+                .into_iter()
+                .map(|(key, value)| (key, value.expect("counted above")))
+                .collect(),
+        ))
+    }
+
+    fn parse_index(&mut self, target: AstNode) -> Result<AstNode, EzError> {
         self.advance(); // '['
-        let index = self.grouped(|p| p.parse_expression(0))?;
+        let (start, is_slice, end) = self.grouped(|p| {
+            let start = if *p.current() == Token::DotDot {
+                None
+            } else {
+                Some(p.parse_expression(0)?)
+            };
+            if *p.current() != Token::DotDot {
+                return Ok((start, false, None));
+            }
+            p.advance(); // ..
+            let end = if *p.current() == Token::RBracket {
+                None
+            } else {
+                Some(p.parse_expression(0)?)
+            };
+            Ok((start, true, end))
+        })?;
         self.expect(Token::RBracket, "']' after the index")?;
+        if is_slice {
+            return Ok(AstNode::Slice {
+                target: Box::new(target),
+                start: start.map(Box::new),
+                end: end.map(Box::new),
+            });
+        }
         Ok(AstNode::Index {
             target: Box::new(target),
-            index: Box::new(index),
+            index: Box::new(start.expect("an index without '..' has an expression")),
         })
     }
 
-    fn parse_member(&mut self, object: AstNode) -> Result<AstNode, KojiError> {
+    fn parse_member(&mut self, object: AstNode) -> Result<AstNode, EzError> {
         self.advance(); // '.'
         let name = self.expect_name("member name after '.'")?;
         Ok(AstNode::Member {
@@ -950,7 +1043,7 @@ impl Parser {
     }
 
     /// Called after consuming `if`.
-    fn parse_if(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_if(&mut self) -> Result<AstNode, EzError> {
         let condition = self.parse_condition("if")?;
         let then_branch = self.parse_block()?;
 
@@ -974,7 +1067,7 @@ impl Parser {
     }
 
     /// Called after consuming `match`.
-    fn parse_match(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_match(&mut self) -> Result<AstNode, EzError> {
         self.expect(Token::LParen, "'(' after 'match'")?;
         let scrutinee = self.parse_expression(0)?;
         self.expect(Token::RParen, "')' after the match value")?;
@@ -1004,7 +1097,7 @@ impl Parser {
         })
     }
 
-    fn parse_match_arm(&mut self) -> Result<MatchArm, KojiError> {
+    fn parse_match_arm(&mut self) -> Result<MatchArm, EzError> {
         let pattern = self.parse_pattern()?;
 
         let guard = if *self.current() == Token::If {
@@ -1033,7 +1126,7 @@ impl Parser {
     }
 
     /// Arm bodies may be statements such as `x += 1` or `break`, as well as expressions.
-    fn parse_located_arm_expression(&mut self) -> Result<AstNode, KojiError> {
+    fn parse_located_arm_expression(&mut self) -> Result<AstNode, EzError> {
         let saved = std::mem::replace(&mut self.newline_ends_expression, true);
         let result = match self.current() {
             Token::Break | Token::Continue | Token::Return => self.parse_statement(),
@@ -1043,7 +1136,7 @@ impl Parser {
         result
     }
 
-    fn parse_pattern(&mut self) -> Result<Pattern, KojiError> {
+    fn parse_pattern(&mut self) -> Result<Pattern, EzError> {
         match self.current().clone() {
             Token::Identifier(name) => {
                 self.advance();
@@ -1089,8 +1182,8 @@ impl Parser {
 }
 
 /// Splits the raw contents of a template string into text and `${...}` expressions.
-fn parse_template(raw: &str, line: usize) -> Result<AstNode, KojiError> {
-    let at_line = |message: String| -> Result<AstNode, KojiError> {
+fn parse_template(raw: &str, line: usize) -> Result<AstNode, EzError> {
+    let at_line = |message: String| -> Result<AstNode, EzError> {
         if line == 0 {
             error(message)
         } else {
@@ -1144,7 +1237,7 @@ fn parse_template(raw: &str, line: usize) -> Result<AstNode, KojiError> {
             let mut sub_parser = Parser::new(&tokens);
             let expression = match sub_parser.parse_expression(0) {
                 Ok(expression) => expression,
-                Err(KojiError::ParserError(message)) => {
+                Err(EzError::ParserError(message)) => {
                     return at_line(format!("in interpolation: {}", message))
                 }
                 Err(other) => return Err(other),
@@ -1170,7 +1263,7 @@ fn parse_template(raw: &str, line: usize) -> Result<AstNode, KojiError> {
 }
 
 /// Parses a single expression and requires the input to end there.
-pub fn parse(tokens: &[Token]) -> Result<AstNode, KojiError> {
+pub fn parse(tokens: &[Token]) -> Result<AstNode, EzError> {
     let mut parser = Parser::new(tokens);
     let expression = parser.parse_expression(0)?;
     if *parser.current() != Token::EOF {
@@ -1182,7 +1275,7 @@ pub fn parse(tokens: &[Token]) -> Result<AstNode, KojiError> {
     Ok(expression)
 }
 
-fn parse_statements(mut parser: Parser) -> Result<Vec<AstNode>, KojiError> {
+fn parse_statements(mut parser: Parser) -> Result<Vec<AstNode>, EzError> {
     let mut statements = Vec::new();
     loop {
         parser.skip_semicolons();
@@ -1199,22 +1292,22 @@ fn parse_statements(mut parser: Parser) -> Result<Vec<AstNode>, KojiError> {
 }
 
 /// Parses an entire file: a sequence of statements.
-pub fn parse_program(tokens: &[Token]) -> Result<Vec<AstNode>, KojiError> {
+pub fn parse_program(tokens: &[Token]) -> Result<Vec<AstNode>, EzError> {
     parse_statements(Parser::new(tokens))
 }
 
 /// Parses an entire file keeping line information: statements are wrapped in `Located`, and a
 /// `(` or `[` at the start of a line is not taken as a call/index of the previous line.
-pub fn parse_program_with_positions(tokens: &[SpannedToken]) -> Result<Vec<AstNode>, KojiError> {
+pub fn parse_program_with_positions(tokens: &[SpannedToken]) -> Result<Vec<AstNode>, EzError> {
     parse_statements(Parser::with_positions(tokens))
 }
 
 /// Lexes and parses source code.
-pub fn parse_source(source: &str) -> Result<Vec<AstNode>, KojiError> {
+pub fn parse_source(source: &str) -> Result<Vec<AstNode>, EzError> {
     let tokens = Lexer::new(source).tokenize_spanned();
     if let Some(illegal) = tokens.iter().find(|t| matches!(t.token, Token::Illegal(_))) {
         if let Token::Illegal(c) = illegal.token {
-            return Err(KojiError::LexerError(format!(
+            return Err(EzError::LexerError(format!(
                 "line {}: unexpected character '{}'",
                 illegal.line, c
             )));
@@ -1228,12 +1321,12 @@ mod tests {
     use super::*;
     use crate::lexer::Lexer;
 
-    fn parse_str(source: &str) -> Result<AstNode, KojiError> {
+    fn parse_str(source: &str) -> Result<AstNode, EzError> {
         let tokens = Lexer::new(source).tokenize();
         parse(&tokens)
     }
 
-    fn parse_program_str(source: &str) -> Result<Vec<AstNode>, KojiError> {
+    fn parse_program_str(source: &str) -> Result<Vec<AstNode>, EzError> {
         let tokens = Lexer::new(source).tokenize();
         parse_program(&tokens)
     }
@@ -1449,7 +1542,7 @@ mod tests {
 
     #[test]
     fn if_else_as_expression_in_const() {
-        let source = "const label: string = if (age > 18) { 'Adult' } else { 'Minor' }";
+        let source = "immut label: string = if (age > 18) { 'Adult' } else { 'Minor' }";
         let program = parse_program_str(source).unwrap();
         match &program[0] {
             AstNode::VarDecl {
@@ -1469,8 +1562,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_declaration_without_keyword() {
-        let program = parse_program_str("names: string[] = ['Anna', 'Claire']").unwrap();
+    fn typed_mut_declaration() {
+        assert!(parse_program_str("names: string[] = ['Anna']").is_err());
+        let program = parse_program_str("mut names: string[] = ['Anna', 'Claire']").unwrap();
         match &program[0] {
             AstNode::VarDecl {
                 ty,
@@ -1509,6 +1603,7 @@ mod tests {
             AstNode::TypeDecl {
                 name,
                 definition: TypeDef::Sum(variants),
+                ..
             } => {
                 assert_eq!(name.as_str(), "Shape");
                 assert_eq!(variants.len(), 2);
@@ -1595,7 +1690,7 @@ mod tests {
     #[test]
     fn match_can_be_assigned_to_a_const() {
         let source = r#"
-            const label: string = match (result) {
+            immut label: string = match (result) {
                 Ok(value) => `Value: ${value}`
                 Err(error) => `Error: ${error}`
             }
@@ -1635,7 +1730,7 @@ mod tests {
 
     #[test]
     fn anonymous_functions() {
-        let program = parse_program_str("const double = (x: int) => x * 2").unwrap();
+        let program = parse_program_str("immut double = (x: int) => x * 2").unwrap();
         match &program[0] {
             AstNode::VarDecl { value, .. } => match &**value {
                 AstNode::Lambda {
@@ -1689,7 +1784,7 @@ mod tests {
 
     #[test]
     fn generic_and_function_types() {
-        let program = parse_program_str("f: (int) => Option[int][] = g").unwrap();
+        let program = parse_program_str("immut f: (int) => Option[int][] = g").unwrap();
         match &program[0] {
             AstNode::VarDecl { ty: Some(TypeExpr::Function { params, ret }), .. } => {
                 assert_eq!(params.len(), 1);

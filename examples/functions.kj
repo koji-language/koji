@@ -4,7 +4,7 @@ function factorial(x: int): int {
     return x * factorial(x - 1)
 }
 
-const double = (x: int) => x * 2
+immut double = (x: int) => x * 2
 
 print(factorial(5))
 print(double(21))

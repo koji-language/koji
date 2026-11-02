@@ -4,8 +4,10 @@ pub fn lookup_ident(ident: &str) -> Token {
     match ident {
         "var" => Token::Var,
         "const" => Token::Const,
-        "imut" => Token::Imut,
+        "let" => Token::Let,
+        "immut" => Token::Immut,
         "mut" => Token::Mut,
+        "take" => Token::Take,
         "type" => Token::Type,
         "interface" => Token::Interface,
         "import" => Token::Import,

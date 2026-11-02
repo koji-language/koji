@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::parser::ast::{AstNode, Param};
@@ -9,14 +10,20 @@ use crate::runtime::env::Env;
 pub enum Value {
     Int(i64),
     Float(f64),
-    Str(Rc<str>),
+    /// Strings have value semantics too: `+=` appends in place when the string is not shared.
+    Str(Rc<String>),
+    Char(char),
     Bool(bool),
     Void,
-    /// Lists are reference values: a `const` list can still have its contents changed.
+    /// Lists and objects have value semantics: copies share their memory until one of them
+    /// changes (copy-on-write, see `interpreter/places.rs`).
     List(Rc<RefCell<Vec<Value>>>),
     /// Shape-typed values, object literals and dictionaries.
     Object(Rc<RefCell<Object>>),
     Variant(Rc<VariantValue>),
+    /// `Map[K, V]` and `Set[T]` (a set has `void` values), with value semantics like lists.
+    Map(Rc<RefCell<MapValue>>),
+    Set(Rc<RefCell<MapValue>>),
     Function(Rc<Closure>),
     /// Built-in function, by qualified name (`print`, `math.sqrt`).
     Builtin(Rc<str>),
@@ -25,15 +32,21 @@ pub enum Value {
     Native(Rc<RefCell<Native>>),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Object {
     /// Fields in declaration order.
     pub fields: Vec<(String, Value)>,
+    /// For a type with a `drop` method: that method (module, `Type.drop`).
+    pub drop: Option<Rc<(PathBuf, String)>>,
 }
 
 impl Object {
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, v)| v)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
+        self.fields.iter_mut().find(|(n, _)| n == name).map(|(_, v)| v)
     }
 
     pub fn set(&mut self, name: &str, value: Value) {
@@ -48,6 +61,8 @@ impl Object {
 #[derive(Debug)]
 pub struct SumType {
     pub name: String,
+    /// Module that declares the type (empty for built-in types), where its methods are.
+    pub module: PathBuf,
     pub variants: Vec<(String, Vec<String>)>,
 }
 
@@ -207,7 +222,7 @@ fn is_identifier(name: &str) -> bool {
 
 impl Value {
     pub fn str(s: &str) -> Value {
-        Value::Str(Rc::from(s))
+        Value::Str(Rc::new(s.to_string()))
     }
 
     pub fn list(items: Vec<Value>) -> Value {
@@ -215,28 +230,7 @@ impl Value {
     }
 
     pub fn object(fields: Vec<(String, Value)>) -> Value {
-        Value::Object(Rc::new(RefCell::new(Object { fields })))
-    }
-
-    /// A copy that shares nothing with the original (lists and objects are copied too).
-    pub fn deep_copy(&self) -> Value {
-        match self {
-            Value::List(items) => Value::list(items.borrow().iter().map(Value::deep_copy).collect()),
-            Value::Object(object) => Value::object(
-                object
-                    .borrow()
-                    .fields
-                    .iter()
-                    .map(|(name, value)| (name.clone(), value.deep_copy()))
-                    .collect(),
-            ),
-            Value::Variant(variant) => Value::Variant(Rc::new(VariantValue {
-                sum: Rc::clone(&variant.sum),
-                name: variant.name.clone(),
-                values: variant.values.iter().map(Value::deep_copy).collect(),
-            })),
-            other => other.clone(),
-        }
+        Value::Object(Rc::new(RefCell::new(Object { fields, drop: None })))
     }
 
     pub fn type_name(&self) -> &'static str {
@@ -245,9 +239,12 @@ impl Value {
             Value::Float(_) => "float",
             Value::Str(_) => "string",
             Value::Bool(_) => "boolean",
+            Value::Char(_) => "char",
             Value::Void => "void",
             Value::List(_) => "list",
             Value::Object(_) => "object",
+            Value::Map(_) => "Map",
+            Value::Set(_) => "Set",
             Value::Variant(_) => "variant",
             Value::Function(_) | Value::Builtin(_) | Value::Constructor(_) => "function",
             Value::Module(_) => "module",
@@ -264,6 +261,7 @@ impl Value {
     pub fn display(&self) -> String {
         match self {
             Value::Str(s) => s.to_string(),
+            Value::Char(c) => c.to_string(),
             Value::Variant(variant) => crate::runtime::stdlib::error_message(variant)
                 .unwrap_or_else(|| self.repr()),
             other => other.repr(),
@@ -294,6 +292,18 @@ impl Value {
                         '\r' => out.push_str("\\r"),
                         other => out.push(other),
                     }
+                }
+                out.push('\'');
+            }
+            Value::Char(c) => {
+                out.push('\'');
+                match c {
+                    '\'' => out.push_str("\\'"),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\t' => out.push_str("\\t"),
+                    '\r' => out.push_str("\\r"),
+                    other => out.push(*other),
                 }
                 out.push('\'');
             }
@@ -331,6 +341,33 @@ impl Value {
                     value.write_repr(out);
                 }
                 out.push_str(" }");
+            }
+            Value::Map(map) => {
+                let map = map.borrow();
+                if map.entries.is_empty() {
+                    out.push_str("[:]");
+                    return;
+                }
+                out.push('[');
+                for (i, (key, value)) in map.entries.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    key.write_repr(out);
+                    out.push_str(": ");
+                    value.write_repr(out);
+                }
+                out.push(']');
+            }
+            Value::Set(set) => {
+                out.push_str("Set([");
+                for (i, (item, _)) in set.borrow().entries.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    item.write_repr(out);
+                }
+                out.push_str("])");
             }
             Value::Variant(variant) => {
                 out.push_str(&variant.name);
@@ -378,6 +415,7 @@ impl Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => *a as f64 == *b,
             (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Char(a), Value::Char(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Void, Value::Void) => true,
             (Value::List(a), Value::List(b)) => {
@@ -385,6 +423,11 @@ impl Value {
                     let (a, b) = (a.borrow(), b.borrow());
                     a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.equals(y))
                 }
+            }
+            (Value::Map(a), Value::Map(b)) | (Value::Set(a), Value::Set(b)) => {
+                let (a, b) = (a.borrow(), b.borrow());
+                a.len() == b.len()
+                    && a.entries.iter().all(|(key, value)| b.get(key).is_some_and(|other| value.equals(other)))
             }
             (Value::Object(a), Value::Object(b)) => {
                 Rc::ptr_eq(a, b) || {
@@ -412,7 +455,8 @@ impl Value {
         }
     }
 
-    /// Identity (`is`): reference values must be the same object in memory.
+    /// Equality used by `equals` for values that are not compared by their contents
+    /// (functions, modules, files...).
     pub fn identical(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
@@ -430,4 +474,118 @@ impl Value {
             _ => self.equals(other),
         }
     }
+}
+
+/// The entries of a map (or the items of a set), in insertion order, with an index by the
+/// hash of their key.
+#[derive(Debug, Clone, Default)]
+pub struct MapValue {
+    pub entries: Vec<(Value, Value)>,
+    index: std::collections::HashMap<u64, Vec<usize>>,
+}
+
+impl MapValue {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn position(&self, key: &Value) -> Option<usize> {
+        self.index
+            .get(&hash_value(key))?
+            .iter()
+            .copied()
+            .find(|&i| self.entries[i].0.equals(key))
+    }
+
+    pub fn get(&self, key: &Value) -> Option<&Value> {
+        self.position(key).map(|i| &self.entries[i].1)
+    }
+
+    pub fn get_mut(&mut self, key: &Value) -> Option<&mut Value> {
+        self.position(key).map(|i| &mut self.entries[i].1)
+    }
+
+    /// Adds or replaces the value of `key`; returns the old value.
+    pub fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
+        match self.position(&key) {
+            Some(i) => Some(std::mem::replace(&mut self.entries[i].1, value)),
+            None => {
+                self.index.entry(hash_value(&key)).or_default().push(self.entries.len());
+                self.entries.push((key, value));
+                None
+            }
+        }
+    }
+
+    pub fn remove(&mut self, key: &Value) -> Option<Value> {
+        let i = self.position(key)?;
+        let (_, value) = self.entries.remove(i);
+        // The positions after `i` moved: rebuild the index.
+        self.index.clear();
+        for (i, (key, _)) in self.entries.iter().enumerate() {
+            self.index.entry(hash_value(key)).or_default().push(i);
+        }
+        Some(value)
+    }
+}
+
+/// A hash that agrees with `Value::equals` (fields and entries in any order hash the same).
+fn hash_value(value: &Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn feed(value: &Value, hasher: &mut std::collections::hash_map::DefaultHasher) {
+        let unordered = |items: Vec<u64>, hasher: &mut std::collections::hash_map::DefaultHasher| {
+            items.into_iter().fold(0u64, u64::wrapping_add).hash(hasher)
+        };
+        match value {
+            Value::Int(n) => (0u8, *n).hash(hasher),
+            // A float with an integer value hashes like the int (`==` treats them as equal).
+            Value::Float(f) if f.fract() == 0.0 && f.abs() < 9.2e18 => (0u8, *f as i64).hash(hasher),
+            Value::Float(f) => (1u8, f.to_bits()).hash(hasher),
+            Value::Str(s) => (2u8, s.as_str()).hash(hasher),
+            Value::Char(c) => (3u8, *c).hash(hasher),
+            Value::Bool(b) => (4u8, *b).hash(hasher),
+            Value::List(items) => {
+                5u8.hash(hasher);
+                for item in items.borrow().iter() {
+                    feed(item, hasher);
+                }
+            }
+            Value::Object(object) => {
+                6u8.hash(hasher);
+                let object = object.borrow();
+                let parts = object.fields.iter().map(|(name, value)| {
+                    let mut part = std::collections::hash_map::DefaultHasher::new();
+                    name.hash(&mut part);
+                    feed(value, &mut part);
+                    part.finish()
+                });
+                unordered(parts.collect(), hasher);
+            }
+            Value::Variant(variant) => {
+                (7u8, variant.name.as_str()).hash(hasher);
+                for value in &variant.values {
+                    feed(value, hasher);
+                }
+            }
+            Value::Map(map) | Value::Set(map) => {
+                8u8.hash(hasher);
+                let map = map.borrow();
+                let parts = map.entries.iter().map(|(key, value)| {
+                    let mut part = std::collections::hash_map::DefaultHasher::new();
+                    feed(key, &mut part);
+                    feed(value, &mut part);
+                    part.finish()
+                });
+                unordered(parts.collect(), hasher);
+            }
+            _ => 9u8.hash(hasher),
+        }
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    feed(value, &mut hasher);
+    hasher.finish()
 }

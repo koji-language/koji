@@ -17,7 +17,18 @@ The `file` module provides functionality for working with files.
 
     With `import file`, the modes are `file.Read`, `file.Write` and `file.Append`. With `import { Mode } from 'file'`, they can be written `Read`, `Write` and `Append`. Since the mode is a sum type, an invalid mode does not compile.
 
-## Methods of File
+## Directories
+
+-   `list(path: string) -> Result[string[], FileError]`  
+    The names of the entries (files and directories) in the directory at `path`, sorted. The names do not include `path`; use [`path.join`](path.md) to build full paths.
+
+-   `exists(path: string) -> boolean`  
+    Whether a file or directory exists at `path`.
+
+-   `createDir(path: string) -> Result[void, FileError]`  
+    Creates the directory at `path`, along with any missing parent directories. If it already exists, nothing changes.
+
+## Methods of `File`
 
 -   `read() -> Result[string, FileError]`  
     Reads the entire contents of the file. The file must have been opened with `Read`.
@@ -26,9 +37,11 @@ The `file` module provides functionality for working with files.
     Writes `text` to the file. The file must have been opened with `Write` or `Append`.
 
 -   `close() -> void`  
-    Closes the file.
+    Closes the file. It consumes the variable: using it afterwards is a compile error.
 
-Reading a file opened for writing, writing to a file opened for reading, or using a closed file are bugs: they panic.
+A `File` is move-only: it cannot be copied, only moved, and it is closed automatically when its owner goes out of scope (see [Values and Memory](../memory.md#files)). So `close()` is only needed to close a file earlier.
+
+Reading a file opened for writing, or writing to a file opened for reading, is a bug: it panics.
 
 ## Errors
 
@@ -59,6 +72,7 @@ import file
 match (file.open('notes.txt', file.Write)) {
     Ok(f) => {
         f.write('Hello world!')
+
         f.close()
     }
     Err(error) => print(error)
@@ -84,9 +98,9 @@ With the `?` operator (see [Error Handling](../error-handling.md)), inside a fun
 import file
 
 function readNotes(): Result[string, file.FileError] {
-    f = file.open('notes.txt', file.Read)?
-    mut content = f.read()?
-    
+    immut f = file.open('notes.txt', file.Read)?
+    immut content = f.read()?
+
     f.close()
 
     return Ok(content)

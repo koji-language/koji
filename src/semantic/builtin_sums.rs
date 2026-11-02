@@ -108,9 +108,24 @@ pub const BUILTIN_SUMS: &[BuiltinSum] = &[
         name: "RegexError",
         module: Some("regex"),
         params: 0,
-        variants: &[("InvalidPattern", &[("pattern", "string"), ("message", "string")])],
+        variants: &[
+            ("InvalidPattern", &[("pattern", "string"), ("message", "string")]),
+            ("Unsupported", &[("pattern", "string"), ("message", "string")]),
+            ("TooLarge", &[("pattern", "string")]),
+        ],
+    },
+    BuiltinSum {
+        name: "SystemError",
+        module: Some("system"),
+        params: 0,
+        variants: &[
+            ("NotFound", &[("command", "string")]),
+            ("PermissionDenied", &[("command", "string")]),
+            ("Io", &[("command", "string"), ("message", "string")]),
+        ],
     },
 ];
+
 
 pub fn builtin_sum(name: &str) -> &'static BuiltinSum {
     BUILTIN_SUMS
@@ -123,12 +138,14 @@ pub fn builtin_sum(name: &str) -> &'static BuiltinSum {
 pub fn stdlib_functions(module: &str) -> &'static [&'static str] {
     match module {
         "time" => &["sleep", "now", "monotonic"],
-        "file" => &["open"],
+        "file" => &["open", "list", "exists", "createDir"],
+        "path" => &["join", "parent", "name", "stem", "extension", "isAbsolute"],
         "datetime" => &["now", "today", "format", "parse"],
         "math" => &["abs", "sqrt", "pow", "floor", "ceil", "round"],
         "http" => &["get", "post", "put", "delete"],
         "json" => &["parse", "stringify", "get", "asString", "asInt", "asFloat", "asBool"],
         "regex" => &["compile"],
+        "system" => &["args", "env", "exit", "run"],
         _ => &[],
     }
 }

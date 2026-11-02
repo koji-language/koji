@@ -39,7 +39,7 @@ The `datetime` module provides utilities to work with current date and time, and
         PatternMismatch(text: string, pattern: string) // the text does not follow the pattern
         InvalidDate(text: string) // e.g. 2025-02-30
     }
-    ```
+```
 
 Dates and times are in UTC.
 
