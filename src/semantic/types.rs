@@ -61,6 +61,28 @@ impl Type {
         }
     }
 
+    /// Replaces the unknown parts with `with`.
+    pub fn fill_unknown(&self, with: &Type) -> Type {
+        match self {
+            Type::Unknown => with.clone(),
+            Type::List(inner) => Type::List(Box::new(inner.fill_unknown(with))),
+            Type::Function { params, ret } => Type::Function {
+                params: params.iter().map(|p| p.fill_unknown(with)).collect(),
+                ret: Box::new(ret.fill_unknown(with)),
+            },
+            Type::Named { id, args } => Type::Named {
+                id: *id,
+                args: args.iter().map(|a| a.fill_unknown(with)).collect(),
+            },
+            Type::Variant { id, args, variant } => Type::Variant {
+                id: *id,
+                args: args.iter().map(|a| a.fill_unknown(with)).collect(),
+                variant: variant.clone(),
+            },
+            other => other.clone(),
+        }
+    }
+
     /// Replaces the generic parameters with `args`.
     pub fn substitute(&self, args: &[Type]) -> Type {
         match self {

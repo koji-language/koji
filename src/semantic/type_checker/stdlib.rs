@@ -271,6 +271,7 @@ impl Checker {
                         narrowed: false,
                         generics: 0,
                         constraints: Vec::new(),
+                        line: 0,
                     },
                 );
             }

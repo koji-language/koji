@@ -120,6 +120,8 @@ struct Symbol {
     /// and their constraints.
     generics: usize,
     constraints: Vec<Constraint>,
+    /// Line where it is declared.
+    line: usize,
 }
 
 impl Symbol {
@@ -136,6 +138,7 @@ impl Symbol {
             narrowed: false,
             generics: 0,
             constraints: Vec::new(),
+            line: 0,
         }
     }
 
@@ -152,6 +155,7 @@ impl Symbol {
             narrowed: false,
             generics: 0,
             constraints: Vec::new(),
+            line: 0,
         }
     }
 }
@@ -385,12 +389,57 @@ impl Checker {
             .find_map(|scope| scope.types.get(name))
     }
 
-    fn declare(&mut self, name: &str, symbol: Symbol) -> CheckResult<()> {
+    fn declare(&mut self, name: &str, mut symbol: Symbol) -> CheckResult<()> {
         if self.current_scope().vars.contains_key(name) {
             return self.err(format!("'{}' is already declared in this scope", name));
         }
+        symbol.line = self.state.line;
         self.current_scope().vars.insert(name.to_string(), symbol);
         Ok(())
+    }
+
+    /// Every variable of the current scope must have a known type by its end (`mut items =
+    /// []` needs a later `items.push(1)`, or an annotation).
+    fn ensure_inferred(&mut self) -> CheckResult<()> {
+        let unknown = self
+            .current_scope()
+            .vars
+            .iter()
+            .filter(|(_, symbol)| matches!(symbol.kind, SymbolKind::Value) && symbol.ty.contains_unknown())
+            .map(|(name, symbol)| (symbol.line, name.clone(), symbol.ty.clone(), symbol.is_imut, symbol.reason))
+            .min_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+        match unknown {
+            // A `for` variable or a `match` binding: its type comes from another value.
+            Some((line, name, ty, _, Some(_))) => {
+                self.state.line = line;
+                self.err(format!(
+                    "the type of '{}' cannot be inferred (it is {}): give a type to the value it comes from",
+                    name,
+                    self.show(&ty)
+                ))
+            }
+            Some((line, name, ty, is_imut, None)) => {
+                self.state.line = line;
+                // An example annotation: the type found so far, with `int` for the unknown parts.
+                let example = self.show(&ty.fill_unknown(&Type::Int));
+                self.err(format!(
+                    "the type of '{}' cannot be inferred (it is {}): annotate it, as in '{} {}: {} = ...'",
+                    name,
+                    self.show(&ty),
+                    if is_imut { "immut" } else { "mut" },
+                    name,
+                    example
+                ))
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Ends a scope of variables: they must all have known types.
+    fn end_scope(&mut self) -> CheckResult<()> {
+        let result = self.ensure_inferred();
+        self.pop_scope();
+        result
     }
 
     fn option_of(&self, ty: Type) -> Type {

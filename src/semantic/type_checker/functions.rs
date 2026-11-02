@@ -71,7 +71,13 @@ impl Checker {
         });
         let context = self.state.returns.pop();
         self.state.function_scopes.pop();
-        self.pop_scope();
+        let body_result = match body_result {
+            Ok(ty) => self.end_scope().map(|_| ty),
+            Err(error) => {
+                self.pop_scope();
+                Err(error)
+            }
+        };
         self.state.moved = saved_moved;
         self.state.loop_scopes = saved_loops;
         let body_ty = body_result?;

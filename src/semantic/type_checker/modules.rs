@@ -29,7 +29,7 @@ impl Checker {
             },
         );
 
-        let result = self.check_statements(&program, None).and_then(|_| {
+        let result = self.check_statements(&program, None).and_then(|_| self.ensure_inferred()).and_then(|_| {
             let module_scope = self.state.scopes.get(1).cloned().unwrap_or_default();
             self.module_exports(&program, &module_scope, display)
         });

@@ -72,6 +72,19 @@ print(original, copy) // [1, 2] [1, 2, 3]
 
 Prefer `immut` for values that do not need to change: it tells the reader that the value stays the same.
 
+## Types
+
+The type of a variable comes from its value, or from an annotation (`mut items: int[] = []`). Every variable must have a known type by the end of its block: an empty value needs an annotation, unless a later use tells its type.
+
+```koji
+mut items = []
+items.push(1) // items is an int[]
+
+mut names = [] // Error! the type of 'names' cannot be inferred (it is ?[]): annotate it, as in 'mut names: int[] = ...'
+
+mut found: Option[string] = None // the annotation gives the type
+```
+
 ## Scope
 
 A variable belongs to the block where it is declared: the file, a function, or any `{ ... }` block such as the body of an `if` or a loop. It is visible in that block and in the blocks inside it.

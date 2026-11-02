@@ -519,7 +519,7 @@ fn match_with_guards() {
 #[test]
 fn match_arms_must_agree_with_the_declared_type() {
     let source = r#"
-        immut result = Ok(1)
+        immut result: Result[int, string] = Ok(1)
 
         immut label: int = match (result) {
             Ok(value) => `Value: ${value}` // Error! string is not int
@@ -2659,4 +2659,36 @@ fn stdlib_system() {
         output,
         "[] None\n0 hello koji\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nbefore exit\n"
     );
+}
+
+#[test]
+fn every_variable_has_a_known_type() {
+    // A later use tells the type of an empty value.
+    let source = r#"
+        mut items = []
+        items.push(1)
+
+        mut counts = [:]
+        counts['a'] = 1
+
+        mut seen = Set.from([])
+        seen.add('x')
+
+        mut maybe = None
+        maybe = Some(2.5)
+
+        print(items, counts, seen, maybe)
+    "#;
+    assert_eq!(run(source), "[1] ['a': 1] Set(['x']) Some(2.5)\n");
+    let errors = [
+        ("mut items = []", "the type of 'items' cannot be inferred (it is ?[]): annotate it, as in 'mut items: int[] = ...'"),
+        ("immut x = None", "the type of 'x' cannot be inferred (it is Option[?]): annotate it, as in 'immut x: Option[int] = ...'"),
+        ("function f() {\nmut m = [:]\nprint(m.length())\n}", "the type of 'm' cannot be inferred (it is Map[?, ?])"),
+        ("immut r = Ok(1)", "(it is Result[int, ?])"),
+        ("function first[T](items: T[]): Option[T] { return None }\nimmut x = first([])", "the type of 'x' cannot be inferred"),
+        ("for i in [] { print(i) }", "the type of 'i' cannot be inferred (it is ?): give a type to the value it comes from"),
+    ];
+    for (code, fragment) in errors {
+        assert_error(code, fragment);
+    }
 }

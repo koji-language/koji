@@ -26,8 +26,13 @@ impl Checker {
                 }
                 self.check_block(&arm.body, expected, vec![])
             })();
-            self.pop_scope();
-            let ty = result?;
+            let ty = match result {
+                Ok(ty) => self.end_scope().map(|_| ty),
+                Err(error) => {
+                    self.pop_scope();
+                    Err(error)
+                }
+            }?;
             branches.push((std::mem::replace(&mut self.state.moved, before.clone()), ty == Type::Never));
             arm_types.push(ty);
         }
@@ -84,6 +89,7 @@ impl Checker {
                 }
                 let mut symbol = Symbol::value(ty.clone(), true);
                 symbol.is_imut = true;
+                symbol.line = self.state.line;
                 symbol.reason = Some("variables bound by 'match' are immut");
                 if self.state.borrowing_match {
                     symbol.borrowed = Some("bound by 'match' to a part of a variable");

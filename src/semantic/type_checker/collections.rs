@@ -100,7 +100,15 @@ impl Checker {
             self.check_mut_place(object, Some(name))?;
             self.ownership.mutating_calls.insert(node_id(callee));
         }
-        self.check_args(&signature.0, args)?;
+        let arg_types = self.check_args(&signature.0, args)?;
+        // `seen = Set.from([])` then `seen.add(1)`: the set becomes a Set[int].
+        if !is_map && name == "add" && key.contains_unknown() {
+            let set = Type::Named {
+                id: self.builtins.set,
+                args: arg_types,
+            };
+            self.refine_variable(object, set);
+        }
         Ok(Some(signature.1))
     }
 

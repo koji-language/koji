@@ -369,7 +369,7 @@ A compiler is a large program, with many data structures and many operations tha
 3.  **Text processing**: the `char` type, slicing, `startsWith`, `endsWith`, `indexOf`, and `+=` in place instead of a string builder (implemented); efficient indexing (`s[i]` is O(n) today, a matter for the compiled strings).
 4.  **Error propagation**: the `?` operator (implemented).
 5.  **Methods on types** (`Type.method()`, `mut self`): implemented.
-6.  **Complete type inference**: today the checker tolerates unresolved types (`x = None`, `[]`). Code generation needs every type resolved, which requires real unification.
+6.  **Complete type inference**: every variable must have a known type by the end of its block (implemented). An empty value (`[]`, `[:]`, `None`) gets its type from an annotation or from a later use (`push`, an assignment, `map[key] = value`, `set.add`); otherwise it is a compile error that suggests the annotation.
 7.  **System access**: command-line arguments, the exit code, environment variables and running processes (implemented in the `system` module); `panic` (implemented); path manipulation (still missing).
 8.  **FFI** (`extern function`), so the compiled standard library can call C functions.
 9.  **Module visibility**: covered by the mandatory `export` decision.

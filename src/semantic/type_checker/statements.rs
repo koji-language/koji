@@ -40,15 +40,21 @@ impl Checker {
         bindings: Vec<(String, Symbol)>,
     ) -> CheckResult<Type> {
         self.push_scope();
-        for (name, symbol) in bindings {
+        for (name, mut symbol) in bindings {
+            symbol.line = self.state.line;
             self.current_scope().vars.insert(name, symbol);
         }
         let result = match node.unlocated() {
             AstNode::Block(statements) => self.check_statements(statements, expected),
             other => self.check_statement(other, expected),
         };
-        self.pop_scope();
-        result
+        match result {
+            Ok(ty) => self.end_scope().map(|_| ty),
+            Err(error) => {
+                self.pop_scope();
+                Err(error)
+            }
+        }
     }
 
     pub(super) fn check_statement(&mut self, node: &AstNode, expected: Option<&Type>) -> CheckResult<Type> {
@@ -344,6 +350,12 @@ impl Checker {
                 };
                 let value_ty = self.check_assigned_value(&element, op, value, "element")?;
                 self.consume(value, &value_ty)?;
+                // `counts = [:]` then `counts['a'] = 1`: the map becomes a Map[string, int].
+                if let Some((key, map_value)) = self.map_parts(&container).filter(|_| container.contains_unknown()) {
+                    let key = if key.contains_unknown() { index_ty.clone() } else { key };
+                    let map_value = if map_value.contains_unknown() { value_ty.clone() } else { map_value };
+                    self.refine_variable(inner, self.map_of(key, map_value));
+                }
                 if self.is_move_only(&element) {
                     self.ownership.replaces.insert(node_id(node));
                 }

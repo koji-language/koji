@@ -519,10 +519,18 @@ impl Checker {
 
     /// `items = []` then `items.push(1)`: the variable becomes an `int[]`.
     fn refine_list(&mut self, object: &AstNode, item: &Type) {
+        self.refine_variable(object, Type::List(Box::new(item.clone())));
+    }
+
+    /// Gives the variable `object` the type `ty`, when its type is still partly unknown.
+    pub(super) fn refine_variable(&mut self, object: &AstNode, ty: Type) {
+        if ty.contains_unknown() {
+            return;
+        }
         if let AstNode::Identifier(name) = object.unlocated() {
             if let Some(symbol) = self.lookup_mut(name) {
-                if symbol.ty.contains_unknown() && !item.contains_unknown() {
-                    symbol.ty = Type::List(Box::new(item.clone()));
+                if symbol.ty.contains_unknown() {
+                    symbol.ty = ty;
                 }
             }
         }
