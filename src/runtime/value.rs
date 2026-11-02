@@ -199,20 +199,8 @@ impl std::fmt::Display for DateTime {
     }
 }
 
-pub fn format_float(value: f64) -> String {
-    if value.is_nan() {
-        "NaN".to_string()
-    } else if value.is_infinite() {
-        if value > 0.0 { "inf" } else { "-inf" }.to_string()
-    } else if value.abs() >= 1e16 {
-        // Large values in scientific notation, so they never look like an int.
-        format!("{:e}", value)
-    } else if value.fract() == 0.0 {
-        format!("{:.1}", value)
-    } else {
-        format!("{}", value)
-    }
-}
+/// The text of a float, shared with the runtime of compiled programs.
+pub use koji_runtime::format_float;
 
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();

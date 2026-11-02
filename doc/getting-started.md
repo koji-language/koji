@@ -68,9 +68,15 @@ The message gives the file and the line of the error.
 | --- | --- |
 | `kojic run <file.kj> [arguments]` | Checks and runs a program; the arguments after the file are for the program (`system.args()`) |
 | `kojic check <file.kj>` | Only checks syntax and types |
+| `kojic build <file.kj> [-o <output>]` | Compiles a program to an executable (needs a C compiler) |
 | `kojic help` | Shows the available commands |
 
-Programs currently run on an interpreter. Compiling to native binaries (`kojic build`) is planned; see the [compiler plan](compiler-plan.md).
+`kojic run` runs programs on an interpreter. `kojic build` compiles them to native executables, through C: it needs a C compiler (`cc`, such as gcc or clang). For now it supports only part of the language (numbers, booleans, strings, functions and control flow); see [the compiler today](compiler-plan.md#the-compiler-today).
+
+```sh
+kojic build hello.kj
+./hello
+```
 
 ## Examples
 

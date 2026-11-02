@@ -2,33 +2,8 @@
 
 use super::*;
 
-/// Why a real power cannot be computed.
-pub enum PowFailure {
-    /// Domain problem: the result is a complex number (`(-8) ** 0.5`).
-    Complex,
-    /// Domain problem: the result is infinite (`0 ** -1`, a pole). Not an overflow: no larger
-    /// type could represent it.
-    Infinite,
-    /// Representation limit: the result does not fit in a float.
-    Overflow,
-}
-
-/// `x ** y` on real numbers. `0 ** 0` is `1`, the value of the expression (the indeterminate
-/// form only concerns limits).
-pub fn real_pow(x: f64, y: f64) -> Result<f64, PowFailure> {
-    if x == 0.0 && y < 0.0 {
-        return Err(PowFailure::Infinite);
-    }
-    if x < 0.0 && y.fract() != 0.0 {
-        return Err(PowFailure::Complex);
-    }
-    let result = x.powf(y);
-    if result.is_finite() {
-        Ok(result)
-    } else {
-        Err(PowFailure::Overflow)
-    }
-}
+// `x ** y` on real numbers is shared with the runtime of compiled programs.
+pub use koji_runtime::{float_pow as real_pow, PowFailure};
 
 fn math_error(name: &str) -> Value {
     err(variant("MathError", name, vec![]))

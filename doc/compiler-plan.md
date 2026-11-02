@@ -2,20 +2,26 @@
 
 This document plans the path from the current implementation to a **self-hosted compiler**: a Koji compiler written in Koji that produces native binaries. It records the language decisions already made and the ones still open.
 
-> Status: the [decisions](#decisions) below are implemented in the current (interpreted) implementation, except where noted. The phases that build the compiler (2 to 5) have not started.
+> Status: the [decisions](#decisions) below are implemented in the interpreter, except where noted. Phase 2 (the compiler in Rust) has started: `kojic build` compiles a first subset of the language (see [The compiler today](#the-compiler-today)).
 
 ---
 
 ## Where we are
 
-Today `kojic run <file>` runs four stages, all written in Rust:
+Everything is written in Rust. `kojic run <file>` runs four stages:
 
 1. **Lexer** (`src/lexer/`): source text → tokens.
 2. **Parser** (`src/parser/`): tokens → AST.
-3. **Type checker** (`src/semantic/`): checks the whole program, including imported modules, before anything runs.
-4. **Interpreter** (`src/runtime/`): walks the AST and executes it. There is no bytecode and no machine code.
+3. **Type checker** (`src/semantic/`): checks the whole program, including imported modules, before anything runs. It records the type of every expression for the compiler.
+4. **Interpreter** (`src/runtime/`): walks the AST and executes it.
 
-`src/ir/` exists but is an empty stub.
+`kojic build <file>` shares the first three stages, then:
+
+4. **Lowering** (`src/ir/`): AST → IR, a typed intermediate representation with basic blocks.
+5. **C generator** (`src/backend/c/`): IR → one C file.
+6. **C compiler** (`cc`): C file + the runtime library → executable.
+
+The **runtime** (`runtime/`) is a Rust library with a C interface: strings, output, panics and the operators that need more than a C expression. It is compiled once as a static library and linked into every program.
 
 ---
 
@@ -38,7 +44,11 @@ stage 3: must be identical to stage 2 (fixed point)
 
 When stage 2 and stage 3 produce the same output, the compiler sustains itself.
 
-**Backend:** generate C first (decided). It needs no LLVM or Cranelift bindings, works on any platform with a C compiler, and the generated code is readable, which makes debugging much easier. A native backend (LLVM, Cranelift or direct assembly) can be added later.
+**Backend:** generate C, with the runtime written in Rust (decided).
+
+-   **C** needs no LLVM or Cranelift bindings, works on any platform with a C compiler, gets the optimizations of gcc and clang for free, and the generated code is readable, which makes debugging much easier. A compiler written in Koji only has to write text.
+-   **The runtime in Rust** reuses the standard library already implemented for the interpreter (`http`, `regex`, `json`, ...) instead of rewriting it in C, and the interpreter and compiled programs share the same code (number formatting, `**`), so they produce the same output. It is distributed with `kojic` as a static library: users only need a C compiler, never Rust.
+-   **The IR** is independent of C: a native backend can be added later, linking with the same runtime.
 
 ---
 
@@ -382,13 +392,33 @@ A compiler is a large program, with many data structures and many operations tha
 
 ---
 
+## The compiler today
+
+`kojic build main.kj` writes the executable `main` (`-o` chooses another name). `--emit c` writes the generated C instead, and `--emit ir` the IR as text. The C compiler is `cc`, or the one named by the `KOJI_CC` environment variable.
+
+It compiles a first subset of the language:
+
+-   `int`, `float`, `boolean` and `string` values, `mut` and `immut` variables, top-level variables used by functions;
+-   every operator on those types, with the same panics as the interpreter (overflow, division by zero, `float` overflow, invalid shifts and powers);
+-   string interpolation, `print`, `string(x)` and `float(n)`;
+-   functions with parameters and a return value, recursion;
+-   `if` (also as an expression), `while`, `for` over `range`, `break`, `continue` and `return`.
+
+Anything else (lists, objects, sum types, `match`, methods, generics, imports, the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
+
+**Memory**: a string variable owns one reference to a reference-counted string, and copying a string only adds a reference (value semantics with copy-on-write). Assigning a variable releases its old string, and a function releases its strings when it returns.
+
+**Next steps**, in order: lists and `for` over lists; objects and sum types with `match`; `Option`, `Result` and `?`; methods; `Map` and `Set`; closures; generics (monomorphization); imports; move-only values and `drop`; then the standard library modules, calling the Rust implementations.
+
+---
+
 ## Phases
 
 | Phase | Delivers | Validation |
 | --- | --- | --- |
 | **0. Decisions** | The open decisions below, and the documentation updated | Documentation reviewed |
 | **1. Language** | The decisions above and the features in [What the language needs](#what-the-language-needs-to-support-the-compiler), implemented in the Rust checker and interpreter | Tests like the current ones |
-| **2. Compiler in Rust** | A typed IR in `src/ir/` (monomorphization, closure conversion, `match` compiled to decision trees), a C code generator, a C runtime (strings, lists, maps, memory management) and a `kojic build` command | Every test runs both interpreted and compiled, with identical output |
+| **2. Compiler in Rust** | A typed IR in `src/ir/` (monomorphization, closure conversion, `match` compiled to decision trees), a C code generator, a runtime in Rust (strings, lists, maps, memory management) and a `kojic build` command | Every test runs both interpreted and compiled, with identical output |
 | **3. `kojic` in Koji** | Lexer → parser → checker → IR → C generator, in this order | At each step, compare with the Rust implementation: same tokens, same AST, same errors, same generated C |
 | **4. Bootstrap** | Stages 1 → 2 → 3 | Stage 2 output identical to stage 3 |
 | **5. Maintenance** | A bootstrap policy: freeze the Rust implementation as stage 0, or commit the generated C of `kojic` so that only a C compiler is needed to build everything | CI rebuilds every stage |
@@ -402,9 +432,11 @@ Notes:
 
 ## Open decisions
 
-1.  **FFI** (`extern function`), so the compiled standard library can call C functions: to decide with the C backend (phase 2).
+1.  **FFI** (`extern function`), so the compiled standard library can call C functions. With the runtime in Rust, the standard library itself does not need it; it is for calling C libraries from Koji code.
 
 Decided:
+
+-   **Backend**: C, with the runtime in Rust (see [Bootstrap strategy](#bootstrap-strategy)).
 
 -   **Mutating methods**: `mut self`, with no marker at the call (see [Methods](#methods)).
 -   **Functions without `self`**: associated functions, `Person.create('John')`.

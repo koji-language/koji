@@ -36,6 +36,9 @@ cargo build --release
 
 # only check syntax and types
 ./target/release/kojic check examples/hello.kj
+
+# compile to an executable (needs a C compiler; a part of the language for now)
+./target/release/kojic build examples/hello.kj -o hello
 ```
 
 See the [Getting Started](doc/getting-started.md) guide for your first program, the available commands and the next steps.

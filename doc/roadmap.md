@@ -24,7 +24,7 @@ This document outlines the planned features and milestones for the Koji programm
 -   [x] Module system with mandatory `export`
 -   [ ] Value semantics with copy-on-write, move-only types and `drop`
 -   [x] User-defined generics, with `equatable` and `orderable` constraints
--   [ ] A compiler targeting native binaries (`kojic build`, through C)
+-   [ ] A compiler targeting native binaries (`kojic build`, through C): in progress, a first part of the language compiles
 -   [ ] A self-hosted compiler, written in Koji
 
 ---

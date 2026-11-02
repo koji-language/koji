@@ -175,9 +175,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "koji_runtime"
+version = "0.1.0"
+
+[[package]]
 name = "kojic"
 version = "0.1.0"
 dependencies = [
+ "koji_runtime",
  "regex",
  "ureq",
 ]

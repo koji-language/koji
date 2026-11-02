@@ -7,6 +7,8 @@ pub enum EzError {
     TypeError(String),
     RuntimeError(String),
     ImportError(String),
+    /// A program that `kojic build` cannot compile yet.
+    CompileError(String),
     /// An `Err` or `None` propagated with `?` out of the main file.
     UnhandledError(String),
     /// `system.exit(code)`: the program ends with this exit code.
@@ -21,6 +23,7 @@ impl fmt::Display for EzError {
             EzError::TypeError(message) => write!(f, "type error: {}", message),
             EzError::RuntimeError(message) => write!(f, "panic: {}", message),
             EzError::ImportError(message) => write!(f, "import error: {}", message),
+            EzError::CompileError(message) => write!(f, "compile error: {}", message),
             EzError::UnhandledError(message) => write!(f, "error: {}", message),
             EzError::Exit(code) => write!(f, "exit code {}", code),
         }

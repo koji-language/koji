@@ -1,0 +1,106 @@
+//! A readable text form of the IR (`kojic build --emit ir`), for debugging.
+
+use std::fmt;
+
+use super::*;
+
+impl fmt::Display for Program {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (id, text) in self.strings.iter().enumerate() {
+            writeln!(f, "string s{} = {:?}", id, text)?;
+        }
+        for (id, global) in self.globals.iter().enumerate() {
+            writeln!(f, "global g{}: {:?} // {}", id, global.ty, global.name)?;
+        }
+        for (id, function) in self.functions.iter().enumerate() {
+            writeln!(f)?;
+            write!(f, "function f{} {}(", id, function.name)?;
+            for param in 0..function.params {
+                if param > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "l{}: {:?}", param, function.locals[param].ty)?;
+            }
+            writeln!(f, "): {:?}", function.ret)?;
+            for (id, local) in function.locals.iter().enumerate().skip(function.params) {
+                match &local.name {
+                    Some(name) => writeln!(f, "    local l{}: {:?} // {}", id, local.ty, name)?,
+                    None => writeln!(f, "    local l{}: {:?}", id, local.ty)?,
+                }
+            }
+            for (id, block) in function.blocks.iter().enumerate() {
+                writeln!(f, "  b{}:", id)?;
+                for instruction in &block.instructions {
+                    writeln!(f, "    {}", instruction)?;
+                }
+                writeln!(f, "    {}", block.terminator)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Operand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Operand::Local(id) => write!(f, "l{}", id),
+            Operand::Global(id) => write!(f, "g{}", id),
+            Operand::Int(n) => write!(f, "{}", n),
+            Operand::Float(x) => write!(f, "{:?}", x),
+            Operand::Bool(b) => write!(f, "{}", b),
+            Operand::Str(id) => write!(f, "s{}", id),
+        }
+    }
+}
+
+impl fmt::Display for Place {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Place::Local(id) => write!(f, "l{}", id),
+            Place::Global(id) => write!(f, "g{}", id),
+        }
+    }
+}
+
+fn list(operands: &[Operand]) -> String {
+    operands.iter().map(Operand::to_string).collect::<Vec<_>>().join(", ")
+}
+
+impl fmt::Display for Instruction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Instruction::Copy { dest, value } => write!(f, "{} = {}", dest, value),
+            Instruction::Unary { dest, op, value, .. } => write!(f, "l{} = {:?} {}", dest, op, value),
+            Instruction::Binary { dest, op, left, right, .. } => {
+                write!(f, "l{} = {:?} {}, {}", dest, op, left, right)
+            }
+            Instruction::Call { dest: Some(dest), function, args, .. } => {
+                write!(f, "l{} = call f{}({})", dest, function, list(args))
+            }
+            Instruction::Call { dest: None, function, args, .. } => {
+                write!(f, "call f{}({})", function, list(args))
+            }
+            Instruction::Print { value, .. } => write!(f, "print {}", value),
+            Instruction::RangeNext { has_value, value, next, end, step, done } => write!(
+                f,
+                "l{}, l{} = range_next l{}, {}, {}, l{}",
+                has_value, value, next, end, step, done
+            ),
+            Instruction::RangeCheck { step, .. } => write!(f, "range_check {}", step),
+        }
+    }
+}
+
+impl fmt::Display for Terminator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Terminator::Goto(block) => write!(f, "goto b{}", block),
+            Terminator::Branch { condition, then_block, else_block } => {
+                write!(f, "branch {}, b{}, b{}", condition, then_block, else_block)
+            }
+            Terminator::Return(Some(value)) => write!(f, "return {}", value),
+            Terminator::Return(None) => write!(f, "return"),
+            Terminator::Unreachable => write!(f, "unreachable"),
+        }
+    }
+}

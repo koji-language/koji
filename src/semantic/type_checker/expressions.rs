@@ -18,7 +18,14 @@ impl Checker {
         Ok(ty)
     }
 
+    /// Checks an expression and records its type for the compiler (`Ownership::types`).
     pub(super) fn check_expr(&mut self, node: &AstNode, expected: Option<&Type>) -> CheckResult<Type> {
+        let ty = self.check_expr_kind(node, expected)?;
+        self.ownership.types.insert(node_id(node), ty.clone());
+        Ok(ty)
+    }
+
+    fn check_expr_kind(&mut self, node: &AstNode, expected: Option<&Type>) -> CheckResult<Type> {
         match node {
             AstNode::Located { line, node } => {
                 self.state.line = *line;

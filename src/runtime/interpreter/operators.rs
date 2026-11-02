@@ -86,14 +86,7 @@ impl Interpreter {
                 result.map(Value::Int).ok_or_else(overflow)
             }
             (Power, Value::Int(a), Value::Int(b)) => {
-                if *a == 0 && *b < 0 {
-                    return Err(self.error("division by zero"));
-                }
-                if *b < 0 {
-                    return Err(self.error("negative exponent with int operands; use a float base"));
-                }
-                let exponent = u32::try_from(*b).map_err(|_| overflow())?;
-                a.checked_pow(exponent).map(Value::Int).ok_or_else(overflow)
+                koji_runtime::int_pow(*a, *b).map(Value::Int).map_err(|message| self.error(message))
             }
             (
                 Add | Subtract | Multiply | Divide | Modulo | Power,

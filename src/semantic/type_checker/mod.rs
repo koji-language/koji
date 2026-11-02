@@ -68,6 +68,8 @@ pub struct Ownership {
     /// Calls of built-in methods that change the value they are called on (`items.push(x)`),
     /// by their callee (`items.push`).
     pub mutating_calls: HashSet<usize>,
+    /// The type of each expression, as checked (used by the compiler).
+    pub types: HashMap<usize, Type>,
 }
 
 /// Identity of an AST node, for the `Ownership` tables.
