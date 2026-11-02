@@ -240,6 +240,8 @@ pub enum AstNode {
     TemplateString(Vec<TemplatePart>),
     BooleanLiteral(bool),
     ArrayLiteral(Vec<AstNode>),
+    /// `['Ana': 30, 'Bia': 25]`, or `[:]`.
+    MapLiteral(Vec<(AstNode, AstNode)>),
     /// `{ name: 'Ana', age: 30 }` or `{ 'hello': 'olá' }`
     ObjectLiteral(Vec<ObjectEntry>),
     Identifier(String),

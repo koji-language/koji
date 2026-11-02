@@ -16,8 +16,8 @@ New to Koji? Start with [Getting Started](getting-started.md).
 ### Types
 
 -   [Primitive Types](primitive-types.md): `int`, `float`, `string`, `char`, `boolean`
--   [Composite Types](composite-types.md): lists
--   [Custom Types](custom-types.md): shapes, dictionaries, methods and display
+-   [Composite Types](composite-types.md): lists, maps and sets
+-   [Custom Types](custom-types.md): shapes, methods and display
 -   [Sum Types](sum-types.md): variants, `Option` and `Result`
 -   [Generics](generics.md): generic functions and types
 

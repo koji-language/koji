@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 
 use super::*;
+use crate::runtime::value::MapValue;
 
 /// Calls the built-in function `name` of this module.
 pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) -> Exec<Value> {
@@ -22,7 +23,7 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
         "json.get" => {
             let key = str_arg(interpreter, &args, 1)?;
             Ok(match json_payload(&args[0], "Object") {
-                Some(Value::Object(fields)) => match fields.borrow().get(key) {
+                Some(Value::Map(fields)) => match fields.borrow().get(&Value::str(key)) {
                     Some(value) => some(value.clone()),
                     None => none(),
                 },
@@ -137,25 +138,26 @@ impl JsonParser {
         match self.chars.get(self.position) {
             Some('{') => {
                 self.position += 1;
-                let mut fields: Vec<(String, Value)> = Vec::new();
+                // A `Map[string, Json]`; a repeated key keeps its last value.
+                let mut fields = MapValue::default();
+                let object = |fields: MapValue| json("Object", vec![Value::Map(Rc::new(RefCell::new(fields)))]);
                 self.skip_whitespace();
                 if self.chars.get(self.position) == Some(&'}') {
                     self.position += 1;
-                    return Ok(json("Object", vec![Value::object(fields)]));
+                    return Ok(object(fields));
                 }
                 loop {
                     self.skip_whitespace();
                     let key = self.string()?;
                     self.expect(':')?;
                     let value = self.value()?;
-                    fields.retain(|(k, _)| *k != key);
-                    fields.push((key, value));
+                    fields.insert(Value::str(&key), value);
                     self.skip_whitespace();
                     match self.chars.get(self.position) {
                         Some(',') => self.position += 1,
                         Some('}') => {
                             self.position += 1;
-                            return Ok(json("Object", vec![Value::object(fields)]));
+                            return Ok(object(fields));
                         }
                         _ => return Err(self.syntax("expected ',' or '}'")),
                     }
@@ -339,13 +341,13 @@ pub fn stringify(value: &Value, out: &mut String) -> Result<(), String> {
             }
             out.push(']');
         }
-        ("Object", Some(Value::Object(object))) => {
+        ("Object", Some(Value::Map(object))) => {
             out.push('{');
-            for (i, (key, value)) in object.borrow().fields.iter().enumerate() {
+            for (i, (key, value)) in object.borrow().entries.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                write_string(key, out);
+                write_string(&key.display(), out);
                 out.push(':');
                 stringify(value, out)?;
             }

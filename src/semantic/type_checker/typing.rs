@@ -149,19 +149,10 @@ impl Checker {
                 Ok(TypeKind::Sum(defs))
             }
             TypeDef::Shape(fields) => Ok(TypeKind::Shape(self.resolve_fields(fields)?)),
-            TypeDef::Index { key, value } => {
-                let key = self.resolve_type(key)?;
-                if key != Type::String {
-                    return self.err(format!(
-                        "index signature keys must be string, found {}",
-                        self.show(&key)
-                    ));
-                }
-                Ok(TypeKind::Dict {
-                    key,
-                    value: self.resolve_type(value)?,
-                })
-            }
+            TypeDef::Index { .. } => self.err(format!(
+                "'{}' cannot be an index signature: use a map, 'type {} = Map[string, ...]'",
+                name, name
+            )),
             TypeDef::Alias(expr) => {
                 // Only reached inside an intersection.
                 let ty = self.resolve_type(expr)?;

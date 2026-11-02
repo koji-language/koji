@@ -42,4 +42,41 @@ Bounds out of range, or a start after the end, panic.
 
 To go through a list, use a [`for` loop](control-flow.md#for-loop).
 
-Dictionaries (keys of type `string` mapped to values) are declared as [index signatures](custom-types.md#index-signatures).
+## Map
+
+`Map[K, V]` maps keys of type `K` to values of type `V`. Keys must be [equatable](generics.md#constraints): numbers, strings, chars, booleans, and types made of them. A map literal is written with brackets, and `[:]` is the empty map:
+
+```koji
+ages: Map[string, int] = ['Ana': 30, 'Bia': 25]
+names = [1: 'one', 2: 'two'] // Map[int, string]
+var empty: Map[string, int] = [:]
+
+print(ages['Ana']) // 30: a missing key panics
+print(ages.get('Carl')) // None
+print('Bia' in ages) // true
+
+ages['Carl'] = 41 // adds or replaces
+ages['Ana'] += 1
+ages.remove('Bia')
+
+for name in ages {
+    print(name, ages[name]) // in the order the keys were added
+}
+```
+
+Like lists, maps are values: assigning a map gives an independent copy. See the [methods of maps](methods.md#map-and-set-methods).
+
+## Set
+
+`Set[T]` holds equatable items without repetition. It is created from a list:
+
+```koji
+var seen: Set[string] = Set.from(['a', 'b', 'a'])
+
+seen.add('c')
+seen.remove('a')
+print(seen.has('b'), 'c' in seen) // true true
+print(seen) // Set(['b', 'c'])
+```
+
+`for item in seen` goes through the items, in the order they were added.

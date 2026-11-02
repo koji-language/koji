@@ -28,7 +28,7 @@ Koji has no `else if`. For more than two branches, use a [`match` with guards](#
 
 ### `for` Loop
 
-The `for` loop runs a block once for each item of a list, each character (`char`) of a string, or each key of a dictionary.
+The `for` loop runs a block once for each item of a list, each character (`char`) of a string, each key of a `Map`, or each item of a `Set`.
 
 #### Counting with `range`
 

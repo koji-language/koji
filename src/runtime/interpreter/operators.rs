@@ -202,6 +202,7 @@ impl Interpreter {
             (Value::Str(haystack), Value::Char(needle)) => Ok(haystack.contains(*needle)),
             (Value::List(items), _) => Ok(items.borrow().iter().any(|v| v.equals(item))),
             (Value::Object(object), Value::Str(key)) => Ok(object.borrow().get(key).is_some()),
+            (Value::Map(map) | Value::Set(map), _) => Ok(map.borrow().get(item).is_some()),
             _ => Err(self.error(format!(
                 "'in' cannot check a {} inside a {}",
                 item.type_name(),

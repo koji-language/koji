@@ -4,18 +4,16 @@ type Product = {
     price: float
 }
 
-type Dictionary = {
-    [key: string]: string
-}
+type Dictionary = Map[string, string]
 
 function describe(product: Product): string {
     return `${product.name} (${product.id}) - ${product.price}`
 }
 
-translations: Dictionary = {
+translations: Dictionary = [
     'hello': 'olá',
     'world': 'mundo'
-}
+]
 
 print(describe({ id: 1, name: 'Pen', price: 2.5 }))
 print(translations['hello'])

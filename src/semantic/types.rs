@@ -122,8 +122,10 @@ pub enum TypeKind {
     Sum(Vec<VariantDef>),
     /// Nominal type with fixed fields.
     Shape(Vec<(String, Type)>),
-    /// Index signature: `{ [key: string]: T }`.
-    Dict { key: Type, value: Type },
+    /// The built-in `Map[K, V]` (`key` and `value` are `Type::Param(0)` and `Type::Param(1)`).
+    Map { key: Type, value: Type },
+    /// The built-in `Set[T]` (`item` is `Type::Param(0)`).
+    Set { item: Type },
     /// A type parameter seen from inside the generic function or type that declares it (`T`
     /// in the body of `first[T]`): an opaque type, with no fields, and only the operators its
     /// constraint allows.

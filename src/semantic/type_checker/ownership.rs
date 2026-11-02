@@ -36,7 +36,8 @@ impl Checker {
                             .iter()
                             .any(|(_, field)| self.move_only_in(&field.substitute(args), visited))
                     }),
-                    TypeKind::Dict { value, .. } => self.move_only_in(value, visited),
+                    TypeKind::Map { value, .. } => self.move_only_in(&value.substitute(args), visited),
+                    TypeKind::Set { item } => self.move_only_in(&item.substitute(args), visited),
                     _ => false,
                 }
             }

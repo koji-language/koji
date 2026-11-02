@@ -58,11 +58,7 @@ type Json = {
     Float(value: float)
     String(value: string)
     Array(items: Json[])
-    Object(fields: JsonObject)
-}
-
-type JsonObject = {
-    [key: string]: Json
+    Object(fields: Map[string, Json])
 }
 ```
 
@@ -367,7 +363,7 @@ A compiler is a large program, with many data structures and many operations tha
 1.  **User-defined generics**: `type Map[K: equatable, V]`, `function find[T](...)`, using the same bracket syntax as `Option[T]`: implemented, with the `equatable` and `orderable` constraints (see [Generics](generics.md)).
 2.  **Collections**:
     -   lists with `push`, `pop`, `insert` and slicing;
-    -   maps with any comparable key type (index signatures only allow `string` keys today);
+    -   maps with any equatable key type (implemented: `Map[K, V]`, which replaced index signatures);
     -   sets.
 3.  **Text processing**:
     -   a `char` (or `byte`) type and conversion to and from character codes;
@@ -429,6 +425,9 @@ Decided:
 -   **`range` is lazy** in a `for` loop.
 -   **Constraints**: `[T: equatable]` and `[T: orderable]`, names the compiler knows; types never declare them, the compiler decides from their structure (see [Generics](generics.md#constraints)). There are no method requirements, and type parameters cannot be move-only values yet.
 -   **Generics**: brackets after the name (`function first[T]`, `type Pair[A, B]`); type arguments are never written at a call, they are inferred from the arguments and the expected type; methods of a generic type see its type parameters (`function Pair.swap(self): Pair[B, A]`) and can add their own (`function Pair.mapFirst[C](...)`). See [Generics](generics.md).
+-   **Maps and sets**: `Map[K: equatable, V]` with the literal `['Ana': 30]` (`[:]` when empty), and `Set[T: equatable]` from `Set.from(list)`. Index signatures are gone: a dictionary is a `Map`.
+-   **`char`** is a primitive type: a Unicode code point. A one-character literal is a `char` where a `char` is expected; indexing a string and `for c in text` give chars.
+-   **Lists**: `push`, `pop`, `insert`, `removeAt`, `sort` (orderable items) and `sortBy(comparison)` change the list like `mut self`; slices `items[1..3]` work on lists and strings.
 -   **No string builder**: text is built with `+=` (appending in place when the string is not shared, as in Swift) and `list.join(separator)`.
 -   **Opaque types** (a type that other modules can use but not build with a literal) are postponed until they are needed.
 -   **No anonymous objects**: an object literal needs a known type (see [No `interface`](#no-interface)). Values are built with a literal or with an associated function (`Person.create(...)`); the language has no special constructors.

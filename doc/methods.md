@@ -57,11 +57,23 @@ The `is...` methods return `false` for an empty string.
 
 `push`, `insert`, `pop`, `removeAt`, `sort` and `sortBy` change the list, like a `mut self` method: the variable must be a `var` or a `const`, not an `imut` or a parameter without `mut`. They change it in place; other copies of the list do not change. To check whether a list has an item, use `x in list`.
 
-## Dictionary Methods
+## Map and Set Methods
 
-| Method       | Description       | Example |
-| ------------ | ----------------- | ------- |
-| `d.length()` | Number of keys    |         |
+| Method               | Description                                                   |
+| -------------------- | ------------------------------------------------------------- |
+| `map.get(key)`       | `Some(value)`, or `None` if the key is missing                |
+| `map.has(key)`       | Whether the key is in the map (also `key in map`)             |
+| `map.remove(key)`    | Removes the key: `Some(value)`, or `None` if it was missing   |
+| `map.keys()`         | The keys, in the order they were added                        |
+| `map.values()`       | The values, in the same order                                 |
+| `set.add(item)`      | Adds the item (nothing changes if it is already there)        |
+| `set.remove(item)`   | Removes the item: whether it was there                        |
+| `set.has(item)`      | Whether the item is in the set (also `item in set`)           |
+| `set.values()`       | The items, in the order they were added                       |
+| `x.length()`         | Number of keys or items                                       |
+| `Set.from(list)`     | A set with the items of a list                                |
+
+`map[key] = value` adds or replaces a value; `remove` and `add` change the map or the set like a `mut self` method.
 
 ## Building Text
 

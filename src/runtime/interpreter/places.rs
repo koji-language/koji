@@ -49,6 +49,10 @@ impl Interpreter {
                     Some(value) => value.clone(),
                     None => return Ok(None),
                 },
+                (Step::Index(key), Value::Map(map), _) if is_last => match map.borrow().get(key) {
+                    Some(value) => value.clone(),
+                    None => return Ok(None),
+                },
                 (Step::Field(name), _, _) => self.member(&value, name)?,
                 (Step::Index(index), _, _) => self.index(&value, index)?,
             };
@@ -115,6 +119,21 @@ fn apply_in<R>(slot: &mut Value, steps: &[Step], f: impl FnOnce(&mut Value) -> R
                 other => return Err(format!("index must be int, found {}", other.type_name())),
             };
             apply_in(&mut items[position], rest, f)
+        }
+        (Value::Map(map), Step::Index(key)) => {
+            if Rc::strong_count(map) > 1 {
+                let copy = map.borrow().clone();
+                *map = Rc::new(RefCell::new(copy));
+            }
+            let mut map = map.borrow_mut();
+            if map.get(key).is_none() && rest.is_empty() {
+                // `ages['Ana'] = 30` adds the key.
+                map.insert(key.clone(), Value::Void);
+            }
+            match map.get_mut(key) {
+                Some(value) => apply_in(value, rest, f),
+                None => Err(format!("key {} not found", key.repr())),
+            }
         }
         (Value::Object(object), step) if step.key().is_some() => {
             let key = step.key().unwrap_or_default();

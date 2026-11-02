@@ -14,7 +14,7 @@ use crate::parser::ast::{
 };
 use crate::runtime::env::Env;
 use crate::runtime::stdlib::{self, PowFailure};
-use crate::runtime::value::{format_float, Closure, ModuleValue, SumType, Value};
+use crate::runtime::value::{format_float, Closure, MapValue, ModuleValue, SumType, Value};
 use crate::semantic::builtin_sums::BUILTIN_SUMS;
 use crate::semantic::type_checker::{is_stdlib_import, node_id, resolve_module_path, Ownership, Program};
 

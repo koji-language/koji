@@ -14,16 +14,13 @@ type Json = {
     Float(value: float)
     String(value: string)
     Array(items: Json[])
-    Object(fields: JsonObject)
-}
-
-type JsonObject = {
-    [key: string]: Json
+    Object(fields: Map[string, Json])
 }
 ```
 
 -   A number without `.`, `e` or `E` is an `Int` (`2025`); any other number is a `Float` (`2025.0`, `1e3`).
 -   JSON `null` is the `Null` variant: Koji itself has no `null`.
+-   An object is a `Map[string, Json]` (also named `json.JsonObject`), which keeps the order of its keys.
 -   `Int(1) == Float(1.0)` is `false`: they are different variants.
 
 ## Functions

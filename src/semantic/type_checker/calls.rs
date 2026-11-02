@@ -49,6 +49,15 @@ impl Checker {
             AstNode::Member { object, name } => {
                 // `Person.create(...)`: an associated function.
                 if let Some(id) = self.type_path(object) {
+                    if id == self.builtins.set && name == "from" {
+                        // Run by the interpreter as the built-in `Set.from`.
+                        *method.borrow_mut() = Some(MethodRef {
+                            module: PathBuf::new(),
+                            key: "Set.from".to_string(),
+                            has_self: false,
+                        });
+                        return self.check_set_from(args, expected);
+                    }
                     return self.check_associated_call(id, name, args, method, expected);
                 }
                 let object_ty = self.check_value(object, None)?;
@@ -57,6 +66,9 @@ impl Checker {
                         let element = (**element).clone();
                         return self.check_list_method(callee, object, element, name, args);
                     }
+                }
+                if let Some(ty) = self.check_collection_method(callee, object, &object_ty, name, args)? {
+                    return Ok(ty);
                 }
                 let user_method = match &object_ty {
                     Type::Named { id, .. } | Type::Variant { id, .. } => {

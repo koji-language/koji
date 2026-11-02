@@ -868,13 +868,7 @@ impl Parser {
             Token::TemplateString(raw) => parse_template(&raw, line),
             Token::Boolean(b) => Ok(AstNode::BooleanLiteral(b)),
             Token::Identifier(name) => Ok(AstNode::Identifier(name)),
-            Token::LBracket => {
-                let elements = self.grouped(|p| {
-                    p.parse_comma_separated(&Token::RBracket, |p| p.parse_expression(0))
-                })?;
-                self.expect(Token::RBracket, "']' at the end of the array")?;
-                Ok(AstNode::ArrayLiteral(elements))
-            }
+            Token::LBracket => self.grouped(Self::parse_brackets),
             Token::LBrace => self.grouped(Self::parse_object_literal),
             Token::If => self.parse_if(),
             Token::Match => self.parse_match(),
@@ -964,6 +958,37 @@ impl Parser {
             method: RefCell::new(None),
             displays: RefCell::new(Vec::new()),
         })
+    }
+
+    /// After `[`: a list `[1, 2]`, or a map `['Ana': 30]` (`[:]` is the empty map).
+    fn parse_brackets(&mut self) -> Result<AstNode, EzError> {
+        if *self.current() == Token::Colon {
+            self.advance(); // :
+            self.expect(Token::RBracket, "']' after '[:'")?;
+            return Ok(AstNode::MapLiteral(Vec::new()));
+        }
+        let items = self.parse_comma_separated(&Token::RBracket, |p| {
+            let item = p.parse_expression(0)?;
+            if *p.current() == Token::Colon {
+                p.advance();
+                return Ok((item, Some(p.parse_expression(0)?)));
+            }
+            Ok((item, None))
+        })?;
+        self.expect(Token::RBracket, "']' at the end of the list")?;
+        let entries = items.iter().filter(|(_, value)| value.is_some()).count();
+        if entries == 0 {
+            return Ok(AstNode::ArrayLiteral(items.into_iter().map(|(item, _)| item).collect()));
+        }
+        if entries != items.len() {
+            return self.error_here("a map literal needs 'key: value' for every entry".to_string());
+        }
+        Ok(AstNode::MapLiteral(
+            items
+                .into_iter()
+                .map(|(key, value)| (key, value.expect("counted above")))
+                .collect(),
+        ))
     }
 
     fn parse_index(&mut self, target: AstNode) -> Result<AstNode, EzError> {

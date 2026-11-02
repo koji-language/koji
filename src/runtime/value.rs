@@ -21,6 +21,9 @@ pub enum Value {
     /// Shape-typed values, object literals and dictionaries.
     Object(Rc<RefCell<Object>>),
     Variant(Rc<VariantValue>),
+    /// `Map[K, V]` and `Set[T]` (a set has `void` values), with value semantics like lists.
+    Map(Rc<RefCell<MapValue>>),
+    Set(Rc<RefCell<MapValue>>),
     Function(Rc<Closure>),
     /// Built-in function, by qualified name (`print`, `math.sqrt`).
     Builtin(Rc<str>),
@@ -240,6 +243,8 @@ impl Value {
             Value::Void => "void",
             Value::List(_) => "list",
             Value::Object(_) => "object",
+            Value::Map(_) => "Map",
+            Value::Set(_) => "Set",
             Value::Variant(_) => "variant",
             Value::Function(_) | Value::Builtin(_) | Value::Constructor(_) => "function",
             Value::Module(_) => "module",
@@ -337,6 +342,33 @@ impl Value {
                 }
                 out.push_str(" }");
             }
+            Value::Map(map) => {
+                let map = map.borrow();
+                if map.entries.is_empty() {
+                    out.push_str("[:]");
+                    return;
+                }
+                out.push('[');
+                for (i, (key, value)) in map.entries.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    key.write_repr(out);
+                    out.push_str(": ");
+                    value.write_repr(out);
+                }
+                out.push(']');
+            }
+            Value::Set(set) => {
+                out.push_str("Set([");
+                for (i, (item, _)) in set.borrow().entries.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    item.write_repr(out);
+                }
+                out.push_str("])");
+            }
             Value::Variant(variant) => {
                 out.push_str(&variant.name);
                 if !variant.values.is_empty() {
@@ -392,6 +424,11 @@ impl Value {
                     a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.equals(y))
                 }
             }
+            (Value::Map(a), Value::Map(b)) | (Value::Set(a), Value::Set(b)) => {
+                let (a, b) = (a.borrow(), b.borrow());
+                a.len() == b.len()
+                    && a.entries.iter().all(|(key, value)| b.get(key).is_some_and(|other| value.equals(other)))
+            }
             (Value::Object(a), Value::Object(b)) => {
                 Rc::ptr_eq(a, b) || {
                     let (a, b) = (a.borrow(), b.borrow());
@@ -437,4 +474,118 @@ impl Value {
             _ => self.equals(other),
         }
     }
+}
+
+/// The entries of a map (or the items of a set), in insertion order, with an index by the
+/// hash of their key.
+#[derive(Debug, Clone, Default)]
+pub struct MapValue {
+    pub entries: Vec<(Value, Value)>,
+    index: std::collections::HashMap<u64, Vec<usize>>,
+}
+
+impl MapValue {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn position(&self, key: &Value) -> Option<usize> {
+        self.index
+            .get(&hash_value(key))?
+            .iter()
+            .copied()
+            .find(|&i| self.entries[i].0.equals(key))
+    }
+
+    pub fn get(&self, key: &Value) -> Option<&Value> {
+        self.position(key).map(|i| &self.entries[i].1)
+    }
+
+    pub fn get_mut(&mut self, key: &Value) -> Option<&mut Value> {
+        self.position(key).map(|i| &mut self.entries[i].1)
+    }
+
+    /// Adds or replaces the value of `key`; returns the old value.
+    pub fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
+        match self.position(&key) {
+            Some(i) => Some(std::mem::replace(&mut self.entries[i].1, value)),
+            None => {
+                self.index.entry(hash_value(&key)).or_default().push(self.entries.len());
+                self.entries.push((key, value));
+                None
+            }
+        }
+    }
+
+    pub fn remove(&mut self, key: &Value) -> Option<Value> {
+        let i = self.position(key)?;
+        let (_, value) = self.entries.remove(i);
+        // The positions after `i` moved: rebuild the index.
+        self.index.clear();
+        for (i, (key, _)) in self.entries.iter().enumerate() {
+            self.index.entry(hash_value(key)).or_default().push(i);
+        }
+        Some(value)
+    }
+}
+
+/// A hash that agrees with `Value::equals` (fields and entries in any order hash the same).
+fn hash_value(value: &Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn feed(value: &Value, hasher: &mut std::collections::hash_map::DefaultHasher) {
+        let unordered = |items: Vec<u64>, hasher: &mut std::collections::hash_map::DefaultHasher| {
+            items.into_iter().fold(0u64, u64::wrapping_add).hash(hasher)
+        };
+        match value {
+            Value::Int(n) => (0u8, *n).hash(hasher),
+            // A float with an integer value hashes like the int (`==` treats them as equal).
+            Value::Float(f) if f.fract() == 0.0 && f.abs() < 9.2e18 => (0u8, *f as i64).hash(hasher),
+            Value::Float(f) => (1u8, f.to_bits()).hash(hasher),
+            Value::Str(s) => (2u8, s.as_str()).hash(hasher),
+            Value::Char(c) => (3u8, *c).hash(hasher),
+            Value::Bool(b) => (4u8, *b).hash(hasher),
+            Value::List(items) => {
+                5u8.hash(hasher);
+                for item in items.borrow().iter() {
+                    feed(item, hasher);
+                }
+            }
+            Value::Object(object) => {
+                6u8.hash(hasher);
+                let object = object.borrow();
+                let parts = object.fields.iter().map(|(name, value)| {
+                    let mut part = std::collections::hash_map::DefaultHasher::new();
+                    name.hash(&mut part);
+                    feed(value, &mut part);
+                    part.finish()
+                });
+                unordered(parts.collect(), hasher);
+            }
+            Value::Variant(variant) => {
+                (7u8, variant.name.as_str()).hash(hasher);
+                for value in &variant.values {
+                    feed(value, hasher);
+                }
+            }
+            Value::Map(map) | Value::Set(map) => {
+                8u8.hash(hasher);
+                let map = map.borrow();
+                let parts = map.entries.iter().map(|(key, value)| {
+                    let mut part = std::collections::hash_map::DefaultHasher::new();
+                    feed(key, &mut part);
+                    feed(value, &mut part);
+                    part.finish()
+                });
+                unordered(parts.collect(), hasher);
+            }
+            _ => 9u8.hash(hasher),
+        }
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    feed(value, &mut hasher);
+    hasher.finish()
 }

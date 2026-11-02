@@ -31,6 +31,17 @@ impl Interpreter {
     ) -> Exec<Value> {
         // A method (`person.greet()`) or an associated function (`Person.create()`).
         if let Some(method) = method {
+            // `Set.from(items)`: built in.
+            if method.module.as_os_str().is_empty() && method.key == "Set.from" {
+                let (values, _, _) = self.eval_args(args, env)?;
+                let mut set = MapValue::default();
+                if let Some(Value::List(items)) = values.first() {
+                    for item in items.borrow().iter() {
+                        set.insert(item.clone(), Value::Void);
+                    }
+                }
+                return Ok(Value::Set(Rc::new(RefCell::new(set))));
+            }
             let closure = match self.methods.get(&(method.module.clone(), method.key.clone())) {
                 Some(closure) => Rc::clone(closure),
                 None => return Err(self.error(format!("method '{}' not found", method.key))),
@@ -276,6 +287,23 @@ impl Interpreter {
                 self.call_value(&member, args)
             }
             Value::Native(native) => stdlib::native_method(self, native, name, args),
+            Value::Map(map) | Value::Set(map) => {
+                let is_map = matches!(object, Value::Map(_));
+                let map = map.borrow();
+                let key = args.first();
+                Ok(match name {
+                    "get" => match key.and_then(|key| map.get(key)) {
+                        Some(value) => some(value.clone()),
+                        None => stdlib::none(),
+                    },
+                    "has" => Value::Bool(key.is_some_and(|key| map.get(key).is_some())),
+                    "keys" => Value::list(map.entries.iter().map(|(key, _)| key.clone()).collect()),
+                    "values" if is_map => Value::list(map.entries.iter().map(|(_, value)| value.clone()).collect()),
+                    "values" => Value::list(map.entries.iter().map(|(item, _)| item.clone()).collect()),
+                    "length" => Value::Int(map.len() as i64),
+                    other => return Err(self.error(format!("{} has no method '{}'", object.type_name(), other))),
+                })
+            }
             Value::Variant(variant) if variant.sum.name == "Result" && name == "mapErr" => {
                 if variant.name != "Err" {
                     return Ok(object.clone());
@@ -292,8 +320,8 @@ impl Interpreter {
         }
     }
 
-    /// The list methods that change the list: `push`, `pop`, `insert`, `removeAt`, `sort` and
-    /// `sortBy`.
+    /// The built-in methods that change the value they are called on: `push`, `pop`, `insert`,
+    /// `removeAt`, `sort` and `sortBy` on lists, `remove` on maps, `add` and `remove` on sets.
     fn change_list(&mut self, place: &Place, name: &str, args: Vec<Value>, env: &Rc<Env>) -> Exec<Value> {
         if name == "sort" || name == "sortBy" {
             let items = match self.read_place(place, env)? {
@@ -323,8 +351,30 @@ impl Interpreter {
             }
         };
         self.modify_place(place, env, |slot| {
+            let is_map = matches!(slot, Value::Map(_));
             let items = match slot {
                 Value::List(items) => items,
+                // `map.remove(key)`, `set.add(item)`, `set.remove(item)`.
+                Value::Map(map) | Value::Set(map) => {
+                    if Rc::strong_count(map) > 1 {
+                        let copy = map.borrow().clone();
+                        *map = Rc::new(RefCell::new(copy));
+                    }
+                    let mut map = map.borrow_mut();
+                    let key = first.unwrap_or(Value::Void);
+                    return Ok(match (name, is_map) {
+                        ("remove", true) => match map.remove(&key) {
+                            Some(value) => some(value),
+                            None => stdlib::none(),
+                        },
+                        ("remove", false) => Value::Bool(map.remove(&key).is_some()),
+                        ("add", false) => {
+                            map.insert(key, Value::Void);
+                            Value::Void
+                        }
+                        (other, _) => return Err(format!("no method '{}'", other)),
+                    });
+                }
                 _ => return Err(format!("'{}' is only for lists", name)),
             };
             if Rc::strong_count(items) > 1 {

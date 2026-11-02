@@ -167,14 +167,8 @@ impl Checker {
             .table
             .fields_of(&Self::named(id))
             .is_some_and(|fields| fields.iter().any(|(n, _)| n == name));
-        let is_dict_length = name == "length" && matches!(self.table.get(id).kind, TypeKind::Dict { .. });
-        if is_field || is_dict_length {
-            return self.err(format!(
-                "'{}' has the same name as a {} of '{}'",
-                full,
-                if is_field { "field" } else { "built-in method" },
-                owner
-            ));
+        if is_field {
+            return self.err(format!("'{}' has the same name as a field of '{}'", full, owner));
         }
 
         let has_self = params.first().is_some_and(|p| p.name == "self");

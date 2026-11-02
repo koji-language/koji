@@ -164,8 +164,10 @@ impl Checker {
                     Type::List(inner) => (**inner).clone(),
                     Type::String => Type::Char,
                     Type::Unknown => Type::Unknown,
-                    Type::Named { id, .. } => match &self.table.get(*id).kind {
-                        TypeKind::Dict { key, .. } => key.clone(),
+                    // A map gives its keys; a set, its items.
+                    Type::Named { .. } => match (self.map_parts(&iterable_ty), self.set_item(&iterable_ty)) {
+                        (Some((key, _)), _) => key,
+                        (None, Some(item)) => item,
                         _ => return self.not_iterable(&iterable_ty),
                     },
                     _ => return self.not_iterable(&iterable_ty),
@@ -341,13 +343,12 @@ impl Checker {
                         (**element).clone()
                     }
                     Type::Unknown => Type::Unknown,
-                    Type::Named { id, .. } => match &self.table.get(*id).kind {
-                        TypeKind::Dict { key, value } => {
-                            let (key, value) = (key.clone(), value.clone());
-                            self.expect_type(&key, &index_ty, "dictionary key")?;
+                    Type::Named { .. } => match self.map_parts(&container) {
+                        Some((key, value)) => {
+                            self.expect_type(&key, &index_ty, "map key")?;
                             value
                         }
-                        _ => return self.err(format!("cannot assign by index to {}", self.show(&container))),
+                        None => return self.err(format!("cannot assign by index to {}", self.show(&container))),
                     },
                     Type::String => return self.err("strings cannot be modified".to_string()),
                     other => return self.err(format!("cannot assign by index to {}", self.show(other))),

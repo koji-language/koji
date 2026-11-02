@@ -25,6 +25,7 @@ mod generics;
 use generics::GenericCallee;
 mod expressions;
 mod calls;
+mod collections;
 mod ownership;
 mod patterns;
 
@@ -214,7 +215,8 @@ pub struct BuiltinTypes {
     pub file_mode: TypeId,
     pub http_error: TypeId,
     pub json: TypeId,
-    pub json_object: TypeId,
+    pub map: TypeId,
+    pub set: TypeId,
     pub json_error: TypeId,
     pub date_error: TypeId,
     pub file: TypeId,

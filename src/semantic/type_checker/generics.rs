@@ -148,7 +148,10 @@ impl Checker {
                             .iter()
                             .all(|(_, field)| self.equatable(&field.substitute(args), visited))
                     }),
-                    TypeKind::Dict { value, .. } => self.equatable(&value.substitute(args), visited),
+                    TypeKind::Map { key, value } => {
+                        self.equatable(&key.substitute(args), visited) && self.equatable(&value.substitute(args), visited)
+                    }
+                    TypeKind::Set { item } => self.equatable(&item.substitute(args), visited),
                     TypeKind::Pending => true,
                 }
             }

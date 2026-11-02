@@ -39,6 +39,15 @@ impl Interpreter {
                 }
                 Ok(Value::list(items))
             }
+            AstNode::MapLiteral(entries) => {
+                let mut map = MapValue::default();
+                for (key, value) in entries {
+                    let key = self.eval(key, env)?;
+                    let value = self.eval(value, env)?;
+                    map.insert(key, value);
+                }
+                Ok(Value::Map(Rc::new(RefCell::new(map))))
+            }
             AstNode::ObjectLiteral(entries) => {
                 let mut fields = Vec::with_capacity(entries.len());
                 for entry in entries {
@@ -172,6 +181,8 @@ impl Interpreter {
                 let items: Vec<Value> = match &iterable {
                     Value::List(items) => items.borrow().clone(),
                     Value::Str(s) => s.chars().map(Value::Char).collect(),
+                    // A map gives its keys, a set its items.
+                    Value::Map(map) | Value::Set(map) => map.borrow().entries.iter().map(|(key, _)| key.clone()).collect(),
                     Value::Object(object) => object
                         .borrow()
                         .fields
@@ -359,6 +370,10 @@ impl Interpreter {
                 let position = self.list_position(chars.len(), index)?;
                 Ok(Value::Char(chars[position]))
             }
+            Value::Map(map) => match map.borrow().get(index) {
+                Some(value) => Ok(value.clone()),
+                None => Err(self.error(format!("key {} not found", index.repr()))),
+            },
             Value::Object(object) => match index {
                 Value::Str(key) => match object.borrow().get(key) {
                     Some(value) => Ok(value.clone()),

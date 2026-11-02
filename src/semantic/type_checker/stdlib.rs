@@ -13,14 +13,22 @@ impl Checker {
             ids.insert(sum.name, table.add(sum.name, sum.params, TypeKind::Pending));
         }
         let json = ids["Json"];
-        let json_object = table.add(
-            "JsonObject",
-            0,
-            TypeKind::Dict {
-                key: Type::String,
-                value: Self::named(json),
+        // `Map[K: equatable, V]` and `Set[T: equatable]`.
+        let map = table.add(
+            "Map",
+            2,
+            TypeKind::Map {
+                key: Type::Param(0),
+                value: Type::Param(1),
             },
         );
+        table.types[map].constraints = vec![Constraint::Equatable, Constraint::None];
+        let set = table.add("Set", 1, TypeKind::Set { item: Type::Param(0) });
+        table.types[set].constraints = vec![Constraint::Equatable];
+        let json_object = Type::Named {
+            id: map,
+            args: vec![Type::String, Self::named(json)],
+        };
         let field_type = |name: &str| -> Type {
             match name {
                 "T0" => Type::Param(0),
@@ -30,7 +38,7 @@ impl Checker {
                 "float" => Type::Float,
                 "boolean" => Type::Boolean,
                 "Json[]" => Type::List(Box::new(Self::named(json))),
-                "JsonObject" => Self::named(json_object),
+                "JsonObject" => json_object.clone(),
                 other => panic!("unknown field type '{}' in a built-in sum type", other),
             }
         };
@@ -139,7 +147,8 @@ impl Checker {
                 file_mode: ids["Mode"],
                 http_error: ids["HttpError"],
                 json,
-                json_object,
+                map,
+                set,
                 json_error: ids["JsonError"],
                 date_error: ids["DateError"],
                 file,
@@ -198,6 +207,8 @@ impl Checker {
         for (name, ty) in primitives {
             scope.types.insert(name.to_string(), TypeRef::Type(ty));
         }
+        scope.types.insert("Map".to_string(), TypeRef::Generic(self.builtins.map));
+        scope.types.insert("Set".to_string(), TypeRef::Generic(self.builtins.set));
         for sum in BUILTIN_SUMS.iter().filter(|sum| sum.module.is_none()) {
             let id = self.builtin_sum_id(sum.name);
             let type_ref = if sum.params > 0 {
@@ -273,7 +284,7 @@ impl Checker {
             "file" => &[("File", b.file)],
             "datetime" => &[("DateTime", b.datetime)],
             "http" => &[("Response", b.response)],
-            "json" => &[("JsonObject", b.json_object)],
+            "json" => &[],
             "regex" => &[("Match", b.regex_match), ("Regex", b.regex)],
             _ => &[],
         };
@@ -281,6 +292,14 @@ impl Checker {
             module
                 .types
                 .insert(type_name.to_string(), TypeRef::Type(Self::named(*id)));
+        }
+        // `json.JsonObject` is `Map[string, Json]`.
+        if name == "json" {
+            let json_object = Type::Named {
+                id: b.map,
+                args: vec![Type::String, Self::named(b.json)],
+            };
+            module.types.insert("JsonObject".to_string(), TypeRef::Type(json_object));
         }
         // Sum types of the module (`FileError`, `Json`...), with their constructors.
         let mut constructors = Scope::default();
@@ -578,7 +597,6 @@ impl Checker {
                 return Ok(Type::Unknown);
             }
             Type::Named { id, .. } => match &self.table.get(*id).kind {
-                TypeKind::Dict { .. } if name == "length" => Some((vec![], Type::Int)),
                 TypeKind::Builtin { methods, .. } => methods
                     .iter()
                     .find(|(n, _, _)| n == name)

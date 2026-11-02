@@ -1,6 +1,6 @@
 # Custom Types
 
-Custom types are declared with `type`. This page covers shape types (named fields), dictionaries (index signatures), intersections, and the methods of a type. Types with variants are covered in [Sum Types](sum-types.md).
+Custom types are declared with `type`. This page covers shape types (named fields), intersections, and the methods of a type. Types with variants are covered in [Sum Types](sum-types.md).
 
 ## Shape Types
 
@@ -77,25 +77,18 @@ function move(point: Point) { ... }
 move({ x: 1, y: 2 }) // Ok: the parameter gives the type
 ```
 
-## Index Signatures
+## Dictionaries
 
-Types with dynamic keys: every key is a `string`, and every value has the same type. They work as dictionaries.
+Koji has no index signatures (`{ [key: string]: string }`): a dictionary is a [`Map`](composite-types.md#map), which accepts any equatable key type. A type can name a map:
 
 ```koji
-type Dictionary = {
-    [key: string]: string
-}
+type Dictionary = Map[string, string]
 
-translations: Dictionary = {
+translations: Dictionary = [
     'hello': 'olá',
     'world': 'mundo'
-}
-
-print(translations['hello']) // olá
-translations['thanks'] = 'obrigado'
+]
 ```
-
-Reading a key that does not exist panics. To go through the keys, use `for key in translations`.
 
 ## Type Union
 

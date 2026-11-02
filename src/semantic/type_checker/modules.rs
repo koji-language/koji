@@ -108,7 +108,6 @@ impl Checker {
                         TypeKind::Shape(fields) => {
                             types.extend(fields.iter().map(|(_, t)| t.clone()))
                         }
-                        TypeKind::Dict { value, .. } => types.push(value.clone()),
                         _ => {}
                     }
                     types.extend(args.iter().cloned());

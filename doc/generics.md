@@ -111,7 +111,7 @@ print(max(['b', 'a'])) // b
 max([ana, bia]) // Error! Person is not orderable, as 'max' requires
 ```
 
-Types never declare what they support: the compiler decides from their structure. A shape, a sum type, a list or a dictionary is equatable when everything it holds is, so `type Point = { x: int, y: int }` is equatable. Functions and move-only values (files, types with `drop`) are not. A type of your own is never orderable; to sort or compare values of it, pass the comparison as a function.
+Types never declare what they support: the compiler decides from their structure. A shape, a sum type, a list, a map or a set is equatable when everything it holds is, so `type Point = { x: int, y: int }` is equatable. Functions and move-only values (files, types with `drop`) are not. A type of your own is never orderable; to sort or compare values of it, pass the comparison as a function.
 
 Generic types can have constraints too: `type Set[T: equatable] = { ... }` only accepts equatable types (`Set[string]`, not `Set[(int) => int]`).
 

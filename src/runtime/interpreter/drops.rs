@@ -62,6 +62,13 @@ impl Interpreter {
                     self.drop_value(item)?;
                 }
             }
+            Value::Map(map) | Value::Set(map) => {
+                let entries = map.borrow().entries.clone();
+                for (key, value) in entries {
+                    self.drop_value(key)?;
+                    self.drop_value(value)?;
+                }
+            }
             Value::Native(native) => {
                 if let Native::File(handle) = &mut *native.borrow_mut() {
                     handle.file = None;

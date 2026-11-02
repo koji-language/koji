@@ -653,25 +653,68 @@ fn shape_types() {
 }
 
 #[test]
-fn index_signatures() {
+fn maps_and_sets() {
     let source = r#"
-        type Dictionary = {
-            [key: string]: string
-        }
+        type Dictionary = Map[string, string]
 
-        translations: Dictionary = {
+        translations: Dictionary = [
             'hello': 'olá',
             'world': 'mundo'
-        }
+        ]
         translations['bye'] = 'tchau'
         print(translations['hello'], 'world' in translations, translations.length())
         for key in translations { print(key) }
+
+        ages: Map[string, int] = ['Ana': 30, 'Bia': 25]
+        var copy = ages
+        copy['Ana'] += 1
+        print(ages['Ana'], copy['Ana'], ages.get('Bia'), ages.get('X'), ages.has('Ana'))
+        print(copy.remove('Bia'), copy.remove('X'), copy, copy.keys(), copy.values())
+        empty: Map[int, string] = [:]
+        print(empty, [1: 'um'])
+
+        type Point = {
+            x: int
+            y: int
+        }
+        var seen: Set[Point] = Set.from([])
+        seen.add({ x: 1, y: 2 })
+        seen.add({ x: 1, y: 2 })
+        p: Point = { x: 1, y: 2 }
+        print(seen.length(), seen.has(p), p in seen)
+        s = Set.from([3, 1, 3, 2])
+        var t = s
+        print(t.remove(3), t.remove(9))
+        print(s, t, s.values(), s == Set.from([1, 2, 3]))
+
+        counts: Map[char, int] = [:]
+        for c in 'banana' {
+            if (c in counts) {
+                counts[c] += 1
+            } else {
+                counts[c] = 1
+            }
+        }
+        print(counts)
     "#;
-    assert_eq!(run(source), "olá true 3\nhello\nworld\nbye\n");
-    assert_error(
-        "type D = { [key: string]: string }\nd: D = { 'a': 1 }",
-        "must be string",
+    assert_eq!(
+        run(source),
+        "olá true 3\nhello\nworld\nbye\n30 31 Some(25) None true\n\
+         Some(25) None ['Ana': 31] ['Ana'] [31]\n[:] [1: 'um']\n1 true true\ntrue false\n\
+         Set([3, 1, 2]) Set([1, 2]) [3, 1, 2] true\n['b': 1, 'a': 3, 'n': 2]\n"
     );
+    let errors = [
+        ("type D = { [key: string]: string }", "'D' cannot be an index signature: use a map"),
+        ("d: Map[string, int] = { 'a': 1 }", "a map is written with brackets, not braces"),
+        ("m = ['a': 1, 'b': 'x']", "map values must have the same type"),
+        ("m = [(n: int) => n: 1]", "map keys must be equatable"),
+        ("imut m = ['a': 1]\nm.remove('a')", "cannot call 'remove' on 'm', as it changes the value: it is imut"),
+        ("m = ['a': 1, 2]", "a map literal needs 'key: value' for every entry"),
+        ("s: Set[(int) => int] = Set.from([])", "is not equatable"),
+    ];
+    for (code, fragment) in errors {
+        assert_error(code, fragment);
+    }
 }
 
 #[test]

@@ -76,6 +76,7 @@ impl Checker {
                 }
                 Ok(Type::List(Box::new(element_ty)))
             }
+            AstNode::MapLiteral(entries) => self.check_map_literal(entries, expected),
             AstNode::ObjectLiteral(entries) => {
                 let ty = self.check_object(entries, expected)?;
                 // A value of a type with `drop` remembers its type, to call it.
@@ -197,13 +198,12 @@ impl Checker {
                         Ok(Type::Char)
                     }
                     Type::Unknown => Ok(Type::Unknown),
-                    Type::Named { id, .. } => match &self.table.get(*id).kind {
-                        TypeKind::Dict { key, value } => {
-                            let (key, value) = (key.clone(), value.clone());
-                            self.expect_type(&key, &index_ty, "dictionary key")?;
+                    Type::Named { .. } => match self.map_parts(&target_ty) {
+                        Some((key, value)) => {
+                            self.expect_type(&key, &index_ty, "map key")?;
                             Ok(value)
                         }
-                        _ => self.err(format!("cannot index a value of type {}", self.show(&target_ty))),
+                        None => self.err(format!("cannot index a value of type {}", self.show(&target_ty))),
                     },
                     other => self.err(format!("cannot index a value of type {}", self.show(other))),
                 }
@@ -550,8 +550,9 @@ impl Checker {
                     }
                     Some(Type::Boolean)
                 }
-                Type::Named { id, .. } => match &self.table.get(*id).kind {
-                    TypeKind::Dict { key, .. } if self.assignable(key, left) => Some(Type::Boolean),
+                Type::Named { .. } => match (self.map_parts(right), self.set_item(right)) {
+                    (Some((key, _)), _) if self.assignable(&key, left) => Some(Type::Boolean),
+                    (None, Some(item)) if self.assignable(&item, left) => Some(Type::Boolean),
                     _ => None,
                 },
                 _ => None,
@@ -662,21 +663,10 @@ impl Checker {
                 self.ensure_constraints(&generic, &info.constraints, &info.name)?;
                 Ok(Type::Named { id, args: generic })
             }
-            Some((ty, TypeKind::Dict { value, .. })) => {
-                for entry in entries {
-                    let value_ty = self.check_value(&entry.value, Some(&value))?;
-                    self.consume(&entry.value, &value_ty)?;
-                    if !self.assignable(&value, &value_ty) {
-                        return self.err(format!(
-                            "value of '{}' must be {}, found {}",
-                            entry.key,
-                            self.show(&value),
-                            self.show(&value_ty)
-                        ));
-                    }
-                }
-                Ok(ty)
-            }
+            Some((ty, TypeKind::Map { .. })) => self.err(format!(
+                "a map is written with brackets, not braces: ['key': value] (for {})",
+                self.show(&ty)
+            )),
             // Types are nominal: an object literal is always a value of a declared type, which
             // comes from where it is used (an annotation, a parameter, a return type...).
             Some((ty, _)) => self.err(format!(
