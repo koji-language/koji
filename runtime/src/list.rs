@@ -29,20 +29,22 @@ pub struct KojiElementType {
     pub equal: unsafe extern "C" fn(*const c_void, *const c_void) -> bool,
     /// -1, 0 or 1; only for orderable items.
     pub compare: Option<unsafe extern "C" fn(*const c_void, *const c_void) -> i32>,
+    /// A hash that agrees with `equal` (for the keys of maps).
+    pub hash: unsafe extern "C" fn(*const c_void) -> u64,
 }
 
 pub struct KojiList {
     references: Cell<usize>,
     element: *const KojiElementType,
-    items: Vec<u64>,
+    pub(crate) items: Vec<u64>,
 }
 
 impl KojiList {
-    fn element(&self) -> &KojiElementType {
+    pub(crate) fn element(&self) -> &KojiElementType {
         unsafe { &*self.element }
     }
 
-    fn slot(&self, index: usize) -> *const c_void {
+    pub(crate) fn slot(&self, index: usize) -> *const c_void {
         &self.items[index] as *const u64 as *const c_void
     }
 
@@ -72,7 +74,7 @@ impl KojiList {
     }
 }
 
-fn new_list(element: *const KojiElementType, items: Vec<u64>) -> *mut KojiList {
+pub(crate) fn new_list(element: *const KojiElementType, items: Vec<u64>) -> *mut KojiList {
     Box::into_raw(Box::new(KojiList {
         references: Cell::new(1),
         element,
@@ -335,4 +337,16 @@ pub extern "C" fn koji_list_index_of(list: *const KojiList, value: *const c_void
     (0..list.items.len())
         .position(|index| unsafe { (list.element().equal)(list.slot(index), value) })
         .map_or(-1, |index| index as i64)
+}
+
+/// A hash of the items, in order.
+#[no_mangle]
+pub extern "C" fn koji_list_hash(list: *const KojiList) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let list = self::list(list);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for index in 0..list.items.len() {
+        unsafe { (list.element().hash)(list.slot(index)) }.hash(&mut hasher);
+    }
+    hasher.finish()
 }

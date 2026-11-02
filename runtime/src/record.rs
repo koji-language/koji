@@ -235,3 +235,16 @@ pub extern "C" fn koji_record_repr(record: *const KojiRecord) -> *mut KojiString
     }
     new_string(text)
 }
+
+/// A hash of the variant and the fields.
+#[no_mangle]
+pub extern "C" fn koji_record_hash(record: *const KojiRecord) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let record = self::record(record);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    record.tag.hash(&mut hasher);
+    for index in 0..record.fields.len() {
+        unsafe { (record.field_type(index).hash)(record.slot(index)) }.hash(&mut hasher);
+    }
+    hasher.finish()
+}

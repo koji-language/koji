@@ -74,6 +74,7 @@ impl fmt::Display for Step {
         match self {
             Step::Index(index) => write!(f, "{}", index),
             Step::Field(field) => write!(f, ".{}", field),
+            Step::Key(key) => write!(f, "{{{}}}", key),
         }
     }
 }
@@ -131,6 +132,15 @@ impl fmt::Display for Instruction {
             }
             Instruction::ListRemove { dest, list, index: None, .. } => write!(f, "l{} = pop {}", dest, list),
             Instruction::Fail { message, .. } => write!(f, "fail {}", message),
+            Instruction::MapNew { dest, entries } => {
+                let entries: Vec<String> = entries.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
+                write!(f, "l{} = map [{}]", dest, entries.join(", "))
+            }
+            Instruction::MapGet { dest, map, key, .. } => write!(f, "l{} = {}{{{}}}", dest, map, key),
+            Instruction::MapLookup { dest, map, key } => write!(f, "l{} = lookup {}, {}", dest, map, key),
+            Instruction::MapSet { map, key, value: Some(value), .. } => write!(f, "{}{{{}}} = {}", map, key, value),
+            Instruction::MapSet { map, key, value: None, .. } => write!(f, "add {}, {}", map, key),
+            Instruction::MapRemove { dest, map, key, .. } => write!(f, "l{} = remove {}, {}", dest, map, key),
             Instruction::ListSlice { dest, list, start, end, .. } => {
                 let bound = |bound: &Option<Operand>| bound.as_ref().map(Operand::to_string).unwrap_or_default();
                 write!(f, "l{} = {}[{}..{}]", dest, list, bound(start), bound(end))

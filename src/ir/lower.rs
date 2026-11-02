@@ -219,7 +219,11 @@ impl Lowerer<'_> {
             Type::List(element) => Ok(Ty::List(Box::new(self.ty(element)?))),
             Type::Char => self.unsupported("the type 'char'"),
             Type::Function { .. } => self.unsupported("a function value"),
-            Type::Named { id, args } | Type::Variant { id, args, .. } => self.record(*id, args).map(Ty::Record),
+            Type::Named { id, args } | Type::Variant { id, args, .. } => match &self.table.get(*id).kind {
+                TypeKind::Map { .. } => Ok(Ty::Map(Box::new(self.ty(&args[0])?), Box::new(self.ty(&args[1])?))),
+                TypeKind::Set { .. } => Ok(Ty::Set(Box::new(self.ty(&args[0])?))),
+                _ => self.record(*id, args).map(Ty::Record),
+            },
             Type::Unknown => self.unsupported("a value whose type is not known here"),
             _ => self.unsupported("this type"),
         }
@@ -299,7 +303,7 @@ impl Lowerer<'_> {
         for arg in args {
             types.push(self.checked_type(arg)?);
         }
-        self.record(id, &types).map(Ty::Record)
+        self.ty(&Type::Named { id, args: types })
     }
 
     /// The checker's type for a written type argument.
@@ -778,12 +782,18 @@ impl Lowerer<'_> {
         iterable: &AstNode,
         body: &AstNode,
     ) -> Lower<()> {
-        let list_type = self.type_in(builder, iterable)?;
-        let Ty::List(element) = &list_type else {
-            return self.unsupported("a 'for' loop over a string (char)");
+        let iterable_type = self.type_in(builder, iterable)?;
+        // A map gives its keys, a set its items (a copy, in the order they were added).
+        let (list_type, value) = match &iterable_type {
+            Ty::List(_) => (iterable_type.clone(), self.expr(builder, iterable)?.expect("a list")),
+            Ty::Map(key, _) | Ty::Set(key) => {
+                let list_type = Ty::List(key.clone());
+                let map = self.expr(builder, iterable)?.expect("a map");
+                (list_type.clone(), self.unary(builder, UnaryOp::MapKeys, map, list_type))
+            }
+            _ => return self.unsupported("a 'for' loop over a string (char)"),
         };
-        let element = (**element).clone();
-        let value = self.expr(builder, iterable)?.expect("a list");
+        let element = list_type.element().clone();
         let list = builder.local(list_type.clone(), None);
         builder.emit(Instruction::Copy {
             dest: Place::Local(list),
@@ -866,6 +876,7 @@ impl Lowerer<'_> {
             AstNode::Identifier(name) => Ok(self.variable(builder, name)?.1),
             AstNode::Index { target, .. } => match self.place_type(builder, target)? {
                 Ty::List(element) => Ok(*element),
+                Ty::Map(_, value) => Ok(*value),
                 _ => self.unsupported("assigning to an item of this value"),
             },
             AstNode::Member { object, name } => Ok(self.field(builder, object, name)?.1),
@@ -975,9 +986,16 @@ impl Lowerer<'_> {
                 path: Vec::new(),
             }),
             AstNode::Index { target, index } => {
-                let mut list = self.target(builder, target)?;
-                list.path.push(Step::Index(self.index(builder, index)?));
-                Ok(list)
+                let container_type = self.place_type(builder, target)?;
+                let mut container = self.target(builder, target)?;
+                match container_type {
+                    Ty::Map(key, _) => {
+                        let key = self.key(builder, index, &key)?;
+                        container.path.push(Step::Key(key));
+                    }
+                    _ => container.path.push(Step::Index(self.index(builder, index)?)),
+                }
+                Ok(container)
             }
             AstNode::Member { object, name } => {
                 let (field, _) = self.field(builder, object, name)?;
@@ -987,6 +1005,17 @@ impl Lowerer<'_> {
             }
             _ => self.unsupported("changing this value"),
         }
+    }
+
+    /// A key of a map, evaluated once.
+    fn key(&mut self, builder: &mut Builder, node: &AstNode, ty: &Ty) -> Lower<Operand> {
+        let value = self.value_as(builder, node, ty)?.expect("a key");
+        if !matches!(value, Operand::Local(_)) {
+            return Ok(value);
+        }
+        let local = builder.local(ty.clone(), None);
+        builder.emit(Instruction::Copy { dest: Place::Local(local), value });
+        Ok(Operand::Local(local))
     }
 
     /// An `int` index, evaluated once.
@@ -1032,6 +1061,14 @@ impl Lowerer<'_> {
                 }
                 Ok(())
             }
+            AstNode::Index { target: map, index } if matches!(self.place_type(builder, map)?, Ty::Map(..)) => {
+                let Ty::Map(key_type, _) = self.place_type(builder, map)? else { unreachable!() };
+                let map = self.target(builder, map)?;
+                let key = self.key(builder, index, &key_type)?;
+                let value = new_value(self, builder)?.expect("a value");
+                builder.emit(Instruction::MapSet { map, key, value: Some(value), line: self.line });
+                Ok(())
+            }
             AstNode::Index { target: list, index } => {
                 let list = self.target(builder, list)?;
                 let index = self.index(builder, index)?;
@@ -1074,6 +1111,7 @@ impl Lowerer<'_> {
             AstNode::ArrayLiteral(items) if matches!(target, Ty::List(_)) => {
                 self.list_literal(builder, items, target).map(Some)
             }
+            AstNode::MapLiteral(entries) if matches!(target, Ty::Map(..)) => self.map_literal(builder, entries, target).map(Some),
             AstNode::ObjectLiteral(entries) if matches!(target, Ty::Record(_)) => {
                 let Ty::Record(record) = target else { unreachable!() };
                 self.object_literal(builder, entries, *record).map(Some)
@@ -1089,6 +1127,21 @@ impl Lowerer<'_> {
                 self.convert(builder, value, &from, target)
             }
         }
+    }
+
+    fn map_literal(&mut self, builder: &mut Builder, entries: &[(AstNode, AstNode)], ty: &Ty) -> Lower<Operand> {
+        let Ty::Map(key_type, value_type) = ty else {
+            return self.unsupported("this map");
+        };
+        let mut values = Vec::new();
+        for (key, value) in entries {
+            let key = self.value_as(builder, key, key_type)?.expect("a key");
+            let value = self.value_as(builder, value, value_type)?.expect("a value");
+            values.push((key, value));
+        }
+        let dest = builder.local(ty.clone(), None);
+        builder.emit(Instruction::MapNew { dest, entries: values });
+        Ok(Operand::Local(dest))
     }
 
     fn list_literal(&mut self, builder: &mut Builder, items: &[AstNode], ty: &Ty) -> Lower<Operand> {
@@ -1137,6 +1190,7 @@ impl Lowerer<'_> {
             Ty::Bool => UnaryOp::BoolToStr,
             Ty::List(_) => UnaryOp::ListToStr,
             Ty::Record(_) => UnaryOp::RecordToStr,
+            Ty::Map(..) | Ty::Set(_) => UnaryOp::MapToStr,
             Ty::Void => return self.unsupported("showing 'void'"),
         };
         Ok(self.unary(builder, op, value, Ty::Str))
@@ -1215,6 +1269,10 @@ impl Lowerer<'_> {
                 let ty = self.type_in(builder, node)?;
                 self.list_literal(builder, items, &ty).map(Some)
             }
+            AstNode::MapLiteral(entries) => {
+                let ty = self.type_in(builder, node)?;
+                self.map_literal(builder, entries, &ty).map(Some)
+            }
             AstNode::ObjectLiteral(entries) => {
                 let Ty::Record(record) = self.type_in(builder, node)? else {
                     return self.unsupported("an object of this type");
@@ -1249,6 +1307,14 @@ impl Lowerer<'_> {
                     Place::Local(id) => Operand::Local(id),
                     Place::Global(id) => Operand::Global(id),
                 }))
+            }
+            AstNode::Index { target, index } if matches!(self.type_in(builder, target), Ok(Ty::Map(..))) => {
+                let Ok(Ty::Map(key_type, value_type)) = self.type_in(builder, target) else { unreachable!() };
+                let map = self.expr(builder, target)?.expect("a map");
+                let key = self.value_as(builder, index, &key_type)?.expect("a key");
+                let dest = builder.local(*value_type, None);
+                builder.emit(Instruction::MapGet { dest, map, key, line: self.line });
+                Ok(Some(Operand::Local(dest)))
             }
             AstNode::Index { target, index } => {
                 let Ty::List(element) = self.type_in(builder, target)? else {
@@ -1379,6 +1445,12 @@ impl Lowerer<'_> {
                 // A method (`point.move(1, 2)`) or an associated function (`Point.origin()`).
                 let method = method.borrow().clone();
                 if let Some(method) = method {
+                    if method.key == "Set.from" {
+                        let set_type = self.type_in(builder, node)?;
+                        let Ty::Set(item) = &set_type else { unreachable!("a set") };
+                        let list = self.value_as(builder, &args[0], &Ty::List(item.clone()))?.expect("a list");
+                        return Ok(Some(self.unary(builder, UnaryOp::SetFromList, list, set_type)));
+                    }
                     if !self.signatures.contains_key(&method.key) {
                         return self.unsupported(&format!("'{}'", method.key));
                     }
@@ -1467,6 +1539,11 @@ impl Lowerer<'_> {
                 let list = self.expr(builder, collection)?.expect("a list");
                 Ok(self.binary(builder, BinaryOp::ListContains, item, list, Ty::Bool))
             }
+            Ty::Map(key, _) | Ty::Set(key) => {
+                let key = self.value_as(builder, item, &key)?.expect("a key");
+                let map = self.expr(builder, collection)?.expect("a map");
+                Ok(self.binary(builder, BinaryOp::MapContains, key, map, Ty::Bool))
+            }
             Ty::Str if self.type_in(builder, item)? == Ty::Str => {
                 let needle = self.expr(builder, item)?.expect("a string");
                 let haystack = self.expr(builder, collection)?.expect("a string");
@@ -1546,6 +1623,12 @@ impl Lowerer<'_> {
                 }
                 _ => return self.unsupported(&format!("'{}' on booleans", op.symbol())),
             },
+            (Ty::Map(..), Ty::Map(..)) | (Ty::Set(_), Ty::Set(_)) => match comparison {
+                Some(comparison @ (Comparison::Equal | Comparison::NotEqual)) => {
+                    (BinaryOp::MapCompare(comparison), left, right, Ty::Bool)
+                }
+                _ => return self.unsupported(&format!("'{}' on these values", op.symbol())),
+            },
             (Ty::Record(_), Ty::Record(_)) => match comparison {
                 Some(comparison @ (Comparison::Equal | Comparison::NotEqual)) => {
                     (BinaryOp::RecordCompare(comparison), left, right, Ty::Bool)
@@ -1584,6 +1667,45 @@ impl Lowerer<'_> {
             (_, "debug") => {
                 let value = self.expr(builder, object)?.expect("a value");
                 self.debug(builder, value, &object_type).map(Some)
+            }
+            (Ty::Map(..) | Ty::Set(_), "length") => {
+                let map = self.expr(builder, object)?.expect("a map");
+                Ok(Some(self.unary(builder, UnaryOp::MapLength, map, Ty::Int)))
+            }
+            (Ty::Map(key, _) | Ty::Set(key), "has") => {
+                let key = self.value_as(builder, &args[0], key)?.expect("a key");
+                let map = self.expr(builder, object)?.expect("a map");
+                Ok(Some(self.binary(builder, BinaryOp::MapContains, key, map, Ty::Bool)))
+            }
+            (Ty::Map(key, _), "keys") | (Ty::Set(key), "values") => {
+                let map = self.expr(builder, object)?.expect("a map");
+                Ok(Some(self.unary(builder, UnaryOp::MapKeys, map, Ty::List(key.clone()))))
+            }
+            (Ty::Map(_, value), "values") => {
+                let map = self.expr(builder, object)?.expect("a map");
+                Ok(Some(self.unary(builder, UnaryOp::MapValues, map, Ty::List(value.clone()))))
+            }
+            (Ty::Map(key, _), "get") => {
+                let dest_type = self.type_in(builder, call)?;
+                let map = self.expr(builder, object)?.expect("a map");
+                let key = self.value_as(builder, &args[0], key)?.expect("a key");
+                let dest = builder.local(dest_type, None);
+                builder.emit(Instruction::MapLookup { dest, map, key });
+                Ok(Some(Operand::Local(dest)))
+            }
+            (Ty::Set(item), "add") => {
+                let map = self.target(builder, object)?;
+                let key = self.value_as(builder, &args[0], item)?.expect("an item");
+                builder.emit(Instruction::MapSet { map, key, value: None, line });
+                Ok(None)
+            }
+            (Ty::Map(key, _) | Ty::Set(key), "remove") => {
+                let dest_type = self.type_in(builder, call)?;
+                let map = self.target(builder, object)?;
+                let key = self.value_as(builder, &args[0], key)?.expect("a key");
+                let dest = builder.local(dest_type, None);
+                builder.emit(Instruction::MapRemove { dest, map, key, line });
+                Ok(Some(Operand::Local(dest)))
             }
             (Ty::Str, "length") => {
                 let text = self.expr(builder, object)?.expect("a string");

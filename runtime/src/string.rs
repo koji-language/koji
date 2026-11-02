@@ -138,3 +138,11 @@ pub extern "C" fn koji_string_length(string: *const KojiString) -> i64 {
 pub extern "C" fn koji_string_contains(haystack: *const KojiString, needle: *const KojiString) -> bool {
     string_text(haystack).contains(string_text(needle))
 }
+
+#[no_mangle]
+pub extern "C" fn koji_string_hash(string: *const KojiString) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    string_text(string).hash(&mut hasher);
+    hasher.finish()
+}

@@ -33,6 +33,7 @@ typedef struct {
     KojiString *(*repr)(const void *slot);
     bool (*equal)(const void *a, const void *b);
     int32_t (*compare)(const void *a, const void *b);
+    uint64_t (*hash)(const void *slot);
 } KojiElementType;
 
 KojiList *koji_list_new(const KojiElementType *element, size_t capacity);
@@ -52,6 +53,9 @@ bool koji_list_equal(const KojiList *a, const KojiList *b);
 bool koji_list_contains(const KojiList *list, const void *value);
 KojiString *koji_list_repr(const KojiList *list);
 KojiString *koji_list_join(const KojiList *list, const KojiString *separator);
+
+uint64_t koji_string_hash(const KojiString *string);
+uint64_t koji_list_hash(const KojiList *list);
 
 bool koji_list_pop(KojiList **variable, void *out);
 bool koji_list_remove(KojiList **variable, int64_t index, void *out);
@@ -81,6 +85,26 @@ void *koji_record_slot(KojiRecord **variable, size_t index);
 void koji_record_set(KojiRecord **variable, size_t index, const void *value);
 bool koji_record_equal(const KojiRecord *a, const KojiRecord *b);
 KojiString *koji_record_repr(const KojiRecord *record);
+uint64_t koji_record_hash(const KojiRecord *record);
+
+typedef struct KojiMap KojiMap;
+
+KojiMap *koji_map_new(const KojiElementType *key, const KojiElementType *value);
+void koji_map_retain(const KojiMap *map);
+void koji_map_release(KojiMap *map);
+int64_t koji_map_length(const KojiMap *map);
+const void *koji_map_get(const KojiMap *map, const void *key, const char *location);
+const void *koji_map_find(const KojiMap *map, const void *key);
+bool koji_map_contains(const KojiMap *map, const void *key);
+void *koji_map_slot(KojiMap **variable, const void *key, const char *location);
+void koji_map_set(KojiMap **variable, const void *key, const void *value);
+bool koji_map_remove(KojiMap **variable, const void *key, void *out);
+KojiList *koji_map_keys(const KojiMap *map);
+KojiList *koji_map_values(const KojiMap *map);
+KojiMap *koji_set_from_list(const KojiList *list);
+bool koji_map_equal(const KojiMap *a, const KojiMap *b);
+uint64_t koji_map_hash(const KojiMap *map);
+KojiString *koji_map_repr(const KojiMap *map);
 
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
@@ -124,6 +148,17 @@ static inline KojiRecord *koji_record_share(KojiRecord *record) {
     return record;
 }
 
+static inline void koji_map_set_variable(KojiMap **variable, KojiMap *value) {
+    KojiMap *old = *variable;
+    *variable = value;
+    koji_map_release(old);
+}
+
+static inline KojiMap *koji_map_share(KojiMap *map) {
+    koji_map_retain(map);
+    return map;
+}
+
 /* The items of lists and the fields of records, by type. */
 
 static int32_t koji_order(bool less, bool greater) { return less ? -1 : greater ? 1 : 0; }
@@ -134,8 +169,9 @@ static int32_t koji_compare_int(const void *a, const void *b) {
     int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
     return koji_order(x < y, x > y);
 }
+static uint64_t koji_hash_int(const void *slot) { return (uint64_t)*(const int64_t *)slot; }
 static const KojiElementType koji_element_int = {
-    sizeof(int64_t), NULL, NULL, koji_repr_int, koji_equal_int, koji_compare_int};
+    sizeof(int64_t), NULL, NULL, koji_repr_int, koji_equal_int, koji_compare_int, koji_hash_int};
 
 static KojiString *koji_repr_float(const void *slot) { return koji_string_from_float(*(const double *)slot); }
 static bool koji_equal_float(const void *a, const void *b) { return *(const double *)a == *(const double *)b; }
@@ -143,15 +179,22 @@ static int32_t koji_compare_float(const void *a, const void *b) {
     double x = *(const double *)a, y = *(const double *)b;
     return koji_order(x < y, x > y);
 }
+static uint64_t koji_hash_float(const void *slot) {
+    double value = *(const double *)slot;
+    uint64_t bits = 0;
+    if (value != 0.0) __builtin_memcpy(&bits, &value, sizeof bits); /* 0.0 and -0.0 are equal */
+    return bits;
+}
 static const KojiElementType koji_element_float = {
-    sizeof(double), NULL, NULL, koji_repr_float, koji_equal_float, koji_compare_float};
+    sizeof(double), NULL, NULL, koji_repr_float, koji_equal_float, koji_compare_float, koji_hash_float};
 
 static KojiString *koji_repr_bool(const void *slot) { return koji_string_from_bool(*(const bool *)slot); }
 static bool koji_equal_bool(const void *a, const void *b) { return *(const bool *)a == *(const bool *)b; }
 /* Like the interpreter, booleans keep their order when sorted. */
 static int32_t koji_compare_bool(const void *a, const void *b) { (void)a; (void)b; return 0; }
+static uint64_t koji_hash_bool(const void *slot) { return *(const bool *)slot; }
 static const KojiElementType koji_element_bool = {
-    sizeof(bool), NULL, NULL, koji_repr_bool, koji_equal_bool, koji_compare_bool};
+    sizeof(bool), NULL, NULL, koji_repr_bool, koji_equal_bool, koji_compare_bool, koji_hash_bool};
 
 static void koji_retain_string(const void *slot) { koji_string_retain(*(KojiString *const *)slot); }
 static void koji_release_string(const void *slot) { koji_string_release(*(KojiString *const *)slot); }
@@ -162,9 +205,10 @@ static bool koji_equal_string(const void *a, const void *b) {
 static int32_t koji_compare_string(const void *a, const void *b) {
     return koji_string_compare(*(KojiString *const *)a, *(KojiString *const *)b);
 }
+static uint64_t koji_hash_string(const void *slot) { return koji_string_hash(*(KojiString *const *)slot); }
 static const KojiElementType koji_element_string = {
     sizeof(KojiString *), koji_retain_string, koji_release_string, koji_repr_string,
-    koji_equal_string, koji_compare_string};
+    koji_equal_string, koji_compare_string, koji_hash_string};
 
 static void koji_retain_list(const void *slot) { koji_list_retain(*(KojiList *const *)slot); }
 static void koji_release_list(const void *slot) { koji_list_release(*(KojiList *const *)slot); }
@@ -172,8 +216,10 @@ static KojiString *koji_repr_list(const void *slot) { return koji_list_repr(*(Ko
 static bool koji_equal_list(const void *a, const void *b) {
     return koji_list_equal(*(KojiList *const *)a, *(KojiList *const *)b);
 }
+static uint64_t koji_hash_list(const void *slot) { return koji_list_hash(*(KojiList *const *)slot); }
 static const KojiElementType koji_element_list = {
-    sizeof(KojiList *), koji_retain_list, koji_release_list, koji_repr_list, koji_equal_list, NULL};
+    sizeof(KojiList *), koji_retain_list, koji_release_list, koji_repr_list, koji_equal_list, NULL,
+    koji_hash_list};
 
 static void koji_retain_record(const void *slot) { koji_record_retain(*(KojiRecord *const *)slot); }
 static void koji_release_record(const void *slot) { koji_record_release(*(KojiRecord *const *)slot); }
@@ -181,8 +227,20 @@ static KojiString *koji_repr_record(const void *slot) { return koji_record_repr(
 static bool koji_equal_record(const void *a, const void *b) {
     return koji_record_equal(*(KojiRecord *const *)a, *(KojiRecord *const *)b);
 }
+static uint64_t koji_hash_record(const void *slot) { return koji_record_hash(*(KojiRecord *const *)slot); }
 static const KojiElementType koji_element_record = {
-    sizeof(KojiRecord *), koji_retain_record, koji_release_record, koji_repr_record, koji_equal_record, NULL};
+    sizeof(KojiRecord *), koji_retain_record, koji_release_record, koji_repr_record, koji_equal_record, NULL,
+    koji_hash_record};
+
+static void koji_retain_map(const void *slot) { koji_map_retain(*(KojiMap *const *)slot); }
+static void koji_release_map(const void *slot) { koji_map_release(*(KojiMap *const *)slot); }
+static KojiString *koji_repr_map(const void *slot) { return koji_map_repr(*(KojiMap *const *)slot); }
+static bool koji_equal_map(const void *a, const void *b) {
+    return koji_map_equal(*(KojiMap *const *)a, *(KojiMap *const *)b);
+}
+static uint64_t koji_hash_map(const void *slot) { return koji_map_hash(*(KojiMap *const *)slot); }
+static const KojiElementType koji_element_map = {
+    sizeof(KojiMap *), koji_retain_map, koji_release_map, koji_repr_map, koji_equal_map, NULL, koji_hash_map};
 
 static inline int64_t koji_int_add(int64_t a, int64_t b, const char *location) {
     int64_t result;

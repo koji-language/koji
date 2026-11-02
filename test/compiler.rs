@@ -485,6 +485,81 @@ at (3.0, 4.0) (3.0, 4.0) (3.0, 4.0)\n\
 }
 
 #[test]
+fn maps_and_sets() {
+    let source = "mut ages: Map[string, int] = ['Ana': 30, 'Bia': 25]\n\
+immut names = [1: 'one', 2: 'two']\n\
+mut empty: Map[string, int] = [:]\n\
+\n\
+print(ages['Ana'], ages.get('Carl'), ages.get('Bia'), 'Bia' in ages, ages.has('Zed'))\n\
+\n\
+immut before = ages\n\
+ages['Carl'] = 41\n\
+ages['Ana'] += 1\n\
+print(ages.remove('Bia'), ages.remove('Bia'), ages, before, names, empty, empty.length())\n\
+\n\
+for name in ages {\n\
+    print(name, ages[name])\n\
+}\n\
+\n\
+print(ages.keys(), ages.values(), ages == ['Carl': 41, 'Ana': 31], ages != before)\n\
+\n\
+mut groups: Map[string, int[]] = ['even': [], 'odd': []]\n\
+\n\
+for n in range(6) {\n\
+    if (n % 2 == 0) {\n\
+        groups['even'].push(n)\n\
+    } else {\n\
+        groups['odd'].push(n)\n\
+    }\n\
+}\n\
+\n\
+print(groups)\n\
+\n\
+mut seen: Set[string] = Set.from(['a', 'b', 'a'])\n\
+seen.add('c')\n\
+seen.add('a')\n\
+print(seen.remove('a'), seen.remove('z'), seen.has('b'), 'c' in seen, seen, seen.length(), seen.values())\n\
+\n\
+for item in seen {\n\
+    print(item)\n\
+}\n\
+\n\
+immut points: Set[int[]] = Set.from([[1, 2], [1, 2], [3]])\n\
+print(points, Set.from([1, 2]) == Set.from([2, 1]))\n\
+\n\
+type Point = {\n\
+    x: int\n\
+    y: int\n\
+}\n\
+\n\
+mut visits: Map[Point, int] = [:]\n\
+immut home: Point = { x: 0, y: 0 }\n\
+visits[home] = 1\n\
+immut same: Point = { x: 0, y: 0 }\n\
+visits[same] += 1\n\
+print(visits, visits[home])\n\
+print(ages['Zed'])\n\
+";
+    let path = source_file("maps", source);
+    let interpreted = interpret(&path, source);
+    let compiled = compile_and_run(&path);
+    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert_eq!(compiled.output, "30 None Some(25) true false\n\
+Some(25) None ['Ana': 31, 'Carl': 41] ['Ana': 30, 'Bia': 25] [1: 'one', 2: 'two'] [:] 0\n\
+Ana 31\n\
+Carl 41\n\
+['Ana', 'Carl'] [31, 41] true true\n\
+['even': [0, 2, 4], 'odd': [1, 3, 5]]\n\
+true false true true Set(['b', 'c']) 2 ['b', 'c']\n\
+b\n\
+c\n\
+Set([[1, 2], [3]]) true\n\
+[{ x: 0, y: 0 }: 2] 2\n\
+");
+    assert!(compiled.error.ends_with("maps.kj:53: key 'Zed' not found"), "{}", compiled.error);
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));
@@ -499,10 +574,10 @@ fn examples_that_compile() {
 
 #[test]
 fn unsupported_constructs_are_reported() {
-    let path = source_file("unsupported", "immut ages = ['Ana': 30]\nprint(ages)\n");
+    let path = source_file("unsupported", "immut double = (n: int) => n * 2\nprint(double(2))\n");
     let error = kojic::build_file(&path, &path.with_extension(""), kojic::Emit::Executable).unwrap_err();
     assert!(
-        error.to_string().ends_with("unsupported.kj:1: a Map is not supported by 'kojic build' yet (use 'kojic run')"),
+        error.to_string().ends_with("unsupported.kj:1: a function value is not supported by 'kojic build' yet (use 'kojic run')"),
         "{}",
         error
     );

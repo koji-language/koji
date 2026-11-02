@@ -34,6 +34,7 @@ fn c_type(ty: &Ty) -> &'static str {
         Ty::Str => "KojiString *",
         Ty::List(_) => "KojiList *",
         Ty::Record(_) => "KojiRecord *",
+        Ty::Map(..) | Ty::Set(_) => "KojiMap *",
         Ty::Void => "void",
     }
 }
@@ -44,6 +45,7 @@ fn share(ty: &Ty, expression: String) -> String {
         Ty::Str => format!("koji_string_share({})", expression),
         Ty::List(_) => format!("koji_list_share({})", expression),
         Ty::Record(_) => format!("koji_record_share({})", expression),
+        Ty::Map(..) | Ty::Set(_) => format!("koji_map_share({})", expression),
         _ => expression,
     }
 }
@@ -53,6 +55,7 @@ fn release(ty: &Ty) -> Option<&'static str> {
         Ty::Str => Some("koji_string_release"),
         Ty::List(_) => Some("koji_list_release"),
         Ty::Record(_) => Some("koji_record_release"),
+        Ty::Map(..) | Ty::Set(_) => Some("koji_map_release"),
         _ => None,
     }
 }
@@ -66,6 +69,7 @@ fn element_type(ty: &Ty) -> &'static str {
         Ty::Str => "&koji_element_string",
         Ty::List(_) => "&koji_element_list",
         Ty::Record(_) => "&koji_element_record",
+        Ty::Map(..) | Ty::Set(_) => "&koji_element_map",
         Ty::Void => unreachable!("a list of void"),
     }
 }
@@ -293,6 +297,9 @@ impl Generator<'_> {
             Ty::Record(_) => {
                 let _ = writeln!(self.out, "    koji_record_set_variable(&{}, {});", dest, expression);
             }
+            Ty::Map(..) | Ty::Set(_) => {
+                let _ = writeln!(self.out, "    koji_map_set_variable(&{}, {});", dest, expression);
+            }
             _ => {
                 let _ = writeln!(self.out, "    {} = {};", dest, expression);
             }
@@ -312,6 +319,12 @@ impl Generator<'_> {
                     self.location(line)
                 ),
                 Step::Field(field) => format!("(void **)koji_record_slot((KojiRecord **){}, {})", variable, field),
+                Step::Key(key) => format!(
+                    "(void **)koji_map_slot((KojiMap **){}, {}, {})",
+                    variable,
+                    self.address(key),
+                    self.location(line)
+                ),
             };
         }
         variable
@@ -342,6 +355,12 @@ impl Generator<'_> {
                 field,
                 value
             ),
+            Step::Key(key) => format!(
+                "koji_map_set((KojiMap **){}, {}, &{})",
+                self.path(&container, line),
+                self.address(key),
+                value
+            ),
         };
         let _ = writeln!(self.out, "    {};", call);
         if let Some(release) = release(ty) {
@@ -352,6 +371,18 @@ impl Generator<'_> {
     /// The variable that holds the list of `target`, as a `KojiList **`.
     fn target(&self, target: &Target, line: usize) -> String {
         format!("(KojiList **){}", self.path(target, line))
+    }
+
+    /// The address of an operand that is a local or a global (a key kept in a local), or of a
+    /// compound literal for a constant.
+    fn address(&self, operand: &Operand) -> String {
+        match operand {
+            Operand::Local(_) | Operand::Global(_) => format!("&{}", self.operand(operand)),
+            Operand::Int(_) => format!("&(int64_t){{ {} }}", self.operand(operand)),
+            Operand::Float(_) => format!("&(double){{ {} }}", self.operand(operand)),
+            Operand::Bool(_) => format!("&(bool){{ {} }}", self.operand(operand)),
+            Operand::Str(_) => format!("&(KojiString *){{ {} }}", self.operand(operand)),
+        }
     }
 
     /// Calls `call`, where `VALUE` is the address of `value` (the list makes its own copy).
@@ -391,11 +422,17 @@ impl Generator<'_> {
                     UnaryOp::ListLength => format!("koji_list_length({})", value),
                     UnaryOp::RecordToStr => format!("koji_record_repr({})", value),
                     UnaryOp::RecordTag => format!("koji_record_tag({})", value),
+                    UnaryOp::MapLength => format!("koji_map_length({})", value),
+                    UnaryOp::MapToStr => format!("koji_map_repr({})", value),
+                    UnaryOp::MapKeys => format!("koji_map_keys({})", value),
+                    UnaryOp::MapValues => format!("koji_map_values({})", value),
+                    UnaryOp::SetFromList => format!("koji_set_from_list({})", value),
                 };
                 self.set(&format!("l{}", dest), &function.locals[*dest].ty, &expression);
             }
             Instruction::Binary { dest, op, left, right, line } => {
                 let expression = match op {
+                    BinaryOp::MapContains => format!("koji_map_contains({}, {})", self.operand(right), self.address(left)),
                     BinaryOp::ListIndexOf => {
                         let item_type = self.operand_type(function, left).element().clone();
                         format!(
@@ -570,6 +607,94 @@ impl Generator<'_> {
                     dest
                 );
             }
+            Instruction::MapNew { dest, entries } => {
+                let ty = function.locals[*dest].ty.clone();
+                let Ty::Map(key_type, value_type) = &ty else { unreachable!("a map") };
+                let new = format!("koji_map_new({}, {})", element_type(key_type), element_type(value_type));
+                self.set(&format!("l{}", dest), &ty, &new);
+                for (key, value) in entries {
+                    let _ = writeln!(
+                        self.out,
+                        "    {{ {} key = {}; {} value = {}; koji_map_set(&l{}, &key, &value); }}",
+                        c_type(key_type),
+                        self.operand(key),
+                        c_type(value_type),
+                        self.operand(value),
+                        dest
+                    );
+                }
+            }
+            Instruction::MapGet { dest, map, key, line } => {
+                let ty = function.locals[*dest].ty.clone();
+                let value = format!(
+                    "*({} const *)koji_map_get({}, {}, {})",
+                    c_type(&ty),
+                    self.operand(map),
+                    self.address(key),
+                    self.location(*line)
+                );
+                self.set(&format!("l{}", dest), &ty, &share(&ty, value));
+            }
+            Instruction::MapLookup { dest, map, key } => {
+                let Ty::Record(option) = function.locals[*dest].ty else { unreachable!("an Option") };
+                let variants = &self.program.records[option].variants;
+                let position = |name: &str| variants.iter().position(|v| v.name.as_deref() == Some(name)).expect("Option");
+                let (some, none) = (position("Some"), position("None"));
+                let _ = writeln!(
+                    self.out,
+                    "    {{ const void *found = koji_map_find({}, {}); KojiRecord *option = koji_record_new(&koji_record_{}, found ? {} : {}); if (found) koji_record_init(option, 0, found); koji_record_set_variable(&l{}, option); }}",
+                    self.operand(map),
+                    self.address(key),
+                    option,
+                    some,
+                    none,
+                    dest
+                );
+            }
+            Instruction::MapSet { map, key, value, line } => {
+                let map = format!("(KojiMap **){}", self.path(map, *line));
+                match value {
+                    Some(value) => {
+                        let ty = self.operand_type(function, value);
+                        let call = format!("koji_map_set({}, {}, VALUE)", map, self.address(key));
+                        self.with_address(&ty, value, &call);
+                    }
+                    None => {
+                        let _ = writeln!(self.out, "    koji_map_set({}, {}, NULL);", map, self.address(key));
+                    }
+                }
+            }
+            Instruction::MapRemove { dest, map, key, line } => {
+                let map = format!("(KojiMap **){}", self.path(map, *line));
+                match function.locals[*dest].ty {
+                    Ty::Record(option) => {
+                        let variants = &self.program.records[option].variants;
+                        let position = |name: &str| variants.iter().position(|v| v.name.as_deref() == Some(name)).expect("Option");
+                        let (some, none) = (position("Some"), position("None"));
+                        let value_type = variants[some].fields[0].1.clone();
+                        let release_value = match release(&value_type) {
+                            Some(release) => format!(" {}(value);", release),
+                            None => String::new(),
+                        };
+                        let _ = writeln!(
+                            self.out,
+                            "    {{ {} value; KojiRecord *option; if (koji_map_remove({}, {}, &value)) {{ option = koji_record_new(&koji_record_{}, {}); koji_record_init(option, 0, &value);{} }} else {{ option = koji_record_new(&koji_record_{}, {}); }} koji_record_set_variable(&l{}, option); }}",
+                            c_type(&value_type),
+                            map,
+                            self.address(key),
+                            option,
+                            some,
+                            release_value,
+                            option,
+                            none,
+                            dest
+                        );
+                    }
+                    _ => {
+                        let _ = writeln!(self.out, "    l{} = koji_map_remove({}, {}, NULL);", dest, map, self.address(key));
+                    }
+                }
+            }
             Instruction::Fail { message, line } => {
                 let _ = writeln!(self.out, "    koji_fail({}, {});", self.location(*line), self.operand(message));
             }
@@ -651,6 +776,9 @@ impl Generator<'_> {
             BinaryOp::ListCompare(Comparison::NotEqual) => format!("!koji_list_equal({}, {})", left, right),
             BinaryOp::ListCompare(_) => format!("koji_list_equal({}, {})", left, right),
             BinaryOp::ListContains | BinaryOp::ListIndexOf => unreachable!("generated by the caller"),
+            BinaryOp::MapContains => unreachable!("generated by the caller"),
+            BinaryOp::MapCompare(Comparison::NotEqual) => format!("!koji_map_equal({}, {})", left, right),
+            BinaryOp::MapCompare(_) => format!("koji_map_equal({}, {})", left, right),
             BinaryOp::RecordCompare(Comparison::NotEqual) => format!("!koji_record_equal({}, {})", left, right),
             BinaryOp::RecordCompare(_) => format!("koji_record_equal({}, {})", left, right),
             BinaryOp::ListJoin => format!("koji_list_join({}, {})", left, right),

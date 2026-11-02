@@ -32,13 +32,15 @@ pub enum Ty {
     List(Box<Ty>),
     /// A value of a declared type (`Program::records`).
     Record(RecordId),
+    Map(Box<Ty>, Box<Ty>),
+    Set(Box<Ty>),
     Void,
 }
 
 impl Ty {
     /// Whether values of this type are reference-counted.
     pub fn is_managed(&self) -> bool {
-        matches!(self, Ty::Str | Ty::List(_) | Ty::Record(_))
+        matches!(self, Ty::Str | Ty::List(_) | Ty::Record(_) | Ty::Map(..) | Ty::Set(_))
     }
 
     /// The type of the items of a list type.
@@ -83,6 +85,8 @@ pub enum Step {
     Index(Operand),
     /// A field of a record (its position).
     Field(usize),
+    /// The value of a key of a map.
+    Key(Operand),
 }
 
 /// A declared type, with its type arguments applied (`Option[int]` and `Option[string]` are
@@ -119,6 +123,13 @@ pub enum UnaryOp {
     RecordToStr,
     /// The tag (variant) of a record, as an `int`.
     RecordTag,
+    MapLength,
+    /// A map or a set as written in code (`['a': 1]`, `Set([1])`).
+    MapToStr,
+    /// The keys of a map, or the items of a set, as a list.
+    MapKeys,
+    MapValues,
+    SetFromList,
     StrLength,
     /// A string as written in code, in quotes (`'it\\'s'`).
     StrRepr,
@@ -166,6 +177,10 @@ pub enum BinaryOp {
     RecordCompare(Comparison),
     /// The position of `right` in the list `left`, or -1.
     ListIndexOf,
+    /// `key in map` (also for sets): the left operand is the key.
+    MapContains,
+    /// `==` and `!=` on maps and sets.
+    MapCompare(Comparison),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -218,6 +233,17 @@ pub enum Instruction {
     FieldSet { record: Target, field: usize, value: Operand, line: usize },
     /// `dest = list.pop()` or `list.removeAt(index)`: `dest` is an `Option` record.
     ListRemove { dest: LocalId, list: Target, index: Option<Operand>, line: usize },
+    /// A new map with `entries` (the type of `dest` gives the types).
+    MapNew { dest: LocalId, entries: Vec<(Operand, Operand)> },
+    /// `dest = map[key]` (panics when the key is missing).
+    MapGet { dest: LocalId, map: Operand, key: Operand, line: usize },
+    /// `dest = map.get(key)`: `dest` is an `Option` record.
+    MapLookup { dest: LocalId, map: Operand, key: Operand },
+    /// `map[key] = value`, or `set.add(key)` without a value.
+    MapSet { map: Target, key: Operand, value: Option<Operand>, line: usize },
+    /// `map.remove(key)` (`dest` is an `Option` record) or `set.remove(key)` (`dest` is a
+    /// boolean).
+    MapRemove { dest: LocalId, map: Target, key: Operand, line: usize },
     /// Ends the program because an `Err` or `None` reached the top level with `?`: prints
     /// `error: <location>: <message>` and exits with code 1.
     Fail { message: Operand, line: usize },
