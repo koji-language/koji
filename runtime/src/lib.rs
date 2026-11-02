@@ -7,6 +7,7 @@
 //! The interpreter uses the same functions (`format_float`, `repr_string`, `int_pow`, `float_pow`), so both
 //! produce exactly the same output.
 
+mod closure;
 mod list;
 mod map;
 mod record;

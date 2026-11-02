@@ -401,6 +401,7 @@ It compiles a first subset of the language:
 -   `int`, `float`, `boolean` and `string` values, `mut` and `immut` variables, top-level variables used by functions;
 -   object types and sum types (also generic, such as `Option[int]`, and recursive), with object literals, constructors, fields (reading and assigning, also `people[0].age += 1`), `==`, `match` (variants, literals, bindings, guards, as a statement or an expression), `is` and the narrowing it gives (`if (x is Some) { x.value }`);
 -   `Option` and `Result`: `?` (with the automatic wrapping of the error, and stopping the program at the top level), `mapErr` with a variant (`mapErr(Parse)`), and the list methods that give them (`pop`, `removeAt`, `indexOf`);
+-   closures: lambdas, which capture a copy of the local variables they use (top-level variables are read directly), named functions used as values, function types (`(int) => int`), calls of any expression that gives a function (`makeAdder(5)(1)`), `sortBy` and `mapErr` with a function;
 -   `Map` and `Set`: literals (`['Ana': 30]`, `[:]`), `Set.from`, reading and assigning by key (also `groups['even'].push(n)`), `in`, `==`, `for` over the keys or items, `get`, `has`, `remove`, `add`, `keys`, `values` and `length`; any equatable value can be a key, kept in the order it was added;
 -   lists of all those values: literals, indexing and assigning items (also `grid[0][1] = 5`), slices, `+`, `==`, `in`, `for` over a list, `length`, `push`, `insert`, `sort` and `join`;
 -   every operator on those types, with the same panics as the interpreter (overflow, division by zero, `float` overflow, invalid shifts and powers);
@@ -409,13 +410,17 @@ It compiles a first subset of the language:
 -   methods, `mut self` and associated functions (`Point.origin()`), of types that are not generic; a type's `display` method in `print`, interpolation and `string(x)`, and the built-in `display()` and `debug()`;
 -   `if` (also as an expression), `while`, `for` over `range`, `break`, `continue` and `return`.
 
-Anything else (`char`, closures and functions as values, generic functions and methods of generic types, imports, types with `drop`, `input` and the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
+Anything else (`char`, generic functions and methods of generic types, imports, types with `drop`, `input` and the standard library modules) is reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
 
 **Memory**: strings, lists and records (the values of declared types) are reference-counted. A variable owns one reference, and copying a value only adds a reference (value semantics with copy-on-write); changing a list that is shared copies it first, so the other variables never see the change. Assigning a variable releases its old value, and a function releases its values when it returns. Each item of a list and each field of a record takes an 8-byte slot, and the generated code describes their types to the runtime (how to retain, release, show, compare and order them). A generic type gets one description for each set of type arguments (`Option[int]`, `Option[string]`). Maps find their keys with a hash, which the description of each type also gives.
 
 A `mut` parameter is passed by value and its final value is written back to the caller's variable when the function returns, as in the interpreter: the C function gets a pointer for it (`out<n>`).
 
-**Next steps**, in order: closures; generics (monomorphization); imports; move-only values and `drop`; then the standard library modules, calling the Rust implementations.
+A closure is the function's code and a record with the values it captured; its code takes that record as a first, hidden argument. A named function used as a value is called through a small function that takes the (empty) record.
+
+The tests run every compiled program under valgrind when it is installed, so a memory error fails them even when the output is right.
+
+**Next steps**, in order: generics (monomorphization); imports; move-only values and `drop`; then the standard library modules, calling the Rust implementations.
 
 ---
 

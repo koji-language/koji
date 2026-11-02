@@ -132,6 +132,15 @@ impl fmt::Display for Instruction {
             }
             Instruction::ListRemove { dest, list, index: None, .. } => write!(f, "l{} = pop {}", dest, list),
             Instruction::Fail { message, .. } => write!(f, "fail {}", message),
+            Instruction::MakeClosure { dest, function, environment: Some(environment) } => {
+                write!(f, "l{} = closure f{} with {}", dest, function, environment)
+            }
+            Instruction::MakeClosure { dest, function, environment: None } => write!(f, "l{} = closure f{}", dest, function),
+            Instruction::CallClosure { dest, closure, args, .. } => {
+                let dest = dest.map(|dest| format!("l{} = ", dest)).unwrap_or_default();
+                write!(f, "{}call {}({})", dest, closure, list(args))
+            }
+            Instruction::ListSortBy { list, comparison, .. } => write!(f, "sort {} by {}", list, comparison),
             Instruction::MapNew { dest, entries } => {
                 let entries: Vec<String> = entries.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
                 write!(f, "l{} = map [{}]", dest, entries.join(", "))

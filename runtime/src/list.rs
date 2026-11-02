@@ -96,7 +96,7 @@ fn copy_items(source: &KojiList) -> Vec<u64> {
 }
 
 /// Makes the list in `variable` its own (copying it if it is shared) and returns it.
-fn unshare<'a>(variable: *mut *mut KojiList) -> &'a mut KojiList {
+pub(crate) fn unshare<'a>(variable: *mut *mut KojiList) -> &'a mut KojiList {
     unsafe {
         let current = &**variable;
         if current.references.get() > 1 {

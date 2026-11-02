@@ -34,13 +34,16 @@ pub enum Ty {
     Record(RecordId),
     Map(Box<Ty>, Box<Ty>),
     Set(Box<Ty>),
+    /// A closure: a function with the values it captured. Its code takes the environment (a
+    /// record) as a first, hidden argument.
+    Function(Vec<Ty>, Box<Ty>),
     Void,
 }
 
 impl Ty {
     /// Whether values of this type are reference-counted.
     pub fn is_managed(&self) -> bool {
-        matches!(self, Ty::Str | Ty::List(_) | Ty::Record(_) | Ty::Map(..) | Ty::Set(_))
+        matches!(self, Ty::Str | Ty::List(_) | Ty::Record(_) | Ty::Map(..) | Ty::Set(_) | Ty::Function(..))
     }
 
     /// The type of the items of a list type.
@@ -130,6 +133,8 @@ pub enum UnaryOp {
     MapKeys,
     MapValues,
     SetFromList,
+    /// `<function name>`.
+    ClosureToStr,
     StrLength,
     /// A string as written in code, in quotes (`'it\\'s'`).
     StrRepr,
@@ -233,6 +238,13 @@ pub enum Instruction {
     FieldSet { record: Target, field: usize, value: Operand, line: usize },
     /// `dest = list.pop()` or `list.removeAt(index)`: `dest` is an `Option` record.
     ListRemove { dest: LocalId, list: Target, index: Option<Operand>, line: usize },
+    /// A closure of `function` (whose first parameter is the environment), with the captured
+    /// values in `environment` (a record), or none.
+    MakeClosure { dest: LocalId, function: FuncId, environment: Option<Operand> },
+    /// Calls a closure.
+    CallClosure { dest: Option<LocalId>, closure: Operand, args: Vec<Operand>, line: usize },
+    /// `items.sortBy(comparison)`.
+    ListSortBy { list: Target, comparison: Operand, line: usize },
     /// A new map with `entries` (the type of `dest` gives the types).
     MapNew { dest: LocalId, entries: Vec<(Operand, Operand)> },
     /// `dest = map[key]` (panics when the key is missing).

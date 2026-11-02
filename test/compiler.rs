@@ -40,6 +40,11 @@ fn source_file(name: &str, source: &str) -> PathBuf {
     path.strip_prefix(&cwd).map(Path::to_path_buf).unwrap_or(path)
 }
 
+fn has_valgrind() -> bool {
+    static FOUND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| Command::new("valgrind").arg("--version").output().is_ok_and(|o| o.status.success()))
+}
+
 fn interpret(path: &Path, source: &str) -> Run {
     let output = Output::default();
     let input: Box<dyn BufRead> = Box::new(std::io::empty());
@@ -54,8 +59,19 @@ fn interpret(path: &Path, source: &str) -> Run {
 fn compile_and_run(path: &Path) -> Run {
     let executable = path.with_extension("");
     kojic::build_file(path, &executable, kojic::Emit::Executable).unwrap_or_else(|error| panic!("{}", error));
-    let result = Command::new(&executable).output().unwrap();
+    // Under valgrind when it is installed: a memory error (a double free, an invalid read)
+    // fails the test even when the output is right.
+    let result = if has_valgrind() {
+        Command::new("valgrind")
+            .args(["-q", "--error-exitcode=99"])
+            .arg(&executable)
+            .output()
+            .unwrap()
+    } else {
+        Command::new(&executable).output().unwrap()
+    };
     let stderr = String::from_utf8(result.stderr).unwrap();
+    assert_ne!(result.status.code(), Some(99), "memory errors:\n{}", stderr);
     Run {
         output: String::from_utf8(result.stdout).unwrap(),
         error: stderr.lines().last().unwrap_or("").to_string(),
@@ -560,8 +576,100 @@ Set([[1, 2], [3]]) true\n\
 }
 
 #[test]
+fn closures() {
+    assert_same(
+        "closures",
+        "type Person = {\n\
+    name: string\n\
+    age: int\n\
+}\n\
+\n\
+mut calls = 0\n\
+\n\
+function makeAdder(amount: int): (int) => int {\n\
+    return (x: int) => x + amount\n\
+}\n\
+\n\
+function makeGreeter(greeting: string, names: string[]): () => string {\n\
+    immut count = names.length()\n\
+    return (): string => {\n\
+        calls += 1\n\
+        `${greeting}, ${names.join(' and ')} (${count})`\n\
+    }\n\
+}\n\
+\n\
+function apply(f: (int) => int, value: int): int {\n\
+    return f(value)\n\
+}\n\
+\n\
+function double(n: int): int {\n\
+    return n * 2\n\
+}\n\
+\n\
+function compose(f: (int) => int, g: (int) => int): (int) => int {\n\
+    return (x: int) => g(f(x))\n\
+}\n\
+\n\
+immut addFive = makeAdder(5)\n\
+mut names = ['Ana', 'Bia']\n\
+immut greet = makeGreeter('Hello', names)\n\
+names.push('Caio')\n\
+print(addFive(1), apply(addFive, 10), apply(double, 4), makeAdder(1)(1))\n\
+print(greet(), greet(), calls, names)\n\
+print(compose(double, addFive)(3), compose(addFive, double)(3))\n\
+\n\
+immut operations: ((int) => int)[] = [double, addFive, (n: int) => n * n]\n\
+\n\
+for operation in operations {\n\
+    print(operation(3))\n\
+}\n\
+\n\
+mut people: Person[] = [{ name: 'Bia', age: 30 }, { name: 'Ana', age: 30 }, { name: 'Caio', age: 20 }]\n\
+people.sortBy((a: Person, b: Person) => a.age < b.age)\n\
+print(people)\n\
+\n\
+mut words = ['pear', 'fig', 'apple']\n\
+words.sortBy((a: string, b: string) => a.length() < b.length())\n\
+print(words)\n\
+\n\
+function check(n: int): Result[int, int] {\n\
+    if (n < 0) { return Err(n) }\n\
+\n\
+    return Ok(n)\n\
+}\n\
+\n\
+function parse(n: int): Result[int, string] {\n\
+    return check(n).mapErr((e: int) => `bad: ${e}`)\n\
+}\n\
+\n\
+print(parse(12), parse(-1), double, (x: int) => x)\n\
+\n\
+function run() {\n\
+    mut total = 10\n\
+    immut show = (): int => total\n\
+    total = 20\n\
+    print(show(), total)\n\
+}\n\
+\n\
+run()\n\
+",
+        "6 15 8 2\n\
+Hello, Ana and Bia (2) Hello, Ana and Bia (2) 2 ['Ana', 'Bia', 'Caio']\n\
+11 16\n\
+6\n\
+8\n\
+9\n\
+[{ name: 'Caio', age: 20 }, { name: 'Bia', age: 30 }, { name: 'Ana', age: 30 }]\n\
+['fig', 'pear', 'apple']\n\
+Ok(12) Err('bad: -1') <function double> <function anonymous function>\n\
+10 20\n\
+",
+    );
+}
+
+#[test]
 fn examples_that_compile() {
-    for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes"] {
+    for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));
         let source = std::fs::read_to_string(&path).unwrap();
         let interpreted = interpret(&path, &source);
@@ -574,10 +682,10 @@ fn examples_that_compile() {
 
 #[test]
 fn unsupported_constructs_are_reported() {
-    let path = source_file("unsupported", "immut double = (n: int) => n * 2\nprint(double(2))\n");
+    let path = source_file("unsupported", "immut c: char = 'a'\nprint(c)\n");
     let error = kojic::build_file(&path, &path.with_extension(""), kojic::Emit::Executable).unwrap_err();
     assert!(
-        error.to_string().ends_with("unsupported.kj:1: a function value is not supported by 'kojic build' yet (use 'kojic run')"),
+        error.to_string().ends_with("unsupported.kj:1: the type 'char' is not supported by 'kojic build' yet (use 'kojic run')"),
         "{}",
         error
     );

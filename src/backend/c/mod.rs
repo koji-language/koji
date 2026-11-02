@@ -35,6 +35,7 @@ fn c_type(ty: &Ty) -> &'static str {
         Ty::List(_) => "KojiList *",
         Ty::Record(_) => "KojiRecord *",
         Ty::Map(..) | Ty::Set(_) => "KojiMap *",
+        Ty::Function(..) => "KojiClosure *",
         Ty::Void => "void",
     }
 }
@@ -46,7 +47,20 @@ fn share(ty: &Ty, expression: String) -> String {
         Ty::List(_) => format!("koji_list_share({})", expression),
         Ty::Record(_) => format!("koji_record_share({})", expression),
         Ty::Map(..) | Ty::Set(_) => format!("koji_map_share({})", expression),
+        Ty::Function(..) => format!("koji_closure_share({})", expression),
         _ => expression,
+    }
+}
+
+/// The function that adds a reference to a value of a managed type.
+fn retain(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::Str => Some("koji_string_retain"),
+        Ty::List(_) => Some("koji_list_retain"),
+        Ty::Record(_) => Some("koji_record_retain"),
+        Ty::Map(..) | Ty::Set(_) => Some("koji_map_retain"),
+        Ty::Function(..) => Some("koji_closure_retain"),
+        _ => None,
     }
 }
 
@@ -56,6 +70,7 @@ fn release(ty: &Ty) -> Option<&'static str> {
         Ty::List(_) => Some("koji_list_release"),
         Ty::Record(_) => Some("koji_record_release"),
         Ty::Map(..) | Ty::Set(_) => Some("koji_map_release"),
+        Ty::Function(..) => Some("koji_closure_release"),
         _ => None,
     }
 }
@@ -70,6 +85,7 @@ fn element_type(ty: &Ty) -> &'static str {
         Ty::List(_) => "&koji_element_list",
         Ty::Record(_) => "&koji_element_record",
         Ty::Map(..) | Ty::Set(_) => "&koji_element_map",
+        Ty::Function(..) => "&koji_element_closure",
         Ty::Void => unreachable!("a list of void"),
     }
 }
@@ -231,11 +247,8 @@ impl Generator<'_> {
         // Parameters are borrowed from the caller; a reference of their own keeps them alive
         // even if the caller's variable changes during the call.
         for (param, local) in function.locals.iter().enumerate().take(function.params) {
-            let retain = match local.ty {
-                Ty::Str => "koji_string_retain",
-                Ty::List(_) => "koji_list_retain",
-                Ty::Record(_) => "koji_record_retain",
-                _ => continue,
+            let Some(retain) = retain(&local.ty) else {
+                continue;
             };
             let _ = writeln!(self.out, "    {}(l{});", retain, param);
         }
@@ -299,6 +312,9 @@ impl Generator<'_> {
             }
             Ty::Map(..) | Ty::Set(_) => {
                 let _ = writeln!(self.out, "    koji_map_set_variable(&{}, {});", dest, expression);
+            }
+            Ty::Function(..) => {
+                let _ = writeln!(self.out, "    koji_closure_set_variable(&{}, {});", dest, expression);
             }
             _ => {
                 let _ = writeln!(self.out, "    {} = {};", dest, expression);
@@ -427,6 +443,7 @@ impl Generator<'_> {
                     UnaryOp::MapKeys => format!("koji_map_keys({})", value),
                     UnaryOp::MapValues => format!("koji_map_values({})", value),
                     UnaryOp::SetFromList => format!("koji_set_from_list({})", value),
+                    UnaryOp::ClosureToStr => format!("koji_closure_repr({})", value),
                 };
                 self.set(&format!("l{}", dest), &function.locals[*dest].ty, &expression);
             }
@@ -605,6 +622,65 @@ impl Generator<'_> {
                     option,
                     none,
                     dest
+                );
+            }
+            Instruction::MakeClosure { dest, function: code, environment } => {
+                let environment = match environment {
+                    Some(environment) => format!("koji_record_share({})", self.operand(environment)),
+                    None => "NULL".to_string(),
+                };
+                let new = format!(
+                    "koji_closure_new((const void *){}, {}, {})",
+                    function_name(*code),
+                    environment,
+                    c_string(&self.program.functions[*code].name)
+                );
+                self.set(&format!("l{}", dest), &function.locals[*dest].ty, &new);
+            }
+            Instruction::CallClosure { dest, closure, args, .. } => {
+                let Ty::Function(params, ret) = self.operand_type(function, closure) else {
+                    unreachable!("a function")
+                };
+                let mut types = vec!["KojiRecord *".to_string()];
+                types.extend(params.iter().map(|ty| c_type(ty).to_string()));
+                let closure = self.operand(closure);
+                let mut values = vec![format!("koji_closure_environment({})", closure)];
+                values.extend(args.iter().map(|arg| self.operand(arg)));
+                let call = format!(
+                    "(({} (*)({}))koji_closure_code({}))({})",
+                    c_type(&ret),
+                    types.join(", "),
+                    closure,
+                    values.join(", ")
+                );
+                match dest {
+                    Some(dest) => self.set(&format!("l{}", dest), &function.locals[*dest].ty, &call),
+                    None => {
+                        let _ = writeln!(self.out, "    {};", call);
+                    }
+                }
+            }
+            Instruction::ListSortBy { list, comparison, line } => {
+                let Ty::Function(params, _) = self.operand_type(function, comparison) else {
+                    unreachable!("a function")
+                };
+                let before = match &params[0] {
+                    Ty::Int => "int",
+                    Ty::Float => "float",
+                    Ty::Bool => "bool",
+                    Ty::Str => "string",
+                    Ty::List(_) => "list",
+                    Ty::Record(_) => "record",
+                    Ty::Map(..) | Ty::Set(_) => "map",
+                    Ty::Function(..) => "closure",
+                    Ty::Void => unreachable!("a list of void"),
+                };
+                let _ = writeln!(
+                    self.out,
+                    "    koji_list_sort_by({}, {}, koji_before_{});",
+                    self.target(list, *line),
+                    self.operand(comparison),
+                    before
                 );
             }
             Instruction::MapNew { dest, entries } => {

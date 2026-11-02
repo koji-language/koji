@@ -106,6 +106,18 @@ bool koji_map_equal(const KojiMap *a, const KojiMap *b);
 uint64_t koji_map_hash(const KojiMap *map);
 KojiString *koji_map_repr(const KojiMap *map);
 
+typedef struct KojiClosure KojiClosure;
+
+KojiClosure *koji_closure_new(const void *code, KojiRecord *environment, const char *name);
+void koji_closure_retain(const KojiClosure *closure);
+void koji_closure_release(KojiClosure *closure);
+const void *koji_closure_code(const KojiClosure *closure);
+KojiRecord *koji_closure_environment(const KojiClosure *closure);
+KojiString *koji_closure_repr(const KojiClosure *closure);
+bool koji_closure_equal(const KojiClosure *a, const KojiClosure *b);
+void koji_list_sort_by(KojiList **variable, const KojiClosure *comparison,
+                       bool (*call)(const KojiClosure *, const void *, const void *));
+
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
 _Noreturn void koji_panic(const char *location, const char *message);
@@ -157,6 +169,17 @@ static inline void koji_map_set_variable(KojiMap **variable, KojiMap *value) {
 static inline KojiMap *koji_map_share(KojiMap *map) {
     koji_map_retain(map);
     return map;
+}
+
+static inline void koji_closure_set_variable(KojiClosure **variable, KojiClosure *value) {
+    KojiClosure *old = *variable;
+    *variable = value;
+    koji_closure_release(old);
+}
+
+static inline KojiClosure *koji_closure_share(KojiClosure *closure) {
+    koji_closure_retain(closure);
+    return closure;
 }
 
 /* The items of lists and the fields of records, by type. */
@@ -241,6 +264,32 @@ static bool koji_equal_map(const void *a, const void *b) {
 static uint64_t koji_hash_map(const void *slot) { return koji_map_hash(*(KojiMap *const *)slot); }
 static const KojiElementType koji_element_map = {
     sizeof(KojiMap *), koji_retain_map, koji_release_map, koji_repr_map, koji_equal_map, NULL, koji_hash_map};
+
+static void koji_retain_closure(const void *slot) { koji_closure_retain(*(KojiClosure *const *)slot); }
+static void koji_release_closure(const void *slot) { koji_closure_release(*(KojiClosure *const *)slot); }
+static KojiString *koji_repr_closure(const void *slot) { return koji_closure_repr(*(KojiClosure *const *)slot); }
+static bool koji_equal_closure(const void *a, const void *b) {
+    return koji_closure_equal(*(KojiClosure *const *)a, *(KojiClosure *const *)b);
+}
+static uint64_t koji_hash_closure(const void *slot) { return (uint64_t)(uintptr_t)*(KojiClosure *const *)slot; }
+static const KojiElementType koji_element_closure = {
+    sizeof(KojiClosure *), koji_retain_closure, koji_release_closure, koji_repr_closure, koji_equal_closure,
+    NULL, koji_hash_closure};
+
+/* `items.sortBy(comparison)`: calls the comparison with two items of each C type. */
+#define KOJI_BEFORE(name, type)                                                                    \
+    static bool koji_before_##name(const KojiClosure *c, const void *a, const void *b) {           \
+        return ((bool (*)(KojiRecord *, type, type))koji_closure_code(c))(                        \
+            koji_closure_environment(c), *(type const *)a, *(type const *)b);                      \
+    }
+KOJI_BEFORE(int, int64_t)
+KOJI_BEFORE(float, double)
+KOJI_BEFORE(bool, bool)
+KOJI_BEFORE(string, KojiString *)
+KOJI_BEFORE(list, KojiList *)
+KOJI_BEFORE(record, KojiRecord *)
+KOJI_BEFORE(map, KojiMap *)
+KOJI_BEFORE(closure, KojiClosure *)
 
 static inline int64_t koji_int_add(int64_t a, int64_t b, const char *location) {
     int64_t result;

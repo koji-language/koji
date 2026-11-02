@@ -36,6 +36,8 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
         global_names: HashMap::new(),
         strings: Vec::new(),
         string_ids: HashMap::new(),
+        empty_environment: None,
+        wrappers: HashMap::new(),
     };
     lowerer.declare_functions(statements)?;
     lowerer.declare_globals(statements)?;
@@ -97,6 +99,10 @@ struct Lowerer<'a> {
     global_names: HashMap<String, GlobalId>,
     strings: Vec<String>,
     string_ids: HashMap<String, StrId>,
+    /// The record of a closure that captures nothing.
+    empty_environment: Option<RecordId>,
+    /// For each function used as a value, the function that calls it with an environment.
+    wrappers: HashMap<FuncId, FuncId>,
 }
 
 /// A name in scope.
@@ -218,7 +224,13 @@ impl Lowerer<'_> {
             Type::Void | Type::Never => Ok(Ty::Void),
             Type::List(element) => Ok(Ty::List(Box::new(self.ty(element)?))),
             Type::Char => self.unsupported("the type 'char'"),
-            Type::Function { .. } => self.unsupported("a function value"),
+            Type::Function { params, ret } => {
+                let mut types = Vec::new();
+                for param in params {
+                    types.push(self.ty(param)?);
+                }
+                Ok(Ty::Function(types, Box::new(self.ty(ret)?)))
+            }
             Type::Named { id, args } | Type::Variant { id, args, .. } => match &self.table.get(*id).kind {
                 TypeKind::Map { .. } => Ok(Ty::Map(Box::new(self.ty(&args[0])?), Box::new(self.ty(&args[1])?))),
                 TypeKind::Set { .. } => Ok(Ty::Set(Box::new(self.ty(&args[0])?))),
@@ -287,7 +299,13 @@ impl Lowerer<'_> {
             },
             TypeExpr::Generic(name, args) => self.named_type(name, args),
             TypeExpr::Array(element) => Ok(Ty::List(Box::new(self.type_expr(element)?))),
-            _ => self.unsupported("this type"),
+            TypeExpr::Function { params, ret } => {
+                let mut types = Vec::new();
+                for param in params {
+                    types.push(self.type_expr(param)?);
+                }
+                Ok(Ty::Function(types, Box::new(self.type_expr(ret)?)))
+            }
         }
     }
 
@@ -490,35 +508,173 @@ impl Lowerer<'_> {
                     builder.declare(&param.name, Variable::Local(local));
                 }
                 builder.scopes.push(HashMap::new());
-                let last_gives_value = match body.unlocated() {
-                    AstNode::Block(statements) => match statements.last() {
-                        Some(last) if is_expression(last) => !matches!(self.type_of(last), Ok(Ty::Void) | Err(_)),
-                        _ => false,
-                    },
-                    _ => false,
-                };
-                match body.unlocated() {
-                    // The value of the last expression is returned (`function area(...): float {
-                    // match (shape) { ... } }`).
-                    AstNode::Block(statements) if ret != Ty::Void && last_gives_value => {
-                        let (last, rest) = statements.split_last().expect("a statement");
-                        self.statements(&mut builder, rest)?;
-                        let value = self.value_as(&mut builder, last, &ret)?;
-                        builder.terminate(Terminator::Return(value));
-                    }
-                    AstNode::Block(statements) => self.statements(&mut builder, statements)?,
-                    expression => {
-                        let value = self.value_as(&mut builder, expression, &ret)?;
-                        builder.terminate(Terminator::Return(value));
-                    }
-                }
-                if ret == Ty::Void {
-                    builder.terminate(Terminator::Return(None));
-                }
+                self.function_body(&mut builder, body, &ret)?;
                 self.functions[id] = Some(builder.finish(key, params.len(), writeback));
             }
         }
         Ok(())
+    }
+
+    /// The body of a function or a lambda, which returns `ret`: a block (whose last
+    /// expression, if it gives a value, is returned) or an expression.
+    fn function_body(&mut self, builder: &mut Builder, body: &AstNode, ret: &Ty) -> Lower<()> {
+        let last_gives_value = match body.unlocated() {
+            AstNode::Block(statements) => match statements.last() {
+                Some(last) if is_expression(last) => !matches!(self.type_of(last), Ok(Ty::Void) | Err(_)),
+                _ => false,
+            },
+            _ => false,
+        };
+        match body.unlocated() {
+            // The value of the last expression is returned (`function area(...): float {
+            // match (shape) { ... } }`).
+            AstNode::Block(statements) if *ret != Ty::Void && last_gives_value => {
+                let (last, rest) = statements.split_last().expect("a statement");
+                self.statements(builder, rest)?;
+                let value = self.value_as(builder, last, ret)?;
+                builder.terminate(Terminator::Return(value));
+            }
+            AstNode::Block(statements) => self.statements(builder, statements)?,
+            expression if *ret == Ty::Void => {
+                self.expr(builder, expression)?;
+            }
+            expression => {
+                let value = self.value_as(builder, expression, ret)?;
+                builder.terminate(Terminator::Return(value));
+            }
+        }
+        if *ret == Ty::Void {
+            builder.terminate(Terminator::Return(None));
+        }
+        Ok(())
+    }
+
+    /// A record type for the values a closure captures (`fields`), or for none.
+    fn environment(&mut self, fields: Vec<(String, Ty)>) -> RecordId {
+        if fields.is_empty() {
+            if let Some(empty) = self.empty_environment {
+                return empty;
+            }
+        }
+        self.records.push(Record {
+            name: "environment".to_string(),
+            variants: vec![Variant { name: None, fields: fields.clone() }],
+        });
+        let id = self.records.len() - 1;
+        if fields.is_empty() {
+            self.empty_environment = Some(id);
+        }
+        id
+    }
+
+    /// `(x: int) => x + amount`: a function whose first parameter is the environment, with the
+    /// local variables it uses (a copy, from the moment the lambda is created). Top-level
+    /// variables are not captured: the function reads them directly.
+    fn lambda(
+        &mut self,
+        builder: &mut Builder,
+        node: &AstNode,
+        params: &[crate::parser::ast::Param],
+        body: &AstNode,
+    ) -> Lower<Operand> {
+        let Ty::Function(param_types, ret) = self.type_in(builder, node)? else {
+            return self.unsupported("this function");
+        };
+        let ret = *ret;
+        let mut names = std::collections::BTreeSet::new();
+        identifiers(body, &mut names);
+        let mut captures = Vec::new();
+        for name in names {
+            if params.iter().any(|param| param.name == name) {
+                continue;
+            }
+            if let Some(Variable::Local(id)) = builder.lookup(&name) {
+                captures.push((name, id));
+            }
+        }
+        let fields: Vec<(String, Ty)> = captures
+            .iter()
+            .map(|(name, id)| (name.clone(), builder.locals[*id].ty.clone()))
+            .collect();
+        let environment = self.environment(fields.clone());
+
+        let id = self.functions.len();
+        self.functions.push(None);
+        let line = self.line;
+        let mut inner = Builder::new(ret.clone(), false);
+        let environment_local = inner.local(Ty::Record(environment), None);
+        for (param, ty) in params.iter().zip(param_types) {
+            let local = inner.local(ty, Some(&param.name));
+            inner.declare(&param.name, Variable::Local(local));
+        }
+        for (field, (name, ty)) in fields.iter().enumerate() {
+            let local = inner.local(ty.clone(), Some(name));
+            inner.emit(Instruction::FieldGet { dest: local, record: Operand::Local(environment_local), field });
+            inner.declare(name, Variable::Local(local));
+        }
+        inner.scopes.push(HashMap::new());
+        self.function_body(&mut inner, body, &ret)?;
+        let count = params.len() + 1;
+        self.functions[id] = Some(inner.finish("anonymous function".to_string(), count, vec![false; count]));
+        self.line = line;
+
+        let environment_value = if captures.is_empty() {
+            None
+        } else {
+            let dest = builder.local(Ty::Record(environment), None);
+            let values = captures.iter().map(|(_, id)| Operand::Local(*id)).collect();
+            builder.emit(Instruction::RecordNew { dest, variant: 0, fields: values });
+            Some(Operand::Local(dest))
+        };
+        let closure_type = self.type_in(builder, node)?;
+        let dest = builder.local(closure_type, None);
+        builder.emit(Instruction::MakeClosure { dest, function: id, environment: environment_value });
+        Ok(Operand::Local(dest))
+    }
+
+    /// A named function used as a value (`immut f = double`): a closure of a function that
+    /// takes an (empty) environment and calls it.
+    fn function_value(&mut self, builder: &mut Builder, name: &str) -> Lower<Operand> {
+        let signature = &self.signatures[name];
+        if signature.writeback.iter().any(|w| *w) {
+            return self.unsupported("a function with 'mut' parameters used as a value");
+        }
+        let (target, params, ret) = (signature.id, signature.params.clone(), signature.ret.clone());
+        let wrapper = match self.wrappers.get(&target) {
+            Some(wrapper) => *wrapper,
+            None => {
+                let environment = self.environment(Vec::new());
+                let mut inner = Builder::new(ret.clone(), false);
+                inner.local(Ty::Record(environment), None);
+                let args: Vec<Operand> = params.iter().map(|ty| Operand::Local(inner.local(ty.clone(), None))).collect();
+                let dest = (ret != Ty::Void).then(|| inner.local(ret.clone(), None));
+                inner.emit(Instruction::Call { dest, function: target, args, writebacks: Vec::new(), line: self.line });
+                inner.terminate(Terminator::Return(dest.map(Operand::Local)));
+                let id = self.functions.len();
+                let count = params.len() + 1;
+                self.functions.push(Some(inner.finish(name.to_string(), count, vec![false; count])));
+                self.wrappers.insert(target, id);
+                id
+            }
+        };
+        let dest = builder.local(Ty::Function(params, Box::new(ret)), None);
+        builder.emit(Instruction::MakeClosure { dest, function: wrapper, environment: None });
+        Ok(Operand::Local(dest))
+    }
+
+    /// Calls a closure (`f(1)`, `makeAdder(5)(1)`).
+    fn call_closure(&mut self, builder: &mut Builder, callee: &AstNode, args: &[AstNode]) -> Lower<Option<Operand>> {
+        let Ty::Function(params, ret) = self.type_in(builder, callee)? else {
+            return self.unsupported("this call");
+        };
+        let closure = self.expr(builder, callee)?.expect("a function");
+        let mut values = Vec::new();
+        for (arg, param) in args.iter().zip(&params) {
+            values.push(self.value_as(builder, arg, param)?.expect("an argument"));
+        }
+        let dest = (*ret != Ty::Void).then(|| builder.local(*ret, None));
+        builder.emit(Instruction::CallClosure { dest, closure, args: values, line: self.line });
+        Ok(dest.map(Operand::Local))
     }
 
     // Statements
@@ -1191,6 +1347,7 @@ impl Lowerer<'_> {
             Ty::List(_) => UnaryOp::ListToStr,
             Ty::Record(_) => UnaryOp::RecordToStr,
             Ty::Map(..) | Ty::Set(_) => UnaryOp::MapToStr,
+            Ty::Function(..) => UnaryOp::ClosureToStr,
             Ty::Void => return self.unsupported("showing 'void'"),
         };
         Ok(self.unary(builder, op, value, Ty::Str))
@@ -1287,6 +1444,7 @@ impl Lowerer<'_> {
                 Ok(Some(Operand::Local(dest)))
             }
             AstNode::Match { scrutinee, arms } => self.lower_match(builder, node, scrutinee, arms),
+            AstNode::Lambda { params, body, .. } => self.lambda(builder, node, params, body).map(Some),
             AstNode::Try { value, wrap } => self.lower_try(builder, node, value, wrap),
             AstNode::Identifier(_) | AstNode::Call { .. }
                 if matches!(self.type_in(builder, node), Ok(Ty::Record(record)) if self.constructor(builder, node, record).is_some()) =>
@@ -1300,7 +1458,7 @@ impl Lowerer<'_> {
                     && !self.global_names.contains_key(name)
                     && self.signatures.contains_key(name)
                 {
-                    return self.unsupported("a function used as a value");
+                    return self.function_value(builder, name).map(Some);
                 }
                 let (place, _) = self.variable(builder, name)?;
                 Ok(Some(match place {
@@ -1464,12 +1622,12 @@ impl Lowerer<'_> {
                 match callee.unlocated() {
                     AstNode::Identifier(name) => {
                         if builder.lookup(name).is_some() || self.global_names.contains_key(name) {
-                            return self.unsupported("calling a function stored in a variable");
+                            return self.call_closure(builder, callee, args);
                         }
                         self.call(builder, name, args, &displays)
                     }
                     AstNode::Member { object, name } => self.builtin_method(builder, node, object, name, args),
-                    _ => self.unsupported("this call"),
+                    _ => self.call_closure(builder, callee, args),
                 }
             }
             _ => self.unsupported(describe(node)),
@@ -1738,6 +1896,12 @@ impl Lowerer<'_> {
                 });
                 Ok(None)
             }
+            (Ty::List(_), "sortBy") => {
+                let list = self.target(builder, object)?;
+                let comparison = self.expr(builder, &args[0])?.expect("a function");
+                builder.emit(Instruction::ListSortBy { list, comparison, line });
+                Ok(None)
+            }
             (Ty::List(_), "sort") => {
                 let list = self.target(builder, object)?;
                 builder.emit(Instruction::ListSort { list, line });
@@ -1750,12 +1914,19 @@ impl Lowerer<'_> {
                 };
                 let (source, target) = (*source, target);
                 let err = self.variant_index(target, "Err")?;
-                let Ty::Record(error_record) = self.records[target].variants[err].fields[0].1.clone() else {
-                    return self.unsupported("'mapErr' with this error type");
+                let error_type = self.records[target].variants[err].fields[0].1.clone();
+                // A variant (`mapErr(Parse)`), or a function that converts the error.
+                let constructor = match (args[0].unlocated(), &error_type) {
+                    (AstNode::Identifier(name), Ty::Record(error_record))
+                        if self.constructor(builder, &args[0], *error_record).is_some() =>
+                    {
+                        Some(name.clone())
+                    }
+                    _ => None,
                 };
-                let constructor = match args[0].unlocated() {
-                    AstNode::Identifier(name) if self.constructor(builder, &args[0], error_record).is_some() => name.clone(),
-                    _ => return self.unsupported("'mapErr' with a function (only a variant, as in 'mapErr(Parse)')"),
+                let converter = match constructor {
+                    Some(_) => None,
+                    None => Some(self.expr(builder, &args[0])?.expect("a function")),
                 };
                 let value = self.expr(builder, object)?.expect("a Result");
                 let subject = builder.local(Ty::Record(source), None);
@@ -1771,9 +1942,23 @@ impl Lowerer<'_> {
                     builder.emit(Instruction::FieldGet { dest: field, record: Operand::Local(subject), field: 0 });
                     let mut inner = Operand::Local(field);
                     if variant == "Err" {
-                        let wrapped = builder.local(Ty::Record(error_record), None);
-                        let index = self.variant_index(error_record, &constructor)?;
-                        builder.emit(Instruction::RecordNew { dest: wrapped, variant: index, fields: vec![inner] });
+                        let wrapped = builder.local(error_type.clone(), None);
+                        match (&constructor, &converter) {
+                            (Some(constructor), _) => {
+                                let Ty::Record(error_record) = error_type else { unreachable!("a record") };
+                                let index = self.variant_index(error_record, constructor)?;
+                                builder.emit(Instruction::RecordNew { dest: wrapped, variant: index, fields: vec![inner] });
+                            }
+                            (None, Some(converter)) => {
+                                builder.emit(Instruction::CallClosure {
+                                    dest: Some(wrapped),
+                                    closure: converter.clone(),
+                                    args: vec![inner],
+                                    line,
+                                });
+                            }
+                            (None, None) => unreachable!("a constructor or a function"),
+                        }
                         inner = Operand::Local(wrapped);
                     }
                     let index = self.variant_index(target, variant)?;
@@ -2170,5 +2355,84 @@ fn describe(node: &AstNode) -> &'static str {
         AstNode::MutArg(_) => "a 'mut' argument",
         AstNode::If { .. } => "this 'if'",
         _ => "this expression",
+    }
+}
+
+/// The names used in `node` (to find what a lambda captures).
+fn identifiers(node: &AstNode, out: &mut std::collections::BTreeSet<String>) {
+    let mut visit = |node: &AstNode| identifiers(node, out);
+    match node {
+        AstNode::Identifier(name) => {
+            out.insert(name.clone());
+        }
+        AstNode::TemplateString(parts) => {
+            for part in parts {
+                if let TemplatePart::Expression(expression, _) = part {
+                    identifiers(expression, out);
+                }
+            }
+        }
+        AstNode::ArrayLiteral(items) | AstNode::Block(items) => items.iter().for_each(visit),
+        AstNode::MapLiteral(entries) => {
+            for (key, value) in entries {
+                identifiers(key, out);
+                identifiers(value, out);
+            }
+        }
+        AstNode::ObjectLiteral(entries) => entries.iter().for_each(|entry| identifiers(&entry.value, out)),
+        AstNode::Unary { operand, .. } => visit(operand),
+        AstNode::BinaryOp { left, right, .. } => {
+            identifiers(left, out);
+            identifiers(right, out);
+        }
+        AstNode::Call { callee, args, .. } => {
+            identifiers(callee, out);
+            args.iter().for_each(|arg| identifiers(arg, out));
+        }
+        AstNode::MutArg(node) | AstNode::Try { value: node, .. } | AstNode::Export(node) => visit(node),
+        AstNode::Located { node, .. } => visit(node),
+        AstNode::Index { target, index } => {
+            identifiers(target, out);
+            identifiers(index, out);
+        }
+        AstNode::Slice { target, start, end } => {
+            identifiers(target, out);
+            for bound in [start, end].into_iter().flatten() {
+                identifiers(bound, out);
+            }
+        }
+        AstNode::Member { object, .. } => visit(object),
+        AstNode::If { condition, then_branch, else_branch } => {
+            identifiers(condition, out);
+            identifiers(then_branch, out);
+            if let Some(else_branch) = else_branch {
+                identifiers(else_branch, out);
+            }
+        }
+        AstNode::Match { scrutinee, arms } => {
+            identifiers(scrutinee, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    identifiers(guard, out);
+                }
+                identifiers(&arm.body, out);
+            }
+        }
+        AstNode::Lambda { body, .. } => visit(body),
+        AstNode::While { condition, body } => {
+            identifiers(condition, out);
+            identifiers(body, out);
+        }
+        AstNode::For { iterable, body, .. } => {
+            identifiers(iterable, out);
+            identifiers(body, out);
+        }
+        AstNode::Return(Some(value)) => visit(value),
+        AstNode::Assign { target, value, .. } => {
+            identifiers(target, out);
+            identifiers(value, out);
+        }
+        AstNode::VarDecl { value, .. } => visit(value),
+        _ => {}
     }
 }
