@@ -256,6 +256,7 @@ impl Checker {
         }
         self.ensure_copyable_args(&generic)?;
         self.ensure_constraints(&generic, constraints, what)?;
+        self.type_args = Some(generic.clone());
         Ok(ret.substitute(&generic))
     }
 }

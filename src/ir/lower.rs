@@ -38,11 +38,20 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
         string_ids: HashMap::new(),
         empty_environment: None,
         wrappers: HashMap::new(),
+        generic_functions: HashMap::new(),
+        type_parameters: HashMap::new(),
+        instances: HashMap::new(),
+        pending: Vec::new(),
+        substitution: Vec::new(),
+        type_names: Vec::new(),
+        record_types: HashMap::new(),
+        type_args: &program.ownership.type_args,
     };
     lowerer.declare_functions(statements)?;
     lowerer.declare_globals(statements)?;
     let main = lowerer.lower_main(statements)?;
     lowerer.lower_functions(statements)?;
+    lowerer.lower_instances()?;
     let functions = lowerer
         .functions
         .into_iter()
@@ -67,6 +76,7 @@ fn display_path(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+#[derive(Clone)]
 struct Signature {
     id: FuncId,
     params: Vec<Ty>,
@@ -103,6 +113,22 @@ struct Lowerer<'a> {
     empty_environment: Option<RecordId>,
     /// For each function used as a value, the function that calls it with an environment.
     wrappers: HashMap<FuncId, FuncId>,
+    /// Generic functions and methods of generic types, by key: they are lowered once for each
+    /// set of type arguments they are called with.
+    generic_functions: HashMap<String, &'a AstNode>,
+    /// The type parameters of each generic type, by name.
+    type_parameters: HashMap<String, Vec<String>>,
+    /// The instances of generic functions, by key and type arguments.
+    instances: HashMap<(String, Vec<Ty>), Signature>,
+    /// Instances still to lower.
+    pending: Vec<(String, Vec<Ty>)>,
+    /// The type arguments of the instance being lowered (`Type::Param(i)` is `substitution[i]`),
+    /// and the names of its type parameters, in the same order.
+    substitution: Vec<Ty>,
+    type_names: Vec<String>,
+    /// The declared type and the type arguments of each record.
+    record_types: HashMap<RecordId, (TypeId, Vec<Ty>)>,
+    type_args: &'a HashMap<usize, Vec<Type>>,
 }
 
 /// A name in scope.
@@ -202,7 +228,7 @@ impl Builder {
     }
 }
 
-impl Lowerer<'_> {
+impl<'a> Lowerer<'a> {
     fn unsupported<T>(&self, what: &str) -> Lower<T> {
         let location = if self.line == 0 {
             self.file.clone()
@@ -232,11 +258,24 @@ impl Lowerer<'_> {
                 Ok(Ty::Function(types, Box::new(self.ty(ret)?)))
             }
             Type::Named { id, args } | Type::Variant { id, args, .. } => match &self.table.get(*id).kind {
+                // A type parameter seen from inside its generic function (`T` in the body of
+                // `first[T]`): the type argument of the instance being lowered.
+                TypeKind::Param(_) => {
+                    let name = &self.table.get(*id).name;
+                    match self.type_names.iter().position(|param| param == name) {
+                        Some(index) => Ok(self.substitution[index].clone()),
+                        None => self.unsupported(&format!("the type parameter '{}' here", name)),
+                    }
+                }
                 TypeKind::Map { .. } => Ok(Ty::Map(Box::new(self.ty(&args[0])?), Box::new(self.ty(&args[1])?))),
                 TypeKind::Set { .. } => Ok(Ty::Set(Box::new(self.ty(&args[0])?))),
                 _ => self.record(*id, args).map(Ty::Record),
             },
             Type::Unknown => self.unsupported("a value whose type is not known here"),
+            Type::Param(index) => match self.substitution.get(*index) {
+                Some(ty) => Ok(ty.clone()),
+                None => self.unsupported("a type parameter here"),
+            },
             _ => self.unsupported("this type"),
         }
     }
@@ -271,6 +310,7 @@ impl Lowerer<'_> {
             }),
             variants: Vec::new(),
         });
+        self.record_types.insert(record, key.clone());
         self.record_ids.insert(key, record);
         let mut variants = Vec::new();
         for (name, fields) in declared {
@@ -295,7 +335,10 @@ impl Lowerer<'_> {
                 "boolean" => Ok(Ty::Bool),
                 "string" => Ok(Ty::Str),
                 "void" => Ok(Ty::Void),
-                _ => self.named_type(name, &[]),
+                _ => match self.type_names.iter().position(|param| param == name) {
+                    Some(index) => Ok(self.substitution[index].clone()),
+                    None => self.named_type(name, &[]),
+                },
             },
             TypeExpr::Generic(name, args) => self.named_type(name, args),
             TypeExpr::Array(element) => Ok(Ty::List(Box::new(self.type_expr(element)?))),
@@ -332,6 +375,9 @@ impl Lowerer<'_> {
                 "float" => Type::Float,
                 "boolean" => Type::Boolean,
                 "string" => Type::String,
+                _ if self.type_names.contains(name) => {
+                    Type::Param(self.type_names.iter().position(|param| param == name).expect("a parameter"))
+                }
                 _ => match self.table.types.iter().position(|info| info.name == *name) {
                     Some(id) => Type::Named { id, args: Vec::new() },
                     None => return self.unsupported(&format!("the type '{}'", name)),
@@ -397,63 +443,157 @@ impl Lowerer<'_> {
 
     /// Gives every top-level function an id first: functions can be called before they are
     /// declared.
-    fn declare_functions(&mut self, statements: &[AstNode]) -> Lower<()> {
+    fn declare_functions(&mut self, statements: &'a [AstNode]) -> Lower<()> {
         // The top-level statements are function 0.
         self.functions.push(None);
+        for statement in statements {
+            if let AstNode::TypeDecl { name, params, .. } = statement.unlocated() {
+                let names = params.iter().map(|param| param.name.clone()).collect();
+                self.type_parameters.insert(name.clone(), names);
+            }
+        }
         for statement in statements {
             if let AstNode::Located { line, .. } = statement {
                 self.line = *line;
             }
-            if let AstNode::FunctionDecl {
-                name,
-                owner,
-                type_params,
-                params,
-                return_type,
-                ..
-            } = statement.unlocated()
-            {
-                if !type_params.is_empty() {
-                    return self.unsupported("a generic function");
-                }
+            if let AstNode::FunctionDecl { name, owner, type_params, .. } = statement.unlocated() {
                 if owner.is_some() && name == "drop" {
                     return self.unsupported("a type with 'drop'");
                 }
-                // The type of `self`.
-                let owner_type = match owner {
-                    Some(owner) => match self.table.types.iter().find(|info| info.name == *owner) {
-                        Some(info) if info.params > 0 => return self.unsupported("a method of a generic type"),
-                        _ => Some(self.named_type(owner, &[])?),
-                    },
-                    None => None,
-                };
-                let mut param_types = Vec::new();
-                let mut writeback = Vec::new();
-                for param in params {
-                    // A `take` parameter owns its value; without `drop`, that is the same as a copy.
-                    writeback.push(param.is_mut);
-                    match (&param.ty, &owner_type) {
-                        (Some(ty), _) => param_types.push(self.type_expr(ty)?),
-                        (None, Some(owner)) if param.name == "self" => param_types.push(owner.clone()),
-                        (None, _) => return self.unsupported("a parameter without a type"),
-                    }
+                let key = function_key(owner, name);
+                let owner_is_generic = owner
+                    .as_ref()
+                    .is_some_and(|owner| self.type_parameters.get(owner).is_some_and(|params| !params.is_empty()));
+                if !type_params.is_empty() || owner_is_generic {
+                    self.generic_functions.insert(key, statement.unlocated());
+                    continue;
                 }
-                let ret = match return_type {
-                    Some(ty) => self.type_expr(ty)?,
-                    None => Ty::Void,
-                };
                 self.functions.push(None);
-                self.signatures.insert(
-                    function_key(owner, name),
-                    Signature {
-                        id: self.functions.len() - 1,
-                        params: param_types,
-                        writeback,
-                        ret,
-                    },
-                );
+                let signature = self.signature(statement.unlocated(), self.functions.len() - 1)?;
+                self.signatures.insert(key, signature);
             }
         }
+        Ok(())
+    }
+
+    /// The signature of a function declaration, with the type arguments of `substitution`
+    /// for a generic one.
+    fn signature(&mut self, declaration: &AstNode, id: FuncId) -> Lower<Signature> {
+        let AstNode::FunctionDecl { owner, params, return_type, .. } = declaration else {
+            unreachable!("a function declaration");
+        };
+        // The type of `self`: the owner, with its type parameters (the first ones).
+        let owner_type = match owner {
+            Some(owner) => {
+                let Some(id) = self.table.types.iter().position(|info| info.name == *owner) else {
+                    return self.unsupported(&format!("the type '{}'", owner));
+                };
+                let count = self.table.get(id).params;
+                Some(self.ty(&Type::Named { id, args: (0..count).map(Type::Param).collect() })?)
+            }
+            None => None,
+        };
+        let mut param_types = Vec::new();
+        let mut writeback = Vec::new();
+        for param in params {
+            // A `take` parameter owns its value; without `drop`, that is the same as a copy.
+            writeback.push(param.is_mut);
+            match (&param.ty, &owner_type) {
+                (Some(ty), _) => param_types.push(self.type_expr(ty)?),
+                (None, Some(owner)) if param.name == "self" => param_types.push(owner.clone()),
+                (None, _) => return self.unsupported("a parameter without a type"),
+            }
+        }
+        let ret = match return_type {
+            Some(ty) => self.type_expr(ty)?,
+            None => Ty::Void,
+        };
+        Ok(Signature { id, params: param_types, writeback, ret })
+    }
+
+    /// The names of the type parameters of a generic function: its owner's, then its own.
+    fn type_parameter_names(&self, declaration: &AstNode) -> Vec<String> {
+        let AstNode::FunctionDecl { owner, type_params, .. } = declaration else {
+            unreachable!("a function declaration");
+        };
+        let mut names = owner
+            .as_ref()
+            .and_then(|owner| self.type_parameters.get(owner).cloned())
+            .unwrap_or_default();
+        names.extend(type_params.iter().map(|param| param.name.clone()));
+        names
+    }
+
+    /// The function `key` (with `type_args` for a generic one), creating the instance if needed.
+    fn callee(&mut self, key: &str, type_args: Vec<Ty>) -> Lower<Signature> {
+        if let Some(signature) = self.signatures.get(key) {
+            return Ok(signature.clone());
+        }
+        let Some(declaration) = self.generic_functions.get(key).copied() else {
+            return self.unsupported(&format!("'{}'", key));
+        };
+        let instance = (key.to_string(), type_args.clone());
+        if let Some(signature) = self.instances.get(&instance) {
+            return Ok(signature.clone());
+        }
+        let id = self.functions.len();
+        self.functions.push(None);
+        let names = self.type_parameter_names(declaration);
+        let saved = (
+            std::mem::replace(&mut self.substitution, type_args.clone()),
+            std::mem::replace(&mut self.type_names, names),
+        );
+        let signature = self.signature(declaration, id);
+        (self.substitution, self.type_names) = saved;
+        let signature = signature?;
+        self.instances.insert(instance, signature.clone());
+        self.pending.push((key.to_string(), type_args));
+        Ok(signature)
+    }
+
+    /// The type arguments the checker inferred for a call of a generic function.
+    fn call_type_args(&mut self, call: &AstNode) -> Lower<Vec<Ty>> {
+        let Some(args) = self.type_args.get(&node_id(call)) else {
+            return Ok(Vec::new());
+        };
+        let mut types = Vec::new();
+        for arg in args {
+            types.push(self.ty(arg)?);
+        }
+        Ok(types)
+    }
+
+    /// Lowers the instances of generic functions, until no new one is needed.
+    fn lower_instances(&mut self) -> Lower<()> {
+        while let Some((key, type_args)) = self.pending.pop() {
+            let declaration = self.generic_functions[&key];
+            let signature = self.instances[&(key.clone(), type_args.clone())].clone();
+            let names = self.type_parameter_names(declaration);
+            let saved = (
+                std::mem::replace(&mut self.substitution, type_args.clone()),
+                std::mem::replace(&mut self.type_names, names),
+            );
+            let shown: Vec<String> = type_args.iter().map(|ty| format!("{:?}", ty)).collect();
+            let result = self.lower_function(declaration, &signature, format!("{}[{}]", key, shown.join(", ")));
+            (self.substitution, self.type_names) = saved;
+            result?;
+        }
+        Ok(())
+    }
+
+    /// Lowers the body of a function declaration with its signature.
+    fn lower_function(&mut self, declaration: &AstNode, signature: &Signature, name: String) -> Lower<()> {
+        let AstNode::FunctionDecl { params, body, .. } = declaration else {
+            unreachable!("a function declaration");
+        };
+        let mut builder = Builder::new(signature.ret.clone(), false);
+        for (param, ty) in params.iter().zip(&signature.params) {
+            let local = builder.local(ty.clone(), Some(&param.name));
+            builder.declare(&param.name, Variable::Local(local));
+        }
+        builder.scopes.push(HashMap::new());
+        self.function_body(&mut builder, body, &signature.ret)?;
+        self.functions[signature.id] = Some(builder.finish(name, params.len(), signature.writeback.clone()));
         Ok(())
     }
 
@@ -490,26 +630,12 @@ impl Lowerer<'_> {
             if let AstNode::Located { line, .. } = statement {
                 self.line = *line;
             }
-            if let AstNode::FunctionDecl {
-                name,
-                owner,
-                params,
-                body,
-                ..
-            } = statement.unlocated()
-            {
+            if let AstNode::FunctionDecl { name, owner, .. } = statement.unlocated() {
                 let key = function_key(owner, name);
-                let signature = &self.signatures[&key];
-                let (id, param_types, ret) = (signature.id, signature.params.clone(), signature.ret.clone());
-                let writeback = signature.writeback.clone();
-                let mut builder = Builder::new(ret.clone(), false);
-                for (param, ty) in params.iter().zip(param_types) {
-                    let local = builder.local(ty, Some(&param.name));
-                    builder.declare(&param.name, Variable::Local(local));
+                // Generic functions are lowered for each instance.
+                if let Some(signature) = self.signatures.get(&key).cloned() {
+                    self.lower_function(statement.unlocated(), &signature, key)?;
                 }
-                builder.scopes.push(HashMap::new());
-                self.function_body(&mut builder, body, &ret)?;
-                self.functions[id] = Some(builder.finish(key, params.len(), writeback));
             }
         }
         Ok(())
@@ -1076,7 +1202,8 @@ impl Lowerer<'_> {
         };
         let is_name = builder.lookup(name).is_some()
             || self.global_names.contains_key(name)
-            || self.signatures.contains_key(name);
+            || self.signatures.contains_key(name)
+            || self.generic_functions.contains_key(name);
         let is_variant = self.records[record]
             .variants
             .iter()
@@ -1460,6 +1587,9 @@ impl Lowerer<'_> {
                 {
                     return self.function_value(builder, name).map(Some);
                 }
+                if builder.lookup(name).is_none() && self.generic_functions.contains_key(name) {
+                    return self.unsupported("a generic function used as a value");
+                }
                 let (place, _) = self.variable(builder, name)?;
                 Ok(Some(match place {
                     Place::Local(id) => Operand::Local(id),
@@ -1609,14 +1739,15 @@ impl Lowerer<'_> {
                         let list = self.value_as(builder, &args[0], &Ty::List(item.clone()))?.expect("a list");
                         return Ok(Some(self.unary(builder, UnaryOp::SetFromList, list, set_type)));
                     }
-                    if !self.signatures.contains_key(&method.key) {
+                    if !self.signatures.contains_key(&method.key) && !self.generic_functions.contains_key(&method.key) {
                         return self.unsupported(&format!("'{}'", method.key));
                     }
                     let receiver = match (callee.unlocated(), method.has_self) {
                         (AstNode::Member { object, .. }, true) => Some(&**object),
                         _ => None,
                     };
-                    return self.call_function(builder, &method.key, receiver, args);
+                    let type_args = self.call_type_args(node)?;
+                    return self.call_function(builder, &method.key, type_args, receiver, args);
                 }
                 let displays = displays.borrow().clone();
                 match callee.unlocated() {
@@ -1624,7 +1755,7 @@ impl Lowerer<'_> {
                         if builder.lookup(name).is_some() || self.global_names.contains_key(name) {
                             return self.call_closure(builder, callee, args);
                         }
-                        self.call(builder, name, args, &displays)
+                        self.call(builder, node, name, args, &displays)
                     }
                     AstNode::Member { object, name } => self.builtin_method(builder, node, object, name, args),
                     _ => self.call_closure(builder, callee, args),
@@ -2235,12 +2366,13 @@ impl Lowerer<'_> {
         &mut self,
         builder: &mut Builder,
         key: &str,
+        type_args: Vec<Ty>,
         receiver: Option<&AstNode>,
         args: &[AstNode],
     ) -> Lower<Option<Operand>> {
-        let signature = &self.signatures[key];
-        let (id, params, ret) = (signature.id, signature.params.clone(), signature.ret.clone());
-        let writeback = signature.writeback.clone();
+        let signature = self.callee(key, type_args)?;
+        let (id, params, ret) = (signature.id, signature.params, signature.ret);
+        let writeback = signature.writeback;
         let mut values = Vec::new();
         let mut writebacks = Vec::new();
         for (index, (arg, param)) in receiver.into_iter().chain(args).zip(&params).enumerate() {
@@ -2275,10 +2407,14 @@ impl Lowerer<'_> {
         display: Option<&crate::parser::ast::MethodRef>,
     ) -> Lower<Operand> {
         if let Some(display) = display {
-            if !self.signatures.contains_key(&display.key) {
-                return self.unsupported(&format!("'{}'", display.key));
-            }
-            return Ok(self.call_function(builder, &display.key, Some(node), &[])?.expect("a string"));
+            // The method of a generic type takes the type arguments of the value.
+            let type_args = match self.type_in(builder, node)? {
+                Ty::Record(record) if self.generic_functions.contains_key(&display.key) => {
+                    self.record_types[&record].1.clone()
+                }
+                _ => Vec::new(),
+            };
+            return Ok(self.call_function(builder, &display.key, type_args, Some(node), &[])?.expect("a string"));
         }
         let ty = self.type_in(builder, node)?;
         let value = self.expr(builder, node)?.expect("a value");
@@ -2288,12 +2424,14 @@ impl Lowerer<'_> {
     fn call(
         &mut self,
         builder: &mut Builder,
+        call: &AstNode,
         name: &str,
         args: &[AstNode],
         displays: &[Option<crate::parser::ast::MethodRef>],
     ) -> Lower<Option<Operand>> {
-        if self.signatures.contains_key(name) {
-            return self.call_function(builder, name, None, args);
+        if self.signatures.contains_key(name) || self.generic_functions.contains_key(name) {
+            let type_args = self.call_type_args(call)?;
+            return self.call_function(builder, name, type_args, None, args);
         }
         match name {
             "print" => {

@@ -72,6 +72,10 @@ pub struct Ownership {
     pub mutating_calls: HashSet<usize>,
     /// The type of each expression, as checked (used by the compiler).
     pub types: HashMap<usize, Type>,
+    /// The type arguments of each call of a generic function or method, as inferred
+    /// (`first([1, 2])` calls `first[int]`). Inside a generic function they can contain its
+    /// own type parameters.
+    pub type_args: HashMap<usize, Vec<Type>>,
     /// The fields of each object literal, in the order of its type's declaration.
     pub field_orders: HashMap<usize, Vec<String>>,
     /// `int` expressions stored as `float` (the items of `[1, 2.5]`).
@@ -283,6 +287,8 @@ pub struct Checker {
     methods: HashMap<(TypeId, String), MethodInfo>,
     /// Argument types of the last built-in call checked.
     last_arg_types: Vec<Type>,
+    /// The type arguments of the last generic call checked, until the call records them.
+    type_args: Option<Vec<Type>>,
     ownership: Ownership,
     state: ModuleState,
 }

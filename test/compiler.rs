@@ -668,6 +668,99 @@ Ok(12) Err('bad: -1') <function double> <function anonymous function>\n\
 }
 
 #[test]
+fn generics() {
+    assert_same(
+        "generics",
+        "type Pair[A, B] = {\n\
+    first: A\n\
+    second: B\n\
+}\n\
+\n\
+type Stack[T: orderable] = {\n\
+    items: T[]\n\
+}\n\
+\n\
+function largest[T: orderable](items: T[]): Option[T] {\n\
+    if (items.length() == 0) { return None }\n\
+\n\
+    mut best = items[0]\n\
+\n\
+    for item in items[1..] {\n\
+        if (item > best) { best = item }\n\
+    }\n\
+\n\
+    return Some(best)\n\
+}\n\
+\n\
+function swap[A, B](pair: Pair[A, B]): Pair[B, A] {\n\
+    return { first: pair.second, second: pair.first }\n\
+}\n\
+\n\
+function count[T: equatable](items: T[], wanted: T): int {\n\
+    mut total = 0\n\
+\n\
+    for item in items {\n\
+        if (item == wanted) { total += 1 }\n\
+    }\n\
+\n\
+    return total\n\
+}\n\
+\n\
+function repeat[T](value: T, times: int): T[] {\n\
+    mut result: T[] = []\n\
+\n\
+    for i in range(times) {\n\
+        result.push(value)\n\
+    }\n\
+\n\
+    return result\n\
+}\n\
+\n\
+function Pair.create(first: A, second: B): Pair[A, B] {\n\
+    return { first: first, second: second }\n\
+}\n\
+\n\
+function Pair.swapped(self): Pair[B, A] {\n\
+    return swap(self)\n\
+}\n\
+\n\
+function Pair.mapFirst[C](self, f: (A) => C): Pair[C, B] {\n\
+    return { first: f(self.first), second: self.second }\n\
+}\n\
+\n\
+function Pair.display(self): string {\n\
+    return `<${self.first} | ${self.second}>`\n\
+}\n\
+\n\
+function Stack.push(mut self, item: T) {\n\
+    self.items.push(item)\n\
+}\n\
+\n\
+function Stack.peek(self): Option[T] {\n\
+    return largest(self.items)\n\
+}\n\
+\n\
+immut pair: Pair[int, string] = { first: 1, second: 'one' }\n\
+print(largest([3, 9, 2]), largest(['b', 'c', 'a']), largest([1.5]), count([1, 2, 1], 1), count(['a'], 'b'))\n\
+print(swap(pair), pair.swapped(), Pair.create(true, 2.5), repeat('ab', 3), repeat([1], 2))\n\
+print(pair.mapFirst((n: int) => n * 10), pair.mapFirst((n: int): string => `#${n}`))\n\
+print(`${pair}`, swap(swap(pair)))\n\
+\n\
+mut stack: Stack[string] = { items: [] }\n\
+stack.push('x')\n\
+stack.push('z')\n\
+print(stack, stack.peek())\n\
+",
+        "Some(9) Some('c') Some(1.5) 2 0\n\
+<one | 1> <one | 1> <true | 2.5> ['ab', 'ab', 'ab'] [[1], [1]]\n\
+<10 | one> <#1 | one>\n\
+<1 | one> <1 | one>\n\
+{ items: ['x', 'z'] } Some('z')\n\
+",
+    );
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));

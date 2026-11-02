@@ -180,7 +180,12 @@ impl Checker {
                 method,
                 displays,
             } => {
+                self.type_args = None;
                 let ty = self.check_call(callee, args, method, expected)?;
+                // Set by a generic call (the calls in its arguments took theirs already).
+                if let Some(type_args) = self.type_args.take() {
+                    self.ownership.type_args.insert(node_id(node), type_args);
+                }
                 // `print(person)` and `string(person)` use `Person.display`, if declared.
                 if let AstNode::Identifier(name) = callee.unlocated() {
                     let is_display = matches!(
