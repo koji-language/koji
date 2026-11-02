@@ -311,3 +311,12 @@ pub extern "C" fn koji_record_display(record: *const KojiRecord) -> *mut KojiStr
     }
     koji_record_repr(record)
 }
+
+/// The name of the variant of a record (`Read` for `file.Read`).
+pub(crate) fn record_variant(record: *const KojiRecord) -> String {
+    let name = self::record(record).variant().name;
+    if name.is_null() {
+        return String::new();
+    }
+    unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned()
+}

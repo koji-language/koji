@@ -8,6 +8,7 @@
 //! produce exactly the same output.
 
 mod closure;
+mod file;
 mod list;
 mod map;
 mod record;

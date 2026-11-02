@@ -49,6 +49,7 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
         modules: Vec::new(),
         module_ids: HashMap::new(),
         module: 0,
+        owning_match: false,
     };
     // The top-level statements of the main file are function 0.
     lowerer.functions.push(None);
@@ -186,6 +187,8 @@ struct Lowerer<'a> {
     module_ids: HashMap<std::path::PathBuf, usize>,
     /// The module being lowered.
     module: usize,
+    /// Lowering the patterns of a `match` whose variables own their values.
+    owning_match: bool,
 }
 
 /// A name in scope.
@@ -318,6 +321,9 @@ impl<'a> Lowerer<'a> {
                     types.push(self.ty(param)?);
                 }
                 Ok(Ty::Function(types, Box::new(self.ty(ret)?)))
+            }
+            Type::Named { id, .. } if self.table.get(*id).name == "File" && matches!(self.table.get(*id).kind, TypeKind::Builtin { .. }) => {
+                Ok(Ty::File)
             }
             Type::Named { id, args } | Type::Variant { id, args, .. } => match &self.table.get(*id).kind {
                 // A type parameter seen from inside its generic function (`T` in the body of
@@ -925,6 +931,8 @@ impl<'a> Lowerer<'a> {
             }
             Ty::List(element) | Ty::Set(element) => self.droppable(element, visiting),
             Ty::Map(key, value) => self.droppable(key, visiting) || self.droppable(value, visiting),
+            // Dropping a file closes it.
+            Ty::File => true,
             _ => false,
         }
     }
@@ -1013,6 +1021,13 @@ impl<'a> Lowerer<'a> {
                     _ => Operand::Local(value),
                 };
                 self.drop_items(&mut builder, list, element, function);
+            }
+            Ty::File => {
+                builder.emit(Instruction::StdCall {
+                    dest: None,
+                    function: "koji_std_file_close",
+                    args: vec![StdArg::Value(Operand::Local(value))],
+                });
             }
             Ty::Map(key, item) => {
                 for (part, op) in [(key, UnaryOp::MapKeys), (item, UnaryOp::MapValues)] {
@@ -1921,7 +1936,8 @@ impl<'a> Lowerer<'a> {
             Ty::Record(_) => UnaryOp::RecordToStr,
             Ty::Map(..) | Ty::Set(_) => UnaryOp::MapToStr,
             Ty::Function(..) => UnaryOp::ClosureToStr,
-            Ty::Void => return self.unsupported("showing 'void'"),
+            Ty::File => UnaryOp::FileToStr,
+            Ty::Void => return Ok(self.string("void")),
         };
         Ok(self.unary(builder, op, value, Ty::Str))
     }
@@ -2625,6 +2641,23 @@ impl<'a> Lowerer<'a> {
                 };
                 self.std(builder, call, function, arguments)
             }
+            (Ty::File, "read" | "write" | "close") => {
+                let file = self.expr(builder, object)?.expect("a file");
+                let line = self.line;
+                match name {
+                    "close" => self.std(builder, call, "koji_std_file_close", vec![StdArg::Value(file)]),
+                    _ => {
+                        let Ty::Record(result) = self.type_in(builder, call)? else { unreachable!("a Result") };
+                        let mut arguments = vec![StdArg::Value(file)];
+                        if name == "write" {
+                            arguments.push(StdArg::Value(self.value_as(builder, &args[0], &Ty::Str)?.expect("a string")));
+                        }
+                        arguments.extend([StdArg::Record(result), StdArg::Location(line)]);
+                        let function = if name == "read" { "koji_std_file_read" } else { "koji_std_file_write" };
+                        self.std(builder, call, function, arguments)
+                    }
+                }
+            }
             (Ty::Str, "chars") => {
                 let text = self.expr(builder, object)?.expect("a string");
                 self.std(builder, call, "koji_std_string_chars", vec![StdArg::Value(text), StdArg::Element(Ty::Char)])
@@ -2818,9 +2851,9 @@ impl<'a> Lowerer<'a> {
     ) -> Lower<Option<Operand>> {
         let result_type = self.type_in(builder, node).unwrap_or(Ty::Void);
         let result = (result_type != Ty::Void).then(|| builder.local(result_type.clone(), None));
-        if self.ownership.owning_matches.contains(&node_id(scrutinee)) {
-            return self.unsupported("a 'match' on a move-only value that is not in a variable");
-        }
+        // A `match` on a move-only temporary (`match (file.open(...))`): the variables of the
+        // arm own their values, and an arm without variables drops the whole value.
+        let owning = self.ownership.owning_matches.contains(&node_id(scrutinee));
         let scrutinee_type = self.type_in(builder, scrutinee)?;
         let value = self.expr(builder, scrutinee)?.expect("a value");
         // Kept in a local: the arms may change the variable that was matched.
@@ -2831,7 +2864,10 @@ impl<'a> Lowerer<'a> {
             let next = builder.new_block();
             builder.scopes.push(HashMap::new());
             let arm_result = (|| -> Lower<()> {
-                self.pattern(builder, &arm.pattern, Operand::Local(subject), &scrutinee_type, next)?;
+                let saved = std::mem::replace(&mut self.owning_match, owning);
+                let bound = self.pattern(builder, &arm.pattern, Operand::Local(subject), &scrutinee_type, next);
+                self.owning_match = saved;
+                bound?;
                 if let Some(guard) = &arm.guard {
                     let condition = self.condition(builder, guard)?;
                     let body = builder.new_block();
@@ -2845,6 +2881,12 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     None => self.block(builder, &arm.body)?,
+                }
+                drop_owned(builder, builder.scopes.len() - 1, true);
+                if owning && !binds(&arm.pattern) {
+                    if let Some(function) = self.drop_function(&scrutinee_type)? {
+                        builder.emit(Instruction::Drop { value: Place::Local(subject), function });
+                    }
                 }
                 builder.terminate(Terminator::Goto(exit));
                 Ok(())
@@ -2888,6 +2930,9 @@ impl<'a> Lowerer<'a> {
                     let local = builder.local(ty.clone(), Some(name));
                     builder.emit(Instruction::Copy { dest: Place::Local(local), value });
                     builder.declare(name, Variable::Local(local));
+                    if self.owning_match {
+                        self.own(builder, Place::Local(local), ty)?;
+                    }
                 }
                 Ok(())
             }
@@ -2901,7 +2946,7 @@ impl<'a> Lowerer<'a> {
                 let variant = self.variant_index(record, name)?;
                 let fields = self.records[record].variants[variant].fields.clone();
                 for (field, (arg, (_, field_type))) in args.iter().zip(&fields).enumerate() {
-                    if matches!(arg, Pattern::Wildcard) {
+                    if matches!(arg, Pattern::Wildcard) || *field_type == Ty::Void {
                         continue;
                     }
                     let dest = builder.local(field_type.clone(), None);
@@ -2995,6 +3040,10 @@ impl<'a> Lowerer<'a> {
         }
 
         builder.switch_to(done);
+        // `file.write(text)?` gives `void`: nothing to read.
+        if result_type == Ty::Void {
+            return Ok(None);
+        }
         let dest = builder.local(result_type, None);
         builder.emit(Instruction::FieldGet { dest, record: subject, field: 0 });
         Ok(Some(Operand::Local(dest)))
@@ -3234,6 +3283,17 @@ impl<'a> Lowerer<'a> {
                 ("koji_std_path_part", vec![value_as(self, builder, 0, Ty::Str)?, StdArg::Mode(part), result(self, builder)?])
             }
             ("path", "isAbsolute") => ("koji_std_path_is_absolute", vec![value_as(self, builder, 0, Ty::Str)?]),
+            ("file", "open") => {
+                let path = value_as(self, builder, 0, Ty::Str)?;
+                let mode_type = self.type_in(builder, &args[1])?;
+                let mode = value_as(self, builder, 1, mode_type)?;
+                ("koji_std_file_open", vec![path, mode, result(self, builder)?])
+            }
+            ("file", "list") => {
+                ("koji_std_file_list", vec![value_as(self, builder, 0, Ty::Str)?, StdArg::Element(Ty::Str), result(self, builder)?])
+            }
+            ("file", "exists") => ("koji_std_file_exists", vec![value_as(self, builder, 0, Ty::Str)?]),
+            ("file", "createDir") => ("koji_std_file_create_dir", vec![value_as(self, builder, 0, Ty::Str)?, result(self, builder)?]),
             ("system", "args") => ("koji_std_system_args", vec![StdArg::Element(Ty::Str)]),
             ("system", "env") => ("koji_std_system_env", vec![value_as(self, builder, 0, Ty::Str)?, result(self, builder)?]),
             ("system", "exit") => {
@@ -3271,6 +3331,16 @@ fn drop_owned(builder: &mut Builder, depth: usize, remove: bool) {
     }
     if remove {
         builder.owned.retain(|(scope, _, _)| *scope <= depth);
+    }
+}
+
+/// Whether a pattern declares variables.
+fn binds(pattern: &crate::parser::ast::Pattern) -> bool {
+    use crate::parser::ast::Pattern;
+    match pattern {
+        Pattern::Identifier(name) => name.chars().next().is_some_and(char::is_lowercase),
+        Pattern::Variant { args, .. } => args.iter().any(binds),
+        Pattern::Wildcard | Pattern::Literal(_) => false,
     }
 }
 

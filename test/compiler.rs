@@ -1130,6 +1130,57 @@ print(text[20])\n\
 }
 
 #[test]
+fn files() {
+    // The program works in a directory of its own, emptied before each run.
+    let data = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler").join("files-data");
+    let source = "import file\n\
+import { Mode } from 'file'\n\
+\n\
+function save(path: string, text: string): Result[void, file.FileError] {\n\
+    immut out = file.open(path, file.Write)?\n\
+    return out.write(text)\n\
+}\n\
+\n\
+function load(path: string): Result[string, file.FileError] {\n\
+    immut input = file.open(path, Read)?\n\
+    return input.read()\n\
+}\n\
+\n\
+print(file.createDir('DATA/sub'), file.exists('DATA'), file.exists('nothing'))\n\
+print(save('DATA/notes.txt', 'first line\\n'))\n\
+\n\
+match (file.open('DATA/notes.txt', Append)) {\n\
+    Ok(f) => {\n\
+        print(f.write('second line\\n'), f)\n\
+        f.close()\n\
+    }\n\
+    Err(error) => print(error)\n\
+}\n\
+\n\
+print(load('DATA/notes.txt'))\n\
+print(load('DATA/missing.txt'), file.list('DATA'), file.list('nothing'))\n\
+\n\
+match (load('DATA')) {\n\
+    Ok(text) => print(text)\n\
+    Err(error) => print('error:', error)\n\
+}\n\
+\n\
+immut text = load('DATA/notes.txt')?\n\
+print(text.split('\\n').length())\n\
+load('DATA/absent.txt')?\n\
+print('not printed')\n\
+".replace("DATA", &data.display().to_string());
+    let path = source_file("files", &source);
+    let _ = std::fs::remove_dir_all(&data);
+    let interpreted = interpret(&path, &source);
+    let _ = std::fs::remove_dir_all(&data);
+    let compiled = compile_and_run(&path);
+    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert!(compiled.output.contains("Ok('first line\\nsecond line\\n')"), "{}", compiled.output);
+    assert!(compiled.error.ends_with("absent.txt' not found"), "{}", compiled.error);
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions", "input", "modules", "types"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));

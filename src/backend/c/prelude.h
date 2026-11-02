@@ -167,6 +167,20 @@ uint32_t koji_std_string_char_at(const KojiString *string, int64_t index, const 
 KojiString *koji_std_string_slice(const KojiString *string, bool has_start, int64_t start, bool has_end, int64_t end,
                                   const char *location);
 
+typedef struct KojiFile KojiFile;
+
+void koji_file_retain(const KojiFile *file);
+void koji_file_release(KojiFile *file);
+KojiString *koji_file_repr(const KojiFile *file);
+KojiRecord *koji_std_file_open(const KojiString *path, const KojiRecord *mode, const KojiRecordType *result);
+void koji_std_file_close(const KojiFile *file);
+KojiRecord *koji_std_file_read(const KojiFile *file, const KojiRecordType *result, const char *location);
+KojiRecord *koji_std_file_write(const KojiFile *file, const KojiString *text, const KojiRecordType *result,
+                                const char *location);
+KojiRecord *koji_std_file_list(const KojiString *path, const KojiElementType *element, const KojiRecordType *result);
+bool koji_std_file_exists(const KojiString *path);
+KojiRecord *koji_std_file_create_dir(const KojiString *path, const KojiRecordType *result);
+
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
 _Noreturn void koji_panic(const char *location, const char *message);
@@ -218,6 +232,17 @@ static inline void koji_map_set_variable(KojiMap **variable, KojiMap *value) {
 static inline KojiMap *koji_map_share(KojiMap *map) {
     koji_map_retain(map);
     return map;
+}
+
+static inline void koji_file_set_variable(KojiFile **variable, KojiFile *value) {
+    KojiFile *old = *variable;
+    *variable = value;
+    koji_file_release(old);
+}
+
+static inline KojiFile *koji_file_share(KojiFile *file) {
+    koji_file_retain(file);
+    return file;
 }
 
 static inline void koji_closure_set_variable(KojiClosure **variable, KojiClosure *value) {
@@ -337,6 +362,22 @@ static uint64_t koji_hash_closure(const void *slot) { return (uint64_t)(uintptr_
 static const KojiElementType koji_element_closure = {
     sizeof(KojiClosure *), koji_retain_closure, koji_release_closure, koji_repr_closure, koji_equal_closure,
     NULL, koji_hash_closure, NULL};
+
+static void koji_retain_file(const void *slot) { koji_file_retain(*(KojiFile *const *)slot); }
+static void koji_release_file(const void *slot) { koji_file_release(*(KojiFile *const *)slot); }
+static KojiString *koji_repr_file(const void *slot) { return koji_file_repr(*(KojiFile *const *)slot); }
+static bool koji_equal_file(const void *a, const void *b) { return *(KojiFile *const *)a == *(KojiFile *const *)b; }
+static uint64_t koji_hash_file(const void *slot) { return (uint64_t)(uintptr_t)*(KojiFile *const *)slot; }
+static const KojiElementType koji_element_file = {
+    sizeof(KojiFile *), koji_retain_file, koji_release_file, koji_repr_file, koji_equal_file, NULL, koji_hash_file,
+    NULL};
+
+/* The `void` in `Ok(void)`: no bytes. */
+static KojiString *koji_repr_void(const void *slot) { (void)slot; return koji_string_new("void", 4); }
+static bool koji_equal_void(const void *a, const void *b) { (void)a; (void)b; return true; }
+static uint64_t koji_hash_void(const void *slot) { (void)slot; return 0; }
+static const KojiElementType koji_element_void = {
+    0, NULL, NULL, koji_repr_void, koji_equal_void, NULL, koji_hash_void, NULL};
 
 /* `items.sortBy(comparison)`: calls the comparison with two items of each C type. */
 #define KOJI_BEFORE(name, type)                                                                    \
