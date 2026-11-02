@@ -102,6 +102,7 @@ impl Checker {
                 let ty = self.with_type_params(type_params, &Self::signature_params(type_params.len()), |c| {
                     c.function_signature(name, params, return_type.as_ref(), true)
                 })?;
+                self.ownership.function_types.insert(node_id(statement), ty.clone());
                 let mut symbol = Symbol::value(ty, true);
                 symbol.generics = type_params.len();
                 symbol.constraints = self.constraints(type_params)?;
@@ -232,6 +233,7 @@ impl Checker {
             }
             other => other,
         };
+        self.ownership.function_types.insert(node_id(statement), ty.clone());
         let info = MethodInfo {
             ty,
             has_self,

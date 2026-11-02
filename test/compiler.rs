@@ -761,6 +761,106 @@ print(stack, stack.peek())\n\
 }
 
 #[test]
+fn modules() {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler").join("modules");
+    for (name, source) in [
+        ("main.kj", "import { count, increment } from 'lib/counter.kj'\n\
+import shapes from 'lib/shapes.kj'\n\
+import { Shape, largest } from 'lib/shapes.kj'\n\
+\n\
+print('main starts', count)\n\
+increment()\n\
+print(count, shapes.largest([3, 7, 2]), largest(['a', 'c']))\n\
+\n\
+immut all: Shape[] = [Circle(1), shapes.Square(2), shapes.Dot, shapes.unit]\n\
+\n\
+for shape in all {\n\
+    print(shape, shape.area())\n\
+}\n\
+\n\
+function helper(): string {\n\
+    return 'from main'\n\
+}\n\
+\n\
+print(helper(), shapes.describe(), shapes.divide(7, 2))\n\
+print(shapes.divide(1, 0))\n\
+"),
+        ("lib/counter.kj", "print('counter loaded')\n\
+\n\
+export mut count = 0\n\
+\n\
+export function increment(): int {\n\
+    count += 1\n\
+    return count\n\
+}\n\
+"),
+        ("lib/shapes.kj", "import { increment } from 'counter.kj'\n\
+\n\
+print('shapes loaded', increment())\n\
+\n\
+export type Shape = {\n\
+    Circle(radius: float)\n\
+    Square(side: float)\n\
+    Dot\n\
+}\n\
+\n\
+function Shape.area(self): float {\n\
+    return match (self) {\n\
+        Circle(radius) => 3.0 * radius * radius\n\
+        Square(side) => side * side\n\
+        Dot => 0.0\n\
+    }\n\
+}\n\
+\n\
+export function largest[T: orderable](items: T[]): T {\n\
+    mut best = items[0]\n\
+\n\
+    for item in items {\n\
+        if (item > best) { best = item }\n\
+    }\n\
+\n\
+    return best\n\
+}\n\
+\n\
+export immut unit = Square(1)\n\
+\n\
+export function divide(a: int, b: int): int {\n\
+    return a / b\n\
+}\n\
+\n\
+function helper(): string {\n\
+    return 'from shapes'\n\
+}\n\
+\n\
+export function describe(): string {\n\
+    return helper()\n\
+}\n\
+"),
+    ] {
+        let path = directory.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, source).unwrap();
+    }
+    let main = directory.join("main.kj");
+    let main = main.strip_prefix(std::env::current_dir().unwrap()).unwrap().to_path_buf();
+    let interpreted = interpret(&main, &std::fs::read_to_string(&main).unwrap());
+    let compiled = compile_and_run(&main);
+    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert_eq!(compiled.output, "counter loaded\n\
+shapes loaded 1\n\
+main starts 1\n\
+2 7 c\n\
+Circle(1.0) 3.0\n\
+Square(2.0) 4.0\n\
+Dot 0.0\n\
+Square(1.0) 1.0\n\
+from main from shapes 3\n\
+");
+    // A panic in a module shows the module's file.
+    assert!(compiled.error.ends_with("shapes.kj:32: division by zero"), "{}", compiled.error);
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));

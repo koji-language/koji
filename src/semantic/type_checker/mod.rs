@@ -72,6 +72,9 @@ pub struct Ownership {
     pub mutating_calls: HashSet<usize>,
     /// The type of each expression, as checked (used by the compiler).
     pub types: HashMap<usize, Type>,
+    /// The type of each function declaration (with `self` first for a method; a generic one
+    /// uses `Type::Param` for its type parameters, the owner's first).
+    pub function_types: HashMap<usize, Type>,
     /// The type arguments of each call of a generic function or method, as inferred
     /// (`first([1, 2])` calls `first[int]`). Inside a generic function they can contain its
     /// own type parameters.

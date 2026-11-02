@@ -302,6 +302,8 @@ pub struct Local {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub name: String,
+    /// The file it was declared in, for the messages of panics.
+    pub file: String,
     /// The first locals are the parameters, in order.
     pub params: usize,
     /// For each parameter, whether it is `mut`: its final value is given back to the caller.

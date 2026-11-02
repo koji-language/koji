@@ -16,6 +16,7 @@ pub fn generate(program: &Program) -> String {
     let mut generator = Generator {
         program,
         out: String::new(),
+        file: String::new(),
     };
     generator.program();
     generator.out
@@ -24,6 +25,8 @@ pub fn generate(program: &Program) -> String {
 struct Generator<'a> {
     program: &'a Program,
     out: String,
+    /// The file of the function being generated.
+    file: String,
 }
 
 fn c_type(ty: &Ty) -> &'static str {
@@ -236,13 +239,14 @@ impl Generator<'_> {
 
     fn location(&self, line: usize) -> String {
         if line == 0 {
-            c_string(&self.program.file)
+            c_string(&self.file)
         } else {
-            c_string(&format!("{}:{}", self.program.file, line))
+            c_string(&format!("{}:{}", self.file, line))
         }
     }
 
     fn function(&mut self, id: FuncId, function: &Function) {
+        self.file = function.file.clone();
         let _ = writeln!(self.out, "{} {{", self.signature(id, function));
         // Parameters are borrowed from the caller; a reference of their own keeps them alive
         // even if the caller's variable changes during the call.
@@ -923,7 +927,7 @@ impl Generator<'_> {
                 let _ = writeln!(
                     self.out,
                     "    koji_panic({}, \"the function ended without returning a value\");",
-                    c_string(&self.program.file)
+                    c_string(&self.file)
                 );
             }
         }

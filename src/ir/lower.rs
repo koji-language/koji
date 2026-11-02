@@ -18,39 +18,52 @@ use crate::semantic::types::{Type, TypeId, TypeKind, TypeTable};
 
 type Lower<T> = Result<T, EzError>;
 
-/// Lowers the main file of a checked program.
+/// Lowers a checked program: the main file and the modules it imports.
 pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
-    let statements = &program.modules[&program.entry];
-    let file = display_path(&program.entry);
     let mut lowerer = Lowerer {
         table: &program.table,
         records: Vec::new(),
         record_ids: HashMap::new(),
         types: &program.ownership.types,
         variable_types: &program.ownership.variable_types,
-        file,
+        function_types: &program.ownership.function_types,
+        file: display_path(&program.entry),
         line: 0,
         functions: Vec::new(),
         signatures: HashMap::new(),
         globals: Vec::new(),
-        global_names: HashMap::new(),
         strings: Vec::new(),
         string_ids: HashMap::new(),
         empty_environment: None,
         wrappers: HashMap::new(),
         generic_functions: HashMap::new(),
-        type_parameters: HashMap::new(),
         instances: HashMap::new(),
         pending: Vec::new(),
         substitution: Vec::new(),
         type_names: Vec::new(),
         record_types: HashMap::new(),
         type_args: &program.ownership.type_args,
+        modules: Vec::new(),
+        module_ids: HashMap::new(),
+        module: 0,
     };
-    lowerer.declare_functions(statements)?;
-    lowerer.declare_globals(statements)?;
-    let main = lowerer.lower_main(statements)?;
-    lowerer.lower_functions(statements)?;
+    // The top-level statements of the main file are function 0.
+    lowerer.functions.push(None);
+    lowerer.load_module(program, &program.entry)?;
+    for module in 0..lowerer.modules.len() {
+        lowerer.enter(module);
+        lowerer.declare_functions()?;
+        lowerer.declare_globals()?;
+    }
+    for module in 0..lowerer.modules.len() {
+        lowerer.enter(module);
+        lowerer.bind_imports()?;
+    }
+    for module in 0..lowerer.modules.len() {
+        lowerer.enter(module);
+        lowerer.lower_module_body()?;
+        lowerer.lower_functions()?;
+    }
     lowerer.lower_instances()?;
     let functions = lowerer
         .functions
@@ -58,13 +71,39 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
         .map(|function| function.expect("every declared function is lowered"))
         .collect();
     Ok(Program {
-        file: lowerer.file,
+        file: display_path(&program.entry),
         functions,
-        main,
+        main: 0,
         globals: lowerer.globals,
         strings: lowerer.strings,
         records: lowerer.records,
     })
+}
+
+/// A file of the program.
+struct Module<'a> {
+    /// Its name in messages: the main file relative to the current directory, like the
+    /// interpreter.
+    file: String,
+    statements: &'a [AstNode],
+    /// What its names refer to: its own functions and top-level variables, and what it imports.
+    names: HashMap<String, Item>,
+    /// The modules it imports, in order: they run before it.
+    imports: Vec<usize>,
+    /// The function that runs its top-level statements (once), and the global that says
+    /// whether it ran.
+    init: FuncId,
+    initialized: Option<GlobalId>,
+}
+
+/// What a name of a module refers to.
+#[derive(Clone)]
+enum Item {
+    Global(GlobalId),
+    /// A function, by its key in `Lowerer::signatures` or `Lowerer::generic_functions`.
+    Function(String),
+    /// A module imported whole (`import math from 'math.kj'`).
+    Module(usize),
 }
 
 /// The file name used in messages: relative to the current directory when possible, like the
@@ -85,12 +124,12 @@ struct Signature {
     ret: Ty,
 }
 
-/// The name of a function in `Lowerer::signatures`: `greet`, or `Person.greet` for a method
-/// (the key of the checker's `MethodRef`).
-fn function_key(owner: &Option<String>, name: &str) -> String {
+/// The key of a function in `Lowerer::signatures`: its module and its name (`greet`, or
+/// `Person.greet` for a method, like the checker's `MethodRef`).
+fn function_key(module: usize, owner: &Option<String>, name: &str) -> String {
     match owner {
-        Some(owner) => format!("{}.{}", owner, name),
-        None => name.to_string(),
+        Some(owner) => format!("{}:{}.{}", module, owner, name),
+        None => format!("{}:{}", module, name),
     }
 }
 
@@ -101,12 +140,13 @@ struct Lowerer<'a> {
     record_ids: HashMap<(TypeId, Vec<Ty>), RecordId>,
     types: &'a HashMap<usize, Type>,
     variable_types: &'a HashMap<usize, Type>,
+    function_types: &'a HashMap<usize, Type>,
+    /// The file of the module being lowered.
     file: String,
     line: usize,
     functions: Vec<Option<Function>>,
     signatures: HashMap<String, Signature>,
     globals: Vec<Global>,
-    global_names: HashMap<String, GlobalId>,
     strings: Vec<String>,
     string_ids: HashMap<String, StrId>,
     /// The record of a closure that captures nothing.
@@ -115,9 +155,7 @@ struct Lowerer<'a> {
     wrappers: HashMap<FuncId, FuncId>,
     /// Generic functions and methods of generic types, by key: they are lowered once for each
     /// set of type arguments they are called with.
-    generic_functions: HashMap<String, &'a AstNode>,
-    /// The type parameters of each generic type, by name.
-    type_parameters: HashMap<String, Vec<String>>,
+    generic_functions: HashMap<String, (usize, &'a AstNode)>,
     /// The instances of generic functions, by key and type arguments.
     instances: HashMap<(String, Vec<Ty>), Signature>,
     /// Instances still to lower.
@@ -129,6 +167,10 @@ struct Lowerer<'a> {
     /// The declared type and the type arguments of each record.
     record_types: HashMap<RecordId, (TypeId, Vec<Ty>)>,
     type_args: &'a HashMap<usize, Vec<Type>>,
+    modules: Vec<Module<'a>>,
+    module_ids: HashMap<std::path::PathBuf, usize>,
+    /// The module being lowered.
+    module: usize,
 }
 
 /// A name in scope.
@@ -216,9 +258,10 @@ impl Builder {
             .insert(name.to_string(), variable);
     }
 
-    fn finish(self, name: String, params: usize, writeback: Vec<bool>) -> Function {
+    fn finish(self, name: String, file: String, params: usize, writeback: Vec<bool>) -> Function {
         Function {
             name,
+            file,
             params,
             writeback,
             ret: self.ret,
@@ -441,17 +484,89 @@ impl<'a> Lowerer<'a> {
 
     // Declarations
 
-    /// Gives every top-level function an id first: functions can be called before they are
-    /// declared.
-    fn declare_functions(&mut self, statements: &'a [AstNode]) -> Lower<()> {
-        // The top-level statements are function 0.
-        self.functions.push(None);
+    /// Adds the module at `path` and the modules it imports (each once).
+    fn load_module(&mut self, program: &'a CheckedProgram, path: &Path) -> Lower<usize> {
+        if let Some(id) = self.module_ids.get(path) {
+            return Ok(*id);
+        }
+        let statements: &'a [AstNode] = &program.modules[path];
+        let id = self.modules.len();
+        let is_entry = *path == program.entry;
+        let init = if is_entry {
+            0
+        } else {
+            self.functions.push(None);
+            self.functions.len() - 1
+        };
+        let initialized = (!is_entry).then(|| {
+            self.globals.push(Global { ty: Ty::Bool, name: format!("{} initialized", path.display()) });
+            self.globals.len() - 1
+        });
+        self.modules.push(Module {
+            file: if is_entry { display_path(path) } else { path.display().to_string() },
+            statements,
+            names: HashMap::new(),
+            imports: Vec::new(),
+            init,
+            initialized,
+        });
+        self.module_ids.insert(path.to_path_buf(), id);
+        let directory = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let mut imports = Vec::new();
         for statement in statements {
-            if let AstNode::TypeDecl { name, params, .. } = statement.unlocated() {
-                let names = params.iter().map(|param| param.name.clone()).collect();
-                self.type_parameters.insert(name.clone(), names);
+            if let AstNode::Located { line, .. } = statement {
+                self.line = *line;
+                self.file = self.modules[id].file.clone();
+            }
+            if let AstNode::Import { path: import, .. } = statement.unlocated() {
+                if !import.ends_with(".kj") {
+                    return self.unsupported(&format!("the standard library module '{}'", import));
+                }
+                let resolved = crate::semantic::type_checker::resolve_module_path(&directory, import);
+                imports.push(self.load_module(program, &resolved)?);
             }
         }
+        self.modules[id].imports = imports;
+        Ok(id)
+    }
+
+    /// Lowers the declarations of the module `module` from now on.
+    fn enter(&mut self, module: usize) {
+        self.module = module;
+        self.file = self.modules[module].file.clone();
+        self.line = 0;
+    }
+
+    /// What `name` refers to in the module being lowered.
+    fn item(&self, name: &str) -> Option<&Item> {
+        self.modules[self.module].names.get(name)
+    }
+
+    fn global_named(&self, name: &str) -> Option<GlobalId> {
+        match self.item(name) {
+            Some(Item::Global(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// The key of the function `name` in the module being lowered.
+    fn function_named(&self, name: &str) -> Option<String> {
+        match self.item(name) {
+            Some(Item::Function(key)) => Some(key.clone()),
+            _ => None,
+        }
+    }
+
+    /// The key of a method or an associated function the checker found.
+    fn method_key(&self, method: &crate::parser::ast::MethodRef) -> String {
+        let module = self.module_ids.get(&method.module).copied().unwrap_or(self.module);
+        format!("{}:{}", module, method.key)
+    }
+
+    /// Gives every top-level function an id first: functions can be called before they are
+    /// declared.
+    fn declare_functions(&mut self) -> Lower<()> {
+        let statements = self.modules[self.module].statements;
         for statement in statements {
             if let AstNode::Located { line, .. } = statement {
                 self.line = *line;
@@ -460,12 +575,13 @@ impl<'a> Lowerer<'a> {
                 if owner.is_some() && name == "drop" {
                     return self.unsupported("a type with 'drop'");
                 }
-                let key = function_key(owner, name);
-                let owner_is_generic = owner
-                    .as_ref()
-                    .is_some_and(|owner| self.type_parameters.get(owner).is_some_and(|params| !params.is_empty()));
+                let key = function_key(self.module, owner, name);
+                if owner.is_none() {
+                    self.modules[self.module].names.insert(name.clone(), Item::Function(key.clone()));
+                }
+                let owner_is_generic = owner.as_ref().is_some_and(|owner| !self.owner_parameters(owner).is_empty());
                 if !type_params.is_empty() || owner_is_generic {
-                    self.generic_functions.insert(key, statement.unlocated());
+                    self.generic_functions.insert(key, (self.module, statement.unlocated()));
                     continue;
                 }
                 self.functions.push(None);
@@ -476,39 +592,64 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// The signature of a function declaration, with the type arguments of `substitution`
-    /// for a generic one.
-    fn signature(&mut self, declaration: &AstNode, id: FuncId) -> Lower<Signature> {
-        let AstNode::FunctionDecl { owner, params, return_type, .. } = declaration else {
-            unreachable!("a function declaration");
-        };
-        // The type of `self`: the owner, with its type parameters (the first ones).
-        let owner_type = match owner {
-            Some(owner) => {
-                let Some(id) = self.table.types.iter().position(|info| info.name == *owner) else {
-                    return self.unsupported(&format!("the type '{}'", owner));
-                };
-                let count = self.table.get(id).params;
-                Some(self.ty(&Type::Named { id, args: (0..count).map(Type::Param).collect() })?)
+    /// The type parameters of the type `owner` declared in the module being lowered.
+    fn owner_parameters(&self, owner: &str) -> Vec<String> {
+        self.modules[self.module]
+            .statements
+            .iter()
+            .find_map(|statement| match statement.unlocated() {
+                AstNode::TypeDecl { name, params, .. } if name == owner => {
+                    Some(params.iter().map(|param| param.name.clone()).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// The names a module imports: a whole module, or some of its functions and variables
+    /// (types need no name: the checker resolved them).
+    fn bind_imports(&mut self) -> Lower<()> {
+        let statements = self.modules[self.module].statements;
+        let mut imports = self.modules[self.module].imports.clone().into_iter();
+        for statement in statements {
+            if let AstNode::Located { line, .. } = statement {
+                self.line = *line;
             }
-            None => None,
-        };
-        let mut param_types = Vec::new();
-        let mut writeback = Vec::new();
-        for param in params {
-            // A `take` parameter owns its value; without `drop`, that is the same as a copy.
-            writeback.push(param.is_mut);
-            match (&param.ty, &owner_type) {
-                (Some(ty), _) => param_types.push(self.type_expr(ty)?),
-                (None, Some(owner)) if param.name == "self" => param_types.push(owner.clone()),
-                (None, _) => return self.unsupported("a parameter without a type"),
+            let AstNode::Import { kind, .. } = statement.unlocated() else {
+                continue;
+            };
+            let module = imports.next().expect("each import was loaded");
+            match kind {
+                crate::parser::ast::ImportKind::Module(name) => {
+                    self.modules[self.module].names.insert(name.clone(), Item::Module(module));
+                }
+                crate::parser::ast::ImportKind::Names(names) => {
+                    for name in names {
+                        if let Some(item) = self.modules[module].names.get(name).cloned() {
+                            self.modules[self.module].names.insert(name.clone(), item);
+                        }
+                    }
+                }
             }
         }
-        let ret = match return_type {
-            Some(ty) => self.type_expr(ty)?,
-            None => Ty::Void,
+        Ok(())
+    }
+
+    /// The signature of a function declaration (from the type the checker gave it), with the
+    /// type arguments of `substitution` for a generic one.
+    fn signature(&mut self, declaration: &AstNode, id: FuncId) -> Lower<Signature> {
+        let AstNode::FunctionDecl { params, .. } = declaration else {
+            unreachable!("a function declaration");
         };
-        Ok(Signature { id, params: param_types, writeback, ret })
+        let Some(ty) = self.function_types.get(&node_id(declaration)) else {
+            return self.unsupported("this function");
+        };
+        let Ty::Function(param_types, ret) = self.ty(ty)? else {
+            return self.unsupported("this function");
+        };
+        // A `take` parameter owns its value; without `drop`, that is the same as a copy.
+        let writeback = params.iter().map(|param| param.is_mut).collect();
+        Ok(Signature { id, params: param_types, writeback, ret: *ret })
     }
 
     /// The names of the type parameters of a generic function: its owner's, then its own.
@@ -516,10 +657,7 @@ impl<'a> Lowerer<'a> {
         let AstNode::FunctionDecl { owner, type_params, .. } = declaration else {
             unreachable!("a function declaration");
         };
-        let mut names = owner
-            .as_ref()
-            .and_then(|owner| self.type_parameters.get(owner).cloned())
-            .unwrap_or_default();
+        let mut names = owner.as_ref().map(|owner| self.owner_parameters(owner)).unwrap_or_default();
         names.extend(type_params.iter().map(|param| param.name.clone()));
         names
     }
@@ -529,7 +667,7 @@ impl<'a> Lowerer<'a> {
         if let Some(signature) = self.signatures.get(key) {
             return Ok(signature.clone());
         }
-        let Some(declaration) = self.generic_functions.get(key).copied() else {
+        let Some((module, declaration)) = self.generic_functions.get(key).copied() else {
             return self.unsupported(&format!("'{}'", key));
         };
         let instance = (key.to_string(), type_args.clone());
@@ -538,6 +676,8 @@ impl<'a> Lowerer<'a> {
         }
         let id = self.functions.len();
         self.functions.push(None);
+        let saved_module = (self.module, self.file.clone(), self.line);
+        self.enter(module);
         let names = self.type_parameter_names(declaration);
         let saved = (
             std::mem::replace(&mut self.substitution, type_args.clone()),
@@ -545,6 +685,7 @@ impl<'a> Lowerer<'a> {
         );
         let signature = self.signature(declaration, id);
         (self.substitution, self.type_names) = saved;
+        (self.module, self.file, self.line) = saved_module;
         let signature = signature?;
         self.instances.insert(instance, signature.clone());
         self.pending.push((key.to_string(), type_args));
@@ -566,7 +707,8 @@ impl<'a> Lowerer<'a> {
     /// Lowers the instances of generic functions, until no new one is needed.
     fn lower_instances(&mut self) -> Lower<()> {
         while let Some((key, type_args)) = self.pending.pop() {
-            let declaration = self.generic_functions[&key];
+            let (module, declaration) = self.generic_functions[&key];
+            self.enter(module);
             let signature = self.instances[&(key.clone(), type_args.clone())].clone();
             let names = self.type_parameter_names(declaration);
             let saved = (
@@ -574,7 +716,8 @@ impl<'a> Lowerer<'a> {
                 std::mem::replace(&mut self.type_names, names),
             );
             let shown: Vec<String> = type_args.iter().map(|ty| format!("{:?}", ty)).collect();
-            let result = self.lower_function(declaration, &signature, format!("{}[{}]", key, shown.join(", ")));
+            let name = key.split_once(':').map_or(key.as_str(), |(_, name)| name);
+            let result = self.lower_function(declaration, &signature, format!("{}[{}]", name, shown.join(", ")));
             (self.substitution, self.type_names) = saved;
             result?;
         }
@@ -593,12 +736,13 @@ impl<'a> Lowerer<'a> {
         }
         builder.scopes.push(HashMap::new());
         self.function_body(&mut builder, body, &signature.ret)?;
-        self.functions[signature.id] = Some(builder.finish(name, params.len(), signature.writeback.clone()));
+        self.functions[signature.id] = Some(builder.finish(name, self.file.clone(), params.len(), signature.writeback.clone()));
         Ok(())
     }
 
     /// Top-level variables are globals, so functions can use them.
-    fn declare_globals(&mut self, statements: &[AstNode]) -> Lower<()> {
+    fn declare_globals(&mut self) -> Lower<()> {
+        let statements = self.modules[self.module].statements;
         for statement in statements {
             if let AstNode::Located { line, .. } = statement {
                 self.line = *line;
@@ -610,31 +754,55 @@ impl<'a> Lowerer<'a> {
                     ty,
                     name: name.clone(),
                 });
-                self.global_names.insert(name.clone(), self.globals.len() - 1);
+                let id = self.globals.len() - 1;
+                self.modules[self.module].names.insert(name.clone(), Item::Global(id));
             }
         }
         Ok(())
     }
 
-    fn lower_main(&mut self, statements: &[AstNode]) -> Lower<FuncId> {
+    /// The function that runs the top-level statements of the module, after the modules it
+    /// imports. An imported module runs once: its function returns at once the next times.
+    fn lower_module_body(&mut self) -> Lower<()> {
+        let module = &self.modules[self.module];
+        let (statements, init, initialized) = (module.statements, module.init, module.initialized);
+        let imports: Vec<FuncId> = module.imports.iter().map(|id| self.modules[*id].init).collect();
         let mut builder = Builder::new(Ty::Void, true);
+        if let Some(initialized) = initialized {
+            let (done, run) = (builder.new_block(), builder.new_block());
+            builder.terminate(Terminator::Branch {
+                condition: Operand::Global(initialized),
+                then_block: done,
+                else_block: run,
+            });
+            builder.switch_to(done);
+            builder.terminate(Terminator::Return(None));
+            builder.switch_to(run);
+            builder.emit(Instruction::Copy { dest: Place::Global(initialized), value: Operand::Bool(true) });
+        }
+        for import in imports {
+            builder.emit(Instruction::Call { dest: None, function: import, args: Vec::new(), writebacks: Vec::new(), line: 0 });
+        }
         self.line = 0;
         self.statements(&mut builder, statements)?;
         builder.terminate(Terminator::Return(None));
-        self.functions[0] = Some(builder.finish("main".to_string(), 0, Vec::new()));
-        Ok(0)
+        let name = if init == 0 { "main".to_string() } else { format!("{} (module)", self.file) };
+        self.functions[init] = Some(builder.finish(name, self.file.clone(), 0, Vec::new()));
+        Ok(())
     }
 
-    fn lower_functions(&mut self, statements: &[AstNode]) -> Lower<()> {
+    fn lower_functions(&mut self) -> Lower<()> {
+        let statements = self.modules[self.module].statements;
         for statement in statements {
             if let AstNode::Located { line, .. } = statement {
                 self.line = *line;
             }
             if let AstNode::FunctionDecl { name, owner, .. } = statement.unlocated() {
-                let key = function_key(owner, name);
+                let key = function_key(self.module, owner, name);
                 // Generic functions are lowered for each instance.
                 if let Some(signature) = self.signatures.get(&key).cloned() {
-                    self.lower_function(statement.unlocated(), &signature, key)?;
+                    let shown = function_key(0, owner, name)[2..].to_string();
+                    self.lower_function(statement.unlocated(), &signature, shown)?;
                 }
             }
         }
@@ -741,7 +909,7 @@ impl<'a> Lowerer<'a> {
         inner.scopes.push(HashMap::new());
         self.function_body(&mut inner, body, &ret)?;
         let count = params.len() + 1;
-        self.functions[id] = Some(inner.finish("anonymous function".to_string(), count, vec![false; count]));
+        self.functions[id] = Some(inner.finish("anonymous function".to_string(), self.file.clone(), count, vec![false; count]));
         self.line = line;
 
         let environment_value = if captures.is_empty() {
@@ -760,8 +928,8 @@ impl<'a> Lowerer<'a> {
 
     /// A named function used as a value (`immut f = double`): a closure of a function that
     /// takes an (empty) environment and calls it.
-    fn function_value(&mut self, builder: &mut Builder, name: &str) -> Lower<Operand> {
-        let signature = &self.signatures[name];
+    fn function_value(&mut self, builder: &mut Builder, key: &str, name: &str) -> Lower<Operand> {
+        let signature = &self.signatures[key];
         if signature.writeback.iter().any(|w| *w) {
             return self.unsupported("a function with 'mut' parameters used as a value");
         }
@@ -778,7 +946,7 @@ impl<'a> Lowerer<'a> {
                 inner.terminate(Terminator::Return(dest.map(Operand::Local)));
                 let id = self.functions.len();
                 let count = params.len() + 1;
-                self.functions.push(Some(inner.finish(name.to_string(), count, vec![false; count])));
+                self.functions.push(Some(inner.finish(name.to_string(), self.file.clone(), count, vec![false; count])));
                 self.wrappers.insert(target, id);
                 id
             }
@@ -833,12 +1001,13 @@ impl<'a> Lowerer<'a> {
             AstNode::FunctionDecl { .. } => self.unsupported("a nested function"),
             AstNode::TypeDecl { .. } if builder.is_main && builder.scopes.len() == 1 => Ok(()),
             AstNode::TypeDecl { .. } => self.unsupported("a type declared inside a block"),
-            AstNode::Import { .. } => self.unsupported("an import"),
+            AstNode::Import { .. } if builder.is_main && builder.scopes.len() == 1 => Ok(()),
+            AstNode::Import { .. } => self.unsupported("an import inside a block"),
             AstNode::VarDecl { name, ty, value, .. } => {
                 let var_type = self.variable_type(node, ty, value)?;
                 let operand = self.value_as(builder, value, &var_type)?;
                 let place = if builder.is_main && builder.scopes.len() == 1 {
-                    let id = self.global_names[name];
+                    let id = self.global_named(name).expect("a declared global");
                     builder.declare(name, Variable::Global(id));
                     Place::Global(id)
                 } else {
@@ -963,8 +1132,7 @@ impl<'a> Lowerer<'a> {
         matches!(iterable.unlocated(), AstNode::Call { callee, .. }
             if matches!(callee.unlocated(), AstNode::Identifier(name) if name == "range")
                 && builder.lookup("range").is_none()
-                && !self.signatures.contains_key("range")
-                && !self.global_names.contains_key("range"))
+                && self.item("range").is_none())
     }
 
     /// `for i in range(...)`, without building the list.
@@ -1144,7 +1312,7 @@ impl<'a> Lowerer<'a> {
     fn variable(&self, builder: &Builder, name: &str) -> Lower<(Place, Ty)> {
         let variable = builder
             .lookup(name)
-            .or_else(|| self.global_names.get(name).map(|id| Variable::Global(*id)));
+            .or_else(|| self.global_named(name).map(Variable::Global));
         match variable {
             Some(Variable::Local(id)) => Ok((Place::Local(id), builder.locals[id].ty.clone())),
             Some(Variable::Global(id)) => Ok((Place::Global(id), self.globals[id].ty.clone())),
@@ -1200,10 +1368,7 @@ impl<'a> Lowerer<'a> {
             },
             _ => return None,
         };
-        let is_name = builder.lookup(name).is_some()
-            || self.global_names.contains_key(name)
-            || self.signatures.contains_key(name)
-            || self.generic_functions.contains_key(name);
+        let is_name = builder.lookup(name).is_some() || self.item(name).is_some();
         let is_variant = self.records[record]
             .variants
             .iter()
@@ -1563,6 +1728,20 @@ impl<'a> Lowerer<'a> {
                 };
                 self.object_literal(builder, entries, record).map(Some)
             }
+            AstNode::Member { object, name } if self.module_of(builder, object).is_some() => {
+                let module = self.module_of(builder, object).expect("a module");
+                match self.modules[module].names.get(name).cloned() {
+                    Some(Item::Global(id)) => Ok(Some(Operand::Global(id))),
+                    Some(Item::Function(key)) if !self.generic_functions.contains_key(&key) => {
+                        self.function_value(builder, &key, name).map(Some)
+                    }
+                    _ => match self.type_in(builder, node)? {
+                        // `shapes.Dot`: a variant without fields.
+                        Ty::Record(record) => self.construct(builder, record, name, &[]).map(Some),
+                        _ => self.unsupported(&format!("'{}' of this module", name)),
+                    },
+                }
+            }
             AstNode::Member { object, name } => {
                 let (field, ty) = self.field(builder, object, name)?;
                 let record = self.expr(builder, object)?.expect("a record");
@@ -1581,14 +1760,13 @@ impl<'a> Lowerer<'a> {
                 self.construct(builder, record, name, args).map(Some)
             }
             AstNode::Identifier(name) => {
-                if builder.lookup(name).is_none()
-                    && !self.global_names.contains_key(name)
-                    && self.signatures.contains_key(name)
-                {
-                    return self.function_value(builder, name).map(Some);
-                }
-                if builder.lookup(name).is_none() && self.generic_functions.contains_key(name) {
-                    return self.unsupported("a generic function used as a value");
+                if builder.lookup(name).is_none() {
+                    if let Some(key) = self.function_named(name) {
+                        if self.generic_functions.contains_key(&key) {
+                            return self.unsupported("a generic function used as a value");
+                        }
+                        return self.function_value(builder, &key, name).map(Some);
+                    }
                 }
                 let (place, _) = self.variable(builder, name)?;
                 Ok(Some(match place {
@@ -1739,7 +1917,8 @@ impl<'a> Lowerer<'a> {
                         let list = self.value_as(builder, &args[0], &Ty::List(item.clone()))?.expect("a list");
                         return Ok(Some(self.unary(builder, UnaryOp::SetFromList, list, set_type)));
                     }
-                    if !self.signatures.contains_key(&method.key) && !self.generic_functions.contains_key(&method.key) {
+                    let key = self.method_key(&method);
+                    if !self.signatures.contains_key(&key) && !self.generic_functions.contains_key(&key) {
                         return self.unsupported(&format!("'{}'", method.key));
                     }
                     let receiver = match (callee.unlocated(), method.has_self) {
@@ -1747,15 +1926,19 @@ impl<'a> Lowerer<'a> {
                         _ => None,
                     };
                     let type_args = self.call_type_args(node)?;
-                    return self.call_function(builder, &method.key, type_args, receiver, args);
+                    return self.call_function(builder, &key, type_args, receiver, args);
                 }
                 let displays = displays.borrow().clone();
                 match callee.unlocated() {
                     AstNode::Identifier(name) => {
-                        if builder.lookup(name).is_some() || self.global_names.contains_key(name) {
+                        if builder.lookup(name).is_some() || self.global_named(name).is_some() {
                             return self.call_closure(builder, callee, args);
                         }
                         self.call(builder, node, name, args, &displays)
+                    }
+                    AstNode::Member { object, name } if self.module_of(builder, object).is_some() => {
+                        let module = self.module_of(builder, object).expect("a module");
+                        self.module_call(builder, node, module, name, args)
                     }
                     AstNode::Member { object, name } => self.builtin_method(builder, node, object, name, args),
                     _ => self.call_closure(builder, callee, args),
@@ -1935,6 +2118,65 @@ impl<'a> Lowerer<'a> {
         };
         let result = self.binary(builder, op, left, right, result_type.clone());
         Ok((result, result_type))
+    }
+
+    /// The module `node` names, when it is the name of an imported module (`calc` in
+    /// `calc.add(1, 2)`).
+    fn module_of(&self, builder: &Builder, node: &AstNode) -> Option<usize> {
+        match node.unlocated() {
+            AstNode::Identifier(name) if builder.lookup(name).is_none() => match self.item(name) {
+                Some(Item::Module(module)) => Some(*module),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// `calc.add(1, 2)`, or `shapes.Circle(2.0)`.
+    fn module_call(
+        &mut self,
+        builder: &mut Builder,
+        call: &AstNode,
+        module: usize,
+        name: &str,
+        args: &[AstNode],
+    ) -> Lower<Option<Operand>> {
+        match self.modules[module].names.get(name).cloned() {
+            Some(Item::Function(key)) => {
+                let type_args = self.call_type_args(call)?;
+                self.call_function(builder, &key, type_args, None, args)
+            }
+            Some(Item::Global(_)) => self.call_closure_value(builder, call, module, name, args),
+            _ => match self.type_in(builder, call)? {
+                Ty::Record(record) => self.construct(builder, record, name, args).map(Some),
+                _ => self.unsupported(&format!("'{}' of this module", name)),
+            },
+        }
+    }
+
+    /// Calls a function stored in a top-level variable of another module.
+    fn call_closure_value(
+        &mut self,
+        builder: &mut Builder,
+        call: &AstNode,
+        module: usize,
+        name: &str,
+        args: &[AstNode],
+    ) -> Lower<Option<Operand>> {
+        let Some(Item::Global(global)) = self.modules[module].names.get(name).cloned() else {
+            return self.unsupported("this call");
+        };
+        let Ty::Function(params, ret) = self.globals[global].ty.clone() else {
+            return self.unsupported("this call");
+        };
+        let _ = call;
+        let mut values = Vec::new();
+        for (arg, param) in args.iter().zip(&params) {
+            values.push(self.value_as(builder, arg, param)?.expect("an argument"));
+        }
+        let dest = (*ret != Ty::Void).then(|| builder.local(*ret, None));
+        builder.emit(Instruction::CallClosure { dest, closure: Operand::Global(global), args: values, line: self.line });
+        Ok(dest.map(Operand::Local))
     }
 
     /// `items.push(x)`, `text.length()` and the other methods of lists and strings.
@@ -2408,13 +2650,12 @@ impl<'a> Lowerer<'a> {
     ) -> Lower<Operand> {
         if let Some(display) = display {
             // The method of a generic type takes the type arguments of the value.
+            let key = self.method_key(display);
             let type_args = match self.type_in(builder, node)? {
-                Ty::Record(record) if self.generic_functions.contains_key(&display.key) => {
-                    self.record_types[&record].1.clone()
-                }
+                Ty::Record(record) if self.generic_functions.contains_key(&key) => self.record_types[&record].1.clone(),
                 _ => Vec::new(),
             };
-            return Ok(self.call_function(builder, &display.key, type_args, Some(node), &[])?.expect("a string"));
+            return Ok(self.call_function(builder, &key, type_args, Some(node), &[])?.expect("a string"));
         }
         let ty = self.type_in(builder, node)?;
         let value = self.expr(builder, node)?.expect("a value");
@@ -2429,9 +2670,9 @@ impl<'a> Lowerer<'a> {
         args: &[AstNode],
         displays: &[Option<crate::parser::ast::MethodRef>],
     ) -> Lower<Option<Operand>> {
-        if self.signatures.contains_key(name) || self.generic_functions.contains_key(name) {
+        if let Some(key) = self.function_named(name) {
             let type_args = self.call_type_args(call)?;
-            return self.call_function(builder, name, type_args, None, args);
+            return self.call_function(builder, &key, type_args, None, args);
         }
         match name {
             "print" => {
