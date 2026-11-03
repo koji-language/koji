@@ -286,8 +286,12 @@ impl Generator<'_> {
         self.file = function.file.clone();
         let _ = writeln!(self.out, "{} {{", self.signature(id, function));
         // Parameters are borrowed from the caller; a reference of their own keeps them alive
-        // even if the caller's variable changes during the call.
+        // even if the caller's variable changes during the call. A `mut` parameter is given its
+        // own reference by the caller (see `Instruction::Call`).
         for (param, local) in function.locals.iter().enumerate().take(function.params) {
+            if function.writeback.get(param).copied().unwrap_or(false) {
+                continue;
+            }
             let Some(retain) = retain(&local.ty) else {
                 continue;
             };
@@ -538,6 +542,25 @@ impl Generator<'_> {
                 }
                 for (param, target) in writebacks {
                     let ty = self.operand_type(function, &args[*param]);
+                    // The function owns the value of a `mut` parameter. When the argument is a
+                    // local variable (not used by another argument), the variable gives it its
+                    // reference for the call, so that the function changes the value in place
+                    // instead of copying it; otherwise the function gets a reference of its own.
+                    if ty.is_managed() {
+                        let alone = |local: &LocalId| {
+                            args.iter().enumerate().all(|(i, arg)| i == *param || *arg != Operand::Local(*local))
+                        };
+                        match (&args[*param], target) {
+                            (Operand::Local(local), Target { root: Place::Local(root), path })
+                                if local == root && path.is_empty() && alone(local) =>
+                            {
+                                let _ = writeln!(self.out, "    {} given{} = l{};", c_type(&ty), param, local);
+                                let _ = writeln!(self.out, "    l{} = NULL;", local);
+                                values[*param] = format!("given{}", param);
+                            }
+                            _ => values[*param] = share(&ty, values[*param].clone()),
+                        }
+                    }
                     let name = format!("back{}", param);
                     let initial = if ty.is_managed() { "NULL" } else { "0" };
                     let _ = writeln!(self.out, "    {} {} = {};", c_type(&ty), name, initial);

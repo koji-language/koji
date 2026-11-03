@@ -287,6 +287,49 @@ print(items)
 }
 
 #[test]
+fn mut_parameters_change_values_in_place() {
+    // A local variable passed as `mut` (or `mut self`) gives its value to the function, which
+    // changes it in place: copying the map at each call would make this loop quadratic.
+    assert_same(
+        "in_place",
+        "\
+type Tables = { types: Map[int, int] }
+type Checker = { tables: Tables, calls: int }
+
+function Checker.record(mut self, id: int) {
+    self.tables.types[id] = id * 2
+    self.calls += 1
+}
+
+function grow(mut items: int[], count: int) {
+    for i in range(count) {
+        items.push(i)
+    }
+}
+
+function run(): string {
+    mut checker: Checker = { tables: { types: [:] }, calls: 0 }
+
+    for i in range(3000) {
+        checker.record(i)
+    }
+
+    mut items: int[] = []
+
+    for i in range(30) {
+        grow(mut items, 100)
+    }
+
+    return `${checker.tables.types.length()} ${checker.calls} ${items.length()}`
+}
+
+print(run())
+",
+        "3000 3000 3000\n",
+    );
+}
+
+#[test]
 fn panics() {
     assert_same_panic("division", "print(1)\nprint(10 / (5 - 5))\n", "division by zero");
     assert_same_panic("overflow", "immut big = 9223372036854775807\nprint(big + 1)\n", "integer overflow");
