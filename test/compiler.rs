@@ -1314,10 +1314,10 @@ fn examples_that_compile() {
 
 #[test]
 fn unsupported_constructs_are_reported() {
-    let path = source_file("unsupported", "import json\nprint(json.stringify(json.Null))\n");
+    let path = source_file("unsupported", "function f() {\n    import math\n    print(math.pi)\n}\n\nf()\n");
     let error = kojic::build_file(&path, &path.with_extension(""), kojic::Emit::Executable).unwrap_err();
     assert!(
-        error.to_string().contains("is not supported by 'kojic build' yet (use 'kojic run')"),
+        error.to_string().ends_with("unsupported.kj:2: an import inside a block is not supported by 'kojic build' yet (use 'kojic run')"),
         "{}",
         error
     );
