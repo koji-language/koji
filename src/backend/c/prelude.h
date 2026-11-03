@@ -206,6 +206,9 @@ KojiString *koji_std_json_stringify(const KojiRecord *value);
 KojiRecord *koji_std_json_get(const KojiRecord *value, const KojiString *key, const KojiRecordType *option);
 KojiRecord *koji_std_json_as(const KojiRecord *value, int32_t kind, const KojiRecordType *option);
 
+KojiRecord *koji_std_http_request(int32_t method, const KojiString *url, const KojiString *body,
+                                  const KojiRecordType *result);
+
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
 _Noreturn void koji_panic(const char *location, const char *message);

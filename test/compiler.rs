@@ -1300,6 +1300,22 @@ error: invalid JSON at line 1, column 7: unexpected character '}'\n\
 }
 
 #[test]
+fn http_errors() {
+    assert_same("http_errors", "import http\n\
+\n\
+print(http.get('not a url'))\n\
+\n\
+match (http.get('http://127.0.0.1:1/')) {\n\
+    Ok(response) => print(response.status)\n\
+    Err(ConnectionFailed(url, _)) => print('cannot connect to', url)\n\
+    Err(error) => print(error)\n\
+}\n\
+", "Err(InvalidUrl('not a url'))\n\
+cannot connect to http://127.0.0.1:1/\n\
+");
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions", "input", "modules", "types"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));

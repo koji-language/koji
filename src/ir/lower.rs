@@ -3320,6 +3320,12 @@ impl<'a> Lowerer<'a> {
                 ("koji_std_path_part", vec![value_as(self, builder, 0, Ty::Str)?, StdArg::Mode(part), result(self, builder)?])
             }
             ("path", "isAbsolute") => ("koji_std_path_is_absolute", vec![value_as(self, builder, 0, Ty::Str)?]),
+            ("http", "get" | "delete" | "post" | "put") => {
+                let method = ["get", "delete", "post", "put"].iter().position(|method| *method == name).expect("a method") as i32;
+                let url = value_as(self, builder, 0, Ty::Str)?;
+                let body = if method >= 2 { value_as(self, builder, 1, Ty::Str)? } else { StdArg::Null };
+                ("koji_std_http_request", vec![StdArg::Mode(method), url, body, result(self, builder)?])
+            }
             ("json", "parse") => {
                 let text = value_as(self, builder, 0, Ty::Str)?;
                 let Ty::Record(result) = self.type_in(builder, call)? else { unreachable!("a Result") };

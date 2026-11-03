@@ -6,6 +6,7 @@ description = "The runtime of compiled Koji programs: strings, output and panics
 
 [dependencies]
 regex = "1"
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [lib]
 path = "src/lib.rs"

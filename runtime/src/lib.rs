@@ -10,6 +10,7 @@
 mod closure;
 pub mod datetime;
 mod file;
+mod http;
 mod json;
 mod list;
 mod map;
@@ -22,6 +23,7 @@ mod string;
 
 pub use numbers::{float_pow, format_float, int_pow, PowFailure};
 pub use string::repr_string;
+pub use http::{http_request, HttpOutcome};
 pub use json::{parse_json, write_float, write_string, JsonFailure, JsonTree};
 pub use regex::regex_error_message;
 pub use stdlib::{error_message, float_to_int, is_title, parse_float, parse_int};
