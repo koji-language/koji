@@ -12,6 +12,7 @@ Usage:
         --emit c                      write the generated C instead
         --emit ir                     write the intermediate representation instead
     kojic dump tokens <file.kj>       show the tokens of a file (for comparing compilers)
+    kojic dump ast <file.kj>          show the syntax tree of a file
     kojic help                        show this message";
 
 fn main() -> ExitCode {
@@ -21,10 +22,11 @@ fn main() -> ExitCode {
     }
     // `kojic dump tokens <file.kj>`: for comparing with the compiler written in Koji.
     if let [dump, stage, file] = args.as_slice() {
-        if dump == "dump" && stage == "tokens" {
+        if dump == "dump" && (stage == "tokens" || stage == "ast") {
             return match std::fs::read_to_string(file) {
                 Ok(source) => {
-                    print!("{}", kojic::dump_tokens(&source));
+                    let text = if stage == "tokens" { kojic::dump_tokens(&source) } else { kojic::dump_ast(&source) };
+                    print!("{}", text);
                     ExitCode::SUCCESS
                 }
                 Err(error) => {

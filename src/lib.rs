@@ -126,3 +126,12 @@ pub fn dump_tokens(source: &str) -> String {
     }
     out
 }
+
+/// The AST of `source`, one top-level statement per line, as `kojic dump ast` prints it; a
+/// syntax error is a single line, `error: ...`.
+pub fn dump_ast(source: &str) -> String {
+    match parser::parse_source(source) {
+        Ok(statements) => statements.iter().map(|statement| format!("{}\n", parser::dump::dump(statement))).collect(),
+        Err(error) => format!("error: {}\n", error),
+    }
+}
