@@ -1,14 +1,16 @@
-// The Koji compiler written in Koji (phase 3). For now: `tokens <file.kj>` prints the tokens
-// of a file, like `kojic dump tokens`.
+// The Koji compiler written in Koji (phase 3). For now it shows the stages written so far, like
+// `kojic dump`: `tokens <file.kj>` prints the tokens of a file and `ast <file.kj>` its syntax
+// tree.
 
 import file
 import system
 import { tokenize, dump } from 'lexer.kj'
+import parser from 'parser.kj'
 
 immut args = system.args()
 
-if (args.length() != 2 or args[0] != 'tokens') {
-    print('usage: main.kj tokens <file.kj>')
+if (args.length() != 2 or not (args[0] == 'tokens' or args[0] == 'ast')) {
+    print('usage: main.kj tokens|ast <file.kj>')
     system.exit(2)
 }
 
@@ -17,14 +19,26 @@ immut source = match (file.open(args[1], file.Read)) {
     Err(error) => Err(error)
 }
 
-match (source) {
-    Ok(text) => {
-        for spanned in tokenize(text) {
-            print(`${spanned.line}:${spanned.column} ${dump(spanned.token)}`)
-        }
-    }
+immut text = match (source) {
+    Ok(text) => text
     Err(error) => {
         print('error:', error)
         system.exit(1)
+        ''
+    }
+}
+
+if (args[0] == 'tokens') {
+    for spanned in tokenize(text) {
+        print(`${spanned.line}:${spanned.column} ${dump(spanned.token)}`)
+    }
+} else {
+    match (parser.parse(text)) {
+        Ok(statements) => {
+            for statement in statements {
+                print(parser.dump(statement))
+            }
+        }
+        Err(message) => print(`error: syntax error: ${message}`)
     }
 }

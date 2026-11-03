@@ -439,13 +439,13 @@ The standard library is in the runtime: the generated code calls a Rust function
 
 The compiler written in Koji is in `compiler/`, one file per stage; `compiler/main.kj` is its entry point. It runs with `kojic run compiler/main.kj ...`, and `kojic build` compiles it to an executable (the first step of the bootstrap).
 
-Each stage prints the same text as a `kojic dump <stage>` command of the compiler in Rust, and `test/bootstrap.rs` compares them on the examples, the compiler's own files, every code block of the documentation and edge cases (`test/lexer/`). The compiled Koji compiler is checked on all of them, and the interpreted one on a few.
+Each stage prints the same text as a `kojic dump <stage>` command of the compiler in Rust, and `test/bootstrap.rs` compares them on the examples, the compiler's own files, every code block of the documentation and edge cases (`test/lexer/`, and the syntax errors listed in `test/bootstrap.rs`). The compiled Koji compiler is checked on all of them, and the interpreted one on a few.
 
 | Stage | File | Compared with | Status |
 | --- | --- | --- | --- |
 | Lexer | `compiler/lexer.kj` | `kojic dump tokens` (`1:5 Identifier count`) | done |
-| Parser | | | next |
-| Checker | | | |
+| Parser | `compiler/parser.kj` | `kojic dump ast` (`(at 1 (immut x _ (int 1)))`; an error is `error: syntax error: ...`) | done |
+| Checker | | | next |
 | IR | | | |
 | C generator | | | |
 
@@ -453,6 +453,8 @@ Notes for writing the compiler in Koji:
 
 -   Koji has no `else if`: a chain of conditions is a `match` with guards, or an early `if` with `return` or `break`.
 -   Characters are classified through strings (`string(c).isAlpha()`), and `c >= '0'` compares chars.
+-   There are no tuples: a function that gives several values returns a small record (`IndexParts` in the parser).
+-   Importing a sum type imports its variants too (`import { Token } from 'lexer.kj'` brings `Identifier`, `End`...); naming them as well is an error.
 
 ---
 

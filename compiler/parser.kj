@@ -1,0 +1,1615 @@
+// The parser of the Koji compiler written in Koji: tokens to a syntax tree. It follows the
+// parser in Rust (src/parser/), with the same error messages, and `kojic dump ast` prints the
+// same text as `dump`.
+
+import { Token, Spanned, tokenize, nul } from 'lexer.kj'
+
+// A written type: `int`, `Map[string, int]`, `int[]`, `(int) => string`.
+export type TypeExpr = {
+    Named(name: string)
+    Generic(name: string, args: TypeExpr[])
+    ArrayOf(element: TypeExpr)
+    FunctionOf(params: TypeExpr[], returns: TypeExpr)
+}
+
+export type Param = {
+    name: string
+    annotation: Option[TypeExpr]
+    isMut: boolean
+    isTake: boolean
+}
+
+export type TypeParam = {
+    name: string
+    constraint: Option[string]
+}
+
+export type Field = {
+    name: string
+    annotation: TypeExpr
+}
+
+export type VariantDef = {
+    name: string
+    fields: Field[]
+}
+
+export type TypeDef = {
+    Sum(variants: VariantDef[])
+    Shape(fields: Field[])
+    IndexSignature(key: TypeExpr, value: TypeExpr)
+    Intersection(parts: TypeDef[])
+    Alias(target: TypeExpr)
+}
+
+export type Pattern = {
+    Wildcard
+    Bind(name: string)
+    VariantPattern(name: string, args: Pattern[])
+    Literal(value: Node)
+}
+
+export type Arm = {
+    pattern: Pattern
+    guard: Option[Node]
+    body: Node
+}
+
+export type Part = {
+    Text(value: string)
+    Expression(value: Node)
+}
+
+export type Entry = {
+    key: Node
+    value: Node
+}
+
+export type ObjectEntry = {
+    key: string
+    value: Node
+}
+
+export type Node = {
+    IntLiteral(value: int)
+    FloatLiteral(value: float)
+    StringNode(value: string)
+    Template(parts: Part[])
+    BooleanLiteral(value: boolean)
+    ListLiteral(items: Node[])
+    MapLiteral(entries: Entry[])
+    ObjectLiteral(entries: ObjectEntry[])
+    Name(name: string)
+    Unary(op: string, operand: Node)
+    Binary(op: string, left: Node, right: Node)
+    Call(callee: Node, args: Node[])
+    MutArg(place: Node)
+    IndexNode(target: Node, index: Node)
+    Slice(target: Node, start: Option[Node], end: Option[Node])
+    Member(object: Node, name: string)
+    If(condition: Node, thenBranch: Node, elseBranch: Option[Node])
+    Match(scrutinee: Node, arms: Arm[])
+    Lambda(params: Param[], returns: Option[TypeExpr], body: Node)
+    Block(statements: Node[])
+    While(condition: Node, body: Node)
+    For(variable: string, isMut: boolean, iterable: Node, body: Node)
+    Break
+    Continue
+    Return(value: Option[Node])
+    Assign(op: string, target: Node, value: Node)
+    VarDecl(name: string, annotation: Option[TypeExpr], value: Node, isImmut: boolean)
+    FunctionDecl(name: string, owner: Option[string], typeParams: TypeParam[], params: Param[], returns: Option[TypeExpr], body: Node)
+    TypeDecl(name: string, params: TypeParam[], definition: TypeDef)
+    ImportModule(name: string, path: string)
+    ImportNames(names: string[], path: string)
+    Try(value: Node)
+    Export(declaration: Node)
+    Located(line: int, statement: Node)
+}
+
+// Binding powers of the binary operators.
+immut orPower = 1
+immut andPower = 2
+immut notPower = 3
+immut equalityPower = 4
+immut comparisonPower = 5
+immut bitOrPower = 6
+immut bitXorPower = 7
+immut bitAndPower = 8
+immut shiftPower = 9
+immut additivePower = 10
+immut multiplicativePower = 11
+immut unaryPower = 12
+immut powerPower = 13
+
+type Parser = {
+    tokens: Spanned[]
+    position: int
+    // How many loops and functions enclose the current point (for `break` and `return`).
+    loopDepth: int
+    functionDepth: int
+    // Inside a match arm body, a binary operator on a new line starts the next arm.
+    newlineEndsExpression: boolean
+}
+
+// The token as error messages show it: `'x'`, `'=>'`, `42`, `the end of the file`.
+export function describe(token: Token): string {
+    return match (token) {
+        Identifier(name) => `'${name}'`
+        Int(value) => string(value)
+        Float(value) => string(value)
+        LargeFloat => 'inf'
+        StringLiteral(value) => value.debug()
+        TemplateString(_) => 'a template string'
+        Boolean(value) => string(value)
+        Keyword(name) => `'${name}'`
+        Symbol(text) => `'${text}'`
+        Illegal(c) => `'${c}'`
+        End => 'the end of the file'
+    }
+}
+
+function Parser.create(tokens: Spanned[]): Parser {
+    return { tokens: tokens, position: 0, loopDepth: 0, functionDepth: 0, newlineEndsExpression: false }
+}
+
+function Parser.tokenAt(self, index: int): Token {
+    if (index < self.tokens.length()) { return self.tokens[index].token }
+
+    return End
+}
+
+function Parser.current(self): Token {
+    return self.tokenAt(self.position)
+}
+
+function Parser.peek(self): Token {
+    return self.tokenAt(self.position + 1)
+}
+
+// The line of a token (0 when unknown); past the end, the line of the last one.
+function Parser.lineAt(self, index: int): int {
+    if (index < self.tokens.length()) { return self.tokens[index].line }
+
+    if (self.tokens.length() == 0) { return 0 }
+
+    return self.tokens[self.tokens.length() - 1].line
+}
+
+function Parser.currentLine(self): int {
+    return self.lineAt(self.position)
+}
+
+// Whether the current token starts a new line.
+function Parser.atNewLine(self): boolean {
+    if (self.position == 0) { return false }
+
+    immut line = self.lineAt(self.position)
+    return line != 0 and line != self.lineAt(self.position - 1)
+}
+
+function Parser.advance(mut self): Token {
+    immut token = self.current()
+
+    if (self.position < self.tokens.length()) { self.position += 1 }
+
+    return token
+}
+
+function Parser.isSymbol(self, text: string): boolean {
+    return self.current() == Symbol(text)
+}
+
+function Parser.isKeyword(self, name: string): boolean {
+    return self.current() == Keyword(name)
+}
+
+// An error at the current line.
+function Parser.failure(self, message: string): string {
+    return atLine(self.currentLine(), message)
+}
+
+function atLine(line: int, message: string): string {
+    if (line == 0) { return message }
+
+    return `line ${line}: ${message}`
+}
+
+function Parser.expect(mut self, expected: Token, description: string): Result[void, string] {
+    if (self.current() != expected) {
+        return Err(self.failure(`expected ${description}, found ${describe(self.current())}`))
+    }
+
+    self.advance()
+    return Ok()
+}
+
+function Parser.expectSymbol(mut self, text: string, description: string): Result[void, string] {
+    return self.expect(Symbol(text), description)
+}
+
+function Parser.expectIdentifier(mut self, description: string): Result[string, string] {
+    return match (self.current()) {
+        Identifier(name) => {
+            self.advance()
+            Ok(name)
+        }
+        Keyword('interface') => Err(self.failure("'interface' is a reserved word: it cannot be a name"))
+        other => Err(self.failure(`expected ${description}, found ${describe(other)}`))
+    }
+}
+
+// Like `expectIdentifier`, but also accepts keywords (`regex.match`, `{ type: 'x' }`).
+function Parser.expectName(mut self, description: string): Result[string, string] {
+    match (self.current()) {
+        Keyword(name) => {
+            self.advance()
+            return Ok(name)
+        }
+        Boolean(value) => {
+            self.advance()
+            return Ok(string(value))
+        }
+        _ => {}
+    }
+
+    return self.expectIdentifier(description)
+}
+
+function Parser.expectString(mut self, description: string): Result[string, string] {
+    return match (self.current()) {
+        StringLiteral(value) => {
+            self.advance()
+            Ok(value)
+        }
+        other => Err(self.failure(`expected ${description}, found ${describe(other)}`))
+    }
+}
+
+function Parser.skipSemicolons(mut self) {
+    while (self.isSymbol(';')) {
+        self.advance()
+    }
+}
+
+function Parser.skipSeparators(mut self) {
+    while (self.isSymbol(',') or self.isSymbol(';')) {
+        self.advance()
+    }
+}
+
+// After an item of a comma-separated list: whether another item follows (a trailing comma
+// before `close` ends the list).
+function Parser.another(mut self, close: string): boolean {
+    if (not self.isSymbol(',')) { return false }
+
+    self.advance()
+    return not self.isSymbol(close)
+}
+
+// Statements
+
+function Parser.locatedStatement(mut self): Result[Node, string] {
+    immut line = self.currentLine()
+    immut statement = self.statement()?
+
+    if (line == 0) { return Ok(statement) }
+
+    return Ok(Located(line, statement))
+}
+
+function Parser.statement(mut self): Result[Node, string] {
+    match (self.current()) {
+        Keyword('break') => {
+            self.insideLoop('break')?
+            self.advance()
+            return Ok(Break)
+        }
+        Keyword('continue') => {
+            self.insideLoop('continue')?
+            self.advance()
+            return Ok(Continue)
+        }
+        Keyword('return') => return self.returnStatement()
+        Keyword('while') => return self.whileLoop()
+        Keyword('for') => return self.forLoop()
+        Keyword('type') => return self.typeDeclaration()
+        Keyword('interface') => return Err(self.failure("'interface' is a reserved word; to describe the shape of a value, use 'type'"))
+        Keyword('import') => return self.importStatement()
+        Keyword('export') => return Err(self.failure("'export' is only allowed at the top level of a file"))
+        Keyword('function') => return self.functionDeclaration()
+        Keyword('mut') => {
+            self.advance()
+            immut name = self.expectIdentifier('variable name')?
+            return self.declaration(name, false)
+        }
+        Keyword('immut') => {
+            self.advance()
+            immut name = self.expectIdentifier('variable name')?
+            return self.declaration(name, true)
+        }
+        Keyword(word) if (word == 'var' or word == 'const' or word == 'let') => {
+            return Err(self.failure(`Koji has no '${word}': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not`))
+        }
+        Identifier(name) if (self.peek() == Symbol(':')) => {
+            return Err(self.failure(`declare '${name}' with 'mut' or 'immut': 'mut ${name}: ... = ...'`))
+        }
+        _ => return self.expressionStatement()
+    }
+}
+
+function Parser.insideLoop(self, keyword: string): Result[void, string] {
+    if (self.loopDepth == 0) { return Err(self.failure(`'${keyword}' can only be used inside a loop`)) }
+
+    return Ok()
+}
+
+function Parser.returnStatement(mut self): Result[Node, string] {
+    if (self.functionDepth == 0) { return Err(self.failure("'return' can only be used inside a function")) }
+
+    self.advance()
+    immut endsHere = self.isSymbol('}') or self.current() == End or self.isSymbol(';') or self.atNewLine()
+
+    if (endsHere) { return Ok(Return(None)) }
+
+    immut value = self.expression(0)?
+    return Ok(Return(Some(value)))
+}
+
+function assignOperator(token: Token): Option[string] {
+    return match (token) {
+        Symbol(text) if (text == '=' or text == '+=' or text == '-=' or text == '*=' or text == '/=' or text == '**=' or text == '%=') => Some(text)
+        _ => None
+    }
+}
+
+function Parser.expressionStatement(mut self): Result[Node, string] {
+    immut target = self.expression(0)?
+    immut operator = assignOperator(self.current())
+
+    if (operator is None) { return Ok(target) }
+
+    immut assignable = match (target) {
+        Name(_) => true
+        IndexNode(_, _) => true
+        Member(_, _) => true
+        _ => false
+    }
+
+    if (not assignable) {
+        return Err(self.failure('invalid assignment target: only a variable, a field or an item can be assigned'))
+    }
+
+    self.advance()
+    immut value = self.expression(0)?
+
+    return match (operator) {
+        Some(op) => Ok(Assign(op, target, value))
+        None => Ok(target)
+    }
+}
+
+// After the name of a declaration: `[: type] = value`.
+function Parser.declaration(mut self, name: string, isImmut: boolean): Result[Node, string] {
+    mut annotation: Option[TypeExpr] = None
+
+    if (self.isSymbol(':')) {
+        self.advance()
+        annotation = Some(self.typeExpression()?)
+    }
+
+    self.expectSymbol('=', "'=' in declaration")?
+    immut value = self.expression(0)?
+    return Ok(VarDecl(name, annotation, value, isImmut))
+}
+
+// Types
+
+function Parser.typeList(mut self, close: string): Result[TypeExpr[], string] {
+    mut items: TypeExpr[] = []
+
+    if (self.isSymbol(close)) { return Ok(items) }
+
+    items.push(self.typeExpression()?)
+
+    while (self.another(close)) {
+        items.push(self.typeExpression()?)
+    }
+
+    return Ok(items)
+}
+
+function Parser.typeExpression(mut self): Result[TypeExpr, string] {
+    mut result = Named('')
+
+    if (self.isSymbol('(')) {
+        // A function type `(int, string) => boolean`, or a type in parentheses.
+        self.advance()
+        immut params = self.typeList(')')?
+        self.expectSymbol(')', "')' in function type")?
+
+        if (not self.isSymbol('=>') and params.length() == 1) {
+            result = params[0]
+        } else {
+            self.expectSymbol('=>', "'=>' in function type")?
+            immut returns = self.typeExpression()?
+            result = FunctionOf(params, returns)
+        }
+    } else {
+        mut name = self.expectIdentifier('type name')?
+
+        while (self.isSymbol('.')) {
+            self.advance()
+            immut part = self.expectIdentifier("type name after '.'")?
+            name += `.${part}`
+        }
+
+        if (self.isSymbol('[') and self.peek() != Symbol(']')) {
+            self.advance()
+            immut args = self.typeList(']')?
+            self.expectSymbol(']', "']' after the type arguments")?
+            result = Generic(name, args)
+        } else {
+            result = Named(name)
+        }
+    }
+
+    while (self.isSymbol('[') and self.peek() == Symbol(']')) {
+        self.advance()
+        self.advance()
+        result = ArrayOf(result)
+    }
+
+    return Ok(result)
+}
+
+// Blocks and loops
+
+// Inside brackets, line breaks never end an expression.
+function Parser.block(mut self): Result[Node, string] {
+    immut saved = self.newlineEndsExpression
+    self.newlineEndsExpression = false
+    immut result = self.blockInner()
+    self.newlineEndsExpression = saved
+    return result
+}
+
+function Parser.blockInner(mut self): Result[Node, string] {
+    self.expectSymbol('{', "'{'")?
+    mut statements: Node[] = []
+
+    while (true) {
+        self.skipSemicolons()
+
+        if (self.isSymbol('}')) { break }
+
+        if (self.current() == End) { return Err(self.failure("unclosed block: expected '}'")) }
+
+        statements.push(self.locatedStatement()?)
+    }
+
+    self.advance()
+    return Ok(Block(statements))
+}
+
+function Parser.loopBody(mut self): Result[Node, string] {
+    self.loopDepth += 1
+    immut body = self.block()
+    self.loopDepth -= 1
+    return body
+}
+
+// A function body: `break` and `continue` do not cross functions.
+function Parser.functionBody(mut self, blockOnly: boolean): Result[Node, string] {
+    immut savedLoops = self.loopDepth
+    self.loopDepth = 0
+    self.functionDepth += 1
+    immut body = if (blockOnly or self.isSymbol('{')) { self.block() } else { self.expression(0) }
+    self.functionDepth -= 1
+    self.loopDepth = savedLoops
+    return body
+}
+
+// Conditions are in parentheses: `(x > 1)`, `not (x > 1)` or `(a) and (b)`.
+function Parser.condition(mut self, keyword: string): Result[Node, string] {
+    mut index = self.position
+
+    while (self.tokenAt(index) == Keyword('not') or self.tokenAt(index) == Symbol('!')) {
+        index += 1
+    }
+
+    if (self.tokenAt(index) != Symbol('(')) {
+        return Err(self.failure(`expected '(' after '${keyword}': conditions must be in parentheses`))
+    }
+
+    return self.expression(0)
+}
+
+function Parser.whileLoop(mut self): Result[Node, string] {
+    self.advance()
+    immut condition = self.condition('while')?
+    immut body = self.loopBody()?
+    return Ok(While(condition, body))
+}
+
+function Parser.forLoop(mut self): Result[Node, string] {
+    self.advance()
+    immut isMut = self.isKeyword('mut')
+
+    if (isMut) { self.advance() }
+
+    immut variable = self.expectIdentifier("variable name for 'for'")?
+    self.expect(Keyword('in'), "'in'")?
+    immut iterable = self.expression(0)?
+    immut body = self.loopBody()?
+    return Ok(For(variable, isMut, iterable, body))
+}
+
+// Functions
+
+function Parser.param(mut self): Result[Param, string] {
+    immut isMut = self.isKeyword('mut')
+    immut isTake = self.isKeyword('take')
+
+    if (isMut or isTake) { self.advance() }
+
+    immut name = self.expectIdentifier('parameter name')?
+    mut annotation: Option[TypeExpr] = None
+
+    if (self.isSymbol(':')) {
+        self.advance()
+        annotation = Some(self.typeExpression()?)
+    }
+
+    return Ok({ name: name, annotation: annotation, isMut: isMut, isTake: isTake })
+}
+
+function Parser.params(mut self): Result[Param[], string] {
+    self.expectSymbol('(', "'(' before the parameters")?
+    mut params: Param[] = []
+
+    if (not self.isSymbol(')')) {
+        params.push(self.param()?)
+
+        while (self.another(')')) {
+            params.push(self.param()?)
+        }
+    }
+
+    self.expectSymbol(')', "')' after the parameters")?
+    return Ok(params)
+}
+
+function Parser.optionalReturnType(mut self): Result[Option[TypeExpr], string] {
+    if (not self.isSymbol(':')) { return Ok(None) }
+
+    self.advance()
+    return Ok(Some(self.typeExpression()?))
+}
+
+function Parser.functionDeclaration(mut self): Result[Node, string] {
+    self.advance()
+    mut name = self.expectIdentifier('function name')?
+    // `function Person.greet(self)`: a method (or associated function) of `Person`.
+    mut owner: Option[string] = None
+
+    if (self.isSymbol('.')) {
+        self.advance()
+        owner = Some(name)
+        name = self.expectName('method name')?
+    }
+
+    immut typeParams = self.typeParameters()?
+    immut params = self.params()?
+    immut returns = self.optionalReturnType()?
+    immut body = self.functionBody(true)?
+    return Ok(FunctionDecl(name, owner, typeParams, params, returns, body))
+}
+
+// Whether the `(` at `open` starts an anonymous function: `(...) =>` or `(...): type =>`.
+function Parser.lambdaStarts(self, open: int): boolean {
+    mut depth = 0
+    mut index = open
+
+    while (true) {
+        immut token = self.tokenAt(index)
+
+        if (token == End) { return false }
+
+        if (token == Symbol('(')) { depth += 1 }
+
+        if (token == Symbol(')')) {
+            depth -= 1
+
+            if (depth == 0) { break }
+        }
+
+        index += 1
+    }
+
+    immut next = self.tokenAt(index + 1)
+    return next == Symbol('=>') or next == Symbol(':')
+}
+
+function Parser.lambda(mut self): Result[Node, string] {
+    immut params = self.params()?
+    immut returns = self.optionalReturnType()?
+    self.expectSymbol('=>', "'=>' in anonymous function")?
+    immut body = self.functionBody(false)?
+    return Ok(Lambda(params, returns, body))
+}
+
+// Modules
+
+function Parser.export(mut self): Result[Node, string] {
+    immut line = self.currentLine()
+    self.advance()
+    immut next = self.current()
+    immut declares = next == Keyword('function') or next == Keyword('mut') or next == Keyword('immut') or next == Keyword('type')
+
+    if (not declares) {
+        return Err(self.failure(`expected 'function', 'mut', 'immut' or 'type' after 'export', found ${describe(next)}`))
+    }
+
+    immut declaration = Export(self.statement()?)
+
+    if (line == 0) { return Ok(declaration) }
+
+    return Ok(Located(line, declaration))
+}
+
+function Parser.importStatement(mut self): Result[Node, string] {
+    self.advance()
+
+    if (self.isSymbol('{')) {
+        self.advance()
+        mut names: string[] = []
+
+        if (not self.isSymbol('}')) {
+            names.push(self.expectIdentifier('imported name')?)
+
+            while (self.another('}')) {
+                names.push(self.expectIdentifier('imported name')?)
+            }
+        }
+
+        self.expectSymbol('}', "'}' after the imported names")?
+        self.expect(Keyword('from'), "'from' after the imported names")?
+        immut path = self.expectString('module path')?
+        return Ok(ImportNames(names, path))
+    }
+
+    immut name = self.expectIdentifier('module name')?
+
+    if (not self.isKeyword('from')) { return Ok(ImportModule(name, name)) }
+
+    self.advance()
+    immut path = self.expectString('module path')?
+    return Ok(ImportModule(name, path))
+}
+
+// Type declarations
+
+// Fields `name: type` separated by newlines or commas, up to and including `}`.
+function Parser.fields(mut self): Result[Field[], string] {
+    mut fields: Field[] = []
+
+    while (true) {
+        self.skipSeparators()
+
+        if (self.isSymbol('}')) {
+            self.advance()
+            break
+        }
+
+        if (self.current() == End) { return Err(self.failure("unclosed field list: expected '}'")) }
+
+        immut name = self.expectName('field name')?
+        self.expectSymbol(':', "':' after the field name")?
+        immut annotation = self.typeExpression()?
+
+        for field in fields {
+            if (field.name == name) { return Err(self.failure(`duplicate field '${name}'`)) }
+        }
+
+        fields.push({ name: name, annotation: annotation })
+    }
+
+    return Ok(fields)
+}
+
+function Parser.typeDeclaration(mut self): Result[Node, string] {
+    self.advance()
+    immut name = self.expectIdentifier('type name')?
+    immut params = self.typeParameters()?
+    self.expectSymbol('=', "'=' in type declaration")?
+    mut parts = [self.typePart()?]
+
+    while (self.isSymbol('&')) {
+        self.advance()
+        parts.push(self.typePart()?)
+    }
+
+    if (self.isSymbol('|')) {
+        return Err(self.failure(`untagged union in type '${name}' is not allowed; use a sum type with named variants`))
+    }
+
+    immut definition = if (parts.length() == 1) { parts[0] } else { Intersection(parts) }
+    return Ok(TypeDecl(name, params, definition))
+}
+
+function Parser.typeParameter(mut self): Result[TypeParam, string] {
+    immut name = self.expectIdentifier('type parameter name')?
+    mut constraint: Option[string] = None
+
+    if (self.isSymbol(':')) {
+        self.advance()
+        constraint = Some(self.expectIdentifier('constraint (equatable or orderable)')?)
+    }
+
+    return Ok({ name: name, constraint: constraint })
+}
+
+// `[A, B: orderable]` after the name of a generic type or function.
+function Parser.typeParameters(mut self): Result[TypeParam[], string] {
+    mut params: TypeParam[] = []
+
+    if (not self.isSymbol('[')) { return Ok(params) }
+
+    self.advance()
+
+    if (not self.isSymbol(']')) {
+        params.push(self.typeParameter()?)
+
+        while (self.another(']')) {
+            params.push(self.typeParameter()?)
+        }
+    }
+
+    self.expectSymbol(']', "']' after the type parameters")?
+
+    if (params.length() == 0) {
+        return Err(self.failure("expected at least one type parameter between '[' and ']'"))
+    }
+
+    for i in range(params.length()) {
+        for earlier in params[..i] {
+            if (earlier.name == params[i].name) {
+                return Err(self.failure(`type parameter '${params[i].name}' is declared twice`))
+            }
+        }
+    }
+
+    return Ok(params)
+}
+
+// One operand of a type definition: a `{ ... }` body or a type name.
+function Parser.typePart(mut self): Result[TypeDef, string] {
+    if (not self.isSymbol('{')) { return Ok(Alias(self.typeExpression()?)) }
+
+    self.advance()
+
+    if (self.isSymbol('[')) {
+        self.advance()
+        self.expectIdentifier('key name')?
+        self.expectSymbol(':', "':' after the key name")?
+        immut key = self.typeExpression()?
+        self.expectSymbol(']', "']' after the key type")?
+        self.expectSymbol(':', "':' before the value type")?
+        immut value = self.typeExpression()?
+        self.skipSeparators()
+        self.expectSymbol('}', "'}' after the index signature")?
+        return Ok(IndexSignature(key, value))
+    }
+
+    if (self.isSymbol('}') or self.peek() == Symbol(':')) { return Ok(Shape(self.fields()?)) }
+
+    mut variants: VariantDef[] = []
+
+    while (true) {
+        self.skipSeparators()
+
+        if (self.isSymbol('}')) {
+            self.advance()
+            break
+        }
+
+        if (self.current() == End) { return Err(self.failure("unclosed type declaration: expected '}'")) }
+
+        immut variant = self.variant()?
+
+        for existing in variants {
+            if (existing.name == variant.name) { return Err(self.failure(`duplicate variant '${variant.name}'`)) }
+        }
+
+        variants.push(variant)
+    }
+
+    return Ok(Sum(variants))
+}
+
+function Parser.variantField(mut self): Result[Field, string] {
+    immut name = self.expectName('field name')?
+    self.expectSymbol(':', "':' after the field name")?
+    immut annotation = self.typeExpression()?
+    return Ok({ name: name, annotation: annotation })
+}
+
+function Parser.variant(mut self): Result[VariantDef, string] {
+    immut name = self.expectIdentifier('variant name')?
+    mut fields: Field[] = []
+
+    if (self.isSymbol('(')) {
+        self.advance()
+
+        if (not self.isSymbol(')')) {
+            fields.push(self.variantField()?)
+
+            while (self.another(')')) {
+                fields.push(self.variantField()?)
+            }
+        }
+
+        self.expectSymbol(')', "')' at the end of the fields")?
+    }
+
+    return Ok({ name: name, fields: fields })
+}
+
+// Expressions
+
+function binaryPower(token: Token): int {
+    return match (token) {
+        Keyword('or') => orPower
+        Keyword('and') => andPower
+        Keyword('is') => equalityPower
+        Keyword('in') => comparisonPower
+        Symbol(text) => match (text) {
+            '==' => equalityPower
+            '!=' => equalityPower
+            '>' => comparisonPower
+            '>=' => comparisonPower
+            '<' => comparisonPower
+            '<=' => comparisonPower
+            '|' => bitOrPower
+            '^' => bitXorPower
+            '&' => bitAndPower
+            '<<' => shiftPower
+            '>>' => shiftPower
+            '+' => additivePower
+            '-' => additivePower
+            '*' => multiplicativePower
+            '/' => multiplicativePower
+            '%' => multiplicativePower
+            '**' => powerPower
+            _ => 0
+        }
+        _ => 0
+    }
+}
+
+function operatorText(token: Token): string {
+    return match (token) {
+        Keyword(name) => name
+        Symbol(text) => text
+        _ => ''
+    }
+}
+
+function Parser.expression(mut self, minimum: int): Result[Node, string] {
+    mut left = self.prefix()?
+
+    while (true) {
+        // Postfix operators bind more tightly than any binary operator. A `(` or `[` on a new
+        // line starts a new statement instead of continuing the previous expression.
+        if (self.isSymbol('(') and not self.atNewLine()) {
+            left = self.call(left)?
+            continue
+        }
+
+        if (self.isSymbol('[') and not self.atNewLine()) {
+            left = self.index(left)?
+            continue
+        }
+
+        if (self.isSymbol('.')) {
+            self.advance()
+            immut name = self.expectName("member name after '.'")?
+            left = Member(left, name)
+            continue
+        }
+
+        if (self.isSymbol('?')) {
+            self.advance()
+            left = Try(left)
+            continue
+        }
+
+        if (self.newlineEndsExpression and self.atNewLine()) { break }
+
+        immut power = binaryPower(self.current())
+
+        if (power == 0 or power < minimum) { break }
+
+        immut op = operatorText(self.advance())
+        // `**` is right-associative; the others are left-associative.
+        immut next = if (op == '**') { power } else { power + 1 }
+        immut right = self.expression(next)?
+        left = Binary(op, left, right)
+    }
+
+    return Ok(left)
+}
+
+// Inside brackets, line breaks never end an expression.
+function Parser.groupedExpression(mut self): Result[Node, string] {
+    immut saved = self.newlineEndsExpression
+    self.newlineEndsExpression = false
+    immut result = self.expression(0)
+    self.newlineEndsExpression = saved
+    return result
+}
+
+function Parser.prefix(mut self): Result[Node, string] {
+    if (self.isSymbol('(') and self.lambdaStarts(self.position)) { return self.lambda() }
+
+    immut line = self.currentLine()
+
+    return match (self.advance()) {
+        Int(value) => Ok(IntLiteral(value))
+        Float(value) => Ok(FloatLiteral(value))
+        LargeFloat => Err(atLine(line, 'float literal is too large (float has no infinity)'))
+        StringLiteral(value) => Ok(StringNode(value))
+        TemplateString(raw) => parseTemplate(raw, line)
+        Boolean(value) => Ok(BooleanLiteral(value))
+        Identifier(name) => Ok(Name(name))
+        Symbol('[') => self.grouped(true)
+        Symbol('{') => self.grouped(false)
+        Keyword('if') => self.ifExpression()
+        Keyword('match') => self.matchExpression()
+        Symbol('-') => {
+            immut operand = self.expression(unaryPower)?
+            Ok(Unary('-', operand))
+        }
+        Symbol('~') => {
+            immut operand = self.expression(unaryPower)?
+            Ok(Unary('~', operand))
+        }
+        Symbol('!') => {
+            immut operand = self.expression(notPower)?
+            Ok(Unary('not', operand))
+        }
+        Keyword('not') => {
+            immut operand = self.expression(notPower)?
+            Ok(Unary('not', operand))
+        }
+        Symbol('(') => {
+            immut inner = self.groupedExpression()?
+            self.expectSymbol(')', "')'")?
+            Ok(inner)
+        }
+        other => Err(atLine(line, `unexpected expression: ${describe(other)}`))
+    }
+}
+
+// After `[` (a list or a map) or `{` (an object): line breaks never end an expression inside.
+function Parser.grouped(mut self, brackets: boolean): Result[Node, string] {
+    immut saved = self.newlineEndsExpression
+    self.newlineEndsExpression = false
+    immut result = if (brackets) { self.brackets() } else { self.objectLiteral() }
+    self.newlineEndsExpression = saved
+    return result
+}
+
+// Called after consuming `{`. Entries are separated by commas or newlines.
+function Parser.objectLiteral(mut self): Result[Node, string] {
+    mut entries: ObjectEntry[] = []
+
+    while (true) {
+        self.skipSeparators()
+
+        if (self.isSymbol('}')) {
+            self.advance()
+            break
+        }
+
+        if (self.current() == End) { return Err(self.failure("unclosed object: expected '}'")) }
+
+        immut key = match (self.current()) {
+            StringLiteral(value) => {
+                self.advance()
+                value
+            }
+            _ => self.expectName('object key')?
+        }
+
+        self.expectSymbol(':', "':' after the object key")?
+        immut value = self.expression(0)?
+
+        for entry in entries {
+            if (entry.key == key) { return Err(self.failure(`duplicate key '${key}'`)) }
+        }
+
+        entries.push({ key: key, value: value })
+    }
+
+    return Ok(ObjectLiteral(entries))
+}
+
+function Parser.argument(mut self): Result[Node, string] {
+    if (self.isKeyword('mut')) {
+        self.advance()
+        return Ok(MutArg(self.expression(0)?))
+    }
+
+    return self.expression(0)
+}
+
+function Parser.call(mut self, callee: Node): Result[Node, string] {
+    self.advance()
+    immut saved = self.newlineEndsExpression
+    self.newlineEndsExpression = false
+    immut args = self.arguments()
+    self.newlineEndsExpression = saved
+    immut values = args?
+    self.expectSymbol(')', "')' at the end of the arguments")?
+    return Ok(Call(callee, values))
+}
+
+function Parser.arguments(mut self): Result[Node[], string] {
+    mut args: Node[] = []
+
+    if (self.isSymbol(')')) { return Ok(args) }
+
+    args.push(self.argument()?)
+
+    while (self.another(')')) {
+        args.push(self.argument()?)
+    }
+
+    return Ok(args)
+}
+
+// After `[`: a list `[1, 2]`, or a map `['Ana': 30]` (`[:]` is the empty map).
+function Parser.brackets(mut self): Result[Node, string] {
+    if (self.isSymbol(':')) {
+        self.advance()
+        self.expectSymbol(']', "']' after '[:'")?
+        return Ok(MapLiteral([]))
+    }
+
+    mut keys: Node[] = []
+    mut values: Option[Node][] = []
+
+    if (not self.isSymbol(']')) {
+        while (true) {
+            keys.push(self.expression(0)?)
+
+            if (self.isSymbol(':')) {
+                self.advance()
+                values.push(Some(self.expression(0)?))
+            } else {
+                values.push(None)
+            }
+
+            if (not self.another(']')) { break }
+        }
+    }
+
+    self.expectSymbol(']', "']' at the end of the list")?
+    mut entries: Entry[] = []
+
+    for i in range(keys.length()) {
+        match (values[i]) {
+            Some(value) => entries.push({ key: keys[i], value: value })
+            None => {}
+        }
+    }
+
+    if (entries.length() == 0) { return Ok(ListLiteral(keys)) }
+
+    if (entries.length() != keys.length()) { return Err(self.failure("a map literal needs 'key: value' for every entry")) }
+
+    return Ok(MapLiteral(entries))
+}
+
+// The inside of `[...]` after a value: an index `[i]` or a slice `[a..b]`, `[..b]`, `[a..]`.
+type IndexParts = {
+    start: Option[Node]
+    isSlice: boolean
+    end: Option[Node]
+}
+
+function Parser.index(mut self, target: Node): Result[Node, string] {
+    self.advance()
+    immut saved = self.newlineEndsExpression
+    self.newlineEndsExpression = false
+    immut result = self.indexParts()
+    self.newlineEndsExpression = saved
+    immut parts = result?
+    self.expectSymbol(']', "']' after the index")?
+
+    if (parts.isSlice) { return Ok(Slice(target, parts.start, parts.end)) }
+
+    return match (parts.start) {
+        Some(index) => Ok(IndexNode(target, index))
+        None => Err(self.failure("expected an index"))
+    }
+}
+
+function Parser.indexParts(mut self): Result[IndexParts, string] {
+    mut start: Option[Node] = None
+
+    if (not self.isSymbol('..')) { start = Some(self.expression(0)?) }
+
+    if (not self.isSymbol('..')) { return Ok({ start: start, isSlice: false, end: None }) }
+
+    self.advance()
+    mut end: Option[Node] = None
+
+    if (not self.isSymbol(']')) { end = Some(self.expression(0)?) }
+
+    return Ok({ start: start, isSlice: true, end: end })
+}
+
+// After `if`.
+function Parser.ifExpression(mut self): Result[Node, string] {
+    immut condition = self.condition('if')?
+    immut thenBranch = self.block()?
+
+    if (not self.isKeyword('else')) { return Ok(If(condition, thenBranch, None)) }
+
+    self.advance()
+
+    if (self.isKeyword('if')) { return Err(self.failure("Koji does not have 'else if'; use 'match' with guards")) }
+
+    immut elseBranch = self.block()?
+    return Ok(If(condition, thenBranch, Some(elseBranch)))
+}
+
+// After `match`.
+function Parser.matchExpression(mut self): Result[Node, string] {
+    self.expectSymbol('(', "'(' after 'match'")?
+    immut scrutinee = self.expression(0)?
+    self.expectSymbol(')', "')' after the match value")?
+    self.expectSymbol('{', "'{' to open the match arms")?
+    mut arms: Arm[] = []
+
+    while (true) {
+        self.skipSeparators()
+
+        if (self.isSymbol('}')) { break }
+
+        if (self.current() == End) { return Err(self.failure("unclosed match: expected '}'")) }
+
+        arms.push(self.matchArm()?)
+    }
+
+    self.advance()
+
+    if (arms.length() == 0) { return Err(self.failure('match with no arms')) }
+
+    return Ok(Match(scrutinee, arms))
+}
+
+function Parser.matchArm(mut self): Result[Arm, string] {
+    immut pattern = self.pattern()?
+    mut guard: Option[Node] = None
+
+    if (self.isKeyword('if')) {
+        self.advance()
+        self.expectSymbol('(', "'(' after 'if' in the guard")?
+        guard = Some(self.expression(0)?)
+        self.expectSymbol(')', "')' after the guard")?
+    }
+
+    self.expectSymbol('=>', "'=>'")?
+    immut body = if (self.isSymbol('{')) { self.block()? } else { self.armExpression()? }
+    return Ok({ pattern: pattern, guard: guard, body: body })
+}
+
+// Arm bodies may be statements such as `x += 1` or `break`, as well as expressions.
+function Parser.armExpression(mut self): Result[Node, string] {
+    immut saved = self.newlineEndsExpression
+    self.newlineEndsExpression = true
+    immut statement = self.isKeyword('break') or self.isKeyword('continue') or self.isKeyword('return')
+    immut result = if (statement) { self.statement() } else { self.expressionStatement() }
+    self.newlineEndsExpression = saved
+    return result
+}
+
+function Parser.pattern(mut self): Result[Pattern, string] {
+    match (self.current()) {
+        Identifier(name) => {
+            self.advance()
+
+            if (name == '_') { return Ok(Wildcard) }
+
+            if (not self.isSymbol('(')) { return Ok(Bind(name)) }
+
+            self.advance()
+            mut args: Pattern[] = []
+
+            if (not self.isSymbol(')')) {
+                args.push(self.pattern()?)
+
+                while (self.another(')')) {
+                    args.push(self.pattern()?)
+                }
+            }
+
+            self.expectSymbol(')', "')' at the end of the pattern")?
+            return Ok(VariantPattern(name, args))
+        }
+        Int(value) => {
+            self.advance()
+            return Ok(Literal(IntLiteral(value)))
+        }
+        Float(value) => {
+            self.advance()
+            return Ok(Literal(FloatLiteral(value)))
+        }
+        LargeFloat => return Err(self.failure('float literal is too large (float has no infinity)'))
+        Symbol('-') => {
+            self.advance()
+
+            return match (self.advance()) {
+                Int(value) => Ok(Literal(IntLiteral(-value)))
+                Float(value) => Ok(Literal(FloatLiteral(-value)))
+                LargeFloat => Err(self.failure('float literal is too large (float has no infinity)'))
+                other => Err(self.failure(`unexpected pattern: -${describe(other)}`))
+            }
+        }
+        StringLiteral(value) => {
+            self.advance()
+            return Ok(Literal(StringNode(value)))
+        }
+        Boolean(value) => {
+            self.advance()
+            return Ok(Literal(BooleanLiteral(value)))
+        }
+        other => return Err(self.failure(`unexpected pattern: ${describe(other)}`))
+    }
+}
+
+// Template strings
+
+// Splits the raw contents of a template string into text and `${...}` expressions.
+function parseTemplate(raw: string, line: int): Result[Node, string] {
+    immut chars = raw.chars()
+    mut parts: Part[] = []
+    mut text = ''
+    mut i = 0
+
+    while (i < chars.length()) {
+        immut c = chars[i]
+
+        if (c == '\\' and i + 1 < chars.length()) {
+            text += match (chars[i + 1]) {
+                'n' => '\n'
+                'r' => '\r'
+                't' => '\t'
+                '0' => nul()
+                other => string(other)
+            }
+            i += 2
+            continue
+        }
+
+        if (c != '$' or i + 1 >= chars.length() or chars[i + 1] != '{') {
+            text += string(c)
+            i += 1
+            continue
+        }
+
+        if (text != '') {
+            parts.push(Text(text))
+            text = ''
+        }
+
+        i += 2
+        mut inner = ''
+        mut depth = 1
+
+        while (i < chars.length()) {
+            if (chars[i] == '{') { depth += 1 }
+
+            if (chars[i] == '}') {
+                depth -= 1
+
+                if (depth == 0) { break }
+            }
+
+            inner += string(chars[i])
+            i += 1
+        }
+
+        if (depth != 0) { return Err(atLine(line, "unclosed interpolation: expected '}'")) }
+
+        immut expression = interpolation(inner, line)?
+        parts.push(Expression(expression))
+        i += 1
+    }
+
+    if (text != '') { parts.push(Text(text)) }
+
+    return Ok(Template(parts))
+}
+
+// The expression inside `${...}`, parsed without lines (its errors take the template's line).
+function interpolation(source: string, line: int): Result[Node, string] {
+    mut tokens: Spanned[] = []
+
+    for spanned in tokenize(source) {
+        tokens.push({ token: spanned.token, line: 0, column: 0 })
+    }
+
+    mut parser = Parser.create(tokens)
+
+    immut expression = match (parser.expression(0)) {
+        Ok(node) => node
+        Err(message) => return Err(atLine(line, `in interpolation: ${message}`))
+    }
+
+    if (parser.current() != End) {
+        return Err(atLine(line, `unexpected token inside interpolation: ${describe(parser.current())}`))
+    }
+
+    return Ok(expression)
+}
+
+// Files
+
+// The statements of a file, or the message of its syntax error (`line 3: expected ...`).
+export function parse(source: string): Result[Node[], string] {
+    immut tokens = tokenize(source)
+
+    for spanned in tokens {
+        match (spanned.token) {
+            Illegal(c) => return Err(`line ${spanned.line}: unexpected character '${c}'`)
+            _ => {}
+        }
+    }
+
+    mut parser = Parser.create(tokens)
+    mut statements: Node[] = []
+
+    while (true) {
+        parser.skipSemicolons()
+
+        if (parser.current() == End) { break }
+
+        if (parser.isKeyword('export')) {
+            statements.push(parser.export()?)
+        } else {
+            statements.push(parser.locatedStatement()?)
+        }
+    }
+
+    return Ok(statements)
+}
+
+// The text form of the tree (`kojic dump ast`): one S-expression per node.
+
+function optional(node: Option[Node]): string {
+    return match (node) {
+        Some(value) => dump(value)
+        None => '_'
+    }
+}
+
+function list(nodes: Node[]): string {
+    mut text = ''
+
+    for node in nodes {
+        text += ` ${dump(node)}`
+    }
+
+    return text
+}
+
+function typeList(types: TypeExpr[]): string {
+    mut texts: string[] = []
+
+    for item in types {
+        texts.push(typeText(item))
+    }
+
+    return texts.join(', ')
+}
+
+// A written type, as in the source: `int`, `Map[string, int]`, `int[]`, `(int) => string`.
+export function typeText(written: TypeExpr): string {
+    return match (written) {
+        Named(name) => name
+        Generic(name, args) => `${name}[${typeList(args)}]`
+        ArrayOf(FunctionOf(params, returns)) => `((${typeList(params)}) => ${typeText(returns)})[]`
+        ArrayOf(element) => `${typeText(element)}[]`
+        FunctionOf(params, returns) => `(${typeList(params)}) => ${typeText(returns)}`
+    }
+}
+
+function optionalType(written: Option[TypeExpr]): string {
+    return match (written) {
+        Some(value) => typeText(value)
+        None => '_'
+    }
+}
+
+function paramsText(params: Param[]): string {
+    mut texts: string[] = []
+
+    for param in params {
+        mut mode = ''
+
+        if (param.isMut) { mode = 'mut ' }
+
+        if (param.isTake and not param.isMut) { mode = 'take ' }
+
+        texts.push(`(param ${mode}${param.name} ${optionalType(param.annotation)})`)
+    }
+
+    return `(${texts.join(' ')})`
+}
+
+function fieldsText(fields: Field[]): string {
+    mut text = ''
+
+    for field in fields {
+        text += ` (field ${field.name} ${typeText(field.annotation)})`
+    }
+
+    return text
+}
+
+function definitionText(definition: TypeDef): string {
+    match (definition) {
+        Sum(variants) => {
+            mut text = '(sum'
+
+            for variant in variants {
+                text += ` (variant ${variant.name}${fieldsText(variant.fields)})`
+            }
+
+            return `${text})`
+        }
+        Shape(fields) => return `(shape${fieldsText(fields)})`
+        IndexSignature(key, value) => return `(index-signature ${typeText(key)} ${typeText(value)})`
+        Intersection(parts) => {
+            mut text = '(intersection'
+
+            for part in parts {
+                text += ` ${definitionText(part)}`
+            }
+
+            return `${text})`
+        }
+        Alias(target) => return `(alias ${typeText(target)})`
+    }
+}
+
+function patternText(pattern: Pattern): string {
+    match (pattern) {
+        Wildcard => return '(wildcard)'
+        Bind(name) => return `(bind ${name})`
+        VariantPattern(name, args) => {
+            mut text = `(variant ${name}`
+
+            for arg in args {
+                text += ` ${patternText(arg)}`
+            }
+
+            return `${text})`
+        }
+        Literal(value) => return `(literal ${dump(value)})`
+    }
+}
+
+function typeParametersText(params: TypeParam[]): string {
+    mut texts: string[] = []
+
+    for param in params {
+        match (param.constraint) {
+            Some(constraint) => texts.push(`${param.name}:${constraint}`)
+            None => texts.push(param.name)
+        }
+    }
+
+    return `(${texts.join(' ')})`
+}
+
+function partsText(parts: Part[]): string {
+    mut text = ''
+
+    for part in parts {
+        match (part) {
+            Text(value) => text += ` (text ${value.debug()})`
+            Expression(value) => text += ` (expr ${dump(value)})`
+        }
+    }
+
+    return text
+}
+
+function armsText(arms: Arm[]): string {
+    mut text = ''
+
+    for arm in arms {
+        text += ` (arm ${patternText(arm.pattern)} ${optional(arm.guard)} ${dump(arm.body)})`
+    }
+
+    return text
+}
+
+// One node as an S-expression: `(binary + (int 1) (name x))`.
+export function dump(node: Node): string {
+    match (node) {
+        IntLiteral(value) => return `(int ${value})`
+        FloatLiteral(value) => return `(float ${value})`
+        StringNode(value) => return `(string ${value.debug()})`
+        Template(parts) => return `(template${partsText(parts)})`
+        BooleanLiteral(value) => return `(bool ${value})`
+        ListLiteral(items) => return `(list${list(items)})`
+        MapLiteral(entries) => {
+            mut text = '(map'
+
+            for entry in entries {
+                text += ` (entry ${dump(entry.key)} ${dump(entry.value)})`
+            }
+
+            return `${text})`
+        }
+        ObjectLiteral(entries) => {
+            mut text = '(object'
+
+            for entry in entries {
+                text += ` (field ${entry.key.debug()} ${dump(entry.value)})`
+            }
+
+            return `${text})`
+        }
+        Name(name) => return `(name ${name})`
+        Unary(op, operand) => return `(unary ${op} ${dump(operand)})`
+        Binary(op, left, right) => return `(binary ${op} ${dump(left)} ${dump(right)})`
+        Call(callee, args) => return `(call ${dump(callee)}${list(args)})`
+        MutArg(place) => return `(mut ${dump(place)})`
+        IndexNode(target, index) => return `(index ${dump(target)} ${dump(index)})`
+        Slice(target, start, end) => return `(slice ${dump(target)} ${optional(start)} ${optional(end)})`
+        Member(object, name) => return `(member ${dump(object)} ${name})`
+        If(condition, thenBranch, elseBranch) => return `(if ${dump(condition)} ${dump(thenBranch)} ${optional(elseBranch)})`
+        Match(scrutinee, arms) => return `(match ${dump(scrutinee)}${armsText(arms)})`
+        Lambda(params, returns, body) => return `(lambda ${paramsText(params)} ${optionalType(returns)} ${dump(body)})`
+        Block(statements) => return `(block${list(statements)})`
+        While(condition, body) => return `(while ${dump(condition)} ${dump(body)})`
+        For(variable, isMut, iterable, body) => {
+            immut mode = if (isMut) { 'mut ' } else { '' }
+            return `(for ${mode}${variable} ${dump(iterable)} ${dump(body)})`
+        }
+        Break => return '(break)'
+        Continue => return '(continue)'
+        Return(value) => {
+            return match (value) {
+                Some(result) => `(return ${dump(result)})`
+                None => '(return)'
+            }
+        }
+        Assign(op, target, value) => return `(assign ${op} ${dump(target)} ${dump(value)})`
+        VarDecl(name, annotation, value, isImmut) => {
+            immut keyword = if (isImmut) { 'immut' } else { 'mut' }
+            return `(${keyword} ${name} ${optionalType(annotation)} ${dump(value)})`
+        }
+        FunctionDecl(name, owner, typeParams, params, returns, body) => {
+            immut fullName = match (owner) {
+                Some(ownerName) => `${ownerName}.${name}`
+                None => name
+            }
+            return `(function ${fullName} ${typeParametersText(typeParams)} ${paramsText(params)} ${optionalType(returns)} ${dump(body)})`
+        }
+        TypeDecl(name, params, definition) => return `(type ${name} ${typeParametersText(params)} ${definitionText(definition)})`
+        ImportModule(name, path) => return `(import ${name} ${path.debug()})`
+        ImportNames(names, path) => return `(import (${names.join(' ')}) ${path.debug()})`
+        Try(value) => return `(try ${dump(value)})`
+        Export(declaration) => return `(export ${dump(declaration)})`
+        Located(line, statement) => return `(at ${line} ${dump(statement)})`
+    }
+}

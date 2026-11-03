@@ -81,3 +81,141 @@ fn the_interpreted_lexer_agrees() {
         assert_eq!(tokens, expected, "the tokens of {} differ", file);
     }
 }
+
+/// Syntax errors (and a few tricky constructs) for comparing the parsers: each one is a file.
+const PARSER_CASES: &[&str] = &[
+    r#"immut x = 1 @ 2"#,
+    r#"break"#,
+    r#"while (true) { continue }
+continue"#,
+    r#"return 1"#,
+    r#"interface A {}"#,
+    r#"function f() { export immut x = 1 }"#,
+    r#"var x = 1"#,
+    r#"const x = 1"#,
+    r#"let x = 1"#,
+    r#"x: int = 1"#,
+    r#"1 + 2 = 3"#,
+    r#"f() += 1"#,
+    r#"mut x int = 1"#,
+    r#"mut interface = 1"#,
+    r#"immut x: Map[string = 1"#,
+    r#"immut f: (int, string) = 1"#,
+    r#"immut f: (int) => = 1"#,
+    r#"immut x: int[ = 1"#,
+    r#"function f( { }"#,
+    r#"function f(a: int { }"#,
+    r#"function f(mut) {}"#,
+    r#"function f() { print(1)"#,
+    r#"if x > 1 { }"#,
+    r#"while not x { }"#,
+    r#"if (x) { } else if (y) { }"#,
+    r#"for in items { }"#,
+    r#"for x items { }"#,
+    r#"export print(1)"#,
+    r#"import { a, b from 'x.kj'"#,
+    r#"import { a } 'x.kj'"#,
+    r#"import { a } from x"#,
+    r#"import math from 1"#,
+    r#"type A = { a: int, a: string }"#,
+    r#"type A = { B C B }"#,
+    r#"type A = { a: int"#,
+    r#"type A = { B(x: int) C"#,
+    r#"type A = int | string"#,
+    r#"type A[] = int"#,
+    r#"type A[T, T] = int"#,
+    r#"type A[T: 1] = int"#,
+    r#"type A = { [k: string] int }"#,
+    r#"type A = { [k: string]: int x }"#,
+    r#"type A = { B(x int) }"#,
+    r#"type A int"#,
+    r#"immut x = match (y) { }"#,
+    r#"immut x = match y { _ => 1 }"#,
+    r#"immut x = match (y) _ => 1"#,
+    r#"immut x = match (y) { 1 => 2"#,
+    r#"immut x = match (y) { 1 if x => 2 }"#,
+    r#"immut x = match (y) { 1 if (x => 2 }"#,
+    r#"immut x = match (y) { 1 2 }"#,
+    r#"immut x = match (y) { -a => 2 }"#,
+    r#"immut x = match (y) { [1] => 2 }"#,
+    r#"immut x = match (y) { A(1, => 2 }"#,
+    r#"immut x = match (y) { 1e400 => 2 }"#,
+    r#"immut x = 1e400"#,
+    r#"immut x = { a: 1, a: 2 }"#,
+    r#"immut x = { a 1 }"#,
+    r#"immut x = { a: 1"#,
+    r#"immut x = { 1: 2 }"#,
+    r#"immut x = [1, 2: 3]"#,
+    r#"immut x = [:"#,
+    r#"immut x = [1, 2"#,
+    r#"immut x = a[1"#,
+    r#"immut x = a[1..2"#,
+    r#"immut x = f(1, 2"#,
+    r#"immut x = (1 + 2"#,
+    r#"immut x = a."#,
+    r#"immut x = a.1"#,
+    r#"immut x = `a ${b`"#,
+    r#"immut x = `a ${}`"#,
+    r#"immut x = `a ${1 2}`"#,
+    r#"immut x = `a ${(1}`"#,
+    r#"immut x = `a ${`b ${c}`}`"#,
+    r#"immut x = `${a} \n \t \0 \` ${b}${c}`"#,
+    r#"immut f = (x: int) x"#,
+    r#"immut f = (x: int): => x"#,
+    r#"immut x = )"#,
+    r#"immut x = "#,
+    r#"print('a' 'b')"#,
+    r#"function A.() {}"#,
+    r#"function A.type(self) { return }"#,
+    r#"function f[]() {}"#,
+    r#"function f[T](x: T): T { return x }
+immut y = 1 ** 2 ** 3 - -4 * ~5 and not x or !y"#,
+    r#"immut x = a
+(1)
+immut y = b
+[2]"#,
+    r#"immut x = match (y) {
+ 0 => 1
+ -1 => 2
+}"#,
+    r#""unterminated"#,
+    r#"immut x = 'a' # comment?"#,
+    r#"for mut x in [1] { x += 1 }"#,
+    r#"immut x = 9223372036854775808"#,
+    r#"immut x = match (y) { -9223372036854775808 => 1 }"#,
+    r#"immut x = match (y) { -1e400 => 2 }"#,
+];
+
+/// The cases above as files (in a directory of their own).
+fn parser_cases() -> Vec<PathBuf> {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-parser-cases");
+    std::fs::create_dir_all(&directory).unwrap();
+    PARSER_CASES
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            let file = directory.join(format!("case{}.kj", index));
+            std::fs::write(&file, format!("{}\n", source)).unwrap();
+            file
+        })
+        .collect()
+}
+
+#[test]
+fn the_parser_in_koji_gives_the_same_tree() {
+    let compiler = koji_compiler();
+    for file in corpus().into_iter().chain(parser_cases()) {
+        let expected = kojic::dump_ast(&std::fs::read_to_string(&file).unwrap());
+        let tree = output(Command::new(compiler).arg("ast").arg(&file));
+        assert_eq!(tree, expected, "the syntax tree of {} differs", file.display());
+    }
+}
+
+#[test]
+fn the_interpreted_parser_agrees() {
+    for file in ["examples/shapes.kj", "compiler/lexer.kj"] {
+        let expected = kojic::dump_ast(&std::fs::read_to_string(file).unwrap());
+        let tree = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "ast", file]));
+        assert_eq!(tree, expected, "the syntax tree of {} differs", file);
+    }
+}

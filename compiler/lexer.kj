@@ -5,6 +5,9 @@ export type Token = {
     Identifier(name: string)
     Int(value: int)
     Float(value: float)
+    // A float literal too large for a float (the lexer in Rust keeps it as infinity, and the
+    // parser rejects it).
+    LargeFloat
     StringLiteral(value: string)
     // The text between backticks, with its escapes and `${...}` (the parser splits it).
     TemplateString(raw: string)
@@ -185,12 +188,12 @@ function Lexer.number(mut self): Token {
 
     return match (float(text)) {
         Ok(f) => Float(f)
-        Err(_) => Float(0.0)
+        Err(_) => LargeFloat
     }
 }
 
 // The character with code 0, for the escape `\0`.
-function nul(): string {
+export function nul(): string {
     return match (char(0)) {
         Some(c) => string(c)
         None => ''
@@ -326,6 +329,7 @@ export function dump(token: Token): string {
         Identifier(name) => `Identifier ${name}`
         Int(value) => `Int ${value}`
         Float(value) => `Float ${value}`
+        LargeFloat => 'Float inf'
         StringLiteral(value) => `String ${value.debug()}`
         TemplateString(raw) => `Template ${raw.debug()}`
         Boolean(value) => `Boolean ${value}`
