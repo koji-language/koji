@@ -116,3 +116,13 @@ pub fn build_file(path: &Path, output: &Path, emit: Emit) -> Result<(), EzError>
         ))),
     }
 }
+
+/// The tokens of `source`, one per line (`1:5 Identifier count`), as `kojic dump tokens` prints
+/// them.
+pub fn dump_tokens(source: &str) -> String {
+    let mut out = String::new();
+    for spanned in lexer::Lexer::new(source).tokenize_spanned() {
+        out.push_str(&format!("{}:{} {}\n", spanned.line, spanned.column, spanned.token.dump()));
+    }
+    out
+}

@@ -133,3 +133,74 @@ pub struct SpannedToken {
     pub line: usize,
     pub column: usize,
 }
+
+impl Token {
+    /// The text of a symbol (`+=`, `=>`), or `None` for the other tokens.
+    pub fn symbol(&self) -> Option<&'static str> {
+        Some(match self {
+            Token::Plus => "+",
+            Token::Minus => "-",
+            Token::Star => "*",
+            Token::StarStar => "**",
+            Token::Slash => "/",
+            Token::Percent => "%",
+            Token::Ampersand => "&",
+            Token::Pipe => "|",
+            Token::Caret => "^",
+            Token::Tilde => "~",
+            Token::ShiftLeft => "<<",
+            Token::ShiftRight => ">>",
+            Token::Equal => "=",
+            Token::EqualEqual => "==",
+            Token::PlusEqual => "+=",
+            Token::MinusEqual => "-=",
+            Token::StarEqual => "*=",
+            Token::StarStarEqual => "**=",
+            Token::SlashEqual => "/=",
+            Token::PercentEqual => "%=",
+            Token::Bang => "!",
+            Token::BangEqual => "!=",
+            Token::Greater => ">",
+            Token::GreaterEqual => ">=",
+            Token::Less => "<",
+            Token::LessEqual => "<=",
+            Token::Arrow => "->",
+            Token::FatArrow => "=>",
+            Token::LParen => "(",
+            Token::RParen => ")",
+            Token::LBrace => "{",
+            Token::RBrace => "}",
+            Token::LBracket => "[",
+            Token::RBracket => "]",
+            Token::Comma => ",",
+            Token::Dot => ".",
+            Token::DotDot => "..",
+            Token::Semicolon => ";",
+            Token::Colon => ":",
+            Token::Question => "?",
+            _ => return None,
+        })
+    }
+
+    /// The token in the text form of `kojic dump tokens`, shared with the compiler written in
+    /// Koji (`compiler/lexer.kj`): `Identifier count`, `Int 42`, `String 'hi'`, `Symbol +=`.
+    pub fn dump(&self) -> String {
+        if let Some(keyword) = self.keyword_name() {
+            return format!("Keyword {}", keyword);
+        }
+        if let Some(symbol) = self.symbol() {
+            return format!("Symbol {}", symbol);
+        }
+        match self {
+            Token::Identifier(name) => format!("Identifier {}", name),
+            Token::Int(n) => format!("Int {}", n),
+            Token::Float(f) => format!("Float {}", koji_runtime::format_float(*f)),
+            Token::StringLiteral(text) => format!("String {}", koji_runtime::repr_string(text)),
+            Token::TemplateString(raw) => format!("Template {}", koji_runtime::repr_string(raw)),
+            Token::Boolean(b) => format!("Boolean {}", b),
+            Token::Illegal(c) => format!("Illegal {}", koji_runtime::repr_string(&c.to_string())),
+            Token::EOF => "End".to_string(),
+            other => format!("{:?}", other),
+        }
+    }
+}

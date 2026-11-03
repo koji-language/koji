@@ -1,0 +1,5 @@
+x = 1.5e3 + 2E-2 + 3e + 4.x + 99999999999999999999 + 1.2.3 + 0.5
+s = 'it\'s' + "a\"b" + 'tab\tnl\nnul\0q\q' + `t ${a} \` x` + 'unterminated
+/* block
+comment */ y = a ** b **= c => d -> e << f >>= g != h !i ~j $ @ # é ação_1 _x
+// end

@@ -19,3 +19,7 @@ path = "test/language.rs"
 [[test]]
 name = "compiler"
 path = "test/compiler.rs"
+
+[[test]]
+name = "bootstrap"
+path = "test/bootstrap.rs"

@@ -433,7 +433,26 @@ Dropping a type is a generated function: it calls the `drop` method (`mut self`,
 
 The standard library is in the runtime: the generated code calls a Rust function for each library function, giving it the description of the `Option`, `Result` or error it must build. The messages of errors, the conversions of text (`int('42')`), dates, the JSON parser, regular expressions and HTTP requests are the same code in the interpreter and in the runtime.
 
-**Next step**: phase 3, the compiler written in Koji.
+---
+
+## The compiler in Koji (phase 3)
+
+The compiler written in Koji is in `compiler/`, one file per stage; `compiler/main.kj` is its entry point. It runs with `kojic run compiler/main.kj ...`, and `kojic build` compiles it to an executable (the first step of the bootstrap).
+
+Each stage prints the same text as a `kojic dump <stage>` command of the compiler in Rust, and `test/bootstrap.rs` compares them on the examples, the compiler's own files, every code block of the documentation and edge cases (`test/lexer/`). The compiled Koji compiler is checked on all of them, and the interpreted one on a few.
+
+| Stage | File | Compared with | Status |
+| --- | --- | --- | --- |
+| Lexer | `compiler/lexer.kj` | `kojic dump tokens` (`1:5 Identifier count`) | done |
+| Parser | | | next |
+| Checker | | | |
+| IR | | | |
+| C generator | | | |
+
+Notes for writing the compiler in Koji:
+
+-   Koji has no `else if`: a chain of conditions is a `match` with guards, or an early `if` with `return` or `break`.
+-   Characters are classified through strings (`string(c).isAlpha()`), and `c >= '0'` compares chars.
 
 ---
 

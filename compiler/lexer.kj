@@ -1,0 +1,337 @@
+// The lexer of the Koji compiler written in Koji: source text to tokens. It follows the
+// lexer in Rust (src/lexer/), and `kojic dump tokens` prints the same text as `dump`.
+
+export type Token = {
+    Identifier(name: string)
+    Int(value: int)
+    Float(value: float)
+    StringLiteral(value: string)
+    // The text between backticks, with its escapes and `${...}` (the parser splits it).
+    TemplateString(raw: string)
+    Boolean(value: boolean)
+    Keyword(name: string)
+    Symbol(text: string)
+    Illegal(character: char)
+    End
+}
+
+// A token and where it starts.
+export type Spanned = {
+    token: Token
+    line: int
+    column: int
+}
+
+type Lexer = {
+    chars: char[]
+    position: int
+    line: int
+    column: int
+}
+
+immut keywords = Set.from([
+    'var', 'const', 'let', 'immut', 'mut', 'take', 'type', 'interface', 'import', 'export',
+    'from', 'if', 'else', 'for', 'in', 'is', 'while', 'function', 'return', 'async', 'await',
+    'match', 'default', 'break', 'continue', 'fallthrough', 'and', 'or', 'not'
+])
+
+// Symbols of two or three characters, longest first.
+immut longSymbols = [
+    '**=', '**', '*=', '==', '=>', '->', '-=', '>=', '>>', '<=', '<<', '!=', '+=', '%=', '/=', '..'
+]
+
+immut shortSymbols = '+-*/%&|^~=!<>(){}[],.;:?'
+
+function Lexer.create(source: string): Lexer {
+    return { chars: source.chars(), position: 0, line: 1, column: 1 }
+}
+
+// Whether there is a character `offset` characters after the current one.
+function Lexer.has(self, offset: int): boolean {
+    return self.position + offset < self.chars.length()
+}
+
+// The character `offset` characters after the current one (there must be one).
+function Lexer.at(self, offset: int): char {
+    return self.chars[self.position + offset]
+}
+
+// Whether the character `offset` characters after the current one is `c`.
+function Lexer.is(self, offset: int, c: char): boolean {
+    return self.has(offset) and self.at(offset) == c
+}
+
+function Lexer.advance(mut self) {
+    if (self.has(0)) {
+        if (self.at(0) == '\n') {
+            self.line += 1
+            self.column = 1
+        } else {
+            self.column += 1
+        }
+    }
+
+    self.position += 1
+}
+
+function isSpace(c: char): boolean {
+    return string(c).isSpace()
+}
+
+function isDigit(c: char): boolean {
+    return c >= '0' and c <= '9'
+}
+
+function startsName(c: char): boolean {
+    return string(c).isAlpha() or c == '_'
+}
+
+function continuesName(c: char): boolean {
+    return string(c).isAlphaNumeric() or c == '_'
+}
+
+// Skips whitespace and comments.
+function Lexer.skipSpace(mut self) {
+    while (true) {
+        while (self.has(0) and isSpace(self.at(0))) {
+            self.advance()
+        }
+
+        immut block = self.is(0, '/') and self.is(1, '*')
+        immut line = self.is(0, '/') and self.is(1, '/')
+
+        if (not block and not line) { break }
+
+        if (block) {
+            self.advance()
+            self.advance()
+
+            while (self.has(0) and not (self.is(0, '*') and self.is(1, '/'))) {
+                self.advance()
+            }
+
+            if (self.has(0)) {
+                self.advance()
+                self.advance()
+            }
+        } else {
+            while (self.has(0) and not self.is(0, '\n')) {
+                self.advance()
+            }
+
+            self.advance()
+        }
+    }
+}
+
+function Lexer.name(mut self): Token {
+    mut text = ''
+
+    while (self.has(0) and continuesName(self.at(0))) {
+        text += string(self.at(0))
+        self.advance()
+    }
+
+    if (text == 'true' or text == 'false') { return Boolean(text == 'true') }
+
+    if (text in keywords) { return Keyword(text) }
+
+    return Identifier(text)
+}
+
+function Lexer.number(mut self): Token {
+    mut text = ''
+    mut hasDot = false
+
+    while (self.has(0)) {
+        immut c = self.at(0)
+        immut dot = c == '.' and not hasDot and self.has(1) and isDigit(self.at(1))
+
+        if (not isDigit(c) and not dot) { break }
+
+        if (dot) { hasDot = true }
+
+        text += string(c)
+        self.advance()
+    }
+
+    // Exponent: `1e308`, `2.5E-3`.
+    mut hasExponent = false
+
+    if (self.is(0, 'e') or self.is(0, 'E')) {
+        immut digitAt = if (self.is(1, '+') or self.is(1, '-')) { 2 } else { 1 }
+
+        if (self.has(digitAt) and isDigit(self.at(digitAt))) {
+            hasExponent = true
+
+            for i in range(digitAt) {
+                text += string(self.at(0))
+                self.advance()
+            }
+
+            while (self.has(0) and isDigit(self.at(0))) {
+                text += string(self.at(0))
+                self.advance()
+            }
+        }
+    }
+
+    if (not hasDot and not hasExponent) {
+        match (int(text)) {
+            Ok(n) => return Int(n)
+            Err(_) => {}
+        }
+    }
+
+    return match (float(text)) {
+        Ok(f) => Float(f)
+        Err(_) => Float(0.0)
+    }
+}
+
+// The character with code 0, for the escape `\0`.
+function nul(): string {
+    return match (char(0)) {
+        Some(c) => string(c)
+        None => ''
+    }
+}
+
+function Lexer.text(mut self, quote: char): Token {
+    self.advance()
+    mut text = ''
+
+    while (self.has(0)) {
+        immut c = self.at(0)
+
+        if (c == quote) {
+            self.advance()
+            break
+        }
+
+        if (c == '\\') {
+            self.advance()
+
+            if (self.has(0)) {
+                immut escaped = self.at(0)
+                text += match (escaped) {
+                    'n' => '\n'
+                    'r' => '\r'
+                    't' => '\t'
+                    '0' => nul()
+                    _ => string(escaped)
+                }
+                self.advance()
+            }
+        } else {
+            text += string(c)
+            self.advance()
+        }
+    }
+
+    return StringLiteral(text)
+}
+
+function Lexer.template(mut self): Token {
+    self.advance()
+    mut raw = ''
+
+    while (self.has(0)) {
+        immut c = self.at(0)
+
+        if (c == '`') {
+            self.advance()
+            break
+        }
+
+        raw += string(c)
+        self.advance()
+
+        if (c == '\\' and self.has(0)) {
+            raw += string(self.at(0))
+            self.advance()
+        }
+    }
+
+    return TemplateString(raw)
+}
+
+// Whether the text at the current position starts with `symbol`.
+function Lexer.startsWith(self, symbol: string): boolean {
+    immut parts = symbol.chars()
+
+    for i in range(parts.length()) {
+        if (not self.is(i, parts[i])) { return false }
+    }
+
+    return true
+}
+
+function Lexer.symbol(mut self): Token {
+    for symbol in longSymbols {
+        if (self.startsWith(symbol)) {
+            for i in range(symbol.length()) {
+                self.advance()
+            }
+
+            return Symbol(symbol)
+        }
+    }
+
+    immut c = self.at(0)
+    self.advance()
+
+    if (c in shortSymbols) { return Symbol(string(c)) }
+
+    return Illegal(c)
+}
+
+function Lexer.token(mut self): Token {
+    if (not self.has(0)) { return End }
+
+    immut c = self.at(0)
+
+    if (startsName(c)) { return self.name() }
+
+    if (isDigit(c)) { return self.number() }
+
+    if (c == '"' or c == '\'') { return self.text(c) }
+
+    if (c == '`') { return self.template() }
+
+    return self.symbol()
+}
+
+// The tokens of `source`, ending with `End`.
+export function tokenize(source: string): Spanned[] {
+    mut lexer = Lexer.create(source)
+    mut tokens: Spanned[] = []
+
+    while (true) {
+        lexer.skipSpace()
+        immut line = lexer.line
+        immut column = lexer.column
+        immut token = lexer.token()
+        tokens.push({ token: token, line: line, column: column })
+
+        if (token == End) { break }
+    }
+
+    return tokens
+}
+
+// A token as `kojic dump tokens` prints it: `Identifier count`, `String 'hi'`, `Symbol +=`.
+export function dump(token: Token): string {
+    return match (token) {
+        Identifier(name) => `Identifier ${name}`
+        Int(value) => `Int ${value}`
+        Float(value) => `Float ${value}`
+        StringLiteral(value) => `String ${value.debug()}`
+        TemplateString(raw) => `Template ${raw.debug()}`
+        Boolean(value) => `Boolean ${value}`
+        Keyword(name) => `Keyword ${name}`
+        Symbol(text) => `Symbol ${text}`
+        Illegal(c) => `Illegal ${string(c).debug()}`
+        End => 'End'
+    }
+}

@@ -1,0 +1,30 @@
+// The Koji compiler written in Koji (phase 3). For now: `tokens <file.kj>` prints the tokens
+// of a file, like `kojic dump tokens`.
+
+import file
+import system
+import { tokenize, dump } from 'lexer.kj'
+
+immut args = system.args()
+
+if (args.length() != 2 or args[0] != 'tokens') {
+    print('usage: main.kj tokens <file.kj>')
+    system.exit(2)
+}
+
+immut source = match (file.open(args[1], file.Read)) {
+    Ok(input) => input.read()
+    Err(error) => Err(error)
+}
+
+match (source) {
+    Ok(text) => {
+        for spanned in tokenize(text) {
+            print(`${spanned.line}:${spanned.column} ${dump(spanned.token)}`)
+        }
+    }
+    Err(error) => {
+        print('error:', error)
+        system.exit(1)
+    }
+}

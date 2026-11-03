@@ -11,12 +11,28 @@ Usage:
         -o <output>                   the executable (default: the file name without .kj)
         --emit c                      write the generated C instead
         --emit ir                     write the intermediate representation instead
+    kojic dump tokens <file.kj>       show the tokens of a file (for comparing compilers)
     kojic help                        show this message";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("build") {
         return build(&args[1..]);
+    }
+    // `kojic dump tokens <file.kj>`: for comparing with the compiler written in Koji.
+    if let [dump, stage, file] = args.as_slice() {
+        if dump == "dump" && stage == "tokens" {
+            return match std::fs::read_to_string(file) {
+                Ok(source) => {
+                    print!("{}", kojic::dump_tokens(&source));
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("cannot read '{}': {}", file, error);
+                    ExitCode::FAILURE
+                }
+            };
+        }
     }
     let (command, file, program_args) = match args.as_slice() {
         // Everything after the file is for the program (`system.args()`).
