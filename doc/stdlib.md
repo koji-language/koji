@@ -1,6 +1,6 @@
 # Standard Library
 
-The **Koji standard library** provides a collection of built-in modules to help you handle common tasks. Click on a section to jump directly to its documentation.
+The **Koji Standard Library** provides a collection of built-in modules to help you handle common tasks. Click on a section to jump directly to its documentation.
 
 ## Modules
 

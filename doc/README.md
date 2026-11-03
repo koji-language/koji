@@ -1,8 +1,6 @@
 # Koji Language Documentation
 
-Welcome to the **Koji** documentation. Here you will find the syntax, the types, functions, error handling, modules and the standard library.
-
-New to Koji? Start with [Getting Started](getting-started.md).
+Welcome to the **Koji documentation**. Here you will find the syntax, the types, functions, error handling, modules and the standard library.
 
 ## Contents
 
@@ -11,33 +9,28 @@ New to Koji? Start with [Getting Started](getting-started.md).
 -   [Getting Started](getting-started.md)
 -   [Conventions](conventions.md)
 -   [Comments](comments.md)
--   [Variable Types](variable-types.md): `mut` and `immut`
+-   [Variable Types](variable-types.md)
 
 ### Types
 
--   [Primitive Types](primitive-types.md): `int`, `float`, `string`, `char`, `boolean`
--   [Composite Types](composite-types.md): lists, maps and sets
--   [Custom Types](custom-types.md): shapes, methods and display
--   [Sum Types](sum-types.md): variants, `Option` and `Result`
--   [Generics](generics.md): generic functions and types
+-   [Primitive Types](primitive-types.md)
+-   [Composite Types](composite-types.md)
+-   [Sum Types](sum-types.md)
+-   [Custom Types](custom-types.md)
+-   [Generics](generics.md)
 
 ### Code
 
 -   [Operators](operators.md)
--   [Control Flow](control-flow.md): `if`, loops and `match`
+-   [Control Flow](control-flow.md)
 -   [Functions](functions.md)
 -   [String Interpolation](string-interpolation.md)
--   [Error Handling](error-handling.md): `Result`, `?` and panics
--   [Values and Memory](memory.md): copies, move-only values and `drop`
+-   [Error Handling](error-handling.md)
+-   [Values and Memory](memory.md)
 -   [Modules and Imports](modules-and-imports.md)
 
 ### Reference
 
--   [Built-in Functions](builtins.md): `print`, `input`, `range`, conversions and `panic`
--   [Built-in Methods](methods.md): methods of strings, lists and every value
+-   [Built-in Functions](builtin-functions.md)
+-   [Built-in Methods](builtin-methods.md)
 -   [Standard Library](stdlib.md)
-
-### The Project
-
--   [Roadmap](roadmap.md)
--   [Compiler Plan](compiler-plan.md): language decisions and the path to a self-hosted compiler

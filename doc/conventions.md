@@ -25,10 +25,12 @@
     print(name)
     print(count)
     ```
+
 -   A comment after code on the same line is separated from it by exactly one space. Comments are not aligned into columns:
 
     ```koji
     immut count = 0 // number of items
     immut total = 0.0 // sum of the prices
     ```
+
 -   A file ends with exactly one line break: the last line is terminated, and no blank lines follow it.

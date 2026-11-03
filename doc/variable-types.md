@@ -13,10 +13,9 @@ immut name = 'Ana'
 mut items: int[] = [] // with a type annotation
 
 count += 1
+name = 'Bia' // Error! cannot modify 'name': it is immut
 
 items.push(2)
-
-name = 'Bia' // Error! cannot modify 'name': it is immut
 ```
 
 A declaration always has its keyword: `x = 1` only changes an existing `mut` variable. A name that was never declared is an error, so a typo (`cuont = 1`) is reported instead of creating a new variable:
@@ -78,6 +77,7 @@ The type of a variable comes from its value, or from an annotation (`mut items: 
 
 ```koji
 mut items = []
+
 items.push(1) // items is an int[]
 
 mut names = [] // Error! the type of 'names' cannot be inferred (it is ?[]): annotate it, as in 'mut names: int[] = ...'

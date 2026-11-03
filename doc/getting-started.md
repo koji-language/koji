@@ -71,7 +71,7 @@ The message gives the file and the line of the error.
 | `kojic build <file.kj> [-o <output>]` | Compiles a program to an executable (needs a C compiler) |
 | `kojic help` | Shows the available commands |
 
-`kojic run` runs programs on an interpreter. `kojic build` compiles them to native executables, through C: it needs a C compiler (`cc`, such as gcc or clang). For now it supports only part of the language (numbers, booleans, strings, functions and control flow); see [the compiler today](compiler-plan.md#the-compiler-today).
+`kojic run` runs programs on an interpreter. `kojic build` compiles them to native executables, through C: it needs a C compiler (`cc`, such as gcc or clang). Both run every program the same way.
 
 ```sh
 kojic build hello.kj
@@ -96,15 +96,3 @@ cargo test
 ```
 
 See the [contributing guide](../CONTRIBUTING.md) for details.
-
-## Next Steps
-
--   [Variable Types](variable-types.md): `mut` and `immut`
--   [Primitive Types](primitive-types.md) and [Composite Types](composite-types.md)
--   [Functions](functions.md)
--   [Custom Types](custom-types.md) and [Sum Types](sum-types.md)
--   [Control Flow](control-flow.md)
--   [Error Handling](error-handling.md)
--   [Modules and Imports](modules-and-imports.md)
--   [Standard Library](stdlib.md)
--   The full [documentation](README.md)

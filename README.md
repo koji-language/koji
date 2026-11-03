@@ -26,22 +26,7 @@ The goal is to provide a language that any developer can quickly learn and use c
 
 ## Getting Started
 
-With [Rust](https://www.rust-lang.org/tools/install) installed:
-
-```sh
-cargo build --release
-
-# check and run a program
-./target/release/kojic run examples/hello.kj
-
-# only check syntax and types
-./target/release/kojic check examples/hello.kj
-
-# compile to an executable (needs a C compiler; a part of the language for now)
-./target/release/kojic build examples/hello.kj -o hello
-```
-
-See the [Getting Started](doc/getting-started.md) guide for your first program, the available commands and the next steps.
+The [Getting Started](doc/getting-started.md) guide walks through your first program and every command.
 
 ---
 
@@ -53,8 +38,10 @@ Access the documentation [here](doc/README.md).
 
 ## Roadmap
 
-For upcoming features and long-term goals, see the [roadmap](doc/roadmap.md). The path to a self-hosted compiler is described in the [compiler plan](doc/compiler-plan.md).
+For upcoming features and long-term goals, see the [roadmap](doc/roadmap.md).
 
-## Contributions
+---
 
-We welcome ideas, suggestions, and contributions! See the [contributing guide](CONTRIBUTING.md) for details.
+## Contributing
+
+Ideas, suggestions and contributions are welcome. See the [contributing guide](CONTRIBUTING.md).
