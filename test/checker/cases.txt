@@ -1,0 +1,929 @@
+// Programs for comparing the checkers (test/bootstrap.rs): each one is a file, and they are
+// separated by a line with four dashes. Most of them have a type error.
+----
+function test() {
+ mut localVar = 2
+}
+print(localVar)
+----
+immut pi = 3.14159
+pi = 3.14
+----
+count = 1
+----
+name: string = 'Ana'
+----
+immut numbers: int[] = [1, 'a']
+----
+immut x: int = 7 / 2.0
+----
+immut a = [1]
+immut b = a
+print(a is b)
+----
+print(1 + 'a')
+----
+print(true + 1)
+----
+immut x = if (true) { 1 }
+----
+if (1) { print(1) }
+----
+if (true) { } else if (false) { }
+----
+break
+----
+immut option = Some(1)
+match (option) {
+ Some(value) => print(value)
+}
+----
+match (1) {
+ 1 => print(1)
+}
+----
+type P = { a: int }
+immut p: P = { a: 1, b: 2 }
+----
+type P = { a: int  b: int }
+immut p: P = { a: 1 }
+----
+type P = { a: int }
+immut p: P = { a: 'x' }
+----
+type Result = string | int
+----
+type U = { id: int }
+immut u: U = { id: 1, extra: true }
+----
+interface User { id: int }
+----
+immut interface = 1
+----
+function f(a: int): int { return a }
+f('x')
+----
+function f(): int {
+ print(1)
+}
+----
+function f() { return 1 }
+----
+function f() {
+ mut items = [1]
+ immut g = () => { items[0] = 2 }
+}
+----
+function f(): Result[int, string] {
+ immut x = int('1')?
+ return Ok(x)
+}
+----
+type E = { A(e: ParseError)  B(e: ParseError) }
+function f(): Result[int, E] {
+ immut x = int('1')?
+ return Ok(x)
+}
+----
+print(int('a').message())
+----
+immut x = int('1').mapErr(5)
+----
+function f(): int {
+ return int('1')?
+}
+----
+immut x = 5?
+----
+immut g = (s: string) => int(s)?
+----
+import { nope } from 'math.kj'
+----
+function f() {
+ export immut x = 1
+}
+----
+export x = 1
+----
+type Hidden = { value: int }
+export function make(): Hidden { return { value: 1 } }
+----
+import file
+immut f = file.open('x', 'r')
+----
+immut x = 1e400
+----
+import json
+print(json.stringify(1))
+----
+import regex
+print(regex.match('a', 'a'))
+----
+function f(x: int) { x = 1 }
+----
+function f(x: int) {}
+mut c = 1
+f(mut c)
+----
+function f(mut x: float) {}
+mut c = 1
+f(mut c)
+----
+immut g = (mut x: int) => x
+----
+mut x = 1
+print(mut x)
+----
+for x in [1, 2] { x = 3 }
+----
+match (Some(1)) {
+Some(n) => { n = 2 }
+None => {}
+}
+----
+immut d = { name: 'Leo' }
+----
+immut x: int = { a: 1 }
+----
+type S = { Circle(r: float) }
+immut s: S = { r: 1.0 }
+----
+import file
+immut h = file.open('x', file.Read)?
+h.close()
+print(h.read())
+----
+print([1, 2].join(','))
+----
+immut c: char = 'ab'
+----
+immut x = 'a'[0] + 1
+----
+immut counts = [1, 2]
+immut values: float[] = counts
+----
+print([[1], [2.5]])
+----
+immut x: Result[int, string] = Ok()
+----
+type T = { A(x: int) B }
+function f(t: T): int {
+    return match (t) {
+        A(1) => 1
+        B => 2
+    }
+}
+----
+type T = { A(x: Option[int]) B }
+function f(t: T): int {
+    return match (t) {
+        A(Some(_)) => 1
+        B => 2
+    }
+}
+----
+function f(b: boolean, c: boolean): int {
+    return match (b) {
+        true => 1
+    }
+}
+----
+function f(x: int): int {
+    return match (x) {
+        1 => 1
+    }
+}
+----
+function f(x: Option[int]): int {
+    return match (x) {
+        Some(n) if (n > 0) => n
+        None => 0
+    }
+}
+----
+type E = { A(error: ParseError) B(error: ParseError) }
+function f(t: string): Result[int, E] {
+    return Ok(int(t)?)
+}
+----
+type E = { A(name: string) }
+function f(t: string): Result[int, E] {
+    return Ok(int(t)?)
+}
+----
+function f(t: string): Result[int, string] {
+    return Ok(int(t)?)
+}
+----
+function f(t: Option[int]): Result[int, string] {
+    return Ok(t?)
+}
+----
+function f(t: string): int {
+    return int(t)?
+}
+----
+immut f = (x: int) => x?
+----
+function first[T](items: T[]): T {
+    return items[0] + items[0]
+}
+----
+function less[T](a: T, b: T): boolean {
+    return a < b
+}
+----
+function same[T](a: T, b: T): boolean {
+    return a == b
+}
+----
+function best[T: orderable](items: T[]): T {
+    return items[0]
+}
+immut f = best([print])
+----
+function best[T: equatable](items: T[]): T {
+    return items[0]
+}
+print(best([(x: int) => x]))
+----
+function f[T: sortable](x: T): T {
+    return x
+}
+----
+type Pair[A, B] = { first: A, second: B }
+immut p: Pair[int] = { first: 1, second: 2 }
+----
+type Pair[A, B] = { first: A, second: B }
+immut p: Pair = { first: 1, second: 2 }
+----
+immut p: int[string] = 1
+----
+type A = { x: int }
+type B = { x: string }
+type C = A & B
+----
+type A = { x: int }
+type C = A & int
+----
+type D = { [key: string]: int }
+----
+type P = { x: int }
+function P.display(self): int {
+    return 1
+}
+----
+type P = { x: int }
+function P.drop(self) {
+}
+----
+type P = { x: int }
+function P.debug(self): string {
+    return ''
+}
+----
+type P = { x: int }
+function P.x(self): int {
+    return 1
+}
+----
+type P = { x: int }
+function P.a(self): int {
+    return 1
+}
+function P.a(self): int {
+    return 2
+}
+----
+type P = { x: int }
+function P.a(n: int, self): int {
+    return 1
+}
+----
+type P = { x: int }
+function P.a(self: P): int {
+    return 1
+}
+----
+function Q.a(self): int {
+    return 1
+}
+----
+type P = { x: int }
+function P.make(): P {
+    return { x: 1 }
+}
+immut p = P.make()
+print(p.make())
+----
+type P = { x: int }
+function P.get(self): int {
+    return self.x
+}
+print(P.get())
+----
+type P = { x: int }
+print(P.nothing())
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+immut c: Conn = { id: 1 }
+immut d = c
+print(c.id)
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+mut c: Conn = { id: 1 }
+c.drop()
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+immut cs: Conn[] = [{ id: 1 }]
+immut c = cs[0]
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+immut c: Conn = { id: 1 }
+for i in range(2) {
+    immut d = c
+}
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+function f(c: Conn): Conn {
+    return c
+}
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+immut c: Conn = { id: 1 }
+immut f = () => c.id
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+immut cs: Conn[] = [{ id: 1 }]
+immut ds = cs[0..1]
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+immut cs: Conn[] = [{ id: 1 }]
+for mut c in cs {
+}
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+immut a: Conn = { id: 1 }
+immut b: Conn = { id: 2 }
+immut c = if (true) { a } else { b }
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+immut cs = [Conn.drop]
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+function first[T](x: T): T {
+    return x
+}
+immut c: Conn = { id: 1 }
+immut d = first(c)
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+immut c: Conn = { id: 1 }
+print(c == c)
+----
+import file
+mut f = file.open('x', file.Read)
+match (f) {
+    Ok(g) => {
+        g.close()
+        g.close()
+    }
+    Err(e) => print(e)
+}
+----
+import file
+match (file.open('x', file.Read)) {
+    Ok(g) => {
+        g.close()
+        print(g.read())
+    }
+    Err(e) => print(e)
+}
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+mut c: Conn = { id: 1 }
+if (true) {
+    immut d = c
+}
+print(c.id)
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed')
+}
+mut c: Conn = { id: 1 }
+immut d = c
+c = { id: 2 }
+print(c.id, d.id)
+----
+function f(): int {
+}
+----
+function f(): int {
+    print(1)
+}
+----
+function f(): int {
+    'a'
+}
+----
+function f() {
+    return 1
+}
+----
+function f(): int {
+    return
+}
+----
+immut f = (x: int) => {
+    if (x > 0) { return 1 }
+    return 'a'
+}
+----
+immut f = (mut x: int) => x
+----
+immut items = []
+----
+mut m = [:]
+m[1] = 'a'
+m['b'] = 'c'
+----
+mut s = Set.from([])
+s.add(1)
+s.add('a')
+----
+immut s = Set.from(1)
+----
+immut s = Set.from([print])
+----
+immut m = [[1]: 2]
+print(m)
+----
+immut m = ['a': 1, 'b': 'c']
+----
+immut x = [1, 'a']
+----
+immut x = [1, 2.5]
+immut y: float[] = [1, 2]
+immut z: float = 1
+print(x, y, z)
+----
+immut x: int[] = [1]
+immut y: float[] = x
+----
+immut c: char = 'a'
+print(c == 'b', 'x' == c, c in 'abc')
+----
+immut r: Result[void, string] = Ok()
+print(r == Ok())
+----
+immut o = None
+print(o)
+----
+immut x = 1
+print(x.y)
+----
+immut x = Some(1)
+print(x.value)
+----
+type P = { x: int }
+immut p: P = { x: 1 }
+print(p.y)
+----
+type P = { x: int }
+immut p: P = { x: 1, y: 2 }
+----
+type P = { x: int, y: int }
+immut p: P = { x: 1 }
+----
+type P = { x: int }
+immut p: P = { x: 'a' }
+----
+immut p = { x: 1 }
+----
+immut p: int = { x: 1 }
+----
+immut p: Map[string, int] = { x: 1 }
+----
+type P = { A B }
+immut p: P = { x: 1 }
+----
+immut x = 1
+x.push(2)
+----
+immut x = [1]
+x.push(2)
+----
+mut x = [1]
+x.push('a')
+----
+mut x = [1]
+x.insert('a', 1)
+----
+mut x = [print]
+x.sort()
+----
+mut x = [1]
+x.sortBy((a: int, b: int) => a)
+----
+immut x = [1]
+print(x.join(','))
+----
+immut x = 'abc'
+print(x.nope())
+----
+immut x = 'abc'
+x[0] = 'b'
+----
+immut x = 'abc'
+print(x[1..2], x[0], x.chars(), 'a'.code())
+----
+immut x = 1
+print(x[0])
+----
+immut x = 1
+print(x[0..1])
+----
+immut x = [1]
+print(x['a'])
+----
+immut m = ['a': 1]
+print(m[1])
+----
+mut m = ['a': 1]
+m.remove(1)
+----
+immut m = ['a': 1]
+m.remove('a')
+----
+immut r: Result[int, string] = Ok(1)
+print(r.mapErr((e: int) => e))
+----
+immut r: Result[int, string] = Ok(1)
+print(r.mapErr(1))
+----
+immut r: Result[int, string] = Ok(1)
+print(r.mapErr((e: string) => e.length()))
+----
+print(int([1]))
+----
+print(range('a'))
+----
+print(range(1, 2, 3, 4))
+----
+print(char('a'))
+----
+import math
+print(math.sqrt('a'))
+----
+import math
+print(math.abs(-1), math.abs(1.5), math.floor(1.5))
+----
+import time
+print(time.now(1))
+----
+import json
+print(json.parse('1'), json.asInt(json.Int(1)))
+----
+import json
+immut j: json.Json = json.Null
+print(json.stringify(j))
+----
+import regex
+match (regex.compile('a+')) {
+    Ok(r) => print(r.test('aa'), r.find('a'), r.split('x'))
+    Err(e) => print(e)
+}
+----
+import system
+print(system.exit('a'))
+----
+import nothing
+----
+import math
+immut x = math.nope
+----
+import math
+print(math.sqrt)
+----
+import math
+math.pi = 3
+----
+print(nope)
+----
+print(print)
+----
+immut f = Some
+print(f(1))
+----
+print(None())
+----
+print(Some(1, 2))
+----
+print(Some())
+----
+immut x = 1
+x = 2
+----
+mut x = 1
+x = 'a'
+----
+x = 1
+----
+for x in 1 {
+}
+----
+for x in ['a': 1] {
+    print(x)
+}
+for y in Set.from([1]) {
+    print(y)
+}
+----
+while (1) {
+}
+----
+if (1) {
+}
+----
+immut x = if (true) { 1 } else { 'a' }
+----
+immut x: int = if (true) { 1 } else { 'a' }
+----
+immut x = match (1) {
+    1 => 'a'
+    _ => 2
+}
+----
+immut x = print(1)
+----
+immut x = -'a'
+----
+immut x = not 1
+----
+immut x = ~1.5
+----
+immut x = 1 + 'a'
+----
+immut x = 'a' * 2
+immut y = [1] + [2]
+print(x, y, 1 << 2, 7 % 2, 2 ** 3, 1.5 ** 2)
+----
+immut x = [1] + ['a']
+----
+immut x = 1 is 2
+----
+immut x = Some(1)
+print(x is Ok)
+----
+immut x = Some(1)
+if (x is Some) {
+    print(x.value)
+}
+----
+immut x = 1 in [print]
+----
+immut x = 'a' in ['a': 1]
+immut y = 1 in Set.from([1])
+print(x, y)
+----
+immut x = 1 in ['a': 1]
+----
+immut f = (x: int) => x
+print(f(1, 2))
+----
+immut f = (x: int) => x
+print(f('a'))
+----
+immut x = 1
+print(x(1))
+----
+function f(mut x: int) {
+    x += 1
+}
+mut y = 1
+f(y)
+----
+function f(x: int) {
+}
+mut y = 1
+f(mut y)
+----
+function f(mut x: float) {
+}
+mut y = 1
+f(mut y)
+----
+function f(mut x: int) {
+}
+immut y = 1
+f(mut y)
+----
+function f(mut x: int) {
+}
+f(mut 1)
+----
+function f(x: int) {
+    x = 2
+}
+----
+function f(x: int) {
+    immut g = () => {
+        x = 1
+    }
+}
+----
+mut total = 0
+function add() {
+    total += 1
+}
+add()
+print(total)
+----
+function outer() {
+    mut n = 0
+    immut g = () => {
+        n += 1
+    }
+}
+----
+type T = { A(x: int) }
+immut t = A(1)
+match (t) {
+    A => print(1)
+}
+----
+type T = { A(x: int) }
+immut t = A(1)
+match (t) {
+    A(a, b) => print(a)
+}
+----
+type T = { A(x: int) }
+immut t = A(1)
+match (t) {
+    B(a) => print(a)
+}
+----
+type T = { A(x: int) }
+immut t = A(1)
+match (t) {
+    Some(a) => print(a)
+    _ => print(0)
+}
+----
+type T = { A(x: int) }
+immut t = A(1)
+match (t) {
+    'a' => print(1)
+    _ => print(0)
+}
+----
+match (1) {
+    None => print(1)
+    _ => print(0)
+}
+----
+immut x = 1?
+----
+print(1)
+break
+----
+type Point = { x: int }
+type Point = { y: int }
+----
+immut x = 1
+immut x = 2
+----
+type A = Option
+----
+type A[T] = int
+----
+type Shape = { Circle(r: float) }
+export function area(s: Shape): float {
+    return 1.0
+}
+----
+export type P = { x: int }
+function P.show(self): string {
+    return 'p'
+}
+immut p: P = { x: 1 }
+print(p.show(), p, string(p), `${p}`)
+----
+type P = { x: int }
+function P.display(self): string {
+    return 'p'
+}
+immut p: P = { x: 1 }
+print(p, string(p), `${p} and ${1}`, p.display(), p.debug())
+----
+type P[T] = { x: T }
+function P.get(self): T {
+    return self.x
+}
+function P.make[U](x: U): P[U] {
+    return { x: x }
+}
+immut p = P.make(1)
+print(p.get(), P.make('a').get())
+----
+type P[T] = { x: T }
+function P.get[T](self): T {
+    return self.x
+}
+----
+type Stack[T] = { items: T[] }
+function Stack.push(mut self, item: T) {
+    self.items.push(item)
+}
+mut s: Stack[int] = { items: [] }
+s.push(1)
+print(s)
+----
+type Stack[T] = { items: T[] }
+function Stack.push(mut self, item: T) {
+    self.items.push(item)
+}
+immut s: Stack[int] = { items: [] }
+s.push(1)
+----
+type Box = { f: (int) => int }
+immut b: Box = { f: (x: int) => x + 1 }
+print(b.f(1))
+----
+import file
+immut f = file.open('x', file.Read)
+match (f) {
+    Ok(g) => print(g.read())
+    Err(e) => print(e)
+}
+----
+import file
+function read(path: string): Result[string, file.FileError] {
+    immut f = file.open(path, file.Read)?
+    return f.read()
+}
+print(read('x'))
+----
+import file
+type Log = { file: file.File }
+function Log.write(mut self, text: string) {
+    self.file.write(text)
+}
+function pair[T](x: T): T[] {
+    return [x]
+}
+print(pair(1))
+----
+type Node = { value: int, next: Option[Node] }
+immut n: Node = { value: 1, next: None }
+print(n == n)
+----
+type Tree = { Leaf Branch(left: Tree, right: Tree) }
+function count(t: Tree): int {
+    return match (t) {
+        Leaf => 1
+        Branch(l, r) => count(l) + count(r)
+    }
+}
+print(count(Branch(Leaf, Leaf)))

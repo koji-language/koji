@@ -1,0 +1,39 @@
+// A module for the checker's tests: exported and private declarations.
+
+export type Shape = {
+    Circle(radius: float)
+    Square(side: float)
+}
+
+type Hidden = { value: int }
+
+export type Box = { label: string, size: int }
+
+export mut count = 0
+export immut origin = [0, 0]
+
+export function area(shape: Shape): float {
+    return match (shape) {
+        Circle(radius) => 3.14 * radius * radius
+        Square(side) => side * side
+    }
+}
+
+function secret(): Hidden {
+    return { value: 1 }
+}
+
+export function first[T](items: T[]): Option[T] {
+    if (items.length() == 0) { return None }
+
+    return Some(items[0])
+}
+
+export type Problem = {
+    Missing(name: string)
+    Parse(error: ParseError)
+}
+
+export function grow(mut items: int[]) {
+    items.push(secret().value)
+}

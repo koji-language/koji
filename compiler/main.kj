@@ -1,17 +1,26 @@
 // The Koji compiler written in Koji (phase 3). For now it shows the stages written so far, like
-// `kojic dump`: `tokens <file.kj>` prints the tokens of a file and `ast <file.kj>` its syntax
-// tree.
+// `kojic dump`: `tokens <file.kj>` prints the tokens of a file, `ast <file.kj>` its syntax tree
+// and `types <file.kj>` what the checker finds.
 
 import file
 import system
 import { tokenize, dump } from 'lexer.kj'
 import parser from 'parser.kj'
+import { dumpTypes } from 'checker.kj'
 
 immut args = system.args()
 
-if (args.length() != 2 or not (args[0] == 'tokens' or args[0] == 'ast')) {
-    print('usage: main.kj tokens|ast <file.kj>')
+if (args.length() != 2 or not (args[0] in ['tokens', 'ast', 'types'])) {
+    print('usage: main.kj tokens|ast|types <file.kj>')
     system.exit(2)
+}
+
+if (args[0] == 'types') {
+    for line in dumpTypes(args[1]) {
+        print(line)
+    }
+
+    system.exit(0)
 }
 
 immut source = match (file.open(args[1], file.Read)) {

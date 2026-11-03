@@ -1,0 +1,5339 @@
+// The type checker of the Koji compiler written in Koji. It follows the checker in Rust
+// (src/semantic/type_checker/), with the same messages, and records what it finds about each
+// node (its type, moves, drops...) by the node's id; `kojic dump types` prints the same text as
+// `dump`.
+
+import file
+import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Part, Entry, ObjectEntry, ParsedFile, parseFrom, annotated } from 'parser.kj'
+import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, MethodSignature, NamedParts, unconstrained, equatable, orderable, constraintName, isNumeric, containsUnknown, anyUnknown, fillUnknown, substitute, substituteAll, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, substituteFields, variantsOf, findField } from 'types.kj'
+
+// Names of the standard library modules (`import math`).
+immut stdlibModules = ['time', 'file', 'path', 'datetime', 'math', 'http', 'json', 'regex', 'system']
+
+type SymbolKind = {
+    ValueSymbol
+    // A built-in function, by its qualified name (`print`, `math.sqrt`).
+    BuiltinSymbol(name: string)
+    // A variant constructor of a sum type.
+    ConstructorSymbol(id: int, variant: string)
+}
+
+type Symbol = {
+    ty: Type
+    // The variable cannot be reassigned (`immut`, functions, parameters...).
+    isConst: boolean
+    // Its contents cannot change either (`immut`).
+    isImut: boolean
+    kind: SymbolKind
+    // The module that declared the symbol, when it was imported: it is read-only here.
+    owner: Option[string]
+    // For functions with `mut` or `take` parameters: how each parameter is passed ('borrow',
+    // 'mut' or 'take'; empty when every parameter is borrowed).
+    modes: string[]
+    // Why the variable is read-only, when the reason is not its declaration.
+    reason: Option[string]
+    // The variable borrows its value (a parameter, the `for` variable...): it cannot move it.
+    borrowed: Option[string]
+    // A copy of a variable with a narrower type (`if (x is Some)`): moving it moves the original.
+    narrowed: boolean
+    // For a generic function: the number of its type parameters, and their constraints.
+    generics: int
+    constraints: int[]
+    // The id of the `VarDecl` that declared it.
+    decl: Option[int]
+    // The line where it is declared.
+    line: int
+}
+
+function valueSymbol(ty: Type, isConst: boolean): Symbol {
+    return {
+        ty: ty, isConst: isConst, isImut: false, kind: ValueSymbol, owner: None, modes: [], reason: None,
+        borrowed: None, narrowed: false, generics: 0, constraints: [], decl: None, line: 0
+    }
+}
+
+function builtinSymbol(name: string): Symbol {
+    return {
+        ty: VoidType, isConst: true, isImut: true, kind: BuiltinSymbol(name), owner: None, modes: [], reason: None,
+        borrowed: None, narrowed: false, generics: 0, constraints: [], decl: None, line: 0
+    }
+}
+
+type TypeRef = {
+    KnownType(ty: Type)
+    // A generic type that needs arguments (`Option`, `Result`).
+    GenericType(id: int)
+}
+
+type Scope = {
+    vars: Map[string, Symbol]
+    types: Map[string, TypeRef]
+}
+
+function emptyScope(): Scope {
+    return { vars: [:], types: [:] }
+}
+
+type ModuleInfo = {
+    // How messages name the module (`math.kj`, `json`).
+    display: string
+    // Exported values, functions and constructors, and exported types.
+    members: Map[string, Symbol]
+    types: Map[string, TypeRef]
+    // Names declared in the module but not exported.
+    private: Set[string]
+}
+
+// A method (`function Person.greet(self)`) or an associated function (`Person.create(...)`).
+type MethodInfo = {
+    // The full signature; for a method, the first parameter is `self`.
+    ty: Type
+    hasSelf: boolean
+    modes: string[]
+    module: string
+    // The type parameters of the type (first) and of the method itself.
+    generics: int
+    typeParams: TypeParam[]
+    constraints: int[]
+}
+
+type ReturnContext = {
+    // The declared return type; `None` when it must be inferred (anonymous functions).
+    declared: Option[Type]
+    inferred: Option[Type]
+}
+
+// A variable whose value was moved: the index of its scope, its name and the line of the move.
+type Moved = {
+    index: int
+    name: string
+    line: int
+}
+
+type Moves = Map[string, Moved]
+
+function movedKey(index: int, name: string): string {
+    return `${index} ${name}`
+}
+
+type Builtins = {
+    option: int
+    result: int
+    parseError: int
+    mathError: int
+    fileError: int
+    fileMode: int
+    httpError: int
+    json: int
+    map: int
+    output: int
+    systemError: int
+    set: int
+    jsonError: int
+    dateError: int
+    file: int
+    datetime: int
+    response: int
+    regexMatch: int
+    regex: int
+    regexError: int
+}
+
+// The checking state of a module.
+type ModuleState = {
+    // Whether this is the main file (where `?` may be used at the top level).
+    isEntry: boolean
+    scopes: Scope[]
+    // The index in `scopes` of the parameter scope of each function being checked.
+    functionScopes: int[]
+    returns: ReturnContext[]
+    file: string
+    path: string
+    dir: string
+    line: int
+    moved: Moves
+    // The scope index where each loop being checked starts.
+    loopScopes: int[]
+    // While checking the patterns of a `match` on a variable: its bindings borrow.
+    borrowingMatch: boolean
+}
+
+function emptyState(): ModuleState {
+    return {
+        isEntry: false, scopes: [], functionScopes: [], returns: [], file: '', path: '', dir: '', line: 0,
+        moved: [:], loopScopes: [], borrowingMatch: false
+    }
+}
+
+// A method that a call resolves to, by its module and its name (`Person.greet`).
+export type MethodRef = {
+    module: string
+    key: string
+    hasSelf: boolean
+}
+
+// The variant that wraps an error propagated by `?` (`File` in `Err(File(error))`), possibly
+// from an imported module.
+export type TryWrap = {
+    module: Option[string]
+    variant: string
+}
+
+// A loaded module: its path, how messages name it, and its statements.
+export type LoadedModule = {
+    path: string
+    display: string
+    statements: Node[]
+}
+
+// What the compiler needs to know about each node, by its id.
+export type Tables = {
+    // The type of each expression.
+    types: Map[int, Type]
+    // Variables read by moving them out (`g = f` reads `f`).
+    moves: Set[int]
+    // Declarations of a variable that owns a move-only value: it is dropped at the end of its block.
+    declares: Set[int]
+    // Assignments that replace a move-only value: the old one is dropped.
+    replaces: Set[int]
+    // Move-only values only used in place: they are dropped after that use.
+    temporaries: Set[int]
+    // Scrutinees of a `match` on a move-only temporary: its bindings own their values.
+    owningMatches: Set[int]
+    // Object literals of a type with a `drop` method, with that method.
+    drops: Map[int, MethodRef]
+    // String literals that are `char` values.
+    charLiterals: Set[int]
+    // Calls of built-in methods that change the value they are called on, by their callee.
+    mutatingCalls: Set[int]
+    // The `drop` method of each type that declares one.
+    dropMethods: Map[int, MethodRef]
+    // The type of each function declaration.
+    functionTypes: Map[int, Type]
+    // The type arguments of each call of a generic function, as inferred.
+    typeArgs: Map[int, Type[]]
+    // The fields of each object literal, in the order of its type's declaration.
+    fieldOrders: Map[int, string[]]
+    // `int` expressions stored as `float`.
+    toFloat: Set[int]
+    // The type of each declared variable, after the later uses that refine it.
+    variableTypes: Map[int, Type]
+    // The method or associated function each call resolves to.
+    methods: Map[int, MethodRef]
+    // For `print` and `string`: the `display` method of each argument's type.
+    displays: Map[int, Option[MethodRef][]]
+    // For each `${...}` of a template string: the `display` method of its type.
+    templateDisplays: Map[int, Option[MethodRef]]
+    // The variant `?` wraps the error in.
+    wraps: Map[int, TryWrap]
+}
+
+function emptyTables(): Tables {
+    return {
+        types: [:], moves: Set.from([]), declares: Set.from([]), replaces: Set.from([]), temporaries: Set.from([]),
+        owningMatches: Set.from([]), drops: [:], charLiterals: Set.from([]), mutatingCalls: Set.from([]),
+        dropMethods: [:], functionTypes: [:], typeArgs: [:], fieldOrders: [:], toFloat: Set.from([]),
+        variableTypes: [:], methods: [:], displays: [:], templateDisplays: [:], wraps: [:]
+    }
+}
+
+// A checked program.
+export type Program = {
+    modules: LoadedModule[]
+    table: TypeInfo[]
+    tables: Tables
+}
+
+type Checker = {
+    table: TypeInfo[]
+    builtins: Builtins
+    modules: ModuleInfo[]
+    moduleByPath: Map[string, int]
+    stdlib: Map[string, int]
+    loading: string[]
+    loaded: LoadedModule[]
+    // Methods and associated functions of each type, by `id name`.
+    methods: Map[string, MethodInfo]
+    // The argument types of the last built-in call checked.
+    lastArgTypes: Type[]
+    // The type arguments of the last generic call checked, until the call records them.
+    typeArgs: Option[Type[]]
+    tables: Tables
+    state: ModuleState
+    // The id of the first node of the next module parsed.
+    nextId: int
+}
+
+// Built-in types
+
+type BuiltinField = {
+    name: string
+    ty: string
+}
+
+type BuiltinVariant = {
+    name: string
+    fields: BuiltinField[]
+}
+
+// A sum type the language or its standard library provides.
+type BuiltinSum = {
+    name: string
+    // The standard library module that exports it; `None` for the prelude.
+    module: Option[string]
+    params: int
+    variants: BuiltinVariant[]
+}
+
+function variant(name: string, fields: BuiltinField[]): BuiltinVariant {
+    return { name: name, fields: fields }
+}
+
+function field(name: string, ty: string): BuiltinField {
+    return { name: name, ty: ty }
+}
+
+function builtinSums(): BuiltinSum[] {
+    immut text = [field('text', 'string')]
+    immut pathOnly = [field('path', 'string')]
+    immut pathMessage = [field('path', 'string'), field('message', 'string')]
+    immut url = [field('url', 'string')]
+    immut urlMessage = [field('url', 'string'), field('message', 'string')]
+    return [
+        { name: 'Option', module: None, params: 1, variants: [variant('Some', [field('value', 'T0')]), variant('None', [])] },
+        {
+            name: 'Result', module: None, params: 2,
+            variants: [variant('Ok', [field('value', 'T0')]), variant('Err', [field('error', 'T1')])]
+        },
+        { name: 'ParseError', module: None, params: 0, variants: [variant('InvalidNumber', text), variant('OutOfRange', text)] },
+        {
+            name: 'MathError', module: Some('math'), params: 0,
+            variants: [variant('Complex', []), variant('Indeterminate', []), variant('Infinite', [])]
+        },
+        { name: 'Mode', module: Some('file'), params: 0, variants: [variant('Read', []), variant('Write', []), variant('Append', [])] },
+        {
+            name: 'FileError', module: Some('file'), params: 0,
+            variants: [
+                variant('NotFound', pathOnly), variant('PermissionDenied', pathOnly), variant('IsDirectory', pathOnly),
+                variant('InvalidUtf8', pathOnly), variant('Io', pathMessage)
+            ]
+        },
+        {
+            name: 'HttpError', module: Some('http'), params: 0,
+            variants: [
+                variant('InvalidUrl', url), variant('ConnectionFailed', urlMessage), variant('Timeout', url),
+                variant('Tls', urlMessage), variant('InvalidResponse', urlMessage)
+            ]
+        },
+        {
+            name: 'JsonError', module: Some('json'), params: 0,
+            variants: [
+                variant('Syntax', [field('message', 'string'), field('line', 'int'), field('column', 'int')]),
+                variant('NumberOutOfRange', [field('text', 'string'), field('line', 'int'), field('column', 'int')])
+            ]
+        },
+        {
+            name: 'Json', module: Some('json'), params: 0,
+            variants: [
+                variant('Null', []), variant('Bool', [field('value', 'boolean')]), variant('Int', [field('value', 'int')]),
+                variant('Float', [field('value', 'float')]), variant('String', [field('value', 'string')]),
+                variant('Array', [field('items', 'Json[]')]), variant('Object', [field('fields', 'JsonObject')])
+            ]
+        },
+        {
+            name: 'DateError', module: Some('datetime'), params: 0,
+            variants: [variant('PatternMismatch', [field('text', 'string'), field('pattern', 'string')]), variant('InvalidDate', text)]
+        },
+        {
+            name: 'RegexError', module: Some('regex'), params: 0,
+            variants: [
+                variant('InvalidPattern', [field('pattern', 'string'), field('message', 'string')]),
+                variant('Unsupported', [field('pattern', 'string'), field('message', 'string')]),
+                variant('TooLarge', [field('pattern', 'string')])
+            ]
+        },
+        {
+            name: 'SystemError', module: Some('system'), params: 0,
+            variants: [
+                variant('NotFound', [field('command', 'string')]), variant('PermissionDenied', [field('command', 'string')]),
+                variant('Io', [field('command', 'string'), field('message', 'string')])
+            ]
+        }
+    ]
+}
+
+// The functions of each standard library module.
+function stdlibFunctions(module: string): string[] {
+    return match (module) {
+        'time' => ['sleep', 'now', 'monotonic']
+        'file' => ['open', 'list', 'exists', 'createDir']
+        'path' => ['join', 'parent', 'name', 'stem', 'extension', 'isAbsolute']
+        'datetime' => ['now', 'today', 'format', 'parse']
+        'math' => ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
+        'http' => ['get', 'post', 'put', 'delete']
+        'json' => ['parse', 'stringify', 'get', 'asString', 'asInt', 'asFloat', 'asBool']
+        'regex' => ['compile']
+        'system' => ['args', 'env', 'exit', 'run']
+        _ => []
+    }
+}
+
+function named(id: int): Type {
+    return NamedType(id, [])
+}
+
+function addType(mut table: TypeInfo[], name: string, params: int, kind: TypeKind): int {
+    table.push({ name: name, params: params, constraints: [], kind: kind })
+    return table.length() - 1
+}
+
+function sumId(ids: Map[string, int], name: string): int {
+    return match (ids.get(name)) {
+        Some(id) => id
+        None => -1
+    }
+}
+
+function Checker.create(): Checker {
+    mut table: TypeInfo[] = []
+    // The built-in sum types: declared first, resolved once every name exists (`Json` refers to
+    // `JsonObject`, which refers back to `Json`).
+    mut ids: Map[string, int] = [:]
+
+    for sum in builtinSums() {
+        ids[sum.name] = addType(mut table, sum.name, sum.params, Pending)
+    }
+
+    immut json = sumId(ids, 'Json')
+    // `Map[K: equatable, V]` and `Set[T: equatable]`.
+    immut map = addType(mut table, 'Map', 2, MapKind(ParamType(0), ParamType(1)))
+    table[map].constraints = [equatable, unconstrained]
+    immut set = addType(mut table, 'Set', 1, SetKind(ParamType(0)))
+    table[set].constraints = [equatable]
+    immut jsonObject = NamedType(map, [StringType, named(json)])
+
+    for sum in builtinSums() {
+        mut variants: VariantInfo[] = []
+
+        for info in sum.variants {
+            mut fields: FieldType[] = []
+
+            for builtin in info.fields {
+                immut ty = match (builtin.ty) {
+                    'T0' => ParamType(0)
+                    'T1' => ParamType(1)
+                    'string' => StringType
+                    'int' => IntType
+                    'float' => FloatType
+                    'boolean' => BooleanType
+                    'Json[]' => ListType(named(json))
+                    _ => jsonObject
+                }
+                fields.push({ name: builtin.name, ty: ty })
+            }
+
+            variants.push({ name: info.name, fields: fields })
+        }
+
+        table[sumId(ids, sum.name)].kind = SumKind(variants)
+    }
+
+    immut fileError = named(sumId(ids, 'FileError'))
+    immut result = sumId(ids, 'Result')
+    immut file = addType(mut table, 'File', 0, BuiltinKind([], [
+        { name: 'read', params: [], returns: NamedType(result, [StringType, fileError]) },
+        { name: 'write', params: [StringType], returns: NamedType(result, [VoidType, fileError]) },
+        { name: 'close', params: [], returns: VoidType }
+    ]))
+    mut dateFields: FieldType[] = []
+
+    for name in ['year', 'month', 'day', 'hour', 'minute', 'second'] {
+        dateFields.push({ name: name, ty: IntType })
+    }
+
+    immut datetime = addType(mut table, 'DateTime', 0, BuiltinKind(dateFields, []))
+    immut response = addType(mut table, 'Response', 0, BuiltinKind([{ name: 'status', ty: IntType }, { name: 'body', ty: StringType }], []))
+    immut output = addType(mut table, 'Output', 0, BuiltinKind([
+        { name: 'status', ty: IntType }, { name: 'stdout', ty: StringType }, { name: 'stderr', ty: StringType }
+    ], []))
+    immut regexMatch = addType(mut table, 'Match', 0, BuiltinKind([
+        { name: 'value', ty: StringType }, { name: 'start', ty: IntType }, { name: 'end', ty: IntType }
+    ], []))
+    immut matchType = named(regexMatch)
+    immut regex = addType(mut table, 'Regex', 0, BuiltinKind([], [
+        { name: 'test', params: [StringType], returns: BooleanType },
+        { name: 'find', params: [StringType], returns: NamedType(sumId(ids, 'Option'), [matchType]) },
+        { name: 'findAll', params: [StringType], returns: ListType(matchType) },
+        { name: 'replace', params: [StringType, StringType], returns: StringType },
+        { name: 'replaceAll', params: [StringType, StringType], returns: StringType },
+        { name: 'split', params: [StringType], returns: ListType(StringType) }
+    ]))
+    immut builtins: Builtins = {
+        option: sumId(ids, 'Option'), result: result, parseError: sumId(ids, 'ParseError'),
+        mathError: sumId(ids, 'MathError'), fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
+        httpError: sumId(ids, 'HttpError'), json: json, map: map, output: output, systemError: sumId(ids, 'SystemError'),
+        set: set, jsonError: sumId(ids, 'JsonError'), dateError: sumId(ids, 'DateError'), file: file,
+        datetime: datetime, response: response, regexMatch: regexMatch, regex: regex, regexError: sumId(ids, 'RegexError')
+    }
+    return {
+        table: table, builtins: builtins, modules: [], moduleByPath: [:], stdlib: [:], loading: [], loaded: [],
+        methods: [:], lastArgTypes: [], typeArgs: None, tables: emptyTables(), state: emptyState(), nextId: 0
+    }
+}
+
+// The id of a built-in sum type, by name.
+function Checker.builtinSumId(self, name: string): int {
+    immut b = self.builtins
+    return match (name) {
+        'Option' => b.option
+        'Result' => b.result
+        'ParseError' => b.parseError
+        'MathError' => b.mathError
+        'FileError' => b.fileError
+        'Mode' => b.fileMode
+        'HttpError' => b.httpError
+        'Json' => b.json
+        'JsonError' => b.jsonError
+        'DateError' => b.dateError
+        'SystemError' => b.systemError
+        _ => b.regexError
+    }
+}
+
+// The scope with the built-in functions, types and constructors.
+function Checker.prelude(self): Scope {
+    mut scope = emptyScope()
+
+    for name in ['print', 'input', 'range', 'int', 'float', 'string', 'char', 'panic'] {
+        scope.vars[name] = builtinSymbol(name)
+    }
+
+    scope.types['int'] = KnownType(IntType)
+    scope.types['float'] = KnownType(FloatType)
+    scope.types['string'] = KnownType(StringType)
+    scope.types['char'] = KnownType(CharType)
+    scope.types['boolean'] = KnownType(BooleanType)
+    scope.types['bool'] = KnownType(BooleanType)
+    scope.types['void'] = KnownType(VoidType)
+    scope.types['Map'] = GenericType(self.builtins.map)
+    scope.types['Set'] = GenericType(self.builtins.set)
+
+    for sum in builtinSums() {
+        if (sum.module is Some) { continue }
+
+        immut id = self.builtinSumId(sum.name)
+        scope.types[sum.name] = if (sum.params > 0) { GenericType(id) } else { KnownType(named(id)) }
+
+        for constructor in self.constructors(id) {
+            scope.vars[constructor.name] = constructor.symbol
+        }
+    }
+
+    return scope
+}
+
+type Constructor = {
+    name: string
+    symbol: Symbol
+}
+
+// The constructors of the sum type `id`, as symbols.
+function Checker.constructors(self, id: int): Constructor[] {
+    immut info = self.table[id]
+    mut result: Constructor[] = []
+
+    match (info.kind) {
+        SumKind(variants) => {
+            for each in variants {
+                mut unknown: Type[] = []
+
+                for i in range(info.params) {
+                    unknown.push(UnknownType)
+                }
+
+                immut value = NamedType(id, unknown)
+                mut params: Type[] = []
+
+                for field in each.fields {
+                    params.push(field.ty)
+                }
+
+                immut ty = if (each.fields.length() == 0) { value } else { FunctionType(params, value) }
+                immut symbol: Symbol = {
+                    ty: ty, isConst: true, isImut: true, kind: ConstructorSymbol(id, each.name), owner: None, modes: [],
+                    reason: None, borrowed: None, narrowed: false, generics: 0, constraints: [], decl: None, line: 0
+                }
+                result.push({ name: each.name, symbol: symbol })
+            }
+        }
+        _ => {}
+    }
+
+    return result
+}
+
+// Declares the constructors of the sum type `id` in the current scope.
+function Checker.declareConstructors(mut self, id: int) {
+    immut last = self.state.scopes.length() - 1
+
+    for constructor in self.constructors(id) {
+        self.state.scopes[last].vars[constructor.name] = constructor.symbol
+    }
+}
+
+function Checker.stdlibModule(mut self, name: string): int {
+    match (self.stdlib.get(name)) {
+        Some(id) => return id
+        None => {}
+    }
+
+    mut module: ModuleInfo = { display: name, members: [:], types: [:], private: Set.from([]) }
+
+    for member in stdlibFunctions(name) {
+        module.members[member] = builtinSymbol(`${name}.${member}`)
+    }
+
+    immut b = self.builtins
+
+    if (name == 'math') {
+        module.members['pi'] = valueSymbol(FloatType, true)
+        module.members['e'] = valueSymbol(FloatType, true)
+    }
+
+    match (name) {
+        'file' => module.types['File'] = KnownType(named(b.file))
+        'datetime' => module.types['DateTime'] = KnownType(named(b.datetime))
+        'http' => module.types['Response'] = KnownType(named(b.response))
+        'system' => module.types['Output'] = KnownType(named(b.output))
+        'regex' => {
+            module.types['Match'] = KnownType(named(b.regexMatch))
+            module.types['Regex'] = KnownType(named(b.regex))
+        }
+        _ => {}
+    }
+
+    // `json.JsonObject` is `Map[string, Json]`.
+    if (name == 'json') { module.types['JsonObject'] = KnownType(NamedType(b.map, [StringType, named(b.json)])) }
+
+    // The sum types of the module (`FileError`, `Json`...), with their constructors.
+    for sum in builtinSums() {
+        if (sum.module != Some(name)) { continue }
+
+        immut id = self.builtinSumId(sum.name)
+        module.types[sum.name] = KnownType(named(id))
+
+        for constructor in self.constructors(id) {
+            module.members[constructor.name] = constructor.symbol
+        }
+    }
+
+    self.modules.push(module)
+    immut id = self.modules.length() - 1
+    self.stdlib[name] = id
+    return id
+}
+
+// Nodes
+
+// The node without its `Located` and `Export` wrappers.
+function unlocated(node: Node): Node {
+    return match (node.kind) {
+        Located(_, statement) => unlocated(statement)
+        Export(declaration) => unlocated(declaration)
+        _ => node
+    }
+}
+
+// The id the checker records a node by (that of the node without its wrappers).
+function nodeId(node: Node): int {
+    return unlocated(node).id
+}
+
+// Whether this top-level statement is marked with `export`.
+function isExported(node: Node): boolean {
+    return match (node.kind) {
+        Located(_, statement) => isExported(statement)
+        Export(_) => true
+        _ => false
+    }
+}
+
+// The name declared by a function, variable or type declaration (methods declare no name).
+function declaredName(node: Node): Option[string] {
+    return match (unlocated(node).kind) {
+        FunctionDecl(name, None, _, _, _, _) => Some(name)
+        VarDecl(name, _, _, _) => Some(name)
+        TypeDecl(name, _, _) => Some(name)
+        _ => None
+    }
+}
+
+function isStatement(node: Node): boolean {
+    return match (unlocated(node).kind) {
+        While(_, _) => true
+        For(_, _, _, _) => true
+        Assign(_, _, _) => true
+        VarDecl(_, _, _, _) => true
+        FunctionDecl(_, _, _, _, _, _) => true
+        TypeDecl(_, _, _) => true
+        ImportModule(_, _) => true
+        ImportNames(_, _) => true
+        _ => false
+    }
+}
+
+function isName(node: Node): boolean {
+    return match (unlocated(node).kind) {
+        Name(_) => true
+        _ => false
+    }
+}
+
+function modeOf(param: Param): string {
+    if (param.isMut) { return 'mut' }
+
+    if (param.isTake) { return 'take' }
+
+    return 'borrow'
+}
+
+// Paths
+
+// The directory of a file (`examples` for `examples/shapes.kj`, '' for `shapes.kj`).
+function parentDir(path: string): string {
+    immut parts = path.split('/')
+
+    if (parts.length() == 1) { return '' }
+
+    return parts[..parts.length() - 1].join('/')
+}
+
+// `path` relative to `dir`, without `.` and `..` parts.
+function resolvePath(dir: string, path: string): string {
+    immut joined = if (path.startsWith('/') or dir == '') { path } else { `${dir}/${path}` }
+    mut parts: string[] = []
+
+    for part in joined.split('/') {
+        if (part == '.' or (part == '' and parts.length() > 0)) { continue }
+
+        if (part == '..' and parts.length() > 0 and parts[parts.length() - 1] != '..' and parts[parts.length() - 1] != '') {
+            parts.pop()
+            continue
+        }
+
+        parts.push(part)
+    }
+
+    return parts.join('/')
+}
+
+// The text of a system error, as the checker in Rust shows it.
+function ioMessage(error: file.FileError): string {
+    return match (error) {
+        NotFound(_) => 'No such file or directory (os error 2)'
+        PermissionDenied(_) => 'Permission denied (os error 13)'
+        IsDirectory(_) => 'Is a directory (os error 21)'
+        InvalidUtf8(_) => 'stream did not contain valid UTF-8'
+        Io(_, message) => message
+    }
+}
+
+function readSource(path: string): Result[string, file.FileError] {
+    immut input = file.open(path, file.Read)?
+    return input.read()
+}
+
+// Turns `line N: message` into `file:N: message`.
+function prefixError(file: string, message: string): string {
+    if (message.startsWith('line ')) {
+        immut rest = message[5..]
+
+        match (rest.indexOf(': ')) {
+            Some(colon) => {
+                immut line = rest[..colon]
+
+                if (line.length() > 0 and line.isNumeric()) { return `${file}:${line}: ${rest[colon + 2..]}` }
+            }
+            None => {}
+        }
+    }
+
+    return `${file}: ${message}`
+}
+
+// Scopes and errors
+
+// A type error at the current line.
+function Checker.failure(self, message: string): string {
+    immut location = if (self.state.line == 0) { self.state.file } else { `${self.state.file}:${self.state.line}` }
+    return `type error: ${location}: ${message}`
+}
+
+function Checker.show(self, ty: Type): string {
+    return display(self.table, ty)
+}
+
+function Checker.lastScope(self): int {
+    return self.state.scopes.length() - 1
+}
+
+function Checker.pushScope(mut self) {
+    self.state.scopes.push(emptyScope())
+}
+
+function Checker.popScope(mut self) {
+    self.state.scopes.pop()
+    immut length = self.state.scopes.length()
+    mut kept: Moves = [:]
+
+    for key in self.state.moved.keys() {
+        match (self.state.moved.get(key)) {
+            Some(moved) if (moved.index < length) => kept[key] = moved
+            _ => {}
+        }
+    }
+
+    self.state.moved = kept
+}
+
+function Checker.lookup(self, name: string): Option[Symbol] {
+    mut i = self.state.scopes.length() - 1
+
+    while (i >= 0) {
+        match (self.state.scopes[i].vars.get(name)) {
+            Some(symbol) => return Some(symbol)
+            None => {}
+        }
+
+        i -= 1
+    }
+
+    return None
+}
+
+// The index of the scope that declares `name`.
+function Checker.scopeOf(self, name: string): Option[int] {
+    mut i = self.state.scopes.length() - 1
+
+    while (i >= 0) {
+        if (self.state.scopes[i].vars.has(name)) { return Some(i) }
+
+        i -= 1
+    }
+
+    return None
+}
+
+function Checker.lookupType(self, name: string): Option[TypeRef] {
+    mut i = self.state.scopes.length() - 1
+
+    while (i >= 0) {
+        match (self.state.scopes[i].types.get(name)) {
+            Some(found) => return Some(found)
+            None => {}
+        }
+
+        i -= 1
+    }
+
+    return None
+}
+
+// A function captures a read-only copy of the variables of the functions around it: they cannot
+// be assigned (module variables are not captured, they belong to the module).
+function Checker.ensureNotCaptured(self, name: string): Result[void, string] {
+    if (self.state.functionScopes.length() == 0) { return Ok() }
+
+    immut boundary = self.state.functionScopes[self.state.functionScopes.length() - 1]
+
+    match (self.scopeOf(name)) {
+        // 0 is the prelude and 1 the module scope.
+        Some(index) if (index > 1 and index < boundary) => {
+            return Err(self.failure(`cannot modify '${name}' here: functions capture a read-only copy of the variables around them`))
+        }
+        _ => return Ok()
+    }
+}
+
+// Gives a better-known type to a variable, and records it for the compiler.
+function Checker.setVariableType(mut self, name: string, ty: Type) {
+    match (self.scopeOf(name)) {
+        Some(index) => {
+            self.state.scopes[index].vars[name].ty = ty
+
+            match (self.state.scopes[index].vars[name].decl) {
+                Some(decl) => self.tables.variableTypes[decl] = ty
+                None => {}
+            }
+        }
+        None => {}
+    }
+}
+
+function Checker.declare(mut self, name: string, symbol: Symbol): Result[void, string] {
+    immut last = self.lastScope()
+
+    if (self.state.scopes[last].vars.has(name)) { return Err(self.failure(`'${name}' is already declared in this scope`)) }
+
+    mut declared = symbol
+    declared.line = self.state.line
+
+    match (declared.decl) {
+        Some(decl) => self.tables.variableTypes[decl] = declared.ty
+        None => {}
+    }
+
+    self.state.scopes[last].vars[name] = declared
+    return Ok()
+}
+
+// Every variable of the current scope must have a known type by its end (`mut items = []` needs
+// a later `items.push(1)`, or an annotation).
+function Checker.ensureInferred(mut self): Result[void, string] {
+    immut scope = self.state.scopes[self.lastScope()]
+    mut found: Option[string] = None
+    mut foundLine = 0
+
+    for name in scope.vars.keys() {
+        immut symbol = match (scope.vars.get(name)) {
+            Some(symbol) => symbol
+            None => continue
+        }
+
+        if (symbol.kind != ValueSymbol or not containsUnknown(symbol.ty)) { continue }
+
+        immut earlier = match (found) {
+            Some(other) => symbol.line < foundLine or (symbol.line == foundLine and name < other)
+            None => true
+        }
+
+        if (earlier) {
+            found = Some(name)
+            foundLine = symbol.line
+        }
+    }
+
+    immut name = match (found) {
+        Some(name) => name
+        None => return Ok()
+    }
+
+    immut symbol = match (scope.vars.get(name)) {
+        Some(symbol) => symbol
+        None => return Ok()
+    }
+
+    self.state.line = symbol.line
+
+    // A `for` variable or a `match` binding: its type comes from another value.
+    if (symbol.reason is Some) {
+        return Err(self.failure(`the type of '${name}' cannot be inferred (it is ${self.show(symbol.ty)}): give a type to the value it comes from`))
+    }
+
+    // An example annotation: the type found so far, with `int` for the unknown parts.
+    immut example = self.show(fillUnknown(symbol.ty, IntType))
+    immut keyword = if (symbol.isImut) { 'immut' } else { 'mut' }
+    return Err(self.failure(`the type of '${name}' cannot be inferred (it is ${self.show(symbol.ty)}): annotate it, as in '${keyword} ${name}: ${example} = ...'`))
+}
+
+// Ends a scope of variables: they must all have known types.
+function Checker.endScope(mut self): Result[void, string] {
+    self.ensureInferred()?
+    self.popScope()
+    return Ok()
+}
+
+function Checker.optionOf(self, ty: Type): Type {
+    return NamedType(self.builtins.option, [ty])
+}
+
+function Checker.setLine(mut self, node: Node) {
+    match (node.kind) {
+        Located(line, _) => self.state.line = line
+        _ => {}
+    }
+}
+
+// Modules
+
+function Checker.checkModule(mut self, path: string, display: string, source: string): Result[int, string] {
+    immut parsed = match (parseFrom(source, self.nextId)) {
+        Ok(parsed) => parsed
+        Err(message) => return Err(`syntax error: ${prefixError(display, message)}`)
+    }
+
+    self.nextId = parsed.nextId
+    self.loaded.push({ path: path, display: display, statements: parsed.statements })
+    self.loading.push(path)
+    immut prelude = self.prelude()
+    immut saved = self.state
+    mut state = emptyState()
+    state.isEntry = self.loading.length() == 1
+    state.scopes = [prelude, emptyScope()]
+    state.file = display
+    state.path = path
+    state.dir = parentDir(path)
+    self.state = state
+    self.checkStatements(parsed.statements, None)?
+    self.ensureInferred()?
+    immut moduleScope = self.state.scopes[1]
+    immut module = self.moduleExports(parsed.statements, moduleScope, display)?
+    self.state = saved
+    self.loading.pop()
+    self.modules.push(module)
+    immut id = self.modules.length() - 1
+    self.moduleByPath[path] = id
+    return Ok(id)
+}
+
+// What other modules can import: only the declarations marked with `export`. Exporting a sum
+// type also exports its variants; an exported variable is read-only outside the module.
+function Checker.moduleExports(mut self, program: Node[], scope: Scope, display: string): Result[ModuleInfo, string] {
+    mut module: ModuleInfo = { display: display, members: [:], types: [:], private: Set.from([]) }
+    mut exportedIds: Set[int] = Set.from([])
+    mut privateIds: Set[int] = Set.from([])
+
+    for statement in program {
+        immut name = match (declaredName(statement)) {
+            Some(name) => name
+            None => continue
+        }
+
+        immut kind = unlocated(statement).kind
+        immut isType = match (kind) {
+            TypeDecl(_, _, _) => true
+            _ => false
+        }
+        // A private alias (`type Counts = Map[string, int]`) does not make its type private.
+        immut isAlias = match (kind) {
+            TypeDecl(_, _, Alias(_)) => true
+            _ => false
+        }
+
+        if (not isExported(statement)) {
+            module.private.add(name)
+
+            if (isType and not isAlias) {
+                match (scope.types.get(name)) {
+                    Some(KnownType(NamedType(id, _))) => privateIds.add(id)
+                    _ => {}
+                }
+            }
+
+            continue
+        }
+
+        if (isType) {
+            match (scope.types.get(name)) {
+                Some(typeRef) => {
+                    module.types[name] = typeRef
+
+                    match (typeRef) {
+                        KnownType(NamedType(id, _)) => {
+                            exportedIds.add(id)
+
+                            match (variantsOf(self.table, id)) {
+                                Some(variants) => {
+                                    for each in variants {
+                                        match (scope.vars.get(each.name)) {
+                                            Some(symbol) => module.members[each.name] = symbol
+                                            None => {}
+                                        }
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None => {}
+            }
+
+            continue
+        }
+
+        match (scope.vars.get(name)) {
+            Some(symbol) => {
+                mut member = symbol
+                member.owner = Some(display)
+                module.members[name] = member
+            }
+            None => {}
+        }
+    }
+
+    mut hidden: Set[int] = Set.from([])
+
+    for id in privateIds.values() {
+        if (not exportedIds.has(id)) { hidden.add(id) }
+    }
+
+    // Implicit declarations and imported names are never exported either.
+    for name in scope.vars.keys() {
+        if (not module.members.has(name) and not module.types.has(name)) { module.private.add(name) }
+    }
+
+    for name in scope.types.keys() {
+        if (not module.members.has(name) and not module.types.has(name)) { module.private.add(name) }
+    }
+
+    // A public signature cannot mention a private type: importers could not name it.
+    for statement in program {
+        if (not isExported(statement)) { continue }
+
+        self.setLine(statement)
+        immut name = match (declaredName(statement)) {
+            Some(name) => name
+            None => ''
+        }
+        mut types: Type[] = []
+
+        if (module.types.has(name)) {
+            match (scope.types.get(name)) {
+                Some(KnownType(NamedType(id, args))) => {
+                    match (self.table[id].kind) {
+                        SumKind(variants) => {
+                            for each in variants {
+                                for field in each.fields {
+                                    types.push(field.ty)
+                                }
+                            }
+                        }
+                        ShapeKind(fields) => {
+                            for field in fields {
+                                types.push(field.ty)
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    for arg in args {
+                        types.push(arg)
+                    }
+                }
+                Some(KnownType(alias)) => types.push(alias)
+                _ => {}
+            }
+        }
+
+        match (module.members.get(name)) {
+            Some(symbol) => types.push(symbol.ty)
+            None => {}
+        }
+
+        for ty in types {
+            match (findTypeId(ty, hidden)) {
+                Some(id) => {
+                    immut typeName = self.table[id].name
+                    return Err(self.failure(`'${name}' is exported, but its type uses the private type '${typeName}' (export '${typeName}' too)`))
+                }
+                None => {}
+            }
+        }
+    }
+
+    return Ok(module)
+}
+
+function Checker.missingMember(self, module: int, name: string): string {
+    immut info = self.modules[module]
+
+    if (info.private.has(name)) { return self.failure(`'${name}' is not exported by '${info.display}'`) }
+
+    return self.failure(`module '${info.display}' has no member '${name}'`)
+}
+
+// The first type of `ids` that appears in `ty`.
+function findTypeId(ty: Type, ids: Set[int]): Option[int] {
+    match (namedParts(ty)) {
+        Some(parts) => {
+            if (ids.has(parts.id)) { return Some(parts.id) }
+
+            return findInTypes(parts.args, ids)
+        }
+        None => {}
+    }
+
+    return match (ty) {
+        ListType(item) => findTypeId(item, ids)
+        FunctionType(params, returns) => {
+            match (findInTypes(params, ids)) {
+                Some(id) => Some(id)
+                None => findTypeId(returns, ids)
+            }
+        }
+        _ => None
+    }
+}
+
+function findInTypes(types: Type[], ids: Set[int]): Option[int] {
+    for ty in types {
+        match (findTypeId(ty, ids)) {
+            Some(id) => return Some(id)
+            None => {}
+        }
+    }
+
+    return None
+}
+
+function Checker.checkImport(mut self, names: Option[string[]], moduleName: string, path: string): Result[void, string] {
+    mut moduleId = 0
+
+    if (path in stdlibModules) {
+        moduleId = self.stdlibModule(path)
+    } else {
+        immut resolved = resolvePath(self.state.dir, path)
+
+        match (self.moduleByPath.get(resolved)) {
+            Some(id) => moduleId = id
+            None => {
+                if (resolved in self.loading) { return Err(self.failure(`circular import of '${path}'`)) }
+
+                immut source = match (readSource(resolved)) {
+                    Ok(source) => source
+                    Err(error) => return Err(self.failure(`cannot import '${path}': ${ioMessage(error)}`))
+                }
+
+                moduleId = self.checkModule(resolved, path, source)?
+            }
+        }
+    }
+
+    immut wanted = match (names) {
+        Some(wanted) => wanted
+        None => return self.declare(moduleName, valueSymbol(ModuleType(moduleId), true))
+    }
+
+    immut module = self.modules[moduleId]
+
+    for name in wanted {
+        mut found = false
+
+        match (module.members.get(name)) {
+            Some(symbol) => {
+                self.declare(name, symbol)?
+                found = true
+            }
+            None => {}
+        }
+
+        match (module.types.get(name)) {
+            Some(typeRef) => {
+                self.state.scopes[self.lastScope()].types[name] = typeRef
+
+                // Importing a sum type also imports its constructors.
+                match (typeRef) {
+                    KnownType(NamedType(id, _)) if (variantsOf(self.table, id) is Some) => self.declareConstructors(id)
+                    _ => {}
+                }
+
+                found = true
+            }
+            None => {}
+        }
+
+        if (not found) { return Err(self.missingMember(moduleId, name)) }
+    }
+
+    return Ok()
+}
+
+// Written types
+
+function Checker.resolveType(mut self, written: TypeExpr): Result[Type, string] {
+    match (written) {
+        Named(name) => {
+            return match (self.findType(name)?) {
+                KnownType(ty) => Ok(ty)
+                GenericType(id) => {
+                    immut info = self.table[id]
+                    Err(self.failure(`type '${info.name}' needs ${info.params} type argument(s), e.g. ${info.name}[int]`))
+                }
+            }
+        }
+        Generic(name, args) => {
+            immut id = match (self.findType(name)?) {
+                GenericType(id) => id
+                KnownType(_) => return Err(self.failure(`type '${name}' is not generic`))
+            }
+
+            immut expected = self.table[id].params
+
+            if (expected != args.length()) {
+                return Err(self.failure(`type '${name}' expects ${expected} type argument(s), found ${args.length()}`))
+            }
+
+            mut resolved: Type[] = []
+
+            for arg in args {
+                resolved.push(self.resolveType(arg)?)
+            }
+
+            // `Option[File]` is fine; a user generic type cannot hold a move-only value yet.
+            if (id != self.builtins.option and id != self.builtins.result) {
+                self.ensureCopyableArgs(resolved)?
+                immut info = self.table[id]
+                self.ensureConstraints(resolved, info.constraints, info.name)?
+            }
+
+            return Ok(NamedType(id, resolved))
+        }
+        ArrayOf(element) => return Ok(ListType(self.resolveType(element)?))
+        FunctionOf(params, returns) => {
+            mut resolved: Type[] = []
+
+            for param in params {
+                resolved.push(self.resolveType(param)?)
+            }
+
+            return Ok(FunctionType(resolved, self.resolveType(returns)?))
+        }
+    }
+}
+
+function Checker.findType(self, name: string): Result[TypeRef, string] {
+    match (name.indexOf('.')) {
+        Some(dot) => {
+            immut module = name[..dot]
+            immut typeName = name[dot + 1..]
+            immut moduleId = match (self.lookup(module)) {
+                Some(symbol) => {
+                    match (symbol.ty) {
+                        ModuleType(id) => id
+                        _ => return Err(self.failure(`'${module}' is not an imported module`))
+                    }
+                }
+                None => return Err(self.failure(`'${module}' is not an imported module`))
+            }
+
+            return match (self.modules[moduleId].types.get(typeName)) {
+                Some(found) => Ok(found)
+                None => Err(self.failure(`module '${module}' has no type '${typeName}'`))
+            }
+        }
+        None => {}
+    }
+
+    return match (self.lookupType(name)) {
+        Some(found) => Ok(found)
+        None => Err(self.failure(`unknown type '${name}'`))
+    }
+}
+
+function Checker.resolveFields(mut self, fields: Field[]): Result[FieldType[], string] {
+    mut resolved: FieldType[] = []
+
+    for each in fields {
+        resolved.push({ name: each.name, ty: self.resolveType(each.annotation)? })
+    }
+
+    return Ok(resolved)
+}
+
+function Checker.resolveTypeDef(mut self, name: string, definition: TypeDef): Result[TypeKind, string] {
+    match (definition) {
+        Sum(variants) => {
+            mut defs: VariantInfo[] = []
+
+            for each in variants {
+                defs.push({ name: each.name, fields: self.resolveFields(each.fields)? })
+            }
+
+            return Ok(SumKind(defs))
+        }
+        Shape(fields) => return Ok(ShapeKind(self.resolveFields(fields)?))
+        IndexSignature(_, _) => {
+            return Err(self.failure(`'${name}' cannot be an index signature: use a map, 'type ${name} = Map[string, ...]'`))
+        }
+        Alias(target) => {
+            // Only reached inside an intersection.
+            immut ty = self.resolveType(target)?
+
+            return match (fieldsOf(self.table, ty)) {
+                Some(fields) => Ok(ShapeKind(fields))
+                None => Err(self.failure(`'${self.show(ty)}' cannot be part of the intersection '${name}': only types with fields can be merged`))
+            }
+        }
+        Intersection(parts) => {
+            mut merged: FieldType[] = []
+
+            for part in parts {
+                immut fields = match (self.resolveTypeDef(name, part)?) {
+                    ShapeKind(fields) => fields
+                    _ => return Err(self.failure(`only types with fields can be merged with '&' (in '${name}')`))
+                }
+
+                for each in fields {
+                    match (findField(merged, each.name)) {
+                        Some(existing) if (existing != each.ty) => {
+                            return Err(self.failure(`field '${each.name}' has conflicting types in '${name}': ${self.show(existing)} and ${self.show(each.ty)}`))
+                        }
+                        Some(_) => {}
+                        None => merged.push(each)
+                    }
+                }
+            }
+
+            return Ok(ShapeKind(merged))
+        }
+    }
+}
+
+function Checker.functionSignature(mut self, name: string, params: Param[], returns: Option[TypeExpr], isDeclaration: boolean): Result[Type, string] {
+    mut types: Type[] = []
+
+    for param in params {
+        match (param.annotation) {
+            Some(annotation) => types.push(self.resolveType(annotation)?)
+            None => return Err(self.failure(`parameter '${param.name}' of '${name}' needs a type annotation`))
+        }
+    }
+
+    immut returned = match (returns) {
+        Some(annotation) => self.resolveType(annotation)?
+        None => if (isDeclaration) { VoidType } else { UnknownType }
+    }
+
+    return Ok(FunctionType(types, returned))
+}
+
+function Checker.expectType(self, expected: Type, actual: Type, what: string): Result[void, string] {
+    if (assignable(expected, actual)) { return Ok() }
+
+    return Err(self.failure(`${what} must be ${self.show(expected)}, found ${self.show(actual)}`))
+}
+
+// The type of an `if` or a `match` with several branches.
+function Checker.branchTypes(self, types: Type[], expected: Option[Type], what: string): Result[Type, string] {
+    match (expected) {
+        Some(wanted) => {
+            for ty in types {
+                if (ty != VoidType and not assignable(wanted, ty)) {
+                    return Err(self.failure(`${what} branch has type ${self.show(ty)}, expected ${self.show(wanted)}`))
+                }
+            }
+        }
+        None => {}
+    }
+
+    mut result = NeverType
+
+    for ty in types {
+        result = match (join(result, ty)) {
+            Some(joined) => joined
+            // Branches with different types: fine as a statement, an error if used as a value.
+            None => return Ok(VoidType)
+        }
+    }
+
+    return Ok(result)
+}
+
+// Hoisting: imports, types, functions and methods declared in a block
+
+type PendingType = {
+    statement: Node
+    // The id of the declared type; -1 for an alias.
+    id: int
+}
+
+// Declares the types, constructors and function signatures of a block before checking it, so
+// they can be used before their definition (and recursively).
+function Checker.hoist(mut self, statements: Node[]): Result[void, string] {
+    // Imports first: types and function signatures may refer to imported modules.
+    for statement in statements {
+        self.setLine(statement)
+
+        match (unlocated(statement).kind) {
+            ImportModule(name, path) => self.checkImport(None, name, path)?
+            ImportNames(names, path) => self.checkImport(Some(names), '', path)?
+            _ => {}
+        }
+    }
+
+    mut pending: PendingType[] = []
+
+    for statement in statements {
+        self.setLine(statement)
+
+        match (unlocated(statement).kind) {
+            TypeDecl(name, params, Alias(_)) => {
+                self.checkTypeNameFree(name)?
+
+                if (params.length() > 0) { return Err(self.failure(`the alias '${name}' cannot have type parameters`)) }
+
+                pending.push({ statement: statement, id: -1 })
+            }
+            TypeDecl(name, params, _) => {
+                self.checkTypeNameFree(name)?
+                immut id = addType(mut self.table, name, params.length(), Pending)
+                // A generic type needs its arguments where it is used: `Pair[int, string]`.
+                immut typeRef = if (params.length() == 0) { KnownType(named(id)) } else { GenericType(id) }
+                self.state.scopes[self.lastScope()].types[name] = typeRef
+                pending.push({ statement: statement, id: id })
+            }
+            _ => {}
+        }
+    }
+
+    for each in pending {
+        self.setLine(each.statement)
+
+        match (unlocated(each.statement).kind) {
+            TypeDecl(name, _, Alias(target)) if (each.id == -1) => {
+                immut ty = self.resolveType(target)?
+                self.state.scopes[self.lastScope()].types[name] = KnownType(ty)
+            }
+            TypeDecl(name, params, definition) => {
+                self.table[each.id].constraints = self.constraints(params)?
+                immut pushed = self.enterTypeParams(params, signatureParams(params.length()))
+                immut kind = self.resolveTypeDef(name, definition)?
+                self.exitTypeParams(pushed)
+                self.table[each.id].kind = kind
+
+                match (kind) {
+                    SumKind(_) => self.declareConstructors(each.id)
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for statement in statements {
+        self.setLine(statement)
+
+        match (unlocated(statement).kind) {
+            FunctionDecl(name, owner, typeParams, params, returns, _) => {
+                if (owner is Some) {
+                    self.declareMethod(statements, statement)?
+                    continue
+                }
+
+                immut pushed = self.enterTypeParams(typeParams, signatureParams(typeParams.length()))
+                immut ty = self.functionSignature(name, params, returns, true)?
+                self.exitTypeParams(pushed)
+                self.tables.functionTypes[nodeId(statement)] = ty
+                mut symbol = valueSymbol(ty, true)
+                symbol.generics = typeParams.length()
+                symbol.constraints = self.constraints(typeParams)?
+
+                for param in params {
+                    if (modeOf(param) != 'borrow') {
+                        mut modes: string[] = []
+
+                        for each in params {
+                            modes.push(modeOf(each))
+                        }
+
+                        symbol.modes = modes
+                        break
+                    }
+                }
+
+                self.declare(name, symbol)?
+            }
+            _ => {}
+        }
+    }
+
+    return Ok()
+}
+
+// `function Person.greet(self)` or `function Person.create(name: string)`: only at the top level
+// of the file that declares `Person`.
+type MethodParts = {
+    name: string
+    owner: string
+    typeParams: TypeParam[]
+    params: Param[]
+    returns: Option[TypeExpr]
+}
+
+function methodParts(statement: Node): Option[MethodParts] {
+    return match (unlocated(statement).kind) {
+        FunctionDecl(name, Some(owner), typeParams, params, returns, _) => {
+            Some({ name: name, owner: owner, typeParams: typeParams, params: params, returns: returns })
+        }
+        _ => None
+    }
+}
+
+function Checker.declareMethod(mut self, statements: Node[], statement: Node): Result[void, string] {
+    immut parts = match (methodParts(statement)) {
+        Some(parts) => parts
+        None => return Ok()
+    }
+    immut name = parts.name
+    immut owner = parts.owner
+    immut params = parts.params
+    immut full = `${owner}.${name}`
+
+    if (self.state.scopes.length() != 2 or self.state.functionScopes.length() > 0) {
+        return Err(self.failure(`'${full}' must be declared at the top level of the file that declares '${owner}'`))
+    }
+
+    if (isExported(statement)) {
+        return Err(self.failure(`'${full}' does not take 'export': methods are available wherever their type is`))
+    }
+
+    // The type parameters of the type (`A`, `B` in `type Pair[A, B]`) are visible in its methods,
+    // before the method's own.
+    mut ownerParams: Option[TypeParam[]] = None
+
+    for each in statements {
+        match (unlocated(each).kind) {
+            TypeDecl(typeName, typeParams, definition) if (typeName == owner and ownerParams is None) => {
+                match (definition) {
+                    Alias(_) => {}
+                    _ => ownerParams = Some(typeParams)
+                }
+            }
+            _ => {}
+        }
+    }
+
+    immut declaredHere = ownerParams is Some
+    immut typeParamsOfOwner = match (ownerParams) {
+        Some(found) => found
+        None => []
+    }
+    immut cannotDeclare = `cannot declare '${full}': methods belong to a type with fields or variants declared in the same file`
+
+    if (not declaredHere) { return Err(self.failure(cannotDeclare)) }
+
+    immut id = match (self.state.scopes[self.lastScope()].types.get(owner)) {
+        Some(KnownType(NamedType(id, _))) => id
+        Some(GenericType(id)) => id
+        _ => return Err(self.failure(cannotDeclare))
+    }
+
+    if (self.methods.has(`${id} ${name}`)) { return Err(self.failure(`'${full}' is already declared`)) }
+
+    immut isField = match (fieldsOf(self.table, named(id))) {
+        Some(fields) => findField(fields, name) is Some
+        None => false
+    }
+
+    if (isField) { return Err(self.failure(`'${full}' has the same name as a field of '${owner}'`)) }
+
+    immut hasSelf = params.length() > 0 and params[0].name == 'self'
+
+    if (name == 'debug') {
+        return Err(self.failure(`cannot declare '${full}': every type has 'debug()', which shows the structure of the value`))
+    }
+
+    if (name == 'display') {
+        immut returnsString = match (parts.returns) {
+            Some(Named('string')) => true
+            _ => false
+        }
+
+        if (not hasSelf or params.length() != 1 or params[0].isMut or not returnsString) {
+            return Err(self.failure(`'${full}' must be declared as 'function ${full}(self): string'`))
+        }
+    }
+
+    // `drop` runs when a value goes out of scope; declaring it makes the type move-only.
+    if (name == 'drop' and (not hasSelf or params.length() != 1 or not params[0].isMut or parts.returns is Some)) {
+        return Err(self.failure(`'${full}' must be declared as 'function ${full}(mut self)'`))
+    }
+
+    for i in range(params.length()) {
+        if (params[i].name != 'self') { continue }
+
+        if (i > 0) { return Err(self.failure(`in '${full}', 'self' must be the first parameter`)) }
+
+        if (params[i].annotation is Some) {
+            return Err(self.failure(`'self' has no type annotation: in '${full}' it is always '${owner}'`))
+        }
+    }
+
+    for param in parts.typeParams {
+        for each in typeParamsOfOwner {
+            if (each.name == param.name) {
+                return Err(self.failure(`in '${full}', the type parameter '${param.name}' is already a type parameter of '${owner}'`))
+            }
+        }
+    }
+
+    mut names: TypeParam[] = typeParamsOfOwner
+
+    for param in parts.typeParams {
+        names.push(param)
+    }
+
+    immut constraints = self.constraints(names)?
+    immut generic = signatureParams(names.length())
+    immut selfType = NamedType(id, generic[..typeParamsOfOwner.length()])
+    immut rest = if (hasSelf) { params[1..] } else { params }
+    immut pushed = self.enterTypeParams(names, generic)
+    immut signature = self.functionSignature(full, rest, parts.returns, true)?
+    self.exitTypeParams(pushed)
+    immut ty = match (signature) {
+        FunctionType(types, returned) => {
+            mut all: Type[] = []
+
+            if (hasSelf) { all.push(selfType) }
+
+            for each in types {
+                all.push(each)
+            }
+
+            FunctionType(all, returned)
+        }
+        other => other
+    }
+    self.tables.functionTypes[nodeId(statement)] = ty
+
+    if (name == 'drop') { self.tables.dropMethods[id] = { module: self.state.path, key: full, hasSelf: true } }
+
+    mut modes: string[] = []
+
+    for param in params {
+        modes.push(modeOf(param))
+    }
+
+    self.methods[`${id} ${name}`] = {
+        ty: ty, hasSelf: hasSelf, modes: modes, module: self.state.path, generics: names.length(), typeParams: names,
+        constraints: constraints
+    }
+    return Ok()
+}
+
+function Checker.checkTypeNameFree(self, name: string): Result[void, string] {
+    if (self.state.scopes[self.lastScope()].types.has(name)) {
+        return Err(self.failure(`type '${name}' is already declared in this scope`))
+    }
+
+    return Ok()
+}
+
+// Generic functions and types
+
+// The constraint of each type parameter.
+function Checker.constraints(self, params: TypeParam[]): Result[int[], string] {
+    mut result: int[] = []
+
+    for param in params {
+        match (param.constraint) {
+            None => result.push(unconstrained)
+            Some('equatable') => result.push(equatable)
+            Some('orderable') => result.push(orderable)
+            Some(other) => {
+                return Err(self.failure(`unknown constraint '${other}' for '${param.name}': the constraints are 'equatable' and 'orderable'`))
+            }
+        }
+    }
+
+    return Ok(result)
+}
+
+// New opaque types for `params`, for a body.
+function Checker.opaqueParams(mut self, params: TypeParam[]): Result[Type[], string] {
+    immut constraints = self.constraints(params)?
+    mut types: Type[] = []
+
+    for i in range(params.length()) {
+        types.push(named(addType(mut self.table, params[i].name, 0, ParamKind(constraints[i]))))
+    }
+
+    return Ok(types)
+}
+
+// Makes the names of `params` mean `types` (in a new scope, if there are any); `exitTypeParams`
+// ends it.
+function Checker.enterTypeParams(mut self, params: TypeParam[], types: Type[]): boolean {
+    if (params.length() == 0) { return false }
+
+    self.pushScope()
+
+    for i in range(params.length()) {
+        if (i < types.length()) { self.state.scopes[self.lastScope()].types[params[i].name] = KnownType(types[i]) }
+    }
+
+    return true
+}
+
+function Checker.exitTypeParams(mut self, pushed: boolean) {
+    if (pushed) { self.popScope() }
+}
+
+function Checker.isTypeParam(self, ty: Type): boolean {
+    return match (ty) {
+        NamedType(id, _) => {
+            match (self.table[id].kind) {
+                ParamKind(_) => true
+                _ => false
+            }
+        }
+        _ => false
+    }
+}
+
+// Learns the type parameters of `pattern` (a signature type) from `actual`.
+function unify(pattern: Type, actual: Type, mut generic: Type[]) {
+    match (pattern) {
+        ParamType(i) => {
+            if (i < generic.length() and containsUnknown(generic[i])) {
+                generic[i] = match (join(generic[i], actual)) {
+                    Some(joined) => joined
+                    None => actual
+                }
+            }
+
+            return
+        }
+        ListType(item) => {
+            match (actual) {
+                ListType(actualItem) => unify(item, actualItem, mut generic)
+                _ => {}
+            }
+
+            return
+        }
+        NamedType(id, args) => {
+            match (namedParts(actual)) {
+                Some(parts) if (parts.id == id) => {
+                    for i in range(args.length()) {
+                        if (i < parts.args.length()) { unify(args[i], parts.args[i], mut generic) }
+                    }
+                }
+                _ => {}
+            }
+
+            return
+        }
+        FunctionType(params, returns) => {
+            match (actual) {
+                FunctionType(actualParams, actualReturns) => {
+                    for i in range(params.length()) {
+                        if (i < actualParams.length()) { unify(params[i], actualParams[i], mut generic) }
+                    }
+
+                    unify(returns, actualReturns, mut generic)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+// Whether `ty` meets `constraint`: a type is equatable when everything it holds is (no functions,
+// no move-only values), and orderable when it is a number, a string or a char.
+function Checker.satisfies(self, ty: Type, constraint: int): boolean {
+    if (constraint == unconstrained) { return true }
+
+    if (constraint == equatable) {
+        mut visited: Set[int] = Set.from([])
+        return self.equatableIn(ty, mut visited)
+    }
+
+    return match (ty) {
+        IntType => true
+        FloatType => true
+        StringType => true
+        CharType => true
+        UnknownType => true
+        NeverType => true
+        NamedType(id, _) => self.table[id].kind == ParamKind(orderable)
+        _ => false
+    }
+}
+
+function Checker.equatableIn(self, ty: Type, mut visited: Set[int]): boolean {
+    if (self.isMoveOnly(ty)) { return false }
+
+    match (ty) {
+        ListType(item) => return self.equatableIn(item, mut visited)
+        FunctionType(_, _) => return false
+        ModuleType(_) => return false
+        _ => {}
+    }
+
+    immut parts = match (namedParts(ty)) {
+        Some(parts) => parts
+        None => return true
+    }
+
+    immut b = self.builtins
+
+    match (self.table[parts.id].kind) {
+        ParamKind(constraint) => return constraint >= equatable
+        BuiltinKind(_, _) => return parts.id == b.datetime or parts.id == b.response or parts.id == b.regexMatch
+        _ => {}
+    }
+
+    if (visited.has(parts.id)) { return true }
+
+    visited.add(parts.id)
+
+    match (self.table[parts.id].kind) {
+        ShapeKind(fields) => {
+            for each in fields {
+                if (not self.equatableIn(substitute(each.ty, parts.args), mut visited)) { return false }
+            }
+
+            return true
+        }
+        SumKind(variants) => {
+            for each in variants {
+                for fieldType in each.fields {
+                    if (not self.equatableIn(substitute(fieldType.ty, parts.args), mut visited)) { return false }
+                }
+            }
+
+            return true
+        }
+        MapKind(key, value) => {
+            return self.equatableIn(substitute(key, parts.args), mut visited) and self.equatableIn(substitute(value, parts.args), mut visited)
+        }
+        SetKind(item) => return self.equatableIn(substitute(item, parts.args), mut visited)
+        _ => return true
+    }
+}
+
+// The type arguments `args` must meet the `constraints` of their parameters (`what` names the
+// generic function or type, for the message).
+function Checker.ensureConstraints(self, args: Type[], constraints: int[], what: string): Result[void, string] {
+    for i in range(args.length()) {
+        if (i >= constraints.length()) { break }
+
+        if (not self.satisfies(args[i], constraints[i])) {
+            return Err(self.failure(`${self.show(args[i])} is not ${constraintName(constraints[i])}, as '${what}' requires`))
+        }
+    }
+
+    return Ok()
+}
+
+// Type parameters cannot stand for move-only values yet: a generic function could copy them.
+function Checker.ensureCopyableArgs(self, args: Type[]): Result[void, string] {
+    for arg in args {
+        if (self.isMoveOnly(arg)) {
+            return Err(self.failure(`a type parameter cannot be ${self.show(arg)}: type parameters cannot be move-only values yet`))
+        }
+    }
+
+    return Ok()
+}
+
+function unknowns(count: int): Type[] {
+    mut types: Type[] = []
+
+    for i in range(count) {
+        types.push(UnknownType)
+    }
+
+    return types
+}
+
+type SignatureParts = {
+    params: Type[]
+    returns: Type
+}
+
+function signatureParts(signature: Type): Option[SignatureParts] {
+    return match (signature) {
+        FunctionType(params, returns) => Some({ params: params, returns: returns })
+        _ => None
+    }
+}
+
+function modeAt(modes: string[], index: int): string {
+    if (index < modes.length()) { return modes[index] }
+
+    return 'borrow'
+}
+
+// A call of a generic function: the type arguments are inferred from the arguments and the
+// expected type, then checked against the constraints.
+function Checker.checkGenericCall(mut self, signature: Type, initial: Type[], constraints: int[], modes: string[], what: string, args: Node[], expected: Option[Type]): Result[Type, string] {
+    mut generic = initial
+    immut parts = match (signatureParts(signature)) {
+        Some(parts) => parts
+        None => return Err(self.failure('a value of this type cannot be called'))
+    }
+    immut params = parts.params
+
+    if (params.length() != args.length()) {
+        return Err(self.failure(`expected ${params.length()} argument(s), found ${args.length()}`))
+    }
+
+    // `immut nothing: Option[int] = first([])`: the expected type tells `T`.
+    match (expected) {
+        Some(wanted) => unify(parts.returns, wanted, mut generic)
+        None => {}
+    }
+
+    for i in range(params.length()) {
+        immut param = params[i]
+        immut arg = args[i]
+        immut mode = modeAt(modes, i)
+        immut wanted = substitute(param, generic)
+        mut actual = UnknownType
+
+        match (unlocated(arg).kind) {
+            MutArg(place) => {
+                if (mode != 'mut') { return Err(self.failure(`argument ${i + 1} is not a 'mut' parameter: remove 'mut'`)) }
+
+                actual = self.checkMutPlace(place, None)?
+            }
+            _ => {
+                if (mode == 'mut') {
+                    return Err(self.failure(`argument ${i + 1} is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')`))
+                }
+
+                actual = self.checkValue(arg, Some(wanted))?
+            }
+        }
+
+        unify(param, actual, mut generic)
+        immut target = substitute(param, generic)
+
+        if (target == FloatType and actual == IntType) { self.tables.toFloat.add(nodeId(arg)) }
+
+        if (not assignable(target, actual)) {
+            return Err(self.failure(`argument ${i + 1} must be ${self.show(target)}, found ${self.show(actual)}`))
+        }
+
+        if (mode == 'take') { self.consume(arg, actual)? }
+
+        if (mode == 'borrow') { self.noteTemporary(arg, actual) }
+    }
+
+    self.ensureCopyableArgs(generic)?
+    self.ensureConstraints(generic, constraints, what)?
+    self.typeArgs = Some(generic)
+    return Ok(substitute(parts.returns, generic))
+}
+
+// Move-only values
+
+function Checker.isMoveOnly(self, ty: Type): boolean {
+    mut visited: Set[int] = Set.from([])
+    return self.moveOnlyIn(ty, mut visited)
+}
+
+function Checker.moveOnlyIn(self, ty: Type, mut visited: Set[int]): boolean {
+    match (ty) {
+        ListType(item) => return self.moveOnlyIn(item, mut visited)
+        _ => {}
+    }
+
+    immut parts = match (namedParts(ty)) {
+        Some(parts) => parts
+        None => return false
+    }
+
+    if (parts.id == self.builtins.file or self.methods.has(`${parts.id} drop`)) { return true }
+
+    for arg in parts.args {
+        if (self.moveOnlyIn(arg, mut visited)) { return true }
+    }
+
+    if (visited.has(parts.id)) { return false }
+
+    visited.add(parts.id)
+
+    match (self.table[parts.id].kind) {
+        ShapeKind(fields) => {
+            for each in fields {
+                if (self.moveOnlyIn(substitute(each.ty, parts.args), mut visited)) { return true }
+            }
+
+            return false
+        }
+        SumKind(variants) => {
+            for each in variants {
+                for fieldType in each.fields {
+                    if (self.moveOnlyIn(substitute(fieldType.ty, parts.args), mut visited)) { return true }
+                }
+            }
+
+            return false
+        }
+        MapKind(_, value) => return self.moveOnlyIn(substitute(value, parts.args), mut visited)
+        SetKind(item) => return self.moveOnlyIn(substitute(item, parts.args), mut visited)
+        _ => return false
+    }
+}
+
+// Reading a variable whose value was moved is an error.
+function Checker.ensureNotMoved(self, name: string): Result[void, string] {
+    immut index = match (self.scopeOf(name)) {
+        Some(index) => index
+        None => return Ok()
+    }
+
+    return match (self.state.moved.get(movedKey(index, name))) {
+        Some(moved) => {
+            Err(self.failure(`'${name}' cannot be used here: its value was moved (or closed) on line ${moved.line}; assign it a new value first`))
+        }
+        None => Ok()
+    }
+}
+
+// A function cannot use a move-only variable of the functions around it: it would get a copy.
+function Checker.ensureNotCapturedMoveOnly(self, name: string, ty: Type): Result[void, string] {
+    if (self.state.functionScopes.length() == 0) { return Ok() }
+
+    immut boundary = self.state.functionScopes[self.state.functionScopes.length() - 1]
+
+    match (self.scopeOf(name)) {
+        Some(index) if (index > 1 and index < boundary and self.isMoveOnly(ty)) => {
+            return Err(self.failure(`'${name}' cannot be used here: functions capture a copy of the variables around them, and '${self.show(ty)}' cannot be copied`))
+        }
+        _ => return Ok()
+    }
+}
+
+// `value` (of type `ty`) is stored, returned or assigned: when it is a move-only variable, the
+// variable gives up its value.
+function Checker.consume(mut self, value: Node, ty: Type): Result[void, string] {
+    if (not self.isMoveOnly(ty)) { return Ok() }
+
+    immut node = unlocated(value)
+
+    match (node.kind) {
+        Name(name) => return self.moveVariable(value, name, ty)
+        Member(_, _) => return Err(self.failure(`a value of type ${self.show(ty)} cannot be copied out of a field or an element (it is move-only)`))
+        IndexNode(_, _) => return Err(self.failure(`a value of type ${self.show(ty)} cannot be copied out of a field or an element (it is move-only)`))
+        If(_, _, _) => {}
+        Match(_, _) => {}
+        Block(_) => {}
+        _ => return Ok()
+    }
+
+    if (hasVariableTail(node)) {
+        return Err(self.failure(`a value of type ${self.show(ty)} cannot be moved out of a variable inside an 'if', a 'match' or a block; move it first ('x = value')`))
+    }
+
+    return Ok()
+}
+
+// Whether a branch of `node` ends with a variable (`if (c) { f } else { g }`).
+function hasVariableTail(node: Node): boolean {
+    match (unlocated(node).kind) {
+        Name(_) => return true
+        Block(statements) => return statements.length() > 0 and hasVariableTail(statements[statements.length() - 1])
+        If(_, thenBranch, elseBranch) => {
+            if (hasVariableTail(thenBranch)) { return true }
+
+            return match (elseBranch) {
+                Some(branch) => hasVariableTail(branch)
+                None => false
+            }
+        }
+        Match(_, arms) => {
+            for arm in arms {
+                if (hasVariableTail(arm.body)) { return true }
+            }
+
+            return false
+        }
+        _ => return false
+    }
+}
+
+// Moves the value out of the variable `name` (read by `node`).
+function Checker.moveVariable(mut self, node: Node, name: string, ty: Type): Result[void, string] {
+    immut symbol = match (self.lookup(name)) {
+        Some(symbol) => symbol
+        None => return Ok()
+    }
+
+    if (symbol.kind != ValueSymbol) { return Ok() }
+
+    immut what = self.show(ty)
+
+    match (symbol.owner) {
+        Some(owner) => return Err(self.failure(`'${name}' cannot be moved: it belongs to '${owner}'`))
+        None => {}
+    }
+
+    match (symbol.borrowed) {
+        Some(borrowed) => {
+            return Err(self.failure(`'${name}' cannot be moved: it is ${borrowed}, which only borrows its value (${what} is move-only)`))
+        }
+        None => {}
+    }
+
+    immut index = match (self.scopeOf(name)) {
+        Some(index) => index
+        None => 0
+    }
+
+    if (self.state.functionScopes.length() > 0 and index < self.state.functionScopes[self.state.functionScopes.length() - 1]) {
+        return Err(self.failure(`'${name}' cannot be moved here: it is declared outside this function, which may run more than once`))
+    }
+
+    if (self.state.loopScopes.length() > 0 and index < self.state.loopScopes[self.state.loopScopes.length() - 1]) {
+        return Err(self.failure(`'${name}' cannot be moved inside a loop: it is declared outside the loop, and the next iteration would use it again`))
+    }
+
+    immut line = self.state.line
+    self.state.moved[movedKey(index, name)] = { index: index, name: name, line: line }
+
+    // The variable narrowed by `if (x is ...)` is the same as the one outside.
+    if (symbol.narrowed) {
+        mut outer = index - 1
+
+        while (outer >= 0) {
+            if (self.state.scopes[outer].vars.has(name)) {
+                self.state.moved[movedKey(outer, name)] = { index: outer, name: name, line: line }
+                break
+            }
+
+            outer -= 1
+        }
+    }
+
+    self.tables.moves.add(nodeId(node))
+    return Ok()
+}
+
+// A move-only value used in place by a temporary expression is dropped after that use.
+function Checker.noteTemporary(mut self, node: Node, ty: Type) {
+    if (self.isMoveOnly(ty) and isTemporary(node)) { self.tables.temporaries.add(nodeId(node)) }
+}
+
+function isTemporary(node: Node): boolean {
+    return match (unlocated(node).kind) {
+        Call(_, _) => true
+        ObjectLiteral(_) => true
+        ListLiteral(_) => true
+        Try(value) => isTemporary(value)
+        _ => false
+    }
+}
+
+function isPlace(node: Node): boolean {
+    return match (unlocated(node).kind) {
+        Name(_) => true
+        Member(_, _) => true
+        IndexNode(_, _) => true
+        _ => false
+    }
+}
+
+// The moves of a branch of an `if` or a `match`, and whether it ends the function or the loop.
+type Branch = {
+    moved: Moves
+    diverges: boolean
+}
+
+// A variable moved in any branch that continues is moved after the `if` or the `match`.
+function Checker.mergeMoves(mut self, before: Moves, branches: Branch[]) {
+    immut length = self.state.scopes.length()
+    mut merged = before
+
+    for branch in branches {
+        if (branch.diverges) { continue }
+
+        for key in branch.moved.keys() {
+            match (branch.moved.get(key)) {
+                Some(moved) if (moved.index < length and not merged.has(key)) => merged[key] = moved
+                _ => {}
+            }
+        }
+    }
+
+    self.state.moved = merged
+}
+
+// Statements
+
+// A variable declared at the start of a block (the `for` variable, a narrowed variable).
+type Binding = {
+    name: string
+    symbol: Symbol
+}
+
+// Checks a sequence of statements in the current scope; returns the type of its value (the last
+// statement, when it is an expression).
+function Checker.checkStatements(mut self, statements: Node[], expected: Option[Type]): Result[Type, string] {
+    self.hoist(statements)?
+    mut tail = VoidType
+
+    for i in range(statements.length()) {
+        immut statement = statements[i]
+        immut isLast = i + 1 == statements.length()
+        tail = self.checkStatement(statement, if (isLast) { expected } else { None })?
+
+        if (not isLast and tail != NeverType) {
+            // The value of an expression statement is discarded.
+            if (not isStatement(statement)) { self.noteTemporary(statement, tail) }
+
+            tail = VoidType
+        }
+    }
+
+    if (statements.length() > 0 and isStatement(statements[statements.length() - 1])) { return Ok(VoidType) }
+
+    return Ok(tail)
+}
+
+function Checker.checkBlock(mut self, node: Node, expected: Option[Type], bindings: Binding[]): Result[Type, string] {
+    self.pushScope()
+
+    for binding in bindings {
+        mut symbol = binding.symbol
+        symbol.line = self.state.line
+        self.state.scopes[self.lastScope()].vars[binding.name] = symbol
+    }
+
+    immut inner = unlocated(node)
+    immut ty = match (inner.kind) {
+        Block(statements) => self.checkStatements(statements, expected)?
+        _ => self.checkStatement(inner, expected)?
+    }
+    self.endScope()?
+    return Ok(ty)
+}
+
+function Checker.checkStatement(mut self, node: Node, expected: Option[Type]): Result[Type, string] {
+    match (node.kind) {
+        Located(line, statement) => {
+            self.state.line = line
+            return self.checkStatement(statement, expected)
+        }
+        Export(declaration) => return self.checkStatement(declaration, expected)
+        VarDecl(name, annotation, value, isImmut) => {
+            mut declared: Option[Type] = None
+
+            match (annotation) {
+                Some(written) => declared = Some(self.resolveType(written)?)
+                None => {}
+            }
+
+            immut valueType = self.checkValue(value, declared)?
+            mut variableType = valueType
+
+            match (declared) {
+                Some(wanted) => {
+                    if (not assignable(wanted, valueType)) {
+                        return Err(self.failure(`cannot assign a value of type ${self.show(valueType)} to '${name}' of type ${self.show(wanted)}`))
+                    }
+
+                    variableType = wanted
+                }
+                None => {}
+            }
+
+            self.consume(value, variableType)?
+
+            if (self.isMoveOnly(variableType)) { self.tables.declares.add(nodeId(node)) }
+
+            mut symbol = valueSymbol(variableType, isImmut)
+            symbol.isImut = isImmut
+            symbol.decl = Some(nodeId(node))
+            self.declare(name, symbol)?
+            return Ok(VoidType)
+        }
+        Assign(op, target, value) => {
+            self.checkAssign(node, target, op, value)?
+            return Ok(VoidType)
+        }
+        FunctionDecl(name, Some(owner), _, params, _, body) => {
+            immut full = `${owner}.${name}`
+            mut info: Option[MethodInfo] = None
+
+            match (self.lookupType(owner)) {
+                Some(KnownType(NamedType(id, _))) => info = self.methods.get(`${id} ${name}`)
+                Some(GenericType(id)) => info = self.methods.get(`${id} ${name}`)
+                _ => {}
+            }
+
+            immut method = match (info) {
+                Some(method) => method
+                None => return Err(self.failure(`unknown method '${full}'`))
+            }
+
+            // Inside the body, the type parameters are opaque types.
+            immut opaque = self.opaqueParams(method.typeParams)?
+            immut signature = substitute(method.ty, opaque)
+            immut pushed = self.enterTypeParams(method.typeParams, opaque)
+            self.checkFunction(full, params, signature, body)?
+            self.exitTypeParams(pushed)
+            return Ok(VoidType)
+        }
+        FunctionDecl(name, None, typeParams, params, returns, body) => {
+            mut signature = VoidType
+
+            match (self.state.scopes[self.lastScope()].vars.get(name)) {
+                Some(symbol) => signature = symbol.ty
+                None => {
+                    immut pushed = self.enterTypeParams(typeParams, signatureParams(typeParams.length()))
+                    signature = self.functionSignature(name, params, returns, true)?
+                    self.exitTypeParams(pushed)
+                }
+            }
+
+            immut opaque = self.opaqueParams(typeParams)?
+            immut pushed = self.enterTypeParams(typeParams, opaque)
+            self.checkFunction(name, params, substitute(signature, opaque), body)?
+            self.exitTypeParams(pushed)
+            return Ok(VoidType)
+        }
+        TypeDecl(_, _, _) => return Ok(VoidType)
+        // Imports are processed when the block is hoisted.
+        ImportModule(_, _) => return Ok(VoidType)
+        ImportNames(_, _) => return Ok(VoidType)
+        While(condition, body) => {
+            self.checkCondition(condition, 'while')?
+            self.state.loopScopes.push(self.state.scopes.length())
+            self.checkBlock(body, None, [])?
+            self.state.loopScopes.pop()
+            return Ok(VoidType)
+        }
+        For(variable, isMut, iterable, body) => {
+            immut iterableType = self.checkValue(iterable, None)?
+            mut item = UnknownType
+
+            match (iterableType) {
+                ListType(inner) => item = inner
+                StringType => item = CharType
+                UnknownType => item = UnknownType
+                // A map gives its keys; a set, its items.
+                NamedType(_, _) => {
+                    match (self.mapParts(iterableType)) {
+                        Some(parts) => item = parts.key
+                        None => {
+                            match (self.setItem(iterableType)) {
+                                Some(setItem) => item = setItem
+                                None => return Err(self.notIterable(iterableType))
+                            }
+                        }
+                    }
+                }
+                _ => return Err(self.notIterable(iterableType))
+            }
+
+            self.noteTemporary(iterable, iterableType)
+
+            if (isMut and self.isMoveOnly(item)) {
+                return Err(self.failure(`'for mut' would copy each item, and ${self.show(item)} is move-only: use 'for ${variable} in'`))
+            }
+
+            mut symbol = valueSymbol(item, not isMut)
+            symbol.isImut = not isMut
+            symbol.reason = Some("the 'for' variable is immut (use 'for mut' to change it)")
+            symbol.borrowed = Some("the 'for' variable")
+            self.state.loopScopes.push(self.state.scopes.length())
+            self.checkBlock(body, None, [{ name: variable, symbol: symbol }])?
+            self.state.loopScopes.pop()
+            return Ok(VoidType)
+        }
+        Break => return Ok(NeverType)
+        Continue => return Ok(NeverType)
+        Return(value) => {
+            self.checkReturn(value)?
+            return Ok(NeverType)
+        }
+        _ => return self.checkExpression(node, expected)
+    }
+}
+
+function Checker.notIterable(self, ty: Type): string {
+    return self.failure(`cannot iterate over a value of type ${self.show(ty)} (use a list, a string or range())`)
+}
+
+function Checker.checkCondition(mut self, condition: Node, keyword: string): Result[void, string] {
+    immut ty = self.checkValue(condition, Some(BooleanType))?
+
+    if (ty != BooleanType and ty != UnknownType and ty != NeverType) {
+        return Err(self.failure(`the condition of '${keyword}' must be boolean, found ${self.show(ty)}`))
+    }
+
+    return Ok()
+}
+
+function Checker.checkReturn(mut self, value: Option[Node]): Result[void, string] {
+    if (self.state.returns.length() == 0) { return Err(self.failure("'return' outside of a function")) }
+
+    immut last = self.state.returns.length() - 1
+    immut declared = self.state.returns[last].declared
+    mut actual: Option[Type] = None
+
+    match (value) {
+        Some(returned) => {
+            immut ty = self.checkValue(returned, declared)?
+            self.consume(returned, ty)?
+            actual = Some(ty)
+        }
+        None => {}
+    }
+
+    match (declared) {
+        Some(VoidType) => {
+            if (actual is Some) { return Err(self.failure('cannot return a value from a function without a return type')) }
+
+            return Ok()
+        }
+        Some(wanted) => {
+            return match (actual) {
+                None => Err(self.failure(`this function must return a value of type ${self.show(wanted)}`))
+                Some(ty) => {
+                    if (assignable(wanted, ty)) {
+                        Ok()
+                    } else {
+                        Err(self.failure(`returning ${self.show(ty)}, but the function returns ${self.show(wanted)}`))
+                    }
+                }
+            }
+        }
+        None => {}
+    }
+
+    immut returned = match (actual) {
+        Some(ty) => ty
+        None => VoidType
+    }
+    immut inferred = match (self.state.returns[last].inferred) {
+        None => returned
+        Some(previous) => {
+            match (join(previous, returned)) {
+                Some(joined) => joined
+                None => return Err(self.failure(`inconsistent return types: ${self.show(previous)} and ${self.show(returned)}`))
+            }
+        }
+    }
+    self.state.returns[last].inferred = Some(inferred)
+    return Ok()
+}
+
+function Checker.checkAssign(mut self, node: Node, target: Node, op: string, value: Node): Result[void, string] {
+    match (target.kind) {
+        Name(name) => {
+            immut symbol = match (self.lookup(name)) {
+                Some(symbol) => symbol
+                // Declarations always have a keyword: `x = 1` only changes an existing `x`.
+                None => {
+                    return Err(self.failure(`'${name}' is not declared: declare it with 'mut ${name} = ...' (or 'immut' if it never changes)`))
+                }
+            }
+
+            match (symbol.owner) {
+                Some(owner) => return Err(self.failure(`'${name}' is read-only outside '${owner}'`))
+                None => {}
+            }
+
+            self.ensureNotCaptured(name)?
+
+            if (symbol.kind != ValueSymbol or isModule(symbol.ty)) { return Err(self.failure(`cannot assign to '${name}'`)) }
+
+            if (symbol.isImut or symbol.isConst) { return Err(self.failure(`cannot modify '${name}': ${imutReason(symbol)}`)) }
+
+            immut newType = self.checkAssignedValue(symbol.ty, op, value, name)?
+            self.consume(value, newType)?
+
+            if (self.isMoveOnly(symbol.ty)) {
+                // The old value is dropped, and a moved variable gets a value again.
+                self.tables.replaces.add(nodeId(node))
+
+                match (self.scopeOf(name)) {
+                    Some(index) => self.state.moved.remove(movedKey(index, name))
+                    None => {}
+                }
+            }
+
+            if (containsUnknown(symbol.ty)) {
+                immut refined = match (join(symbol.ty, newType)) {
+                    Some(joined) => joined
+                    None => symbol.ty
+                }
+                self.setVariableType(name, refined)
+            }
+
+            return Ok()
+        }
+        IndexNode(inner, index) => {
+            self.ensureContentsMutable(inner)?
+            immut container = self.checkValue(inner, None)?
+            immut indexType = self.checkValue(index, None)?
+            mut element = UnknownType
+
+            match (container) {
+                ListType(item) => {
+                    self.expectType(IntType, indexType, 'list index')?
+                    element = item
+                }
+                UnknownType => element = UnknownType
+                NamedType(_, _) => {
+                    match (self.mapParts(container)) {
+                        Some(parts) => {
+                            self.expectType(parts.key, indexType, 'map key')?
+                            element = parts.value
+                        }
+                        None => return Err(self.failure(`cannot assign by index to ${self.show(container)}`))
+                    }
+                }
+                StringType => return Err(self.failure('strings cannot be modified'))
+                other => return Err(self.failure(`cannot assign by index to ${self.show(other)}`))
+            }
+
+            immut valueType = self.checkAssignedValue(element, op, value, 'element')?
+            self.consume(value, valueType)?
+
+            // `counts = [:]` then `counts['a'] = 1`: the map becomes a Map[string, int].
+            if (containsUnknown(container)) {
+                match (self.mapParts(container)) {
+                    Some(parts) => {
+                        immut key = if (containsUnknown(parts.key)) { indexType } else { parts.key }
+                        immut mapValue = if (containsUnknown(parts.value)) { valueType } else { parts.value }
+                        self.refineVariable(inner, self.mapOf(key, mapValue))
+                    }
+                    None => {}
+                }
+            }
+
+            if (self.isMoveOnly(element)) { self.tables.replaces.add(nodeId(node)) }
+
+            return Ok()
+        }
+        Member(object, name) => {
+            self.ensureContentsMutable(object)?
+            immut objectType = self.checkValue(object, None)?
+            mut fieldType = UnknownType
+
+            match (objectType) {
+                UnknownType => fieldType = UnknownType
+                ModuleType(id) => return Err(self.failure(`'${name}' is read-only outside '${self.modules[id].display}'`))
+                VariantType(_, _, _) => return Err(self.failure(`variant fields cannot be modified ('${name}')`))
+                NamedType(id, _) if (self.isBuiltinObject(id)) => return Err(self.failure(`'${name}' is read-only`))
+                other => {
+                    match (fieldsOf(self.table, other)) {
+                        Some(fields) => {
+                            match (findField(fields, name)) {
+                                Some(ty) => fieldType = ty
+                                None => return Err(self.failure(`${self.show(other)} has no field '${name}'`))
+                            }
+                        }
+                        None => return Err(self.failure(`cannot assign field '${name}' on ${self.show(other)}`))
+                    }
+                }
+            }
+
+            immut valueType = self.checkAssignedValue(fieldType, op, value, name)?
+            self.consume(value, valueType)?
+
+            if (self.isMoveOnly(fieldType)) { self.tables.replaces.add(nodeId(node)) }
+
+            return Ok()
+        }
+        _ => return Err(self.failure('invalid assignment target'))
+    }
+}
+
+function isModule(ty: Type): boolean {
+    return match (ty) {
+        ModuleType(_) => true
+        _ => false
+    }
+}
+
+function Checker.isBuiltinObject(self, id: int): boolean {
+    return match (self.table[id].kind) {
+        BuiltinKind(_, _) => true
+        _ => false
+    }
+}
+
+function imutReason(symbol: Symbol): string {
+    return match (symbol.reason) {
+        Some(reason) => reason
+        None => 'it is immut'
+    }
+}
+
+// Changing a field or an element (`person.age = 31`, `items[0] = 1`) is not allowed when the
+// variable that holds the value is `immut`.
+function Checker.ensureContentsMutable(self, target: Node): Result[void, string] {
+    mut node = unlocated(target)
+
+    while (true) {
+        match (node.kind) {
+            // `module.items[0] = 1`: a variable of another module is read-only here.
+            Member(object, name) => {
+                match (unlocated(object).kind) {
+                    Name(module) => {
+                        match (self.lookup(module)) {
+                            Some(symbol) => {
+                                match (symbol.ty) {
+                                    ModuleType(id) => return Err(self.failure(`'${name}' is read-only outside '${self.modules[id].display}'`))
+                                    _ => {}
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                    _ => {}
+                }
+
+                node = unlocated(object)
+            }
+            IndexNode(inner, _) => node = unlocated(inner)
+            Name(name) => {
+                match (self.lookup(name)) {
+                    Some(symbol) => {
+                        match (symbol.owner) {
+                            Some(owner) => return Err(self.failure(`'${name}' is read-only outside '${owner}'`))
+                            None => {}
+                        }
+
+                        if (symbol.isImut and symbol.kind == ValueSymbol) {
+                            return Err(self.failure(`cannot modify '${name}': ${imutReason(symbol)}`))
+                        }
+                    }
+                    None => {}
+                }
+
+                self.ensureNotMoved(name)?
+                return self.ensureNotCaptured(name)
+            }
+            _ => return Ok()
+        }
+    }
+
+    return Ok()
+}
+
+function cannotChange(name: string, receiver: Option[string]): string {
+    return match (receiver) {
+        Some(method) => `cannot call '${method}' on '${name}', as it changes the value`
+        None => `cannot pass '${name}' as 'mut'`
+    }
+}
+
+// What can be passed as `mut`, or a `mut self` method called on (`receiver` is the method): a
+// `mut` variable, or a field or an element of one. Returns its type.
+function Checker.checkMutPlace(mut self, place: Node, receiver: Option[string]): Result[Type, string] {
+    immut node = unlocated(place)
+
+    match (node.kind) {
+        Name(name) => {
+            immut symbol = match (self.lookup(name)) {
+                Some(symbol) => symbol
+                None => return Err(self.failure(`undefined variable '${name}'`))
+            }
+
+            match (symbol.owner) {
+                Some(owner) => return Err(self.failure(`'${name}' is read-only outside '${owner}'`))
+                None => {}
+            }
+
+            self.ensureNotCaptured(name)?
+            self.ensureNotMoved(name)?
+
+            if (symbol.kind != ValueSymbol or isModule(symbol.ty)) { return Err(self.failure(cannotChange(name, receiver))) }
+
+            if (symbol.isImut or symbol.isConst) {
+                return Err(self.failure(`${cannotChange(name, receiver)}: ${imutReason(symbol)}`))
+            }
+
+            return Ok(symbol.ty)
+        }
+        Member(object, name) => {
+            self.ensureContentsMutable(object)?
+            immut objectType = self.checkValue(object, None)?
+            immut readOnly = match (objectType) {
+                ModuleType(_) => true
+                VariantType(_, _, _) => true
+                NamedType(id, _) => self.isBuiltinObject(id)
+                _ => false
+            }
+
+            if (readOnly) { return Err(self.failure(`${cannotChange(name, receiver)}: it is read-only`)) }
+
+            return self.checkMember(object, name)
+        }
+        IndexNode(target, _) => {
+            self.ensureContentsMutable(target)?
+
+            if (self.checkValue(target, None)? == StringType) { return Err(self.failure('strings cannot be modified')) }
+
+            return self.checkValue(place, None)
+        }
+        _ => {
+            return match (receiver) {
+                Some(method) => {
+                    Err(self.failure(`'${method}' changes the value it is called on: call it on a variable, a field or an element`))
+                }
+                None => Err(self.failure("only a variable, a field or an element can be passed as 'mut'"))
+            }
+        }
+    }
+}
+
+// Checks `target op= value` where the target has type `targetType`; returns the value type.
+function Checker.checkAssignedValue(mut self, targetType: Type, op: string, value: Node, name: string): Result[Type, string] {
+    mut valueType = UnknownType
+
+    if (op == '=') {
+        valueType = self.checkValue(value, Some(targetType))?
+    } else {
+        immut right = self.checkValue(value, None)?
+        valueType = self.binaryType(op[..op.length() - 1], targetType, right)?
+    }
+
+    if (not assignable(targetType, valueType)) {
+        return Err(self.failure(`cannot assign a value of type ${self.show(valueType)} to '${name}' of type ${self.show(targetType)}`))
+    }
+
+    return Ok(valueType)
+}
+
+// Function bodies
+
+function Checker.checkFunction(mut self, name: string, params: Param[], signature: Type, body: Node): Result[Type, string] {
+    immut parts = match (signatureParts(signature)) {
+        Some(parts) => parts
+        None => return Err(self.failure('a function signature is a function type'))
+    }
+    immut declared = if (parts.returns == UnknownType) { None } else { Some(parts.returns) }
+    self.pushScope()
+    self.state.functionScopes.push(self.state.scopes.length() - 1)
+
+    for i in range(params.length()) {
+        if (i >= parts.params.length()) { break }
+
+        immut param = params[i]
+
+        if ((param.isMut or param.isTake) and name == 'anonymous function') {
+            immut keyword = if (param.isMut) { 'mut' } else { 'take' }
+            return Err(self.failure(`anonymous functions cannot have '${keyword}' parameters ('${param.name}')`))
+        }
+
+        // Only `mut` parameters (and `mut self`) can be modified; the others are immut.
+        mut symbol = valueSymbol(parts.params[i], not param.isMut)
+        symbol.isImut = not param.isMut
+        symbol.reason = Some("parameters can only be modified when declared 'mut'")
+
+        // A `take` parameter owns its value; the others only borrow it.
+        if (not param.isTake) { symbol.borrowed = Some(if (param.name == 'self') { "'self'" } else { 'a parameter' }) }
+
+        self.declare(param.name, symbol)?
+    }
+
+    // Moves inside the function only concern its own variables.
+    immut savedMoved = self.state.moved
+    immut savedLoops = self.state.loopScopes
+    self.state.loopScopes = []
+    self.state.returns.push({ declared: declared, inferred: None })
+    immut valueExpected = match (declared) {
+        Some(VoidType) => None
+        other => other
+    }
+    immut inner = unlocated(body)
+    mut bodyType = VoidType
+    mut tail: Option[Node] = None
+    mut isBlock = false
+
+    match (inner.kind) {
+        Block(statements) => {
+            isBlock = true
+            bodyType = self.checkStatements(statements, valueExpected)?
+
+            if (statements.length() > 0 and not isStatement(statements[statements.length() - 1])) {
+                tail = Some(statements[statements.length() - 1])
+            }
+        }
+        _ => {
+            bodyType = self.checkValue(inner, valueExpected)?
+            tail = Some(inner)
+        }
+    }
+
+    // The value of the last expression is returned (moved out), or dropped when the function
+    // returns nothing.
+    match (tail) {
+        Some(last) => {
+            if (declared == Some(VoidType)) {
+                self.noteTemporary(last, bodyType)
+            } else {
+                self.consume(last, bodyType)?
+            }
+        }
+        None => {}
+    }
+
+    immut context = self.state.returns.pop()
+    self.state.functionScopes.pop()
+    self.endScope()?
+    self.state.moved = savedMoved
+    self.state.loopScopes = savedLoops
+    immut endsWithExpression = tail is Some
+    mut returned = VoidType
+
+    match (declared) {
+        Some(VoidType) => returned = VoidType
+        Some(wanted) => {
+            if (bodyType != NeverType) {
+                // Every path returns explicitly when the body is `never`.
+                if (not endsWithExpression or bodyType == VoidType) {
+                    return Err(self.failure(`'${name}' must return a value of type ${self.show(wanted)} (add a 'return' or end with an expression)`))
+                }
+
+                if (not assignable(wanted, bodyType)) {
+                    return Err(self.failure(`'${name}' returns ${self.show(bodyType)}, but its declared return type is ${self.show(wanted)}`))
+                }
+            }
+
+            returned = wanted
+        }
+        None => {
+            immut inferred = match (context) {
+                Some(found) => found.inferred
+                None => None
+            }
+
+            match (inferred) {
+                Some(found) => {
+                    returned = found
+
+                    if (bodyType != NeverType and isBlock and bodyType != VoidType) {
+                        returned = match (join(found, bodyType)) {
+                            Some(joined) => joined
+                            None => found
+                        }
+                    }
+                }
+                None => returned = if (bodyType == NeverType) { VoidType } else { bodyType }
+            }
+        }
+    }
+
+    return Ok(FunctionType(parts.params, returned))
+}
+
+// Expressions
+
+// Checks an expression whose value is used: it must not be `void`.
+function Checker.checkValue(mut self, node: Node, expected: Option[Type]): Result[Type, string] {
+    immut ty = self.checkExpression(node, expected)?
+
+    if (ty == VoidType) {
+        immut hint = match (unlocated(node).kind) {
+            If(_, _, _) => " (to be used as a value, every branch must produce a value of the same type, and 'if' needs an 'else')"
+            Match(_, _) => " (to be used as a value, every branch must produce a value of the same type, and 'if' needs an 'else')"
+            _ => ''
+        }
+        return Err(self.failure(`this expression has no value${hint}`))
+    }
+
+    return Ok(ty)
+}
+
+// Checks an expression and records its type for the compiler.
+function Checker.checkExpression(mut self, node: Node, expected: Option[Type]): Result[Type, string] {
+    immut ty = self.expressionType(node, expected)?
+    self.tables.types[nodeId(node)] = ty
+    return Ok(ty)
+}
+
+function Checker.expressionType(mut self, node: Node, expected: Option[Type]): Result[Type, string] {
+    match (node.kind) {
+        Located(line, statement) => {
+            self.state.line = line
+            return self.checkExpression(statement, expected)
+        }
+        IntLiteral(_) => return Ok(IntType)
+        FloatLiteral(_) => return Ok(FloatType)
+        // `'a'` is a char where a char is expected.
+        StringNode(text) => {
+            if (expected != Some(CharType)) { return Ok(StringType) }
+
+            if (text.chars().length() != 1) {
+                return Err(self.failure(`'${text}' is not a char: a char literal has exactly one character`))
+            }
+
+            self.tables.charLiterals.add(nodeId(node))
+            return Ok(CharType)
+        }
+        BooleanLiteral(_) => return Ok(BooleanType)
+        Template(parts) => {
+            for part in parts {
+                match (part) {
+                    Expression(value) => {
+                        immut ty = self.checkValue(value, None)?
+                        self.tables.templateDisplays[value.id] = self.displayMethod(ty)
+                    }
+                    Text(_) => {}
+                }
+            }
+
+            return Ok(StringType)
+        }
+        ListLiteral(items) => {
+            immut expectedItem = match (expected) {
+                Some(ListType(item)) => Some(item)
+                _ => None
+            }
+            mut itemType = UnknownType
+            mut ints: int[] = []
+
+            for item in items {
+                immut ty = self.checkValue(item, expectedItem)?
+                self.consume(item, ty)?
+
+                if (ty == IntType) { ints.push(nodeId(item)) }
+
+                itemType = match (join(itemType, ty)) {
+                    Some(joined) => joined
+                    None => {
+                        return Err(self.failure(`list elements must have the same type: found ${self.show(itemType)} and ${self.show(ty)}`))
+                    }
+                }
+            }
+
+            // The expected item type wins (`float` for `[1, 2]`), unless it is still unknown.
+            match (expectedItem) {
+                Some(wanted) => {
+                    if (not containsUnknown(wanted) and assignable(wanted, itemType)) { itemType = wanted }
+                }
+                None => {}
+            }
+
+            // `[1, 2.5]` and `xs: float[] = [1]`: the ints are stored as floats.
+            if (itemType == FloatType) {
+                for id in ints {
+                    self.tables.toFloat.add(id)
+                }
+            }
+
+            return Ok(ListType(itemType))
+        }
+        MapLiteral(entries) => return self.checkMapLiteral(entries, expected)
+        ObjectLiteral(entries) => {
+            immut ty = self.checkObject(entries, expected)?
+
+            // The fields are kept in the order of the type's declaration.
+            match (fieldsOf(self.table, ty)) {
+                Some(fields) => {
+                    mut order: string[] = []
+
+                    for each in fields {
+                        order.push(each.name)
+                    }
+
+                    self.tables.fieldOrders[nodeId(node)] = order
+                }
+                None => {}
+            }
+
+            // A value of a type with `drop` remembers its type, to call it.
+            match (ty) {
+                NamedType(id, _) => {
+                    match (self.methods.get(`${id} drop`)) {
+                        Some(info) => self.tables.drops[nodeId(node)] = { module: info.module, key: self.methodName(id, 'drop'), hasSelf: true }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+
+            return Ok(ty)
+        }
+        Name(name) => {
+            self.typeArgs = None
+            immut ty = self.checkIdentifier(name, expected)?
+
+            // A generic function used as a value: the type arguments it takes.
+            match (self.typeArgs) {
+                Some(args) => {
+                    self.tables.typeArgs[nodeId(node)] = args
+                    self.typeArgs = None
+                }
+                None => {}
+            }
+
+            return Ok(ty)
+        }
+        Unary(op, operand) => {
+            immut ty = self.checkValue(operand, None)?
+
+            if (ty == UnknownType) { return Ok(UnknownType) }
+
+            if (op == '-' and isNumeric(ty)) { return Ok(ty) }
+
+            if (op == 'not' and ty == BooleanType) { return Ok(BooleanType) }
+
+            if (op == '~' and ty == IntType) { return Ok(IntType) }
+
+            return Err(self.failure(`operator '${op}' cannot be applied to ${self.show(ty)}`))
+        }
+        Binary(op, left, right) => return self.checkBinary(op, left, right)
+        Call(callee, args) => {
+            self.typeArgs = None
+            immut ty = self.checkCall(node, callee, args, expected)?
+
+            // Set by a generic call (the calls in its arguments took theirs already).
+            match (self.typeArgs) {
+                Some(typeArgs) => {
+                    self.tables.typeArgs[nodeId(node)] = typeArgs
+                    self.typeArgs = None
+                }
+                None => {}
+            }
+
+            // `print(person)` and `string(person)` use `Person.display`, if declared.
+            match (unlocated(callee).kind) {
+                Name(name) => {
+                    immut isDisplay = match (self.lookup(name)) {
+                        Some(symbol) => symbol.kind == BuiltinSymbol('print') or symbol.kind == BuiltinSymbol('string')
+                        None => false
+                    }
+
+                    if (isDisplay) {
+                        immut types = self.lastArgTypes
+                        self.lastArgTypes = []
+                        mut methods: Option[MethodRef][] = []
+
+                        for each in types {
+                            methods.push(self.displayMethod(each))
+                        }
+
+                        self.tables.displays[nodeId(node)] = methods
+                    }
+                }
+                _ => {}
+            }
+
+            return Ok(ty)
+        }
+        Slice(target, start, end) => {
+            immut targetType = self.checkValue(target, None)?
+
+            for bound in [start, end] {
+                match (bound) {
+                    Some(value) => {
+                        immut ty = self.checkValue(value, None)?
+                        self.expectType(IntType, ty, 'slice bound')?
+                    }
+                    None => {}
+                }
+            }
+
+            match (targetType) {
+                ListType(item) => {
+                    if (self.isMoveOnly(item)) {
+                        return Err(self.failure(`a slice copies the items, and ${self.show(item)} is move-only`))
+                    }
+
+                    return Ok(targetType)
+                }
+                StringType => return Ok(targetType)
+                UnknownType => return Ok(targetType)
+                other => return Err(self.failure(`cannot slice a value of type ${self.show(other)}`))
+            }
+        }
+        MutArg(_) => return Err(self.failure("'mut' is only used before a call argument: 'f(mut x)'"))
+        IndexNode(target, index) => {
+            immut targetType = self.checkValue(target, None)?
+            immut indexType = self.checkValue(index, None)?
+
+            match (targetType) {
+                ListType(item) => {
+                    self.expectType(IntType, indexType, 'list index')?
+                    return Ok(item)
+                }
+                StringType => {
+                    self.expectType(IntType, indexType, 'string index')?
+                    return Ok(CharType)
+                }
+                UnknownType => return Ok(UnknownType)
+                NamedType(_, _) => {
+                    return match (self.mapParts(targetType)) {
+                        Some(parts) => {
+                            self.expectType(parts.key, indexType, 'map key')?
+                            Ok(parts.value)
+                        }
+                        None => Err(self.failure(`cannot index a value of type ${self.show(targetType)}`))
+                    }
+                }
+                other => return Err(self.failure(`cannot index a value of type ${self.show(other)}`))
+            }
+        }
+        Member(object, name) => return self.checkMember(object, name)
+        If(condition, thenBranch, elseBranch) => {
+            self.checkCondition(condition, 'if')?
+            immut narrowed = self.narrowing(condition)
+            immut before = self.state.moved
+
+            match (elseBranch) {
+                None => {
+                    immut thenType = self.checkBlock(thenBranch, None, narrowed)?
+                    immut thenMoved = self.state.moved
+                    self.state.moved = before
+                    self.mergeMoves(before, [{ moved: thenMoved, diverges: thenType == NeverType }])
+                    return Ok(VoidType)
+                }
+                Some(otherwise) => {
+                    immut thenType = self.checkBlock(thenBranch, expected, narrowed)?
+                    immut thenMoved = self.state.moved
+                    self.state.moved = before
+                    immut elseType = self.checkBlock(otherwise, expected, [])?
+                    immut elseMoved = self.state.moved
+                    self.state.moved = before
+                    self.mergeMoves(before, [
+                        { moved: thenMoved, diverges: thenType == NeverType },
+                        { moved: elseMoved, diverges: elseType == NeverType }
+                    ])
+                    return self.branchTypes([thenType, elseType], expected, 'if')
+                }
+            }
+        }
+        Match(scrutinee, arms) => return self.checkMatch(scrutinee, arms, expected)
+        Lambda(params, returns, body) => {
+            immut signature = self.functionSignature('anonymous function', params, returns, false)?
+            return self.checkFunction('anonymous function', params, signature, body)
+        }
+        Block(_) => return self.checkBlock(node, expected, [])
+        Try(value) => return self.checkTry(node, value)
+        _ => return self.checkStatement(node, expected)
+    }
+}
+
+function Checker.checkBinary(mut self, op: string, left: Node, right: Node): Result[Type, string] {
+    if (op == 'is') {
+        // Values have no identity: `is` only checks a variant.
+        return match (self.checkVariantTest(left, right)?) {
+            Some(result) => Ok(result)
+            None => Err(self.failure("'is' checks a variant ('result is Some'); to compare values, use '=='"))
+        }
+    }
+
+    mut leftType = UnknownType
+    mut rightType = UnknownType
+
+    // In `c == 'a'`, the literal takes the type of the other side (a char).
+    immut leftIsString = match (unlocated(left).kind) {
+        StringNode(_) => true
+        _ => false
+    }
+
+    if (leftIsString) {
+        rightType = self.checkValue(right, None)?
+        immut wanted = if (rightType == CharType) { Some(CharType) } else { None }
+        leftType = self.checkValue(left, wanted)?
+    } else {
+        leftType = self.checkValue(left, None)?
+        immut rightIsList = match (unlocated(right).kind) {
+            ListLiteral(_) => true
+            _ => false
+        }
+        // `floats + [3]`: a list literal takes the type of the other list. In `c in 'aeiou'`, the
+        // string is not a char. In `result == Ok()`, the other side tells the type arguments.
+        immut wanted = match (leftType) {
+            CharType => if (op != 'in') { Some(CharType) } else { None }
+            ListType(_) => if (rightIsList) { Some(leftType) } else { None }
+            NamedType(_, _) => Some(leftType)
+            _ => None
+        }
+        rightType = self.checkValue(right, wanted)?
+    }
+
+    // A type parameter only has the comparisons its constraint allows.
+    immut comparison = op in ['==', '!=', '<', '<=', '>', '>=', 'in']
+
+    if (not comparison) {
+        for side in [leftType, rightType] {
+            if (self.isTypeParam(side)) {
+                return Err(self.failure(`operator '${op}' cannot be used on '${self.show(side)}': a type parameter only supports the comparisons of its constraint`))
+            }
+        }
+    }
+
+    return self.binaryType(op, leftType, rightType)
+}
+
+// `value?` on a `Result` or an `Option`: its type is the `Ok` / `Some` value.
+function Checker.checkTry(mut self, node: Node, value: Node): Result[Type, string] {
+    immut ty = self.checkValue(value, None)?
+    // `x?` takes the value out of `x`.
+    self.consume(value, ty)?
+    mut id = 0
+    mut args: Type[] = []
+
+    match (ty) {
+        NamedType(found, typeArgs) if (found == self.builtins.result or found == self.builtins.option) => {
+            id = found
+            args = typeArgs
+        }
+        UnknownType => return Ok(UnknownType)
+        other => return Err(self.failure(`'?' can only be used on a Result or an Option, found ${self.show(other)}`))
+    }
+
+    immut inner = if (args.length() > 0) { args[0] } else { UnknownType }
+    immut isResult = id == self.builtins.result
+    immut kind = if (isResult) { 'a Result' } else { 'an Option' }
+
+    if (self.state.returns.length() == 0) {
+        // At the top level of the main file, a failure stops the program.
+        if (self.state.isEntry) { return Ok(inner) }
+
+        return Err(self.failure("'?' at the top level is only allowed in the main file"))
+    }
+
+    immut declared = match (self.state.returns[self.state.returns.length() - 1].declared) {
+        Some(declared) => declared
+        None => return Err(self.failure("'?' needs the function to declare its return type"))
+    }
+    immut returnedArgs = match (declared) {
+        NamedType(returned, returnedArgs) if (returned == id) => returnedArgs
+        other => return Err(self.failure(`'?' on ${kind} needs the function to return ${kind} too, but it returns ${self.show(other)}`))
+    }
+
+    if (not isResult) { return Ok(inner) }
+
+    immut error = if (args.length() > 1) { args[1] } else { UnknownType }
+    immut target = if (returnedArgs.length() > 1) { returnedArgs[1] } else { UnknownType }
+
+    if (assignable(target, error)) { return Ok(inner) }
+
+    self.tables.wraps[nodeId(node)] = self.errorWrapper(error, target)?
+    return Ok(inner)
+}
+
+// The automatic conversion of `?`: the variant of `target` (the function's error type) that holds
+// exactly one field of type `error`. It must be the only such variant.
+function Checker.errorWrapper(self, error: Type, target: Type): Result[TryWrap, string] {
+    immut useMapErr = `use '.mapErr(...)' to convert ${self.show(error)} into ${self.show(target)}`
+    mut targetId = 0
+    mut targetArgs: Type[] = []
+
+    match (target) {
+        NamedType(id, args) if (variantsOf(self.table, id) is Some) => {
+            targetId = id
+            targetArgs = args
+        }
+        _ => return Err(self.failure(`'?' cannot convert ${self.show(error)} into ${self.show(target)}: ${useMapErr}`))
+    }
+
+    mut candidates: string[] = []
+
+    match (variantsOf(self.table, targetId)) {
+        Some(variants) => {
+            for each in variants {
+                if (each.fields.length() != 1) { continue }
+
+                immut fieldType = substitute(each.fields[0].ty, targetArgs)
+
+                if (fieldType == error or (assignable(fieldType, error) and assignable(error, fieldType))) {
+                    candidates.push(each.name)
+                }
+            }
+        }
+        None => {}
+    }
+
+    if (candidates.length() == 0) {
+        return Err(self.failure(`'?' cannot convert ${self.show(error)} into ${self.show(target)}: no variant of ${self.show(target)} holds a ${self.show(error)} (${useMapErr})`))
+    }
+
+    if (candidates.length() > 1) {
+        return Err(self.failure(`'?' cannot choose how to convert ${self.show(error)} into ${self.show(target)}: the variants ${candidates.join(', ')} all hold a ${self.show(error)} (${useMapErr})`))
+    }
+
+    immut chosen = candidates[0]
+
+    // The variant is built by name: find how it is reachable from here.
+    match (self.lookup(chosen)) {
+        Some(symbol) if (isConstructorOf(symbol, targetId)) => return Ok({ module: None, variant: chosen })
+        _ => {}
+    }
+
+    mut i = self.state.scopes.length() - 1
+
+    while (i >= 0) {
+        immut scope = self.state.scopes[i]
+
+        for alias in scope.vars.keys() {
+            match (scope.vars.get(alias)) {
+                Some(symbol) => {
+                    match (symbol.ty) {
+                        ModuleType(module) => {
+                            match (self.modules[module].members.get(chosen)) {
+                                Some(member) if (isConstructorOf(member, targetId)) => return Ok({ module: Some(alias), variant: chosen })
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None => {}
+            }
+        }
+
+        i -= 1
+    }
+
+    return Err(self.failure(`'?' would wrap the error in '${chosen}', but '${chosen}' is not in scope here (import it)`))
+}
+
+function isConstructorOf(symbol: Symbol, id: int): boolean {
+    return match (symbol.kind) {
+        ConstructorSymbol(found, _) => found == id
+        _ => false
+    }
+}
+
+function isConstructor(symbol: Symbol): boolean {
+    return match (symbol.kind) {
+        ConstructorSymbol(_, _) => true
+        _ => false
+    }
+}
+
+// `x is Some` inside an `if` condition: in the `then` branch, `x` is known to be that variant.
+function Checker.narrowing(self, condition: Node): Binding[] {
+    match (unlocated(condition).kind) {
+        Binary('is', left, right) => {
+            match (unlocated(left).kind) {
+                Name(name) => {
+                    match (unlocated(right).kind) {
+                        Name(variantName) => {
+                            match (self.lookup(name)) {
+                                Some(symbol) => {
+                                    match (self.lookup(variantName)) {
+                                        Some(found) => {
+                                            match (found.kind) {
+                                                ConstructorSymbol(variantType, _) => {
+                                                    match (symbol.ty) {
+                                                        NamedType(id, args) if (id == variantType) => {
+                                                            mut narrowed = symbol
+                                                            narrowed.narrowed = true
+                                                            narrowed.ty = VariantType(id, args, variantName)
+                                                            return [{ name: name, symbol: narrowed }]
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        None => {}
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    return []
+}
+
+// `value is Variant`: whether a sum-type value is a given variant.
+function Checker.checkVariantTest(mut self, left: Node, right: Node): Result[Option[Type], string] {
+    immut variantName = match (unlocated(right).kind) {
+        Name(name) => name
+        _ => return Ok(None)
+    }
+    immut variantType = match (self.lookup(variantName)) {
+        Some(symbol) => {
+            match (symbol.kind) {
+                ConstructorSymbol(id, _) => id
+                _ => return Ok(None)
+            }
+        }
+        None => return Ok(None)
+    }
+    immut leftType = self.checkValue(left, None)?
+
+    if (leftType == UnknownType) { return Ok(Some(BooleanType)) }
+
+    match (namedParts(leftType)) {
+        Some(parts) if (parts.id == variantType) => return Ok(Some(BooleanType))
+        _ => {}
+    }
+
+    return Err(self.failure(`'${variantName}' is not a variant of ${self.show(leftType)}`))
+}
+
+// Why `left op ...` cannot compare: the type is not equatable.
+function Checker.notEquatable(self, op: string, ty: Type): string {
+    if (self.isTypeParam(ty)) {
+        immut name = self.show(ty)
+        return self.failure(`operator '${op}' needs '${name}' to be equatable: declare it as '[${name}: equatable]'`)
+    }
+
+    return self.failure(`values of type ${self.show(ty)} cannot be compared with '${op}': it is not equatable (it holds functions or move-only values)`)
+}
+
+function Checker.binaryType(self, op: string, left: Type, right: Type): Result[Type, string] {
+    immut comparison = op in ['==', '!=', '>', '>=', '<', '<=', 'is', 'in']
+
+    if (left == UnknownType or right == UnknownType) {
+        if (comparison or op == 'and' or op == 'or') { return Ok(BooleanType) }
+
+        return Ok(UnknownType)
+    }
+
+    immut numeric = isNumeric(left) and isNumeric(right)
+    immut bothInt = left == IntType and right == IntType
+    immut cannot: Result[Type, string] = Err(self.failure(`operator '${op}' cannot be applied to ${self.show(left)} and ${self.show(right)}`))
+
+    match (op) {
+        '+' => {
+            if (bothInt) { return Ok(IntType) }
+
+            if (numeric) { return Ok(FloatType) }
+
+            if (left == StringType and right == StringType) { return Ok(StringType) }
+
+            match (left) {
+                ListType(_) => {
+                    match (right) {
+                        ListType(_) => {
+                            return match (join(left, right)) {
+                                Some(joined) => Ok(joined)
+                                None => cannot
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+
+            return cannot
+        }
+        // Like Go and Rust: dividing ints gives an int, dividing floats gives a float.
+        op if (op in ['-', '*', '/', '%', '**']) => {
+            if (bothInt) { return Ok(IntType) }
+
+            if (numeric) { return Ok(FloatType) }
+
+            if (op == '*' and ((left == StringType and right == IntType) or (left == IntType and right == StringType))) {
+                return Ok(StringType)
+            }
+
+            return cannot
+        }
+        op if (op in ['>', '>=', '<', '<=']) => {
+            if (numeric or (left == StringType and right == StringType) or (left == CharType and right == CharType)) {
+                return Ok(BooleanType)
+            }
+
+            if (left == right and self.isTypeParam(left)) {
+                if (not self.satisfies(left, orderable)) {
+                    return Err(self.failure(`operator '${op}' needs '${self.show(left)}' to be orderable: declare it as '[${self.show(left)}: orderable]'`))
+                }
+
+                return Ok(BooleanType)
+            }
+
+            return cannot
+        }
+        op if (op in ['==', '!=', 'is']) => {
+            if (numeric or assignable(left, right) or assignable(right, left)) {
+                if (not numeric and not self.satisfies(left, equatable)) { return Err(self.notEquatable(op, left)) }
+
+                return Ok(BooleanType)
+            }
+
+            return cannot
+        }
+        op if (op == 'and' or op == 'or') => {
+            if (left == BooleanType and right == BooleanType) { return Ok(BooleanType) }
+
+            return cannot
+        }
+        'in' => {
+            match (right) {
+                StringType => {
+                    if (left == StringType or left == CharType) { return Ok(BooleanType) }
+
+                    return cannot
+                }
+                ListType(item) => {
+                    if (assignable(item, left) or assignable(left, item)) {
+                        if (not self.satisfies(item, equatable)) { return Err(self.notEquatable(op, item)) }
+
+                        return Ok(BooleanType)
+                    }
+
+                    return cannot
+                }
+                NamedType(_, _) => {
+                    match (self.mapParts(right)) {
+                        Some(parts) => {
+                            if (assignable(parts.key, left)) { return Ok(BooleanType) }
+
+                            return cannot
+                        }
+                        None => {}
+                    }
+
+                    return match (self.setItem(right)) {
+                        Some(item) => if (assignable(item, left)) { Ok(BooleanType) } else { cannot }
+                        None => cannot
+                    }
+                }
+                _ => return cannot
+            }
+        }
+        _ => {
+            if (bothInt) { return Ok(IntType) }
+
+            return cannot
+        }
+    }
+}
+
+function Checker.checkIdentifier(mut self, name: string, expected: Option[Type]): Result[Type, string] {
+    immut symbol = match (self.lookup(name)) {
+        Some(symbol) => symbol
+        None => return Err(self.failure(`undefined variable '${name}'`))
+    }
+
+    match (symbol.kind) {
+        BuiltinSymbol(builtin) => return Err(self.failure(`'${builtin}' is a built-in function and must be called`))
+        ConstructorSymbol(id, _) => {
+            // `None` takes its generic arguments from the expected type, when known.
+            match (expected) {
+                Some(NamedType(expectedId, args)) if (expectedId == id) => {
+                    match (symbol.ty) {
+                        NamedType(_, _) => return Ok(NamedType(id, args))
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+
+            return Ok(symbol.ty)
+        }
+        ValueSymbol => {}
+    }
+
+    // A generic function used as a value takes its type arguments from the expected type:
+    // `immut f: (int[]) => Option[int] = first`, or a parameter's type.
+    if (symbol.generics > 0) {
+        mut generic = unknowns(symbol.generics)
+
+        match (expected) {
+            Some(wanted) => unify(symbol.ty, wanted, mut generic)
+            None => {}
+        }
+
+        if (anyUnknown(generic)) {
+            return Err(self.failure(`the type arguments of '${name}' are not known here: call it, or use it where a function type is expected (annotate the variable)`))
+        }
+
+        self.ensureConstraints(generic, symbol.constraints, name)?
+        immut ty = substitute(symbol.ty, generic)
+        self.typeArgs = Some(generic)
+        return Ok(ty)
+    }
+
+    if (symbol.modes.length() > 0) {
+        return Err(self.failure(`'${name}' has 'mut' or 'take' parameters and can only be called, not used as a value`))
+    }
+
+    self.ensureNotMoved(name)?
+    self.ensureNotCapturedMoveOnly(name, symbol.ty)?
+    return Ok(symbol.ty)
+}
+
+function Checker.checkObject(mut self, entries: ObjectEntry[], expected: Option[Type]): Result[Type, string] {
+    match (expected) {
+        Some(NamedType(id, args)) => {
+            immut ty = NamedType(id, args)
+
+            match (self.table[id].kind) {
+                ShapeKind(fields) => {
+                    immut typeName = self.show(ty)
+                    // For a generic type, the unknown type arguments are learned from the fields.
+                    mut generic = args
+
+                    for entry in entries {
+                        match (findField(fields, entry.key)) {
+                            Some(fieldType) => {
+                                immut wanted = substitute(fieldType, generic)
+                                immut valueType = self.checkValue(entry.value, Some(wanted))?
+                                self.consume(entry.value, valueType)?
+
+                                if (wanted == FloatType and valueType == IntType) { self.tables.toFloat.add(nodeId(entry.value)) }
+
+                                unify(fieldType, valueType, mut generic)
+                                immut target = substitute(fieldType, generic)
+
+                                if (not assignable(target, valueType)) {
+                                    return Err(self.failure(`field '${entry.key}' of ${typeName} must be ${self.show(target)}, found ${self.show(valueType)}`))
+                                }
+                            }
+                            None => return Err(self.failure(`${typeName} has no field '${entry.key}'`))
+                        }
+                    }
+
+                    mut missing: string[] = []
+
+                    for each in fields {
+                        mut given = false
+
+                        for entry in entries {
+                            if (entry.key == each.name) { given = true }
+                        }
+
+                        if (not given) { missing.push(each.name) }
+                    }
+
+                    if (missing.length() > 0) { return Err(self.failure(`missing field(s) ${missing.join(', ')} in ${typeName}`)) }
+
+                    self.ensureCopyableArgs(generic)?
+                    immut info = self.table[id]
+                    self.ensureConstraints(generic, info.constraints, info.name)?
+                    return Ok(NamedType(id, generic))
+                }
+                MapKind(_, _) => {
+                    return Err(self.failure(`a map is written with brackets, not braces: ['key': value] (for ${self.show(ty)})`))
+                }
+                // Types are nominal: an object literal is always a value of a declared type, which
+                // comes from where it is used (an annotation, a parameter, a return type...).
+                _ => return Err(self.failure(`an object literal cannot be a value of type ${self.show(ty)}`))
+            }
+        }
+        Some(other) if (not containsUnknown(other)) => {
+            return Err(self.failure(`an object literal cannot be a value of type ${self.show(other)}`))
+        }
+        _ => {
+            return Err(self.failure("this object literal needs a type: declare one with 'type' and annotate the variable ('person: Person = { ... }')"))
+        }
+    }
+}
+
+function Checker.checkMember(mut self, object: Node, name: string): Result[Type, string] {
+    immut objectType = self.checkValue(object, None)?
+    self.noteTemporary(object, objectType)
+
+    match (objectType) {
+        ModuleType(id) => {
+            return match (self.modules[id].members.get(name)) {
+                Some(symbol) => {
+                    match (symbol.kind) {
+                        BuiltinSymbol(builtin) => Err(self.failure(`'${builtin}' is a built-in function and must be called`))
+                        _ => {
+                            if (symbol.generics > 0) {
+                                Err(self.failure(`'${name}' is generic and can only be called (its type arguments come from the call)`))
+                            } else {
+                                if (symbol.modes.length() > 0) {
+                                    Err(self.failure(`'${name}' has 'mut' or 'take' parameters and can only be called, not used as a value`))
+                                } else {
+                                    Ok(symbol.ty)
+                                }
+                            }
+                        }
+                    }
+                }
+                None => Err(self.missingMember(id, name))
+            }
+        }
+        UnknownType => return Ok(UnknownType)
+        StringType => return Err(self.failure(`method '${name}' must be called: '${name}()'`))
+        ListType(_) => return Err(self.failure(`method '${name}' must be called: '${name}()'`))
+        other => {
+            match (fieldsOf(self.table, other)) {
+                Some(fields) => {
+                    return match (findField(fields, name)) {
+                        Some(ty) => Ok(ty)
+                        None => Err(self.failure(`${self.show(other)} has no field '${name}'`))
+                    }
+                }
+                None => {
+                    immut hint = match (other) {
+                        NamedType(id, _) if (variantsOf(self.table, id) is Some) => " (use 'match' or check the variant with 'is' first)"
+                        _ => ''
+                    }
+                    return Err(self.failure(`a value of type ${self.show(other)} has no field '${name}'${hint}`))
+                }
+            }
+        }
+    }
+}
+
+// Calls
+
+// The methods of lists (besides `length` and `join`); all but `indexOf` change the list.
+immut listMethods = ['push', 'pop', 'insert', 'removeAt', 'sort', 'sortBy', 'indexOf']
+
+function Checker.checkCall(mut self, node: Node, callee: Node, args: Node[], expected: Option[Type]): Result[Type, string] {
+    immut target = unlocated(callee)
+
+    match (target.kind) {
+        Name(name) => {
+            match (self.lookup(name)) {
+                Some(symbol) => {
+                    match (symbol.kind) {
+                        BuiltinSymbol(builtin) => return self.checkBuiltinCall(builtin, args)
+                        ConstructorSymbol(id, variantName) => return self.checkConstructor(id, variantName, args, expected)
+                        ValueSymbol => {
+                            if (symbol.generics > 0) {
+                                return self.checkGenericCall(symbol.ty, unknowns(symbol.generics), symbol.constraints, symbol.modes, name, args, expected)
+                            }
+
+                            if (symbol.modes.length() > 0) { return self.checkFunctionCallMut(symbol.ty, symbol.modes, args) }
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        Member(object, name) => {
+            // `Person.create(...)`: an associated function.
+            match (self.typePath(object)) {
+                Some(id) => {
+                    if (id == self.builtins.set and name == 'from') {
+                        // Run as the built-in `Set.from`.
+                        self.tables.methods[node.id] = { module: '', key: 'Set.from', hasSelf: false }
+                        return self.checkSetFrom(args, expected)
+                    }
+
+                    return self.checkAssociatedCall(node, id, name, args, expected)
+                }
+                None => {}
+            }
+
+            immut objectType = self.checkValue(object, None)?
+
+            match (objectType) {
+                ListType(item) => {
+                    if (name in listMethods) { return self.checkListMethod(callee, object, item, name, args) }
+                }
+                _ => {}
+            }
+
+            match (self.checkCollectionMethod(callee, object, objectType, name, args)?) {
+                Some(ty) => return Ok(ty)
+                None => {}
+            }
+
+            mut userMethod: Option[MethodInfo] = None
+            mut ownerId = 0
+
+            match (namedParts(objectType)) {
+                Some(parts) => {
+                    userMethod = self.methods.get(`${parts.id} ${name}`)
+                    ownerId = parts.id
+                }
+                None => {}
+            }
+
+            // With `take self`, the method owns the value: it is not a temporary to drop.
+            immut takesSelf = match (userMethod) {
+                Some(info) => info.modes.length() > 0 and info.modes[0] == 'take'
+                None => false
+            }
+
+            if (not takesSelf) { self.checkReceiver(object, objectType, name)? }
+
+            match (userMethod) {
+                Some(info) => {
+                    immut receiverArgs = match (namedParts(objectType)) {
+                        Some(parts) => parts.args
+                        None => []
+                    }
+                    return self.checkMethod(node, object, ownerId, receiverArgs, name, info, args, expected)
+                }
+                None => {}
+            }
+
+            return self.checkMethodCall(objectType, name, args, expected)
+        }
+        _ => {}
+    }
+
+    immut calleeType = self.checkValue(callee, None)?
+    return self.checkFunctionCall(calleeType, args)
+}
+
+// The ownership rules for the value a method is called on.
+function Checker.checkReceiver(mut self, object: Node, ty: Type, name: string): Result[void, string] {
+    immut id = match (namedParts(ty)) {
+        Some(parts) => parts.id
+        None => return Ok()
+    }
+
+    if (name == 'drop' and self.methods.has(`${id} drop`)) {
+        return Err(self.failure("'drop' cannot be called: it runs by itself when the value goes out of scope"))
+    }
+
+    // `f.close()` consumes the file: `f` cannot be used afterwards.
+    if (id == self.builtins.file and name == 'close') {
+        match (unlocated(object).kind) {
+            Name(variable) => return self.moveVariable(object, variable, ty)
+            Member(_, _) => return Err(self.failure("'close' consumes the file: call it on a variable (a file in a field or a list is closed when its owner is dropped)"))
+            IndexNode(_, _) => return Err(self.failure("'close' consumes the file: call it on a variable (a file in a field or a list is closed when its owner is dropped)"))
+            _ => {
+                self.noteTemporary(object, ty)
+                return Ok()
+            }
+        }
+    }
+
+    self.noteTemporary(object, ty)
+    return Ok()
+}
+
+// The type named by `Person` or `module.Person` when used before a `.`, if it is a type and not a
+// value.
+function Checker.typePath(self, node: Node): Option[int] {
+    mut found: Option[TypeRef] = None
+
+    match (unlocated(node).kind) {
+        Name(name) => {
+            if (self.lookup(name) is None) { found = self.lookupType(name) }
+        }
+        Member(object, name) => {
+            match (unlocated(object).kind) {
+                Name(module) => {
+                    match (self.lookup(module)) {
+                        Some(symbol) => {
+                            match (symbol.ty) {
+                                ModuleType(id) => {
+                                    if (not self.modules[id].members.has(name)) { found = self.modules[id].types.get(name) }
+                                }
+                                _ => {}
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    return match (found) {
+        Some(KnownType(NamedType(id, _))) => Some(id)
+        Some(GenericType(id)) => Some(id)
+        _ => None
+    }
+}
+
+// The `display` method declared for the type, used by `print` and interpolation.
+function Checker.displayMethod(self, ty: Type): Option[MethodRef] {
+    return match (namedParts(ty)) {
+        Some(parts) => {
+            match (self.methods.get(`${parts.id} display`)) {
+                Some(info) => Some({ module: info.module, key: self.methodName(parts.id, 'display'), hasSelf: true })
+                None => None
+            }
+        }
+        None => None
+    }
+}
+
+function Checker.methodName(self, id: int, name: string): string {
+    return `${self.table[id].name}.${name}`
+}
+
+// `Person.create('Ana')`
+function Checker.checkAssociatedCall(mut self, node: Node, id: int, name: string, args: Node[], expected: Option[Type]): Result[Type, string] {
+    immut full = self.methodName(id, name)
+    immut info = match (self.methods.get(`${id} ${name}`)) {
+        Some(info) => info
+        None => return Err(self.failure(`'${full}' is not declared`))
+    }
+
+    if (info.hasSelf) { return Err(self.failure(`'${full}' takes 'self': call it on a value ('value.${name}(...)')`)) }
+
+    self.tables.methods[node.id] = { module: info.module, key: full, hasSelf: false }
+
+    // `Pair.create(1, 'a')`: the type arguments are inferred, like a generic function.
+    if (info.generics > 0) {
+        return self.checkGenericCall(info.ty, unknowns(info.generics), info.constraints, info.modes, full, args, expected)
+    }
+
+    return self.checkFunctionCallMut(info.ty, info.modes, args)
+}
+
+// `person.greet()`
+function Checker.checkMethod(mut self, node: Node, object: Node, id: int, receiverArgs: Type[], name: string, info: MethodInfo, args: Node[], expected: Option[Type]): Result[Type, string] {
+    immut full = self.methodName(id, name)
+
+    if (not info.hasSelf) { return Err(self.failure(`'${full}' has no 'self': call it on the type ('${full}(...)')`)) }
+
+    immut first = modeAt(info.modes, 0)
+
+    // `mut self`: the call needs no marker, but the value must be one that can change.
+    if (first == 'mut') { self.checkMutPlace(object, Some(full))? }
+
+    // `take self`: the value is moved into the method.
+    if (first == 'take' and isPlace(object)) {
+        immut ty = self.checkValue(object, None)?
+        self.consume(object, ty)?
+    }
+
+    self.tables.methods[node.id] = { module: info.module, key: full, hasSelf: true }
+    immut ty = match (info.ty) {
+        FunctionType(params, returns) => FunctionType(params[1..], returns)
+        other => other
+    }
+    immut modes = if (info.modes.length() > 1) { info.modes[1..] } else { [] }
+
+    if (info.generics > 0) {
+        // The type arguments of the value (`Pair[int, string]`), then the method's own.
+        mut generic = receiverArgs
+
+        while (generic.length() < info.generics) {
+            generic.push(UnknownType)
+        }
+
+        return self.checkGenericCall(ty, generic[..info.generics], info.constraints, modes, full, args, expected)
+    }
+
+    return self.checkFunctionCallMut(ty, modes, args)
+}
+
+function Checker.checkFunctionCall(mut self, calleeType: Type, args: Node[]): Result[Type, string] {
+    return self.checkFunctionCallMut(calleeType, [], args)
+}
+
+// A call of a function whose parameters are passed as `modes` (borrowed when empty).
+function Checker.checkFunctionCallMut(mut self, calleeType: Type, modes: string[], args: Node[]): Result[Type, string] {
+    match (calleeType) {
+        FunctionType(params, returns) => {
+            self.checkArgsMut(params, modes, args)?
+            return Ok(returns)
+        }
+        UnknownType => {
+            for arg in args {
+                self.checkValue(arg, None)?
+            }
+
+            return Ok(UnknownType)
+        }
+        other => return Err(self.failure(`a value of type ${self.show(other)} cannot be called`))
+    }
+}
+
+function Checker.checkArgs(mut self, params: Type[], args: Node[]): Result[Type[], string] {
+    return self.checkArgsMut(params, [], args)
+}
+
+function Checker.checkArgsMut(mut self, params: Type[], modes: string[], args: Node[]): Result[Type[], string] {
+    if (params.length() != args.length()) {
+        return Err(self.failure(`expected ${params.length()} argument(s), found ${args.length()}`))
+    }
+
+    mut types: Type[] = []
+
+    for i in range(params.length()) {
+        immut param = params[i]
+        immut arg = args[i]
+        immut mode = modeAt(modes, i)
+        immut isMut = mode == 'mut'
+
+        match (unlocated(arg).kind) {
+            MutArg(place) => {
+                if (not isMut) { return Err(self.failure(`argument ${i + 1} is not a 'mut' parameter: remove 'mut'`)) }
+
+                immut ty = self.checkMutPlace(place, None)?
+
+                // The function may store any value of the parameter type in the variable, so the
+                // types must be the same.
+                if (not assignable(param, ty) or not assignable(ty, param)) {
+                    return Err(self.failure(`argument ${i + 1} is 'mut' and must be exactly ${self.show(param)}, found ${self.show(ty)}`))
+                }
+
+                types.push(ty)
+                continue
+            }
+            _ => {
+                if (isMut) {
+                    return Err(self.failure(`argument ${i + 1} is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')`))
+                }
+            }
+        }
+
+        immut ty = self.checkValue(arg, Some(param))?
+
+        // An `int` passed for a `float` is converted (`Some(1)` for an `Option[float]`).
+        if (param == FloatType and ty == IntType) { self.tables.toFloat.add(nodeId(arg)) }
+
+        if (mode == 'take') {
+            // The argument moves into the function, which owns it from now on.
+            self.consume(arg, ty)?
+        } else {
+            self.noteTemporary(arg, ty)
+        }
+
+        if (not assignable(param, ty)) {
+            mut hint = ''
+
+            match (param) {
+                NamedType(_, _) => {
+                    match (ty) {
+                        NamedType(_, _) => {
+                            if (fieldsOf(self.table, param) is Some and fieldsOf(self.table, ty) is Some) {
+                                hint = ` (${self.show(ty)} is not a subtype of ${self.show(param)}: Koji has no subtyping, pass the fields explicitly)`
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+
+            return Err(self.failure(`argument ${i + 1} must be ${self.show(param)}, found ${self.show(ty)}${hint}`))
+        }
+
+        types.push(ty)
+    }
+
+    return Ok(types)
+}
+
+function Checker.checkConstructor(mut self, id: int, variantName: string, args: Node[], expected: Option[Type]): Result[Type, string] {
+    immut info = self.table[id]
+    mut fields: FieldType[] = []
+
+    match (info.kind) {
+        SumKind(variants) => {
+            for each in variants {
+                if (each.name == variantName) {
+                    fields = each.fields
+                    break
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if (fields.length() == 0) { return Err(self.failure(`variant '${variantName}' has no fields and is used without '()'`)) }
+
+    // The generic arguments: from the expected type, then inferred from the arguments.
+    mut generic = unknowns(info.params)
+
+    match (expected) {
+        Some(NamedType(expectedId, args)) if (expectedId == id) => generic = args
+        _ => {}
+    }
+
+    // `Ok()`: a single field of type `void` is written without an argument.
+    if (args.length() == 0 and fields.length() == 1) {
+        match (fields[0].ty) {
+            ParamType(index) if (containsUnknown(generic[index]) or generic[index] == VoidType) => {
+                generic[index] = VoidType
+                return Ok(NamedType(id, generic))
+            }
+            VoidType => return Ok(NamedType(id, generic))
+            _ => {}
+        }
+    }
+
+    if (fields.length() != args.length()) {
+        return Err(self.failure(`'${variantName}' expects ${fields.length()} argument(s), found ${args.length()}`))
+    }
+
+    for i in range(fields.length()) {
+        immut fieldType = fields[i].ty
+        immut arg = args[i]
+        immut wanted = substitute(fieldType, generic)
+        immut actual = self.checkValue(arg, Some(wanted))?
+        self.consume(arg, actual)?
+
+        if (wanted == FloatType and actual == IntType) { self.tables.toFloat.add(nodeId(arg)) }
+
+        match (fieldType) {
+            ParamType(index) if (containsUnknown(generic[index])) => {
+                generic[index] = match (join(generic[index], actual)) {
+                    Some(joined) => joined
+                    None => actual
+                }
+                continue
+            }
+            _ => {}
+        }
+
+        if (not assignable(wanted, actual)) {
+            return Err(self.failure(`field '${fields[i].name}' of '${variantName}' must be ${self.show(wanted)}, found ${self.show(actual)}`))
+        }
+    }
+
+    self.ensureConstraints(generic, self.table[id].constraints, self.table[id].name)?
+    return Ok(NamedType(id, generic))
+}
+
+// `items.push(x)`, `items.pop()`... The methods that change the list need a variable that can
+// change (like `mut self`), and change it in place.
+function Checker.checkListMethod(mut self, callee: Node, object: Node, item: Type, name: string, args: Node[]): Result[Type, string] {
+    if (name != 'indexOf') {
+        self.checkMutPlace(object, Some(name))?
+        self.tables.mutatingCalls.add(nodeId(callee))
+    }
+
+    immut count = match (name) {
+        'push' => 1
+        'removeAt' => 1
+        'sortBy' => 1
+        'indexOf' => 1
+        'insert' => 2
+        _ => 0
+    }
+
+    if (args.length() != count) { return Err(self.failure(`'${name}' expects ${count} argument(s), found ${args.length()}`)) }
+
+    match (name) {
+        'push' => {
+            immut ty = self.itemArgument(args[0], item)?
+            self.consume(args[0], ty)?
+            self.refineVariable(object, ListType(ty))
+            return Ok(VoidType)
+        }
+        'insert' => {
+            self.positionArgument(args[0])?
+            immut ty = self.itemArgument(args[1], item)?
+            self.consume(args[1], ty)?
+            self.refineVariable(object, ListType(ty))
+            return Ok(VoidType)
+        }
+        'pop' => return Ok(self.optionOf(item))
+        'removeAt' => {
+            self.positionArgument(args[0])?
+            return Ok(self.optionOf(item))
+        }
+        'sort' => {
+            if (not self.satisfies(item, orderable)) {
+                return Err(self.failure(`'sort' needs orderable items, and ${self.show(item)} is not: use 'sortBy' with a comparison`))
+            }
+
+            return Ok(VoidType)
+        }
+        'sortBy' => {
+            // `(a, b) => a.age < b.age`: whether `a` goes before `b`.
+            self.checkArgs([FunctionType([item, item], BooleanType)], args)?
+            return Ok(VoidType)
+        }
+        _ => {
+            if (not self.satisfies(item, equatable)) {
+                return Err(self.failure(`'indexOf' needs equatable items, and ${self.show(item)} is not`))
+            }
+
+            self.itemArgument(args[0], item)?
+            return Ok(self.optionOf(IntType))
+        }
+    }
+}
+
+function Checker.itemArgument(mut self, arg: Node, item: Type): Result[Type, string] {
+    immut ty = self.checkValue(arg, Some(item))?
+    self.expectType(item, ty, 'the item')?
+    return Ok(ty)
+}
+
+function Checker.positionArgument(mut self, arg: Node): Result[void, string] {
+    immut ty = self.checkValue(arg, None)?
+    return self.expectType(IntType, ty, 'the position')
+}
+
+// Gives the variable `object` the type `ty`, when its type is still partly unknown.
+function Checker.refineVariable(mut self, object: Node, ty: Type) {
+    if (containsUnknown(ty)) { return }
+
+    match (unlocated(object).kind) {
+        Name(name) => {
+            match (self.lookup(name)) {
+                Some(symbol) if (containsUnknown(symbol.ty)) => self.setVariableType(name, ty)
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+// Maps and sets
+
+type MapParts = {
+    key: Type
+    value: Type
+}
+
+// The key and value types of a `Map[K, V]`.
+function Checker.mapParts(self, ty: Type): Option[MapParts] {
+    return match (ty) {
+        NamedType(id, args) => {
+            match (self.table[id].kind) {
+                MapKind(key, value) => Some({ key: substitute(key, args), value: substitute(value, args) })
+                _ => None
+            }
+        }
+        _ => None
+    }
+}
+
+// The item type of a `Set[T]`.
+function Checker.setItem(self, ty: Type): Option[Type] {
+    return match (ty) {
+        NamedType(id, args) => {
+            match (self.table[id].kind) {
+                SetKind(item) => Some(substitute(item, args))
+                _ => None
+            }
+        }
+        _ => None
+    }
+}
+
+function Checker.mapOf(self, key: Type, value: Type): Type {
+    return NamedType(self.builtins.map, [key, value])
+}
+
+// `['Ana': 30, 'Bia': 25]`, or `[:]`.
+function Checker.checkMapLiteral(mut self, entries: Entry[], expected: Option[Type]): Result[Type, string] {
+    mut keyType = UnknownType
+    mut valueType = UnknownType
+
+    match (expected) {
+        Some(wanted) => {
+            match (self.mapParts(wanted)) {
+                Some(parts) => {
+                    keyType = parts.key
+                    valueType = parts.value
+                }
+                None => {}
+            }
+        }
+        None => {}
+    }
+
+    for entry in entries {
+        immut wantedKey = if (containsUnknown(keyType)) { None } else { Some(keyType) }
+        immut actualKey = self.checkValue(entry.key, wantedKey)?
+        keyType = self.joinEntry(keyType, actualKey, 'keys')?
+        immut wantedValue = if (containsUnknown(valueType)) { None } else { Some(valueType) }
+        immut actualValue = self.checkValue(entry.value, wantedValue)?
+        self.consume(entry.value, actualValue)?
+        valueType = self.joinEntry(valueType, actualValue, 'values')?
+    }
+
+    if (not self.satisfies(keyType, equatable)) {
+        return Err(self.failure(`map keys must be equatable, and ${self.show(keyType)} is not`))
+    }
+
+    return Ok(self.mapOf(keyType, valueType))
+}
+
+function Checker.joinEntry(self, soFar: Type, actual: Type, what: string): Result[Type, string] {
+    if (not containsUnknown(soFar) and assignable(soFar, actual)) { return Ok(soFar) }
+
+    return match (join(soFar, actual)) {
+        Some(joined) => Ok(joined)
+        None => Err(self.failure(`map ${what} must have the same type: found ${self.show(soFar)} and ${self.show(actual)}`))
+    }
+}
+
+// The methods of maps and sets. `remove` (both) and `add` (sets) change the value, like `mut self`
+// methods.
+function Checker.checkCollectionMethod(mut self, callee: Node, object: Node, objectType: Type, name: string, args: Node[]): Result[Option[Type], string] {
+    mut key = UnknownType
+    mut value = VoidType
+    mut isMap = false
+
+    match (self.mapParts(objectType)) {
+        Some(parts) => {
+            key = parts.key
+            value = parts.value
+            isMap = true
+        }
+        None => {
+            match (self.setItem(objectType)) {
+                Some(item) => key = item
+                None => return Ok(None)
+            }
+        }
+    }
+
+    immut mutating = name == 'remove' or (not isMap and name == 'add')
+    mut params: Type[] = []
+    mut returned = VoidType
+
+    match (name) {
+        'get' if (isMap) => {
+            params = [key]
+            returned = self.optionOf(value)
+        }
+        'has' => {
+            params = [key]
+            returned = BooleanType
+        }
+        'remove' if (isMap) => {
+            params = [key]
+            returned = self.optionOf(value)
+        }
+        'keys' if (isMap) => returned = ListType(key)
+        'values' if (isMap) => returned = ListType(value)
+        'values' => returned = ListType(key)
+        'add' if (not isMap) => {
+            params = [key]
+            returned = VoidType
+        }
+        'remove' => {
+            params = [key]
+            returned = BooleanType
+        }
+        'length' => returned = IntType
+        _ => return Ok(None)
+    }
+
+    if (mutating) {
+        self.checkMutPlace(object, Some(name))?
+        self.tables.mutatingCalls.add(nodeId(callee))
+    }
+
+    immut argTypes = self.checkArgs(params, args)?
+
+    // `seen = Set.from([])` then `seen.add(1)`: the set becomes a Set[int].
+    if (not isMap and name == 'add' and containsUnknown(key)) {
+        self.refineVariable(object, NamedType(self.builtins.set, argTypes))
+    }
+
+    return Ok(Some(returned))
+}
+
+// `Set.from([1, 2])`
+function Checker.checkSetFrom(mut self, args: Node[], expected: Option[Type]): Result[Type, string] {
+    mut wanted: Option[Type] = None
+
+    match (expected) {
+        Some(ty) => {
+            match (self.setItem(ty)) {
+                Some(item) => wanted = Some(ListType(item))
+                None => {}
+            }
+        }
+        None => {}
+    }
+
+    if (args.length() != 1) { return Err(self.failure(`'Set.from' expects 1 argument(s), found ${args.length()}`)) }
+
+    immut items = self.checkValue(args[0], wanted)?
+    immut item = match (items) {
+        ListType(item) => item
+        UnknownType => UnknownType
+        other => return Err(self.failure(`'Set.from' needs a list, found ${self.show(other)}`))
+    }
+
+    if (not self.satisfies(item, equatable)) {
+        return Err(self.failure(`set items must be equatable, and ${self.show(item)} is not`))
+    }
+
+    return Ok(NamedType(self.builtins.set, [item]))
+}
+
+// Built-in functions and methods
+
+function Checker.argTypes(mut self, args: Node[]): Result[Type[], string] {
+    mut types: Type[] = []
+
+    for arg in args {
+        types.push(self.checkValue(arg, None)?)
+    }
+
+    return Ok(types)
+}
+
+function Checker.arity(self, name: string, args: Type[], min: int, max: int): Result[void, string] {
+    if (args.length() < min or args.length() > max) {
+        immut expected = if (min == max) { string(min) } else { `${min} to ${max}` }
+        return Err(self.failure(`'${name}' expects ${expected} argument(s), found ${args.length()}`))
+    }
+
+    return Ok()
+}
+
+function Checker.expectArg(self, name: string, index: int, expected: Type, actual: Type): Result[void, string] {
+    if (assignable(expected, actual)) { return Ok() }
+
+    return Err(self.failure(`argument ${index + 1} of '${name}' must be ${self.show(expected)}, found ${self.show(actual)}`))
+}
+
+function Checker.expectNumericArg(self, name: string, index: int, actual: Type): Result[void, string] {
+    if (isNumeric(actual) or actual == UnknownType) { return Ok() }
+
+    return Err(self.failure(`argument ${index + 1} of '${name}' must be a number, found ${self.show(actual)}`))
+}
+
+// The arguments must be exactly `expected`.
+function Checker.checkExactly(self, name: string, types: Type[], expected: Type[]): Result[void, string] {
+    self.arity(name, types, expected.length(), expected.length())?
+
+    for i in range(expected.length()) {
+        self.expectArg(name, i, expected[i], types[i])?
+    }
+
+    return Ok()
+}
+
+function Checker.resultWith(self, ok: Type, error: int): Type {
+    return NamedType(self.builtins.result, [ok, named(error)])
+}
+
+// Checks a call of a built-in function and returns its result type.
+function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[Type, string] {
+    immut types = self.argTypes(args)?
+
+    for i in range(args.length()) {
+        self.noteTemporary(args[i], types[i])
+    }
+
+    self.lastArgTypes = types
+    immut b = self.builtins
+    immut s = StringType
+    immut json = named(b.json)
+
+    match (name) {
+        'print' => return Ok(VoidType)
+        'panic' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(NeverType)
+        }
+        'input' => {
+            self.arity(name, types, 0, 1)?
+
+            if (types.length() > 0) { self.expectArg(name, 0, s, types[0])? }
+
+            return Ok(self.optionOf(StringType))
+        }
+        'range' => {
+            self.arity(name, types, 1, 3)?
+
+            for i in range(types.length()) {
+                self.expectArg(name, i, IntType, types[i])?
+            }
+
+            return Ok(ListType(IntType))
+        }
+        'int' => return self.conversion(name, types, IntType)
+        'float' => return self.conversion(name, types, FloatType)
+        'string' => {
+            self.arity(name, types, 1, 1)?
+            return Ok(StringType)
+        }
+        // `char(72)`: the character with that code, or `None` if no character has it.
+        'char' => {
+            self.checkExactly(name, types, [IntType])?
+            return Ok(self.optionOf(CharType))
+        }
+        'time.sleep' => {
+            self.arity(name, types, 1, 1)?
+            self.expectNumericArg(name, 0, types[0])?
+            return Ok(VoidType)
+        }
+        'time.now' => {
+            self.checkExactly(name, types, [])?
+            return Ok(FloatType)
+        }
+        'time.monotonic' => {
+            self.checkExactly(name, types, [])?
+            return Ok(FloatType)
+        }
+        'file.open' => {
+            self.checkExactly(name, types, [s, named(b.fileMode)])?
+            return Ok(self.resultWith(named(b.file), b.fileError))
+        }
+        'file.list' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(self.resultWith(ListType(StringType), b.fileError))
+        }
+        'file.exists' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(BooleanType)
+        }
+        'file.createDir' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(self.resultWith(VoidType, b.fileError))
+        }
+        'path.join' => {
+            self.checkExactly(name, types, [s, s])?
+            return Ok(StringType)
+        }
+        other if (other in ['path.parent', 'path.name', 'path.stem', 'path.extension']) => {
+            self.checkExactly(name, types, [s])?
+            return Ok(self.optionOf(StringType))
+        }
+        'path.isAbsolute' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(BooleanType)
+        }
+        'datetime.now' => {
+            self.checkExactly(name, types, [])?
+            return Ok(named(b.datetime))
+        }
+        'datetime.today' => {
+            self.checkExactly(name, types, [])?
+            return Ok(StringType)
+        }
+        'datetime.format' => {
+            self.arity(name, types, 2, 2)?
+            self.expectNumericArg(name, 0, types[0])?
+            self.expectArg(name, 1, s, types[1])?
+            return Ok(StringType)
+        }
+        'datetime.parse' => {
+            self.checkExactly(name, types, [s, s])?
+            return Ok(self.resultWith(IntType, b.dateError))
+        }
+        'math.abs' => {
+            self.arity(name, types, 1, 1)?
+            self.expectNumericArg(name, 0, types[0])?
+            return Ok(types[0])
+        }
+        'math.sqrt' => {
+            self.arity(name, types, 1, 1)?
+            self.expectNumericArg(name, 0, types[0])?
+            return Ok(self.resultWith(FloatType, b.mathError))
+        }
+        'math.pow' => {
+            self.arity(name, types, 2, 2)?
+            self.expectNumericArg(name, 0, types[0])?
+            self.expectNumericArg(name, 1, types[1])?
+            return Ok(self.resultWith(FloatType, b.mathError))
+        }
+        other if (other in ['math.floor', 'math.ceil', 'math.round']) => {
+            self.arity(name, types, 1, 1)?
+            self.expectNumericArg(name, 0, types[0])?
+            return Ok(IntType)
+        }
+        'system.args' => {
+            self.checkExactly(name, types, [])?
+            return Ok(ListType(StringType))
+        }
+        'system.env' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(self.optionOf(StringType))
+        }
+        // Ends the program: the code after it does not run.
+        'system.exit' => {
+            self.checkExactly(name, types, [IntType])?
+            return Ok(NeverType)
+        }
+        'system.run' => {
+            self.checkExactly(name, types, [s, ListType(StringType)])?
+            return Ok(self.resultWith(named(b.output), b.systemError))
+        }
+        other if (other == 'http.get' or other == 'http.delete') => {
+            self.checkExactly(name, types, [s])?
+            return Ok(self.resultWith(named(b.response), b.httpError))
+        }
+        other if (other == 'http.post' or other == 'http.put') => {
+            self.checkExactly(name, types, [s, s])?
+            return Ok(self.resultWith(named(b.response), b.httpError))
+        }
+        'json.parse' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(self.resultWith(json, b.jsonError))
+        }
+        'json.stringify' => {
+            self.checkExactly(name, types, [json])?
+            return Ok(StringType)
+        }
+        'json.get' => {
+            self.checkExactly(name, types, [json, s])?
+            return Ok(self.optionOf(json))
+        }
+        other if (other in ['json.asString', 'json.asInt', 'json.asFloat', 'json.asBool']) => {
+            self.checkExactly(name, types, [json])?
+            immut value = match (other) {
+                'json.asString' => StringType
+                'json.asInt' => IntType
+                'json.asFloat' => FloatType
+                _ => BooleanType
+            }
+            return Ok(self.optionOf(value))
+        }
+        'regex.compile' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(self.resultWith(named(b.regex), b.regexError))
+        }
+        other => return Err(self.failure(`unknown built-in function '${other}'`))
+    }
+}
+
+// `int(x)` and `float(x)`.
+function Checker.conversion(self, name: string, types: Type[], target: Type): Result[Type, string] {
+    self.arity(name, types, 1, 1)?
+
+    return match (types[0]) {
+        IntType => Ok(target)
+        FloatType => Ok(target)
+        BooleanType => Ok(target)
+        StringType => Ok(self.resultWith(target, self.builtins.parseError))
+        UnknownType => Ok(UnknownType)
+        other => Err(self.failure(`cannot convert ${self.show(other)} to ${name}`))
+    }
+}
+
+function Checker.checkMethodCall(mut self, objectType: Type, name: string, args: Node[], expected: Option[Type]): Result[Type, string] {
+    match (objectType) {
+        ModuleType(id) => {
+            immut symbol = match (self.modules[id].members.get(name)) {
+                Some(symbol) => symbol
+                None => return Err(self.missingMember(id, name))
+            }
+
+            match (symbol.kind) {
+                BuiltinSymbol(builtin) => return self.checkBuiltinCall(builtin, args)
+                ConstructorSymbol(typeId, variantName) => return self.checkConstructor(typeId, variantName, args, expected)
+                ValueSymbol => {
+                    if (symbol.generics > 0) {
+                        return self.checkGenericCall(symbol.ty, unknowns(symbol.generics), symbol.constraints, symbol.modes, name, args, expected)
+                    }
+
+                    return self.checkFunctionCallMut(symbol.ty, symbol.modes, args)
+                }
+            }
+        }
+        // `result.mapErr(f)`: converts the error with `f` (a function or a variant constructor).
+        NamedType(id, typeArgs) if (id == self.builtins.result and name == 'mapErr') => return self.checkMapErr(typeArgs, args)
+        _ => {}
+    }
+
+    immut s = StringType
+    mut signature: Option[SignatureParts] = None
+
+    match (objectType) {
+        StringType => {
+            match (name) {
+                'length' => signature = Some({ params: [], returns: IntType })
+                other if (other in ['trim', 'upper', 'lower']) => signature = Some({ params: [], returns: StringType })
+                other if (other in ['isSpace', 'isNumeric', 'isAlpha', 'isAlphaNumeric', 'isUpper', 'isLower', 'isTitle']) => {
+                    signature = Some({ params: [], returns: BooleanType })
+                }
+                'split' => signature = Some({ params: [s], returns: ListType(StringType) })
+                'replace' => signature = Some({ params: [s, s], returns: StringType })
+                other if (other == 'startsWith' or other == 'endsWith') => signature = Some({ params: [s], returns: BooleanType })
+                'indexOf' => signature = Some({ params: [s], returns: self.optionOf(IntType) })
+                'chars' => signature = Some({ params: [], returns: ListType(CharType) })
+                _ => {}
+            }
+        }
+        CharType => {
+            if (name == 'code') { signature = Some({ params: [], returns: IntType }) }
+        }
+        ListType(item) => {
+            if (name == 'length') { signature = Some({ params: [], returns: IntType }) }
+
+            // `['a', 'b'].join(', ')` gives 'a, b'.
+            if (name == 'join') {
+                if (item != StringType and not containsUnknown(item)) {
+                    return Err(self.failure(`'join' needs a list of strings, found ${self.show(objectType)}`))
+                }
+
+                signature = Some({ params: [s], returns: StringType })
+            }
+        }
+        UnknownType => {
+            for arg in args {
+                self.checkValue(arg, None)?
+            }
+
+            return Ok(UnknownType)
+        }
+        NamedType(id, _) => {
+            match (self.table[id].kind) {
+                BuiltinKind(_, methods) => {
+                    for method in methods {
+                        if (method.name == name) {
+                            signature = Some({ params: method.params, returns: method.returns })
+                            break
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    match (signature) {
+        Some(found) => {
+            self.checkArgs(found.params, args)?
+            return Ok(found.returns)
+        }
+        None => {}
+    }
+
+    // A field holding a function: `obj.callback(1)`.
+    match (fieldsOf(self.table, objectType)) {
+        Some(fields) => {
+            match (findField(fields, name)) {
+                Some(fieldType) => return self.checkFunctionCall(fieldType, args)
+                None => {}
+            }
+        }
+        None => {}
+    }
+
+    // Every value has `display()` (what `print` shows) and `debug()` (its structure).
+    if (name == 'display' or name == 'debug') {
+        self.checkArgs([], args)?
+        return Ok(StringType)
+    }
+
+    return Err(self.failure(`a value of type ${self.show(objectType)} has no method '${name}'`))
+}
+
+// `result.mapErr(f)` with `f: (E) => F` gives a `Result[T, F]`.
+function Checker.checkMapErr(mut self, typeArgs: Type[], args: Node[]): Result[Type, string] {
+    immut ok = if (typeArgs.length() > 0) { typeArgs[0] } else { UnknownType }
+    immut error = if (typeArgs.length() > 1) { typeArgs[1] } else { UnknownType }
+
+    if (args.length() != 1) { return Err(self.failure(`'mapErr' expects 1 argument, found ${args.length()}`)) }
+
+    immut converter = self.checkValue(args[0], None)?
+
+    match (converter) {
+        FunctionType(params, returns) if (params.length() == 1) => {
+            if (not assignable(params[0], error)) {
+                return Err(self.failure(`the function given to 'mapErr' must accept ${self.show(error)}, but it accepts ${self.show(params[0])}`))
+            }
+
+            return Ok(NamedType(self.builtins.result, [ok, returns]))
+        }
+        other => {
+            return Err(self.failure(`'mapErr' expects a function with one parameter (or a variant with one field), found ${self.show(other)}`))
+        }
+    }
+}
+
+// `match`: patterns and exhaustiveness
+
+function Checker.checkMatch(mut self, scrutinee: Node, arms: Arm[], expected: Option[Type]): Result[Type, string] {
+    immut scrutineeType = self.checkValue(scrutinee, None)?
+    // On a move-only variable, the bindings borrow its parts; on a temporary, they own them.
+    immut moveOnly = self.isMoveOnly(scrutineeType)
+    immut borrowing = moveOnly and isPlace(scrutinee)
+
+    if (moveOnly and not borrowing) { self.tables.owningMatches.add(nodeId(scrutinee)) }
+
+    immut before = self.state.moved
+    mut branches: Branch[] = []
+    mut armTypes: Type[] = []
+
+    for arm in arms {
+        self.pushScope()
+        self.state.borrowingMatch = borrowing
+        self.checkPattern(arm.pattern, scrutineeType)?
+        self.state.borrowingMatch = false
+
+        match (arm.guard) {
+            Some(guard) => self.checkCondition(guard, 'match guard')?
+            None => {}
+        }
+
+        immut ty = self.checkBlock(arm.body, expected, [])?
+        self.endScope()?
+        branches.push({ moved: self.state.moved, diverges: ty == NeverType })
+        self.state.moved = before
+        armTypes.push(ty)
+    }
+
+    self.mergeMoves(before, branches)
+    self.checkExhaustive(scrutineeType, arms)?
+    return self.branchTypes(armTypes, expected, 'match arm')
+}
+
+// The variant `name` of `ty`, if it is a sum type that has it (with its type arguments).
+type FoundVariant = {
+    args: Type[]
+    info: VariantInfo
+}
+
+function Checker.variantOf(self, ty: Type, name: string): Option[FoundVariant] {
+    immut parts = match (namedParts(ty)) {
+        Some(parts) => parts
+        None => return None
+    }
+
+    match (variantsOf(self.table, parts.id)) {
+        Some(variants) => {
+            for each in variants {
+                if (each.name == name) { return Some({ args: parts.args, info: each }) }
+            }
+        }
+        None => {}
+    }
+
+    return None
+}
+
+function Checker.isConstructorName(self, name: string): boolean {
+    return match (self.lookup(name)) {
+        Some(symbol) => isConstructor(symbol)
+        None => false
+    }
+}
+
+function Checker.checkPattern(mut self, pattern: Pattern, ty: Type): Result[void, string] {
+    match (pattern) {
+        Wildcard => return Ok()
+        Bind(name) => {
+            match (self.variantOf(ty, name)) {
+                Some(found) => {
+                    if (found.info.fields.length() > 0) {
+                        return Err(self.failure(`variant '${name}' has fields; use '${name}(...)' in the pattern`))
+                    }
+
+                    return Ok()
+                }
+                None => {}
+            }
+
+            immut dynamic = ty == UnknownType
+
+            if (self.isConstructorName(name) and not dynamic) {
+                return Err(self.failure(`pattern '${name}' does not match a value of type ${self.show(ty)}`))
+            }
+
+            if (dynamic and self.isConstructorName(name)) { return Ok() }
+
+            mut symbol = valueSymbol(ty, true)
+            symbol.isImut = true
+            symbol.line = self.state.line
+            symbol.reason = Some("variables bound by 'match' are immut")
+
+            if (self.state.borrowingMatch) { symbol.borrowed = Some("bound by 'match' to a part of a variable") }
+
+            self.state.scopes[self.lastScope()].vars[name] = symbol
+            return Ok()
+        }
+        VariantPattern(name, args) => {
+            if (ty == UnknownType) {
+                for arg in args {
+                    self.checkPattern(arg, UnknownType)?
+                }
+
+                return Ok()
+            }
+
+            immut found = match (self.variantOf(ty, name)) {
+                Some(found) => found
+                None => return Err(self.failure(`'${name}' is not a variant of ${self.show(ty)}`))
+            }
+            immut fields = found.info.fields
+
+            if (fields.length() != args.length()) {
+                return Err(self.failure(`variant '${name}' has ${fields.length()} field(s), but the pattern has ${args.length()}`))
+            }
+
+            for i in range(fields.length()) {
+                self.checkPattern(args[i], substitute(fields[i].ty, found.args))?
+            }
+
+            return Ok()
+        }
+        Literal(literal) => {
+            immut literalType = self.checkExpression(literal, Some(ty))?
+
+            if (not assignable(ty, literalType) and not assignable(literalType, ty)) {
+                return Err(self.failure(`pattern of type ${self.show(literalType)} does not match a value of type ${self.show(ty)}`))
+            }
+
+            return Ok()
+        }
+    }
+}
+
+// Whether the pattern matches every value of its type.
+function Checker.irrefutable(self, pattern: Pattern, ty: Type): boolean {
+    return match (pattern) {
+        Wildcard => true
+        Bind(name) => self.variantOf(ty, name) is None and not self.isConstructorName(name)
+        _ => false
+    }
+}
+
+function Checker.checkExhaustive(self, ty: Type, arms: Arm[]): Result[void, string] {
+    mut rows: Pattern[][] = []
+
+    for arm in arms {
+        if (arm.guard is None) { rows.push([arm.pattern]) }
+    }
+
+    immut witness = match (self.missingPattern([ty], rows)) {
+        None => return Ok()
+        Some(found) => if (found.length() > 0) { found[0] } else { '_' }
+    }
+
+    if (witness == '_') { return Err(self.failure("match is not exhaustive: add a wildcard arm '_ => ...'")) }
+
+    return Err(self.failure(`match is not exhaustive: ${witness} is not handled (add an arm for it or a wildcard '_ => ...')`))
+}
+
+// A constructor of a type with finitely many of them: its name and field types.
+type ConstructorInfo = {
+    name: string
+    fields: Type[]
+}
+
+function Checker.constructorsOf(self, ty: Type): Option[ConstructorInfo[]] {
+    if (ty == BooleanType) { return Some([{ name: 'true', fields: [] }, { name: 'false', fields: [] }]) }
+
+    immut parts = match (namedParts(ty)) {
+        Some(parts) => parts
+        None => return None
+    }
+    immut variants = match (variantsOf(self.table, parts.id)) {
+        Some(variants) => variants
+        None => return None
+    }
+    immut only = match (ty) {
+        VariantType(_, _, name) => Some(name)
+        _ => None
+    }
+    mut result: ConstructorInfo[] = []
+
+    for each in variants {
+        match (only) {
+            Some(name) if (name != each.name) => continue
+            _ => {}
+        }
+
+        mut fields: Type[] = []
+
+        for fieldType in each.fields {
+            fields.push(substitute(fieldType.ty, parts.args))
+        }
+
+        result.push({ name: each.name, fields: fields })
+    }
+
+    return Some(result)
+}
+
+function headName(pattern: Pattern): Option[string] {
+    return match (pattern) {
+        Bind(name) => Some(name)
+        VariantPattern(name, _) => Some(name)
+        Literal(literal) => {
+            match (literal.kind) {
+                BooleanLiteral(value) => Some(string(value))
+                _ => None
+            }
+        }
+        _ => None
+    }
+}
+
+// Whether some row has a refutable head named `name`.
+function Checker.mentioned(self, rows: Pattern[][], first: Type, name: string): boolean {
+    for row in rows {
+        if (not self.irrefutable(row[0], first) and headName(row[0]) == Some(name)) { return true }
+    }
+
+    return false
+}
+
+// The classic usefulness check on a pattern matrix: an example of values (one per column) that no
+// row matches, or `None` when the rows are exhaustive.
+function Checker.missingPattern(self, types: Type[], rows: Pattern[][]): Option[string[]] {
+    if (types.length() == 0) {
+        if (rows.length() == 0) { return Some([]) }
+
+        return None
+    }
+
+    immut first = types[0]
+    immut rest = types[1..]
+
+    if (first == UnknownType) { return None }
+
+    // Split by constructor only when the column mentions all of them; otherwise the rows with an
+    // irrefutable head (the default matrix) must cover the rest.
+    mut split: Option[ConstructorInfo[]] = None
+
+    match (self.constructorsOf(first)) {
+        Some(constructors) => {
+            mut all = constructors.length() > 0
+
+            for constructor in constructors {
+                if (not self.mentioned(rows, first, constructor.name)) { all = false }
+            }
+
+            if (all) { split = Some(constructors) }
+        }
+        None => {}
+    }
+
+    match (split) {
+        Some(constructors) => {
+            for constructor in constructors {
+                mut specialized: Pattern[][] = []
+
+                for row in rows {
+                    immut head = row[0]
+                    mut args: Option[Pattern[]] = None
+
+                    if (self.irrefutable(head, first)) {
+                        mut wildcards: Pattern[] = []
+
+                        for fieldType in constructor.fields {
+                            wildcards.push(Wildcard)
+                        }
+
+                        args = Some(wildcards)
+                    } else {
+                        match (head) {
+                            Bind(name) if (name == constructor.name) => args = Some([])
+                            VariantPattern(name, patterns) if (name == constructor.name) => args = Some(patterns)
+                            Literal(_) if (headName(head) == Some(constructor.name)) => args = Some([])
+                            _ => {}
+                        }
+                    }
+
+                    match (args) {
+                        Some(found) => {
+                            mut extended = found
+
+                            for pattern in row[1..] {
+                                extended.push(pattern)
+                            }
+
+                            specialized.push(extended)
+                        }
+                        None => {}
+                    }
+                }
+
+                mut subTypes = constructor.fields
+
+                for ty in rest {
+                    subTypes.push(ty)
+                }
+
+                match (self.missingPattern(subTypes, specialized)) {
+                    Some(witness) => {
+                        immut count = constructor.fields.length()
+                        immut inner = witness[..count]
+                        immut head = if (inner.length() == 0) { constructor.name } else { `${constructor.name}(${inner.join(', ')})` }
+                        mut result = [head]
+
+                        for each in witness[count..] {
+                            result.push(each)
+                        }
+
+                        return Some(result)
+                    }
+                    None => {}
+                }
+            }
+
+            return None
+        }
+        None => {}
+    }
+
+    // Only rows with an irrefutable head cover the values not mentioned in the column.
+    mut defaults: Pattern[][] = []
+
+    for row in rows {
+        if (self.irrefutable(row[0], first)) { defaults.push(row[1..]) }
+    }
+
+    mut missingHead = '_'
+
+    match (self.constructorsOf(first)) {
+        Some(constructors) => {
+            for constructor in constructors {
+                if (not self.mentioned(rows, first, constructor.name)) {
+                    if (constructor.fields.length() == 0) {
+                        missingHead = constructor.name
+                    } else {
+                        mut blanks: string[] = []
+
+                        for fieldType in constructor.fields {
+                            blanks.push('_')
+                        }
+
+                        missingHead = `${constructor.name}(${blanks.join(', ')})`
+                    }
+
+                    break
+                }
+            }
+        }
+        None => {}
+    }
+
+    return match (self.missingPattern(rest, defaults)) {
+        Some(witness) => {
+            mut result = [missingHead]
+
+            for each in witness {
+                result.push(each)
+            }
+
+            Some(result)
+        }
+        None => None
+    }
+}
+
+// Programs
+
+// Checks the file at `path` and every module it imports.
+export function check(path: string): Result[Program, string] {
+    immut source = match (readSource(path)) {
+        Ok(source) => source
+        Err(error) => return Err(`import error: cannot read '${path}': ${ioMessage(error)}`)
+    }
+
+    mut checker = Checker.create()
+    checker.checkModule(resolvePath('', path), path, source)?
+    return Ok({ modules: checker.loaded, table: checker.table, tables: checker.tables })
+}
+
+function methodsText(methods: Option[MethodRef][]): string {
+    mut any = false
+    mut texts: string[] = []
+
+    for method in methods {
+        match (method) {
+            Some(found) => {
+                any = true
+                texts.push(found.key)
+            }
+            None => texts.push('_')
+        }
+    }
+
+    if (not any) { return '' }
+
+    return `!displays=(${texts.join(' ')})`
+}
+
+// What `kojic dump types` prints after a node: its type and what the compiler needs to know about it.
+function annotation(program: Program, node: Node): string {
+    immut tables = program.tables
+    immut id = node.id
+    mut text = ''
+
+    match (tables.types.get(id)) {
+        Some(ty) => text += `:${display(program.table, ty)}`
+        None => {}
+    }
+
+    if (tables.moves.has(id)) { text += '!move' }
+
+    if (tables.declares.has(id)) { text += '!declares' }
+
+    if (tables.replaces.has(id)) { text += '!replaces' }
+
+    if (tables.temporaries.has(id)) { text += '!temporary' }
+
+    if (tables.owningMatches.has(id)) { text += '!owning' }
+
+    if (tables.charLiterals.has(id)) { text += '!char' }
+
+    if (tables.mutatingCalls.has(id)) { text += '!mutating' }
+
+    if (tables.toFloat.has(id)) { text += '!float' }
+
+    match (tables.drops.get(id)) {
+        Some(method) => text += `!drop=${method.key}`
+        None => {}
+    }
+
+    match (tables.functionTypes.get(id)) {
+        Some(ty) => text += `!function=${display(program.table, ty)}`
+        None => {}
+    }
+
+    match (tables.typeArgs.get(id)) {
+        Some(args) => text += `!type-args=(${displayAll(program.table, args)})`
+        None => {}
+    }
+
+    match (tables.fieldOrders.get(id)) {
+        Some(fields) => text += `!fields=(${fields.join(' ')})`
+        None => {}
+    }
+
+    match (tables.variableTypes.get(id)) {
+        Some(ty) => text += `!variable=${display(program.table, ty)}`
+        None => {}
+    }
+
+    match (node.kind) {
+        Call(_, _) => {
+            match (tables.methods.get(id)) {
+                Some(method) => {
+                    immut kind = if (method.hasSelf) { 'method' } else { 'associated' }
+                    text += `!${kind}=${method.key}`
+                }
+                None => {}
+            }
+
+            match (tables.displays.get(id)) {
+                Some(methods) => text += methodsText(methods)
+                None => {}
+            }
+        }
+        Template(parts) => {
+            mut methods: Option[MethodRef][] = []
+
+            for part in parts {
+                match (part) {
+                    Expression(value) => {
+                        methods.push(match (tables.templateDisplays.get(value.id)) {
+                            Some(method) => method
+                            None => None
+                        })
+                    }
+                    Text(_) => {}
+                }
+            }
+
+            text += methodsText(methods)
+        }
+        Try(_) => {
+            match (tables.wraps.get(id)) {
+                Some(wrap) => {
+                    match (wrap.module) {
+                        Some(module) => text += `!wrap=${module}.${wrap.variant}`
+                        None => text += `!wrap=${wrap.variant}`
+                    }
+                }
+                None => {}
+            }
+        }
+        _ => {}
+    }
+
+    return text
+}
+
+// What the checker finds in the file at `path` and the modules it imports, as `kojic dump types`
+// prints it: each module (`module math.kj`), then its statements, each node followed by its type
+// and what the compiler needs to know about it. An error is a single line, `error: ...`.
+export function dumpTypes(path: string): string[] {
+    immut program = match (check(path)) {
+        Ok(program) => program
+        Err(message) => return [`error: ${message}`]
+    }
+
+    mut lines: string[] = []
+
+    for module in program.modules {
+        lines.push(`module ${module.display}`)
+
+        for statement in module.statements {
+            lines.push(annotated(statement, (node: Node) => annotation(program, node)))
+        }
+    }
+
+    return lines
+}

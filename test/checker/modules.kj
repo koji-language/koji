@@ -1,0 +1,20 @@
+// Imports of every kind, and what they give.
+import shapes from 'lib/shapes.kj'
+import { Shape, Box, area, first, grow, count } from 'lib/shapes.kj'
+import math
+
+immut circle = Circle(1)
+immut square = shapes.Square(2.0)
+print(area(circle), shapes.area(square), math.pi)
+immut box: Box = { label: 'a', size: 1 }
+immut other: shapes.Box = { size: 2, label: 'b' }
+print(box, other, first([1, 2]), shapes.first(['a']), count)
+mut items = [1]
+grow(mut items)
+shapes.grow(mut items)
+
+function parse(text: string): Result[int, shapes.Problem] {
+    return Ok(int(text)?)
+}
+
+print(parse('12'), items)

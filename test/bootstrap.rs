@@ -219,3 +219,54 @@ fn the_interpreted_parser_agrees() {
         assert_eq!(tree, expected, "the syntax tree of {} differs", file);
     }
 }
+
+/// The programs of `test/checker/cases.txt` (after its header, separated by lines `----`), as
+/// files in a directory of their own.
+fn checker_cases() -> Vec<PathBuf> {
+    let text = std::fs::read_to_string("test/checker/cases.txt").unwrap();
+    let (_, cases) = text.split_once("----\n").expect("the cases start after a line '----'");
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-checker-cases");
+    std::fs::create_dir_all(&directory).unwrap();
+    let files: Vec<PathBuf> = cases
+        .split("\n----\n")
+        .enumerate()
+        .map(|(index, source)| {
+            let file = directory.join(format!("case{}.kj", index));
+            std::fs::write(&file, format!("{}\n", source.trim_end_matches('\n'))).unwrap();
+            file
+        })
+        .collect();
+    assert!(files.len() > 200, "too few checker cases: {}", files.len());
+    files
+}
+
+/// The modules of `test/checker/` (imports of every kind, and their errors).
+fn checker_modules() -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir("test/checker")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "kj"))
+        .collect();
+    files.sort();
+    files
+}
+
+#[test]
+fn the_checker_in_koji_finds_the_same() {
+    let compiler = koji_compiler();
+    let files = corpus().into_iter().chain(parser_cases()).chain(checker_cases()).chain(checker_modules());
+    for file in files {
+        let expected = kojic::dump_types(&file);
+        let found = output(Command::new(compiler).arg("types").arg(&file));
+        assert_eq!(found, expected, "what the checkers find in {} differs", file.display());
+    }
+}
+
+#[test]
+fn the_interpreted_checker_agrees() {
+    for file in ["examples/shapes.kj", "test/checker/modules.kj", "test/checker/wrap.kj"] {
+        let expected = kojic::dump_types(Path::new(file));
+        let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "types", file]));
+        assert_eq!(found, expected, "what the checkers find in {} differs", file);
+    }
+}

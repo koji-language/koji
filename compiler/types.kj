@@ -1,0 +1,395 @@
+// The types of the checker of the Koji compiler written in Koji. It follows src/semantic/types.rs
+// and the compatibility rules of src/semantic/type_checker/typing.rs.
+
+// The static type of an expression.
+export type Type = {
+    IntType
+    FloatType
+    StringType
+    // A Unicode character (a code point).
+    CharType
+    BooleanType
+    VoidType
+    // Not known yet (`None`, `[]`): compatible with anything and refined on later assignments.
+    UnknownType
+    // An expression that never produces a value (`return`, `break`, `continue`).
+    NeverType
+    ListType(item: Type)
+    FunctionType(params: Type[], returns: Type)
+    // A declared type (sum type, shape, map, set or built-in object).
+    NamedType(id: int, args: Type[])
+    // A value of a sum type known to be one variant (inside `if (x is Some) { ... }`).
+    VariantType(id: int, args: Type[], variant: string)
+    ModuleType(id: int)
+    // A generic parameter in a signature (`T` in `Option[T]`).
+    ParamType(index: int)
+}
+
+// What a type parameter requires of its type argument; each level includes the previous one.
+export immut unconstrained = 0
+export immut equatable = 1
+export immut orderable = 2
+
+export function constraintName(constraint: int): string {
+    return match (constraint) {
+        0 => 'unconstrained'
+        1 => 'equatable'
+        _ => 'orderable'
+    }
+}
+
+export type FieldType = {
+    name: string
+    ty: Type
+}
+
+export type VariantInfo = {
+    name: string
+    fields: FieldType[]
+}
+
+export type MethodSignature = {
+    name: string
+    params: Type[]
+    returns: Type
+}
+
+export type TypeKind = {
+    // Declared but not resolved yet (between hoisting and resolution).
+    Pending
+    SumKind(variants: VariantInfo[])
+    // A nominal type with fixed fields.
+    ShapeKind(fields: FieldType[])
+    // The built-in `Map[K, V]` (`key` and `value` are `ParamType(0)` and `ParamType(1)`).
+    MapKind(key: Type, value: Type)
+    // The built-in `Set[T]` (`item` is `ParamType(0)`).
+    SetKind(item: Type)
+    // A type parameter seen from inside the generic function or type that declares it.
+    ParamKind(constraint: int)
+    // A built-in object (`File`, `DateTime`...): read-only fields and methods.
+    BuiltinKind(fields: FieldType[], methods: MethodSignature[])
+}
+
+export type TypeInfo = {
+    name: string
+    // The number of generic parameters, and their constraints (empty: none).
+    params: int
+    constraints: int[]
+    kind: TypeKind
+}
+
+export function isNumeric(ty: Type): boolean {
+    return ty == IntType or ty == FloatType
+}
+
+export function containsUnknown(ty: Type): boolean {
+    return match (ty) {
+        UnknownType => true
+        ListType(item) => containsUnknown(item)
+        FunctionType(params, returns) => anyUnknown(params) or containsUnknown(returns)
+        NamedType(_, args) => anyUnknown(args)
+        VariantType(_, args, _) => anyUnknown(args)
+        _ => false
+    }
+}
+
+export function anyUnknown(types: Type[]): boolean {
+    for ty in types {
+        if (containsUnknown(ty)) { return true }
+    }
+
+    return false
+}
+
+// Replaces the unknown parts with `with`.
+export function fillUnknown(ty: Type, with: Type): Type {
+    return match (ty) {
+        UnknownType => with
+        ListType(item) => ListType(fillUnknown(item, with))
+        FunctionType(params, returns) => FunctionType(fillAll(params, with), fillUnknown(returns, with))
+        NamedType(id, args) => NamedType(id, fillAll(args, with))
+        VariantType(id, args, variant) => VariantType(id, fillAll(args, with), variant)
+        other => other
+    }
+}
+
+function fillAll(types: Type[], with: Type): Type[] {
+    mut result: Type[] = []
+
+    for ty in types {
+        result.push(fillUnknown(ty, with))
+    }
+
+    return result
+}
+
+// Replaces the generic parameters with `args`.
+export function substitute(ty: Type, args: Type[]): Type {
+    return match (ty) {
+        ParamType(index) => if (index < args.length()) { args[index] } else { UnknownType }
+        ListType(item) => ListType(substitute(item, args))
+        FunctionType(params, returns) => FunctionType(substituteAll(params, args), substitute(returns, args))
+        NamedType(id, inner) => NamedType(id, substituteAll(inner, args))
+        VariantType(id, inner, variant) => VariantType(id, substituteAll(inner, args), variant)
+        other => other
+    }
+}
+
+export function substituteAll(types: Type[], args: Type[]): Type[] {
+    mut result: Type[] = []
+
+    for ty in types {
+        result.push(substitute(ty, args))
+    }
+
+    return result
+}
+
+// `ParamType(0..count)`, for a signature.
+export function signatureParams(count: int): Type[] {
+    mut params: Type[] = []
+
+    for i in range(count) {
+        params.push(ParamType(i))
+    }
+
+    return params
+}
+
+// Whether a value of type `actual` can be used where `expected` is required. An `int` becomes a
+// `float` only as a whole value: an `int[]` is not a `float[]`.
+export function assignable(expected: Type, actual: Type): boolean {
+    return compatible(expected, actual, true)
+}
+
+// `assignable`, where `convert` allows an `int` for a `float` (only at the top).
+function compatible(expected: Type, actual: Type, convert: boolean): boolean {
+    if (actual == NeverType or actual == UnknownType or expected == UnknownType) { return true }
+
+    if (expected == FloatType and actual == IntType) { return convert }
+
+    match (expected) {
+        ListType(e) => {
+            match (actual) {
+                ListType(a) => return compatible(e, a, false)
+                _ => {}
+            }
+        }
+        NamedType(e, ea) => {
+            match (actual) {
+                NamedType(a, aa) if (e == a) => return allCompatible(ea, aa)
+                VariantType(a, aa, _) if (e == a) => return allCompatible(ea, aa)
+                _ => {}
+            }
+        }
+        VariantType(e, ea, ev) => {
+            match (actual) {
+                VariantType(a, aa, av) => return e == a and ev == av and allCompatible(ea, aa)
+                _ => {}
+            }
+        }
+        FunctionType(ep, er) => {
+            match (actual) {
+                FunctionType(ap, ar) => {
+                    if (ep.length() != ap.length()) { return false }
+
+                    for i in range(ep.length()) {
+                        if (not compatible(ap[i], ep[i], false)) { return false }
+                    }
+
+                    return compatible(er, ar, false)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    return expected == actual
+}
+
+// Pairwise, as far as the shorter list goes.
+function allCompatible(expected: Type[], actual: Type[]): boolean {
+    for i in range(min(expected.length(), actual.length())) {
+        if (not compatible(expected[i], actual[i], false)) { return false }
+    }
+
+    return true
+}
+
+function min(a: int, b: int): int {
+    if (a < b) { return a }
+
+    return b
+}
+
+// The common type of two branches, if there is one.
+export function join(a: Type, b: Type): Option[Type] {
+    return joinTypes(a, b, true)
+}
+
+// `join`, where `convert` lets `int` and `float` join as `float` (only at the top).
+function joinTypes(a: Type, b: Type, convert: boolean): Option[Type] {
+    if (a == b) { return Some(a) }
+
+    if (a == NeverType) { return Some(b) }
+
+    if (b == NeverType) { return Some(a) }
+
+    if (a == UnknownType) { return Some(b) }
+
+    if (b == UnknownType) { return Some(a) }
+
+    immut mixed = (a == IntType and b == FloatType) or (a == FloatType and b == IntType)
+
+    if (mixed and convert) { return Some(FloatType) }
+
+    match (a) {
+        ListType(x) => {
+            match (b) {
+                ListType(y) => {
+                    return match (joinTypes(x, y, false)) {
+                        Some(item) => Some(ListType(item))
+                        None => None
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    immut left = namedParts(a)
+    immut right = namedParts(b)
+
+    match (left) {
+        Some(x) => {
+            match (right) {
+                Some(y) if (x.id == y.id) => {
+                    mut args: Type[] = []
+
+                    for i in range(min(x.args.length(), y.args.length())) {
+                        match (joinTypes(x.args[i], y.args[i], false)) {
+                            Some(arg) => args.push(arg)
+                            None => return None
+                        }
+                    }
+
+                    return Some(NamedType(x.id, args))
+                }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+
+    if (compatible(a, b, convert)) { return Some(a) }
+
+    if (compatible(b, a, convert)) { return Some(b) }
+
+    return None
+}
+
+// The id and arguments of a named type or a variant type.
+export type NamedParts = {
+    id: int
+    args: Type[]
+}
+
+export function namedParts(ty: Type): Option[NamedParts] {
+    return match (ty) {
+        NamedType(id, args) => Some({ id: id, args: args })
+        VariantType(id, args, _) => Some({ id: id, args: args })
+        _ => None
+    }
+}
+
+// The type as messages show it: `int`, `Option[int]`, `(int) => string`, `?` when unknown.
+export function display(table: TypeInfo[], ty: Type): string {
+    return match (ty) {
+        IntType => 'int'
+        FloatType => 'float'
+        StringType => 'string'
+        BooleanType => 'boolean'
+        CharType => 'char'
+        VoidType => 'void'
+        UnknownType => '?'
+        NeverType => 'never'
+        // `((int) => int)[]`: a list of functions needs parentheses.
+        ListType(FunctionType(params, returns)) => `(${display(table, FunctionType(params, returns))})[]`
+        ListType(item) => `${display(table, item)}[]`
+        FunctionType(params, returns) => `(${displayAll(table, params)}) => ${display(table, returns)}`
+        NamedType(id, args) => `${table[id].name}${displayArgs(table, args)}`
+        VariantType(id, args, variant) => `${table[id].name}${displayArgs(table, args)}.${variant}`
+        ModuleType(_) => 'module'
+        ParamType(index) => `T${index}`
+    }
+}
+
+export function displayAll(table: TypeInfo[], types: Type[]): string {
+    mut texts: string[] = []
+
+    for ty in types {
+        texts.push(display(table, ty))
+    }
+
+    return texts.join(', ')
+}
+
+function displayArgs(table: TypeInfo[], args: Type[]): string {
+    if (args.length() == 0) { return '' }
+
+    return `[${displayAll(table, args)}]`
+}
+
+// The fields of a value of this type, with its generic arguments applied.
+export function fieldsOf(table: TypeInfo[], ty: Type): Option[FieldType[]] {
+    match (ty) {
+        NamedType(id, args) => {
+            return match (table[id].kind) {
+                ShapeKind(fields) => Some(substituteFields(fields, args))
+                BuiltinKind(fields, _) => Some(substituteFields(fields, args))
+                _ => None
+            }
+        }
+        VariantType(id, args, variant) => {
+            match (table[id].kind) {
+                SumKind(variants) => {
+                    for info in variants {
+                        if (info.name == variant) { return Some(substituteFields(info.fields, args)) }
+                    }
+
+                    return None
+                }
+                _ => return None
+            }
+        }
+        _ => return None
+    }
+}
+
+export function substituteFields(fields: FieldType[], args: Type[]): FieldType[] {
+    mut result: FieldType[] = []
+
+    for field in fields {
+        result.push({ name: field.name, ty: substitute(field.ty, args) })
+    }
+
+    return result
+}
+
+export function variantsOf(table: TypeInfo[], id: int): Option[VariantInfo[]] {
+    return match (table[id].kind) {
+        SumKind(variants) => Some(variants)
+        _ => None
+    }
+}
+
+// The field named `name`, if any.
+export function findField(fields: FieldType[], name: string): Option[Type] {
+    for field in fields {
+        if (field.name == name) { return Some(field.ty) }
+    }
+
+    return None
+}

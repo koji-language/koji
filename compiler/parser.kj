@@ -1426,18 +1426,18 @@ export function parseFrom(source: string, firstId: int): Result[ParsedFile, stri
 
 // The text form of the tree (`kojic dump ast`): one S-expression per node.
 
-function optional(node: Option[Node]): string {
+function optional(node: Option[Node], a: (Node) => string): string {
     return match (node) {
-        Some(value) => dump(value)
+        Some(value) => annotated(value, a)
         None => '_'
     }
 }
 
-function list(nodes: Node[]): string {
+function list(nodes: Node[], a: (Node) => string): string {
     mut text = ''
 
     for node in nodes {
-        text += ` ${dump(node)}`
+        text += ` ${annotated(node, a)}`
     }
 
     return text
@@ -1523,7 +1523,7 @@ function definitionText(definition: TypeDef): string {
     }
 }
 
-function patternText(pattern: Pattern): string {
+function patternText(pattern: Pattern, a: (Node) => string): string {
     match (pattern) {
         Wildcard => return '(wildcard)'
         Bind(name) => return `(bind ${name})`
@@ -1531,12 +1531,12 @@ function patternText(pattern: Pattern): string {
             mut text = `(variant ${name}`
 
             for arg in args {
-                text += ` ${patternText(arg)}`
+                text += ` ${patternText(arg, a)}`
             }
 
             return `${text})`
         }
-        Literal(value) => return `(literal ${dump(value)})`
+        Literal(value) => return `(literal ${annotated(value, a)})`
     }
 }
 
@@ -1553,24 +1553,24 @@ function typeParametersText(params: TypeParam[]): string {
     return `(${texts.join(' ')})`
 }
 
-function partsText(parts: Part[]): string {
+function partsText(parts: Part[], a: (Node) => string): string {
     mut text = ''
 
     for part in parts {
         match (part) {
             Text(value) => text += ` (text ${value.debug()})`
-            Expression(value) => text += ` (expr ${dump(value)})`
+            Expression(value) => text += ` (expr ${annotated(value, a)})`
         }
     }
 
     return text
 }
 
-function armsText(arms: Arm[]): string {
+function armsText(arms: Arm[], a: (Node) => string): string {
     mut text = ''
 
     for arm in arms {
-        text += ` (arm ${patternText(arm.pattern)} ${optional(arm.guard)} ${dump(arm.body)})`
+        text += ` (arm ${patternText(arm.pattern, a)} ${optional(arm.guard, a)} ${annotated(arm.body, a)})`
     }
 
     return text
@@ -1578,18 +1578,32 @@ function armsText(arms: Arm[]): string {
 
 // One node as an S-expression: `(binary + (int 1) (name x))`.
 export function dump(node: Node): string {
+    return annotated(node, (ignored: Node) => '')
+}
+
+// `dump`, with what `a` gives for each node after it (`kojic dump types` adds `:int`, `!move`...).
+// `Located` and `Export` are the node they wrap: only that node is annotated.
+export function annotated(node: Node, a: (Node) => string): string {
+    return match (node.kind) {
+        Located(line, statement) => `(at ${line} ${annotated(statement, a)})`
+        Export(declaration) => `(export ${annotated(declaration, a)})`
+        _ => `${plain(node, a)}${a(node)}`
+    }
+}
+
+function plain(node: Node, a: (Node) => string): string {
     match (node.kind) {
         IntLiteral(value) => return `(int ${value})`
         FloatLiteral(value) => return `(float ${value})`
         StringNode(value) => return `(string ${value.debug()})`
-        Template(parts) => return `(template${partsText(parts)})`
+        Template(parts) => return `(template${partsText(parts, a)})`
         BooleanLiteral(value) => return `(bool ${value})`
-        ListLiteral(items) => return `(list${list(items)})`
+        ListLiteral(items) => return `(list${list(items, a)})`
         MapLiteral(entries) => {
             mut text = '(map'
 
             for entry in entries {
-                text += ` (entry ${dump(entry.key)} ${dump(entry.value)})`
+                text += ` (entry ${annotated(entry.key, a)} ${annotated(entry.value, a)})`
             }
 
             return `${text})`
@@ -1598,53 +1612,53 @@ export function dump(node: Node): string {
             mut text = '(object'
 
             for entry in entries {
-                text += ` (field ${entry.key.debug()} ${dump(entry.value)})`
+                text += ` (field ${entry.key.debug()} ${annotated(entry.value, a)})`
             }
 
             return `${text})`
         }
         Name(name) => return `(name ${name})`
-        Unary(op, operand) => return `(unary ${op} ${dump(operand)})`
-        Binary(op, left, right) => return `(binary ${op} ${dump(left)} ${dump(right)})`
-        Call(callee, args) => return `(call ${dump(callee)}${list(args)})`
-        MutArg(place) => return `(mut ${dump(place)})`
-        IndexNode(target, index) => return `(index ${dump(target)} ${dump(index)})`
-        Slice(target, start, end) => return `(slice ${dump(target)} ${optional(start)} ${optional(end)})`
-        Member(object, name) => return `(member ${dump(object)} ${name})`
-        If(condition, thenBranch, elseBranch) => return `(if ${dump(condition)} ${dump(thenBranch)} ${optional(elseBranch)})`
-        Match(scrutinee, arms) => return `(match ${dump(scrutinee)}${armsText(arms)})`
-        Lambda(params, returns, body) => return `(lambda ${paramsText(params)} ${optionalType(returns)} ${dump(body)})`
-        Block(statements) => return `(block${list(statements)})`
-        While(condition, body) => return `(while ${dump(condition)} ${dump(body)})`
+        Unary(op, operand) => return `(unary ${op} ${annotated(operand, a)})`
+        Binary(op, left, right) => return `(binary ${op} ${annotated(left, a)} ${annotated(right, a)})`
+        Call(callee, args) => return `(call ${annotated(callee, a)}${list(args, a)})`
+        MutArg(place) => return `(mut ${annotated(place, a)})`
+        IndexNode(target, index) => return `(index ${annotated(target, a)} ${annotated(index, a)})`
+        Slice(target, start, end) => return `(slice ${annotated(target, a)} ${optional(start, a)} ${optional(end, a)})`
+        Member(object, name) => return `(member ${annotated(object, a)} ${name})`
+        If(condition, thenBranch, elseBranch) => return `(if ${annotated(condition, a)} ${annotated(thenBranch, a)} ${optional(elseBranch, a)})`
+        Match(scrutinee, arms) => return `(match ${annotated(scrutinee, a)}${armsText(arms, a)})`
+        Lambda(params, returns, body) => return `(lambda ${paramsText(params)} ${optionalType(returns)} ${annotated(body, a)})`
+        Block(statements) => return `(block${list(statements, a)})`
+        While(condition, body) => return `(while ${annotated(condition, a)} ${annotated(body, a)})`
         For(variable, isMut, iterable, body) => {
             immut mode = if (isMut) { 'mut ' } else { '' }
-            return `(for ${mode}${variable} ${dump(iterable)} ${dump(body)})`
+            return `(for ${mode}${variable} ${annotated(iterable, a)} ${annotated(body, a)})`
         }
         Break => return '(break)'
         Continue => return '(continue)'
         Return(value) => {
             return match (value) {
-                Some(result) => `(return ${dump(result)})`
+                Some(result) => `(return ${annotated(result, a)})`
                 None => '(return)'
             }
         }
-        Assign(op, target, value) => return `(assign ${op} ${dump(target)} ${dump(value)})`
+        Assign(op, target, value) => return `(assign ${op} ${annotated(target, a)} ${annotated(value, a)})`
         VarDecl(name, annotation, value, isImmut) => {
             immut keyword = if (isImmut) { 'immut' } else { 'mut' }
-            return `(${keyword} ${name} ${optionalType(annotation)} ${dump(value)})`
+            return `(${keyword} ${name} ${optionalType(annotation)} ${annotated(value, a)})`
         }
         FunctionDecl(name, owner, typeParams, params, returns, body) => {
             immut fullName = match (owner) {
                 Some(ownerName) => `${ownerName}.${name}`
                 None => name
             }
-            return `(function ${fullName} ${typeParametersText(typeParams)} ${paramsText(params)} ${optionalType(returns)} ${dump(body)})`
+            return `(function ${fullName} ${typeParametersText(typeParams)} ${paramsText(params)} ${optionalType(returns)} ${annotated(body, a)})`
         }
         TypeDecl(name, params, definition) => return `(type ${name} ${typeParametersText(params)} ${definitionText(definition)})`
         ImportModule(name, path) => return `(import ${name} ${path.debug()})`
         ImportNames(names, path) => return `(import (${names.join(' ')}) ${path.debug()})`
-        Try(value) => return `(try ${dump(value)})`
-        Export(declaration) => return `(export ${dump(declaration)})`
-        Located(line, statement) => return `(at ${line} ${dump(statement)})`
+        Try(value) => return `(try ${annotated(value, a)})`
+        Export(declaration) => return `(export ${annotated(declaration, a)})`
+        Located(line, statement) => return `(at ${line} ${annotated(statement, a)})`
     }
 }

@@ -1,0 +1,2 @@
+import { count } from 'lib/shapes.kj'
+count = 1

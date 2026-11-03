@@ -1,0 +1,7 @@
+import shapes from 'lib/shapes.kj'
+
+function parse(text: string): Result[int, shapes.Problem] {
+    return Ok(int(text)?)
+}
+
+print(parse('x'))

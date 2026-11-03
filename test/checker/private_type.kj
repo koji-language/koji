@@ -1,0 +1,2 @@
+import shapes from 'lib/shapes.kj'
+immut h: shapes.Hidden = 1
