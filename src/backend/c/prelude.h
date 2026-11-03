@@ -200,6 +200,12 @@ KojiString *koji_std_regex_replace(const KojiRegex *regex, const KojiString *inp
                                    bool all);
 KojiList *koji_std_regex_split(const KojiRegex *regex, const KojiString *input, const KojiElementType *element);
 
+KojiRecord *koji_std_json_parse(const KojiString *text, const KojiRecordType *result, const KojiElementType *string,
+                                const KojiElementType *item);
+KojiString *koji_std_json_stringify(const KojiRecord *value);
+KojiRecord *koji_std_json_get(const KojiRecord *value, const KojiString *key, const KojiRecordType *option);
+KojiRecord *koji_std_json_as(const KojiRecord *value, int32_t kind, const KojiRecordType *option);
+
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
 _Noreturn void koji_panic(const char *location, const char *message);

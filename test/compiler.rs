@@ -1250,6 +1250,56 @@ error: invalid regular expression '[': unclosed character class\n\
 }
 
 #[test]
+fn json_values() {
+    assert_same("json_values", "import json\n\
+import { Json } from 'json'\n\
+\n\
+immut text = '{\"name\": \"Koji\", \"version\": 1, \"ratio\": 2.50, \"tags\": [\"fast\", \"safe\"], \"nested\": {\"ok\": true, \"none\": null}, \"name\": \"Koji 2\", \"big\": 1e300, \"escaped\": \"a\\\\\"b\\\\nc\\\\u00e9\"}'\n\
+\n\
+match (json.parse(text)) {\n\
+    Ok(value) => {\n\
+        print(value)\n\
+        print(json.stringify(value))\n\
+        print(json.get(value, 'name'), json.get(value, 'missing'))\n\
+\n\
+        match (json.get(value, 'version')) {\n\
+            Some(version) => print(json.asInt(version), json.asFloat(version), json.asString(version))\n\
+            None => print('no version')\n\
+        }\n\
+\n\
+        match (json.get(value, 'tags')) {\n\
+            Some(Array(items)) => {\n\
+                for item in items {\n\
+                    print(json.asString(item))\n\
+                }\n\
+            }\n\
+            _ => print('no tags')\n\
+        }\n\
+    }\n\
+    Err(error) => print(error)\n\
+}\n\
+\n\
+immut built: Json = Object(['list': Array([Int(1), Float(2.0), Bool(false), Null]), 'text': String('x')])\n\
+print(json.stringify(built))\n\
+print(json.parse('[1, 2,'), json.parse('99999999999999999999'))\n\
+\n\
+match (json.parse('{\"a\": }')) {\n\
+    Ok(value) => print(value)\n\
+    Err(error) => print('error:', error)\n\
+}\n\
+", "Object(['name': String('Koji 2'), 'version': Int(1), 'ratio': Float(2.5), 'tags': Array([String('fast'), String('safe')]), 'nested': Object(['ok': Bool(true), 'none': Null]), 'big': Float(1e300), 'escaped': String('a\"b\\ncé')])\n\
+{\"name\":\"Koji 2\",\"version\":1,\"ratio\":2.5,\"tags\":[\"fast\",\"safe\"],\"nested\":{\"ok\":true,\"none\":null},\"big\":1e300,\"escaped\":\"a\\\"b\\ncé\"}\n\
+Some(String('Koji 2')) None\n\
+Some(1) Some(1.0) None\n\
+Some('fast')\n\
+Some('safe')\n\
+{\"list\":[1,2.0,false,null],\"text\":\"x\"}\n\
+Err(Syntax('unexpected end of input', 1, 7)) Err(NumberOutOfRange('99999999999999999999', 1, 1))\n\
+error: invalid JSON at line 1, column 7: unexpected character '}'\n\
+");
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions", "input", "modules", "types"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));

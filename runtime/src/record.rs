@@ -326,3 +326,8 @@ pub(crate) fn record_variant(record: *const KojiRecord) -> String {
     }
     unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned()
 }
+
+/// The slots of the fields of a record.
+pub(crate) fn record_slots(record: *const KojiRecord) -> Vec<u64> {
+    self::record(record).fields.clone()
+}

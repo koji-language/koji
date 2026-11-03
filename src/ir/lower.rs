@@ -3320,6 +3320,25 @@ impl<'a> Lowerer<'a> {
                 ("koji_std_path_part", vec![value_as(self, builder, 0, Ty::Str)?, StdArg::Mode(part), result(self, builder)?])
             }
             ("path", "isAbsolute") => ("koji_std_path_is_absolute", vec![value_as(self, builder, 0, Ty::Str)?]),
+            ("json", "parse") => {
+                let text = value_as(self, builder, 0, Ty::Str)?;
+                let Ty::Record(result) = self.type_in(builder, call)? else { unreachable!("a Result") };
+                let json = self.records[result].variants[self.variant_index(result, "Ok")?].fields[0].1.clone();
+                ("koji_std_json_parse", vec![text, StdArg::Record(result), StdArg::Element(Ty::Str), StdArg::Element(json)])
+            }
+            ("json", "stringify") => {
+                let json = self.type_in(builder, &args[0])?;
+                ("koji_std_json_stringify", vec![value_as(self, builder, 0, json)?])
+            }
+            ("json", "get") => {
+                let json = self.type_in(builder, &args[0])?;
+                ("koji_std_json_get", vec![value_as(self, builder, 0, json)?, value_as(self, builder, 1, Ty::Str)?, result(self, builder)?])
+            }
+            ("json", "asString" | "asInt" | "asFloat" | "asBool") => {
+                let json = self.type_in(builder, &args[0])?;
+                let kind = ["asString", "asInt", "asFloat", "asBool"].iter().position(|kind| *kind == name).expect("a kind") as i32;
+                ("koji_std_json_as", vec![value_as(self, builder, 0, json)?, StdArg::Mode(kind), result(self, builder)?])
+            }
             ("regex", "compile") => ("koji_std_regex_compile", vec![value_as(self, builder, 0, Ty::Str)?, result(self, builder)?]),
             ("datetime", "now") => ("koji_std_datetime_now", vec![result(self, builder)?]),
             ("datetime", "today") => ("koji_std_datetime_today", Vec::new()),
