@@ -1,18 +1,38 @@
 // The Koji compiler written in Koji (phase 3). For now it shows the stages written so far, like
-// `kojic dump`: `tokens <file.kj>` prints the tokens of a file, `ast <file.kj>` its syntax tree
-// and `types <file.kj>` what the checker finds.
+// `kojic dump`: `tokens <file.kj>` prints the tokens of a file, `ast <file.kj>` its syntax tree,
+// `types <file.kj>` what the checker finds and `ir <file.kj>` its intermediate representation.
 
 import file
 import system
 import { tokenize, dump } from 'lexer.kj'
 import parser from 'parser.kj'
-import { dumpTypes } from 'checker.kj'
+import { dumpTypes, check } from 'checker.kj'
+import { lower } from 'lower.kj'
+import { programText } from 'ir.kj'
 
 immut args = system.args()
 
-if (args.length() != 2 or not (args[0] in ['tokens', 'ast', 'types'])) {
-    print('usage: main.kj tokens|ast|types <file.kj>')
+if (args.length() != 2 or not (args[0] in ['tokens', 'ast', 'types', 'ir'])) {
+    print('usage: main.kj tokens|ast|types|ir <file.kj>')
     system.exit(2)
+}
+
+if (args[0] == 'ir') {
+    immut lowered = match (check(args[1])) {
+        Ok(program) => lower(program)
+        Err(message) => Err(message)
+    }
+
+    match (lowered) {
+        Ok(program) => {
+            for line in programText(program) {
+                print(line)
+            }
+        }
+        Err(message) => print(`error: ${message}`)
+    }
+
+    system.exit(0)
 }
 
 if (args[0] == 'types') {

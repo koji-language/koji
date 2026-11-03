@@ -1,0 +1,4423 @@
+// Lowering, in the Koji compiler written in Koji: from the checked syntax tree to the IR. It
+// follows src/ir/lower.rs, with the same messages for what `kojic build` does not support yet.
+
+import { Node, NodeKind, Pattern, TypeExpr, Param, TypeParam, Arm, Part, Entry, ObjectEntry } from 'parser.kj'
+import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, substitute, display } from 'types.kj'
+import { MethodRef, TryWrap, LoadedModule, Tables, Program, parentDir, resolvePath } from 'checker.kj'
+import { Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
+
+// What a name of a module refers to.
+type Item = {
+    GlobalItem(id: int)
+    // A function, by its key in `Lowerer.signatures` or `Lowerer.genericFunctions`.
+    FunctionItem(key: string)
+    // A module imported whole (`import math from 'math.kj'`).
+    ModuleItem(id: int)
+    // A module of the standard library (`import math`), or one of its functions.
+    StdItem(module: string)
+    StdFunctionItem(module: string, name: string)
+}
+
+// A top-level variable that owns a move-only value, with the function that drops it.
+type OwnedGlobal = {
+    global: int
+    function: int
+}
+
+// A file of the program.
+type Module = {
+    path: string
+    // Its name in messages, like the checker's.
+    file: string
+    statements: Node[]
+    // What its names refer to: its own functions and top-level variables, and what it imports.
+    names: Map[string, Item]
+    // The modules it imports, in order (-1 for the standard library), and the modules imported
+    // inside its functions and blocks.
+    imports: int[]
+    nested: int[]
+    owned: OwnedGlobal[]
+    // The function that runs its top-level statements (once), and the global that says whether
+    // it ran.
+    init: int
+    initialized: Option[int]
+}
+
+type Signature = {
+    id: int
+    params: Ty[]
+    // Whether each parameter is `mut` (its value is given back to the caller).
+    writeback: boolean[]
+    returns: Ty
+}
+
+// A name in scope.
+type Variable = {
+    LocalVar(id: int)
+    GlobalVar(id: int)
+}
+
+type Loop = {
+    // Where `continue` and `break` go, and the depth of the scopes outside the loop.
+    next: int
+    exit: int
+    depth: int
+}
+
+// A variable that owns a move-only value: it is dropped when its scope ends.
+type Owned = {
+    depth: int
+    place: Place
+    function: int
+}
+
+// The function being lowered.
+type Builder = {
+    locals: IrLocal[]
+    blocks: IrBlock[]
+    current: int
+    // Whether the current block already has its terminator (code after `return` is dead).
+    terminated: boolean
+    scopes: Map[string, Variable][]
+    loops: Loop[]
+    owned: Owned[]
+    returns: Ty
+    // Lowering the top-level statements: their declarations are globals.
+    isMain: boolean
+}
+
+function Builder.create(returns: Ty, isMain: boolean): Builder {
+    return {
+        locals: [], blocks: [{ instructions: [], terminator: UnreachableT }], current: 0, terminated: false,
+        scopes: [[:]], loops: [], owned: [], returns: returns, isMain: isMain
+    }
+}
+
+function Builder.local(mut self, ty: Ty, name: Option[string]): int {
+    self.locals.push({ ty: ty, name: name })
+    return self.locals.length() - 1
+}
+
+function Builder.newBlock(mut self): int {
+    self.blocks.push({ instructions: [], terminator: UnreachableT })
+    return self.blocks.length() - 1
+}
+
+function Builder.emit(mut self, instruction: Instruction) {
+    if (not self.terminated) { self.blocks[self.current].instructions.push(instruction) }
+}
+
+function Builder.terminate(mut self, terminator: Terminator) {
+    if (self.terminated) { return }
+
+    self.blocks[self.current].terminator = terminator
+    self.terminated = true
+}
+
+// Continues in `block`.
+function Builder.switchTo(mut self, block: int) {
+    self.current = block
+    self.terminated = false
+}
+
+function Builder.lookup(self, name: string): Option[Variable] {
+    mut i = self.scopes.length() - 1
+
+    while (i >= 0) {
+        match (self.scopes[i].get(name)) {
+            Some(variable) => return Some(variable)
+            None => {}
+        }
+
+        i -= 1
+    }
+
+    return None
+}
+
+function Builder.declare(mut self, name: string, variable: Variable) {
+    self.scopes[self.scopes.length() - 1][name] = variable
+}
+
+function Builder.pushScope(mut self) {
+    self.scopes.push([:])
+}
+
+function Builder.popScope(mut self) {
+    self.scopes.pop()
+}
+
+function Builder.finish(self, name: string, file: string, params: int, writeback: boolean[]): IrFunction {
+    return {
+        name: name, file: file, params: params, writeback: writeback, returns: self.returns, locals: self.locals,
+        blocks: self.blocks
+    }
+}
+
+// Drops the variables owned by scopes deeper than `depth` (last declared first); `remove` forgets
+// them, when their scope ends.
+function Builder.dropOwned(mut self, depth: int, remove: boolean) {
+    mut i = self.owned.length() - 1
+
+    while (i >= 0) {
+        immut owned = self.owned[i]
+
+        if (owned.depth > depth) { self.emit(DropIns(owned.place, owned.function)) }
+
+        i -= 1
+    }
+
+    if (not remove) { return }
+
+    mut kept: Owned[] = []
+
+    for owned in self.owned {
+        if (owned.depth <= depth) { kept.push(owned) }
+    }
+
+    self.owned = kept
+}
+
+// A declared type and its type arguments.
+type RecordType = {
+    id: int
+    args: Ty[]
+}
+
+type Generic = {
+    module: int
+    declaration: Node
+}
+
+type Instance = {
+    key: string
+    typeArgs: Ty[]
+}
+
+type Lowerer = {
+    table: TypeInfo[]
+    tables: Tables
+    records: IrRecord[]
+    // The record of each declared type with its type arguments, by `id:arguments`.
+    recordIds: Map[string, int]
+    // The file of the module being lowered, and the line.
+    file: string
+    line: int
+    functions: Option[IrFunction][]
+    signatures: Map[string, Signature]
+    globals: IrGlobal[]
+    strings: string[]
+    stringIds: Map[string, int]
+    // The record of a closure that captures nothing.
+    emptyEnvironment: Option[int]
+    // For each function used as a value, the function that calls it with an environment.
+    wrappers: Map[int, int]
+    // Generic functions and methods of generic types, by key: lowered once for each set of type
+    // arguments they are called with.
+    genericFunctions: Map[string, Generic]
+    // The instances of generic functions, by key and type arguments, and those still to lower.
+    instances: Map[string, Signature]
+    pending: Instance[]
+    // The type arguments of the instance being lowered, and the names of its type parameters.
+    substitution: Ty[]
+    typeNames: string[]
+    recordTypes: Map[int, RecordType]
+    // The function that drops each type (none when there is nothing to drop), by its text.
+    dropFunctions: Map[string, Option[int]]
+    modules: Module[]
+    moduleIds: Map[string, int]
+    // The module being lowered.
+    module: int
+    // Lowering the patterns of a `match` whose variables own their values.
+    owningMatch: boolean
+    // The module (or -1 for the standard library) of each `import`, by its id.
+    importTargets: Map[int, int]
+    // The names imported by the blocks being lowered, innermost last.
+    blockItems: Map[string, Item][]
+    // The checked modules, by path.
+    checked: Map[string, LoadedModule]
+}
+
+// Nodes
+
+function unlocated(node: Node): Node {
+    return match (node.kind) {
+        Located(_, statement) => unlocated(statement)
+        Export(declaration) => unlocated(declaration)
+        _ => node
+    }
+}
+
+function nodeId(node: Node): int {
+    return unlocated(node).id
+}
+
+function lineOf(node: Node): Option[int] {
+    return match (node.kind) {
+        Located(line, _) => Some(line)
+        _ => None
+    }
+}
+
+// The key of a function in `Lowerer.signatures`: its module and its name (`greet`, or
+// `Person.greet` for a method).
+function functionKey(module: int, owner: Option[string], name: string): string {
+    return match (owner) {
+        Some(ownerName) => `${module}:${ownerName}.${name}`
+        None => `${module}:${name}`
+    }
+}
+
+function Lowerer.unsupported(self, what: string): string {
+    immut location = if (self.line == 0) { self.file } else { `${self.file}:${self.line}` }
+    return `compile error: ${location}: ${what} is not supported by 'kojic build' yet (use 'kojic run')`
+}
+
+// Types
+
+function Lowerer.ty(mut self, ty: Type): Result[Ty, string] {
+    match (ty) {
+        IntType => return Ok(IntTy)
+        FloatType => return Ok(FloatTy)
+        BooleanType => return Ok(BoolTy)
+        StringType => return Ok(StrTy)
+        VoidType => return Ok(VoidTy)
+        NeverType => return Ok(VoidTy)
+        ListType(item) => return Ok(ListTy(self.ty(item)?))
+        CharType => return Ok(CharTy)
+        FunctionType(params, returns) => {
+            mut types: Ty[] = []
+
+            for param in params {
+                types.push(self.ty(param)?)
+            }
+
+            return Ok(FunctionTy(types, self.ty(returns)?))
+        }
+        NamedType(id, args) => return self.namedTy(id, args)
+        VariantType(id, args, _) => return self.namedTy(id, args)
+        UnknownType => return Err(self.unsupported('a value whose type is not known here'))
+        ParamType(index) => {
+            if (index < self.substitution.length()) { return Ok(self.substitution[index]) }
+
+            return Err(self.unsupported('a type parameter here'))
+        }
+        _ => return Err(self.unsupported('this type'))
+    }
+}
+
+function Lowerer.isBuiltinNamed(self, id: int, name: string): boolean {
+    return match (self.table[id].kind) {
+        BuiltinKind(_, _) => self.table[id].name == name
+        _ => false
+    }
+}
+
+function Lowerer.namedTy(mut self, id: int, args: Type[]): Result[Ty, string] {
+    if (self.isBuiltinNamed(id, 'File')) { return Ok(FileTy) }
+
+    if (self.isBuiltinNamed(id, 'Regex')) { return Ok(RegexTy) }
+
+    match (self.table[id].kind) {
+        // A type parameter seen from inside its generic function (`T` in the body of `first[T]`):
+        // the type argument of the instance being lowered.
+        ParamKind(_) => {
+            immut name = self.table[id].name
+
+            for i in range(self.typeNames.length()) {
+                if (self.typeNames[i] == name) { return Ok(self.substitution[i]) }
+            }
+
+            return Err(self.unsupported(`the type parameter '${name}' here`))
+        }
+        MapKind(_, _) => return Ok(MapTy(self.ty(args[0])?, self.ty(args[1])?))
+        SetKind(_) => return Ok(SetTy(self.ty(args[0])?))
+        _ => return Ok(RecordTy(self.record(id, args)?))
+    }
+}
+
+// The fields of each variant a record has (`None` as the name of an object type's one variant).
+type DeclaredVariant = {
+    name: Option[string]
+    fields: FieldType[]
+}
+
+// The record of the declared type `id` with the type arguments `args`.
+function Lowerer.record(mut self, id: int, args: Type[]): Result[int, string] {
+    mut argTypes: Ty[] = []
+
+    for arg in args {
+        argTypes.push(self.ty(arg)?)
+    }
+
+    immut key = `${id}:${tysText(argTypes)}`
+
+    match (self.recordIds.get(key)) {
+        Some(record) => return Ok(record)
+        None => {}
+    }
+
+    immut info = self.table[id]
+    mut declared: DeclaredVariant[] = []
+
+    match (info.kind) {
+        SumKind(variants) => {
+            for each in variants {
+                declared.push({ name: Some(each.name), fields: each.fields })
+            }
+        }
+        ShapeKind(fields) => declared.push({ name: None, fields: fields })
+        // `Output`: the fields of a built-in object.
+        BuiltinKind(fields, methods) if (methods.length() == 0) => declared.push({ name: None, fields: fields })
+        MapKind(_, _) => return Err(self.unsupported('a Map'))
+        SetKind(_) => return Err(self.unsupported('a Set'))
+        _ => return Err(self.unsupported(`the type '${info.name}'`))
+    }
+
+    // Registered before its fields: a type can contain itself (`tail: List`).
+    immut record = self.records.length()
+    self.records.push({ name: display(self.table, NamedType(id, args)), variants: [] })
+    self.recordTypes[record] = { id: id, args: argTypes }
+    self.recordIds[key] = record
+    mut variants: IrVariant[] = []
+
+    for each in declared {
+        mut lowered: IrField[] = []
+
+        for fieldType in each.fields {
+            lowered.push({ name: fieldType.name, ty: self.ty(substitute(fieldType.ty, args))? })
+        }
+
+        variants.push({ name: each.name, fields: lowered })
+    }
+
+    self.records[record].variants = variants
+    return Ok(record)
+}
+
+function Lowerer.typeNameIndex(self, name: string): Option[int] {
+    for i in range(self.typeNames.length()) {
+        if (self.typeNames[i] == name) { return Some(i) }
+    }
+
+    return None
+}
+
+function Lowerer.typeExpr(mut self, written: TypeExpr): Result[Ty, string] {
+    match (written) {
+        Named(name) => {
+            match (name) {
+                'int' => return Ok(IntTy)
+                'float' => return Ok(FloatTy)
+                'boolean' => return Ok(BoolTy)
+                'string' => return Ok(StrTy)
+                'char' => return Ok(CharTy)
+                'void' => return Ok(VoidTy)
+                _ => {}
+            }
+
+            return match (self.typeNameIndex(name)) {
+                Some(index) => Ok(self.substitution[index])
+                None => self.namedType(name, [])
+            }
+        }
+        Generic(name, args) => return self.namedType(name, args)
+        ArrayOf(element) => return Ok(ListTy(self.typeExpr(element)?))
+        FunctionOf(params, returns) => {
+            mut types: Ty[] = []
+
+            for param in params {
+                types.push(self.typeExpr(param)?)
+            }
+
+            return Ok(FunctionTy(types, self.typeExpr(returns)?))
+        }
+    }
+}
+
+// The first type of the table named `name`, and how many have that name.
+type NamedTypes = {
+    first: int
+    count: int
+}
+
+function Lowerer.typesNamed(self, name: string): NamedTypes {
+    mut first = -1
+    mut count = 0
+
+    for i in range(self.table.length()) {
+        if (self.table[i].name == name) {
+            if (first == -1) { first = i }
+
+            count += 1
+        }
+    }
+
+    return { first: first, count: count }
+}
+
+// A declared type written in the source (`Person`, `Option[int]`).
+function Lowerer.namedType(mut self, name: string, args: TypeExpr[]): Result[Ty, string] {
+    immut found = self.typesNamed(name)
+
+    if (found.first == -1) { return Err(self.unsupported(`the type '${name}'`)) }
+
+    if (found.count > 1) { return Err(self.unsupported(`the type '${name}' (declared more than once)`)) }
+
+    mut types: Type[] = []
+
+    for arg in args {
+        types.push(self.checkedType(arg)?)
+    }
+
+    return self.ty(NamedType(found.first, types))
+}
+
+// The checker's type for a written type argument.
+function Lowerer.checkedType(mut self, written: TypeExpr): Result[Type, string] {
+    match (written) {
+        Named(name) => {
+            match (name) {
+                'int' => return Ok(IntType)
+                'float' => return Ok(FloatType)
+                'boolean' => return Ok(BooleanType)
+                'string' => return Ok(StringType)
+                _ => {}
+            }
+
+            match (self.typeNameIndex(name)) {
+                Some(index) => return Ok(ParamType(index))
+                None => {}
+            }
+
+            immut found = self.typesNamed(name)
+
+            if (found.first == -1) { return Err(self.unsupported(`the type '${name}'`)) }
+
+            return Ok(NamedType(found.first, []))
+        }
+        Generic(name, args) => {
+            immut found = self.typesNamed(name)
+
+            if (found.first == -1) { return Err(self.unsupported(`the type '${name}'`)) }
+
+            mut types: Type[] = []
+
+            for arg in args {
+                types.push(self.checkedType(arg)?)
+            }
+
+            return Ok(NamedType(found.first, types))
+        }
+        ArrayOf(element) => return Ok(ListType(self.checkedType(element)?))
+        _ => return Err(self.unsupported('this type'))
+    }
+}
+
+// The type of an expression, as found by the checker.
+function Lowerer.typeOf(mut self, node: Node): Result[Ty, string] {
+    return match (self.tables.types.get(nodeId(node))) {
+        Some(ty) => self.ty(ty)
+        None => Err(self.unsupported('this expression'))
+    }
+}
+
+// The type of an expression in a function: a variable has the type found for it at its
+// declaration, which later uses may have refined (`mut items = []` then `items.push(1)`).
+function Lowerer.typeIn(mut self, builder: Builder, node: Node): Result[Ty, string] {
+    match (unlocated(node).kind) {
+        Name(name) => {
+            match (self.variable(builder, name)) {
+                Ok(found) => return Ok(found.ty)
+                Err(_) => {}
+            }
+        }
+        _ => {}
+    }
+
+    return self.typeOf(node)
+}
+
+// The type of an expression, or `VoidTy` when it has none here.
+function Lowerer.typeOr(mut self, builder: Builder, node: Node): Ty {
+    return match (self.typeIn(builder, node)) {
+        Ok(ty) => ty
+        Err(_) => VoidTy
+    }
+}
+
+// The type of a declared variable, after the uses that refine it.
+function Lowerer.variableType(mut self, declaration: Node, annotation: Option[TypeExpr], value: Node): Result[Ty, string] {
+    // The checker resolved the annotation (an alias, a type of another module).
+    match (self.tables.variableTypes.get(nodeId(declaration))) {
+        Some(ty) => return self.ty(ty)
+        None => {}
+    }
+
+    return match (annotation) {
+        Some(written) => self.typeExpr(written)
+        None => self.typeOf(value)
+    }
+}
+
+function Lowerer.string(mut self, text: string): Operand {
+    match (self.stringIds.get(text)) {
+        Some(id) => return StrOp(id)
+        None => {}
+    }
+
+    self.strings.push(text)
+    immut id = self.strings.length() - 1
+    self.stringIds[text] = id
+    return StrOp(id)
+}
+
+// A variable in scope, and its type.
+type Found = {
+    place: Place
+    ty: Ty
+}
+
+// The variable `name`.
+function Lowerer.variable(self, builder: Builder, name: string): Result[Found, string] {
+    match (builder.lookup(name)) {
+        Some(LocalVar(id)) => return Ok({ place: LocalPlace(id), ty: builder.locals[id].ty })
+        Some(GlobalVar(id)) => return Ok({ place: GlobalPlace(id), ty: self.globals[id].ty })
+        None => {}
+    }
+
+    return match (self.globalNamed(name)) {
+        Some(id) => Ok({ place: GlobalPlace(id), ty: self.globals[id].ty })
+        None => Err(self.unsupported(`'${name}'`))
+    }
+}
+
+// The import a statement is, if it is one: its path, and the names it imports (none for a whole
+// module, whose name is `name`).
+type Import = {
+    name: string
+    names: Option[string[]]
+    path: string
+}
+
+function importOf(node: Node): Option[Import] {
+    return match (unlocated(node).kind) {
+        ImportModule(name, path) => Some({ name: name, names: None, path: path })
+        ImportNames(names, path) => Some({ name: '', names: Some(names), path: path })
+        _ => None
+    }
+}
+
+// Declarations
+
+// Adds the module at `path` and the modules it imports (each once).
+function Lowerer.loadModule(mut self, path: string, isEntry: boolean): Result[int, string] {
+    match (self.moduleIds.get(path)) {
+        Some(id) => return Ok(id)
+        None => {}
+    }
+
+    immut checked = match (self.checked.get(path)) {
+        Some(found) => found
+        None => return Err(self.unsupported(`the module '${path}'`))
+    }
+    immut statements = checked.statements
+    immut id = self.modules.length()
+    mut init = 0
+
+    if (not isEntry) {
+        self.functions.push(None)
+        init = self.functions.length() - 1
+    }
+
+    mut initialized: Option[int] = None
+
+    if (not isEntry) {
+        self.globals.push({ ty: BoolTy, name: `${checked.display} initialized` })
+        initialized = Some(self.globals.length() - 1)
+    }
+
+    self.modules.push({
+        path: path, file: checked.display, statements: statements, names: [:], imports: [], nested: [], owned: [],
+        init: init, initialized: initialized
+    })
+    self.moduleIds[path] = id
+    immut directory = parentDir(path)
+    mut imports: int[] = []
+
+    for statement in statements {
+        match (lineOf(statement)) {
+            Some(line) => {
+                self.line = line
+                self.file = self.modules[id].file
+            }
+            None => {}
+        }
+
+        match (importOf(statement)) {
+            Some(found) => {
+                // The standard library is in the runtime.
+                if (not found.path.endsWith('.kj')) {
+                    imports.push(-1)
+                    self.importTargets[nodeId(statement)] = -1
+                    continue
+                }
+
+                immut module = self.loadModule(resolvePath(directory, found.path), false)?
+                self.importTargets[nodeId(statement)] = module
+                imports.push(module)
+            }
+            None => {}
+        }
+    }
+
+    self.modules[id].imports = imports
+    // Imports inside functions and blocks: their modules run when the block first runs.
+    mut nested: Node[] = []
+
+    for statement in statements {
+        if (importOf(statement) is None) { nestedImports(statement, mut nested) }
+    }
+
+    mut modules: int[] = []
+
+    for statement in nested {
+        immut found = match (importOf(statement)) {
+            Some(found) => found
+            None => continue
+        }
+        mut module = -1
+
+        if (found.path.endsWith('.kj')) {
+            module = self.loadModule(resolvePath(directory, found.path), false)?
+            modules.push(module)
+        }
+
+        self.importTargets[nodeId(statement)] = module
+    }
+
+    self.modules[id].nested = modules
+    return Ok(id)
+}
+
+// The names that the imports among `statements` give to their block (hoisted to its start); the
+// modules they import run then, the first time. Gives whether the block has imports
+// (`exitImports` forgets them at its end).
+function Lowerer.enterImports(mut self, mut builder: Builder, statements: Node[]): Result[boolean, string] {
+    if (builder.isMain and builder.scopes.length() == 1) { return Ok(false) }
+
+    mut names: Map[string, Item] = [:]
+    mut any = false
+
+    for statement in statements {
+        immut found = match (importOf(statement)) {
+            Some(found) => found
+            None => continue
+        }
+        any = true
+        immut module = match (self.importTargets.get(nodeId(statement))) {
+            Some(module) => module
+            None => return Err(self.unsupported('an import in this place'))
+        }
+
+        if (module != -1) { builder.emit(CallIns(None, self.modules[module].init, [], [], 0)) }
+
+        match (found.names) {
+            None => names[found.name] = if (module == -1) { StdItem(found.path) } else { ModuleItem(module) }
+            Some(list) => {
+                for name in list {
+                    if (module == -1) {
+                        names[name] = StdFunctionItem(found.path, name)
+                    } else {
+                        match (self.modules[module].names.get(name)) {
+                            Some(item) => names[name] = item
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (names.length() == 0 and not any) { return Ok(false) }
+
+    self.blockItems.push(names)
+    return Ok(true)
+}
+
+function Lowerer.exitImports(mut self, entered: boolean) {
+    if (entered) { self.blockItems.pop() }
+}
+
+// The modules in the order they finish running: the imports of a module before it.
+function Lowerer.loadOrder(self, module: int, mut order: int[]) {
+    if (module in order) { return }
+
+    mut imports = self.modules[module].imports
+
+    for each in self.modules[module].nested {
+        imports.push(each)
+    }
+
+    for each in imports {
+        if (each != -1) { self.loadOrder(each, mut order) }
+    }
+
+    if (not (module in order)) { order.push(module) }
+}
+
+// Lowers the declarations of the module `module` from now on.
+function Lowerer.enter(mut self, module: int) {
+    self.module = module
+    self.file = self.modules[module].file
+    self.line = 0
+}
+
+// What `name` refers to in the module being lowered.
+function Lowerer.item(self, name: string): Option[Item] {
+    mut i = self.blockItems.length() - 1
+
+    while (i >= 0) {
+        match (self.blockItems[i].get(name)) {
+            Some(item) => return Some(item)
+            None => {}
+        }
+
+        i -= 1
+    }
+
+    return self.modules[self.module].names.get(name)
+}
+
+function Lowerer.globalNamed(self, name: string): Option[int] {
+    return match (self.item(name)) {
+        Some(GlobalItem(id)) => Some(id)
+        _ => None
+    }
+}
+
+// The key of the function `name` in the module being lowered.
+function Lowerer.functionNamed(self, name: string): Option[string] {
+    return match (self.item(name)) {
+        Some(FunctionItem(key)) => Some(key)
+        _ => None
+    }
+}
+
+// The key of a method or an associated function the checker found.
+function Lowerer.methodKey(self, method: MethodRef): string {
+    immut module = match (self.moduleIds.get(method.module)) {
+        Some(id) => id
+        None => self.module
+    }
+    return `${module}:${method.key}`
+}
+
+function Lowerer.setLine(mut self, statement: Node) {
+    match (lineOf(statement)) {
+        Some(line) => self.line = line
+        None => {}
+    }
+}
+
+// Gives every top-level function an id first: functions can be called before they are declared.
+function Lowerer.declareFunctions(mut self): Result[void, string] {
+    immut statements = self.modules[self.module].statements
+
+    for statement in statements {
+        self.setLine(statement)
+        immut declaration = unlocated(statement)
+
+        match (declaration.kind) {
+            FunctionDecl(name, owner, typeParams, _, _, _) => {
+                immut key = functionKey(self.module, owner, name)
+
+                if (owner is None) { self.modules[self.module].names[name] = FunctionItem(key) }
+
+                immut ownerIsGeneric = match (owner) {
+                    Some(ownerName) => self.ownerParameters(ownerName).length() > 0
+                    None => false
+                }
+
+                if (typeParams.length() > 0 or ownerIsGeneric) {
+                    self.genericFunctions[key] = { module: self.module, declaration: declaration }
+                    continue
+                }
+
+                self.functions.push(None)
+                self.signatures[key] = self.signature(declaration, self.functions.length() - 1)?
+            }
+            _ => {}
+        }
+    }
+
+    return Ok()
+}
+
+// The type parameters of the type `owner` declared in the module being lowered.
+function Lowerer.ownerParameters(self, owner: string): string[] {
+    for statement in self.modules[self.module].statements {
+        match (unlocated(statement).kind) {
+            TypeDecl(name, params, _) if (name == owner) => {
+                mut names: string[] = []
+
+                for param in params {
+                    names.push(param.name)
+                }
+
+                return names
+            }
+            _ => {}
+        }
+    }
+
+    return []
+}
+
+// The names a module imports: a whole module, or some of its functions and variables.
+function Lowerer.bindImports(mut self): Result[void, string] {
+    immut statements = self.modules[self.module].statements
+    immut imports = self.modules[self.module].imports
+    mut next = 0
+
+    for statement in statements {
+        self.setLine(statement)
+        immut found = match (importOf(statement)) {
+            Some(found) => found
+            None => continue
+        }
+        immut module = imports[next]
+        next += 1
+
+        match (found.names) {
+            None => {
+                self.modules[self.module].names[found.name] = if (module == -1) { StdItem(found.path) } else { ModuleItem(module) }
+            }
+            Some(names) => {
+                for name in names {
+                    if (module == -1) {
+                        self.modules[self.module].names[name] = StdFunctionItem(found.path, name)
+                        continue
+                    }
+
+                    match (self.modules[module].names.get(name)) {
+                        Some(item) => self.modules[self.module].names[name] = item
+                        None => {}
+                    }
+                }
+            }
+        }
+    }
+
+    return Ok()
+}
+
+// The signature of a function declaration (from the type the checker gave it), with the type
+// arguments of `substitution` for a generic one.
+function Lowerer.signature(mut self, declaration: Node, id: int): Result[Signature, string] {
+    immut params = match (declaration.kind) {
+        FunctionDecl(_, _, _, params, _, _) => params
+        _ => []
+    }
+    immut ty = match (self.tables.functionTypes.get(nodeId(declaration))) {
+        Some(ty) => ty
+        None => return Err(self.unsupported('this function'))
+    }
+
+    match (self.ty(ty)?) {
+        FunctionTy(types, returns) => {
+            // A `take` parameter owns its value; without `drop`, that is the same as a copy.
+            mut writeback: boolean[] = []
+
+            for param in params {
+                writeback.push(param.isMut)
+            }
+
+            return Ok({ id: id, params: types, writeback: writeback, returns: returns })
+        }
+        _ => return Err(self.unsupported('this function'))
+    }
+}
+
+// The names of the type parameters of a generic function: its owner's, then its own.
+function Lowerer.typeParameterNames(self, declaration: Node): string[] {
+    match (declaration.kind) {
+        FunctionDecl(_, owner, typeParams, _, _, _) => {
+            mut names = match (owner) {
+                Some(ownerName) => self.ownerParameters(ownerName)
+                None => []
+            }
+
+            for param in typeParams {
+                names.push(param.name)
+            }
+
+            return names
+        }
+        _ => return []
+    }
+}
+
+function instanceKey(key: string, typeArgs: Ty[]): string {
+    return `${key}[${tysText(typeArgs)}]`
+}
+
+// The function `key` (with `typeArgs` for a generic one), creating the instance if needed.
+function Lowerer.callee(mut self, key: string, typeArgs: Ty[]): Result[Signature, string] {
+    match (self.signatures.get(key)) {
+        Some(signature) => return Ok(signature)
+        None => {}
+    }
+
+    immut generic = match (self.genericFunctions.get(key)) {
+        Some(generic) => generic
+        None => return Err(self.unsupported(`'${key}'`))
+    }
+
+    match (self.instances.get(instanceKey(key, typeArgs))) {
+        Some(signature) => return Ok(signature)
+        None => {}
+    }
+
+    immut id = self.functions.length()
+    self.functions.push(None)
+    immut savedModule = self.module
+    immut savedFile = self.file
+    immut savedLine = self.line
+    self.enter(generic.module)
+    immut savedSubstitution = self.substitution
+    immut savedNames = self.typeNames
+    self.typeNames = self.typeParameterNames(generic.declaration)
+    self.substitution = typeArgs
+    immut result = self.signature(generic.declaration, id)
+    self.substitution = savedSubstitution
+    self.typeNames = savedNames
+    self.module = savedModule
+    self.file = savedFile
+    self.line = savedLine
+    immut signature = result?
+    self.instances[instanceKey(key, typeArgs)] = signature
+    self.pending.push({ key: key, typeArgs: typeArgs })
+    return Ok(signature)
+}
+
+// The type arguments the checker inferred for a call of a generic function.
+function Lowerer.callTypeArgs(mut self, call: Node): Result[Ty[], string] {
+    immut args = match (self.tables.typeArgs.get(nodeId(call))) {
+        Some(args) => args
+        None => return Ok([])
+    }
+    mut types: Ty[] = []
+
+    for arg in args {
+        types.push(self.ty(arg)?)
+    }
+
+    return Ok(types)
+}
+
+// Lowers the instances of generic functions, until no new one is needed.
+function Lowerer.lowerInstances(mut self): Result[void, string] {
+    while (self.pending.length() > 0) {
+        immut instance = match (self.pending.pop()) {
+            Some(instance) => instance
+            None => break
+        }
+        immut generic = match (self.genericFunctions.get(instance.key)) {
+            Some(generic) => generic
+            None => continue
+        }
+        self.enter(generic.module)
+        immut signature = match (self.instances.get(instanceKey(instance.key, instance.typeArgs))) {
+            Some(signature) => signature
+            None => continue
+        }
+        immut savedSubstitution = self.substitution
+        immut savedNames = self.typeNames
+        self.typeNames = self.typeParameterNames(generic.declaration)
+        self.substitution = instance.typeArgs
+        immut name = match (instance.key.indexOf(':')) {
+            Some(colon) => instance.key[colon + 1..]
+            None => instance.key
+        }
+        immut result = self.lowerFunction(generic.declaration, signature, `${name}[${tysText(instance.typeArgs)}]`)
+        self.substitution = savedSubstitution
+        self.typeNames = savedNames
+        result?
+    }
+
+    return Ok()
+}
+
+// Lowers the body of a function declaration with its signature.
+function Lowerer.lowerFunction(mut self, declaration: Node, signature: Signature, name: string): Result[void, string] {
+    mut params: Param[] = []
+    mut body = declaration
+
+    match (declaration.kind) {
+        FunctionDecl(_, _, _, found, _, foundBody) => {
+            params = found
+            body = foundBody
+        }
+        _ => {}
+    }
+
+    mut builder = Builder.create(signature.returns, false)
+
+    for i in range(params.length()) {
+        if (i >= signature.params.length()) { break }
+
+        immut ty = signature.params[i]
+        immut local = builder.local(ty, Some(params[i].name))
+        builder.declare(params[i].name, LocalVar(local))
+
+        // A `take` parameter owns its value: it is dropped when the function returns.
+        if (params[i].isTake) { self.own(mut builder, LocalPlace(local), ty)? }
+    }
+
+    builder.pushScope()
+    self.functionBody(mut builder, body, signature.returns)?
+    self.functions[signature.id] = Some(builder.finish(name, self.file, params.length(), signature.writeback))
+    return Ok()
+}
+
+// Top-level variables are globals, so functions can use them.
+function Lowerer.declareGlobals(mut self): Result[void, string] {
+    immut statements = self.modules[self.module].statements
+
+    for statement in statements {
+        self.setLine(statement)
+        immut declaration = unlocated(statement)
+
+        match (declaration.kind) {
+            VarDecl(name, annotation, value, _) => {
+                immut ty = self.variableType(declaration, annotation, value)?
+                self.globals.push({ ty: ty, name: name })
+                self.modules[self.module].names[name] = GlobalItem(self.globals.length() - 1)
+            }
+            _ => {}
+        }
+    }
+
+    return Ok()
+}
+
+// The function that runs the top-level statements of the module, after the modules it imports.
+// An imported module runs once: its function returns at once the next times.
+function Lowerer.lowerModuleBody(mut self): Result[void, string] {
+    immut module = self.modules[self.module]
+    mut imports: int[] = []
+
+    for each in module.imports {
+        if (each != -1) { imports.push(self.modules[each].init) }
+    }
+
+    mut builder = Builder.create(VoidTy, true)
+
+    match (module.initialized) {
+        Some(initialized) => {
+            immut done = builder.newBlock()
+            immut run = builder.newBlock()
+            builder.terminate(BranchT(GlobalOp(initialized), done, run))
+            builder.switchTo(done)
+            builder.terminate(ReturnT(None))
+            builder.switchTo(run)
+            builder.emit(CopyIns(GlobalPlace(initialized), BoolOp(true)))
+        }
+        None => {}
+    }
+
+    for each in imports {
+        builder.emit(CallIns(None, each, [], [], 0))
+    }
+
+    self.line = 0
+    self.statements(mut builder, module.statements)?
+
+    if (module.init == 0) {
+        // At the end of the program, the values owned by each module are dropped (the main file
+        // first, then the others, last loaded first, like the interpreter).
+        mut order: int[] = []
+        self.loadOrder(0, mut order)
+        mut i = order.length() - 1
+
+        while (i >= 0) {
+            immut owned = self.modules[order[i]].owned
+            mut j = owned.length() - 1
+
+            while (j >= 0) {
+                builder.emit(DropIns(GlobalPlace(owned[j].global), owned[j].function))
+                j -= 1
+            }
+
+            i -= 1
+        }
+    }
+
+    builder.terminate(ReturnT(None))
+    immut name = if (module.init == 0) { 'main' } else { `${self.file} (module)` }
+    self.functions[module.init] = Some(builder.finish(name, self.file, 0, []))
+    return Ok()
+}
+
+function Lowerer.lowerFunctions(mut self): Result[void, string] {
+    immut statements = self.modules[self.module].statements
+
+    for statement in statements {
+        self.setLine(statement)
+        immut declaration = unlocated(statement)
+
+        match (declaration.kind) {
+            FunctionDecl(name, owner, _, _, _, _) => {
+                // Generic functions are lowered for each instance.
+                match (self.signatures.get(functionKey(self.module, owner, name))) {
+                    Some(signature) => self.lowerFunction(declaration, signature, functionKey(0, owner, name)[2..])?
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    return Ok()
+}
+
+// Drops `value` if `node` is a move-only temporary (a value used in place, not kept).
+function Lowerer.dropTemporary(mut self, mut builder: Builder, node: Node, value: Option[Operand]): Result[void, string] {
+    if (not self.tables.temporaries.has(nodeId(node))) { return Ok() }
+
+    immut local = match (value) {
+        Some(LocalOp(local)) => local
+        _ => return Ok()
+    }
+
+    match (self.dropFunction(builder.locals[local].ty)?) {
+        Some(runner) => builder.emit(DropIns(LocalPlace(local), runner))
+        None => {}
+    }
+
+    return Ok()
+}
+
+// Records that `place` owns its value, if it is a move-only value: it is dropped when the current
+// scope ends.
+function Lowerer.own(mut self, mut builder: Builder, place: Place, ty: Ty): Result[void, string] {
+    match (self.dropFunction(ty)?) {
+        Some(runner) => builder.owned.push({ depth: builder.scopes.length(), place: place, function: runner })
+        None => {}
+    }
+
+    return Ok()
+}
+
+// Whether dropping a value of type `ty` does something: a type with a `drop` method, or a value
+// that holds one.
+function Lowerer.droppable(self, ty: Ty, mut visiting: Set[int]): boolean {
+    match (ty) {
+        RecordTy(record) => {
+            if (visiting.has(record)) { return false }
+
+            visiting.add(record)
+            immut hasMethod = match (self.recordTypes.get(record)) {
+                Some(found) => self.tables.dropMethods.has(found.id)
+                None => false
+            }
+
+            if (hasMethod) { return true }
+
+            for variant in self.records[record].variants {
+                for field in variant.fields {
+                    if (self.droppable(field.ty, mut visiting)) { return true }
+                }
+            }
+
+            return false
+        }
+        ListTy(item) => return self.droppable(item, mut visiting)
+        SetTy(item) => return self.droppable(item, mut visiting)
+        MapTy(key, value) => return self.droppable(key, mut visiting) or self.droppable(value, mut visiting)
+        // Dropping a file closes it.
+        FileTy => return true
+        _ => return false
+    }
+}
+
+// The function that drops a value of type `ty` (the type's `drop` method first, then what the
+// value holds), or none when there is nothing to do.
+function Lowerer.dropFunction(mut self, ty: Ty): Result[Option[int], string] {
+    immut text = tyText(ty)
+
+    match (self.dropFunctions.get(text)) {
+        Some(runner) => return Ok(runner)
+        None => {}
+    }
+
+    mut visiting: Set[int] = Set.from([])
+
+    if (not self.droppable(ty, mut visiting)) {
+        self.dropFunctions[text] = None
+        return Ok(None)
+    }
+
+    immut id = self.functions.length()
+    self.functions.push(None)
+    // Known before its body: a type can hold itself.
+    self.dropFunctions[text] = Some(id)
+    immut line = self.line
+    immut file = self.file
+    mut builder = Builder.create(VoidTy, false)
+    immut value = builder.local(ty, Some('value'))
+
+    match (ty) {
+        RecordTy(record) => {
+            mut current = LocalOp(value)
+            mut recordType: RecordType = { id: -1, args: [] }
+
+            match (self.recordTypes.get(record)) {
+                Some(found) => recordType = found
+                None => {}
+            }
+
+            match (self.tables.dropMethods.get(recordType.id)) {
+                Some(method) => {
+                    immut module = match (self.moduleIds.get(method.module)) {
+                        Some(found) => found
+                        None => self.module
+                    }
+                    immut signature = self.callee(`${module}:${method.key}`, recordType.args)?
+                    // `drop(mut self)` may change the value before what it holds is dropped.
+                    immut changed = builder.local(ty, None)
+                    builder.emit(CopyIns(LocalPlace(changed), current))
+                    builder.emit(CallIns(None, signature.id, [LocalOp(changed)], [{ param: 0, target: { root: LocalPlace(changed), path: [] } }], 0))
+                    current = LocalOp(changed)
+                }
+                None => {}
+            }
+
+            immut variants = self.records[record].variants
+
+            for index in range(variants.length()) {
+                mut fields: DropField[] = []
+
+                for field in range(variants[index].fields.length()) {
+                    immut fieldType = variants[index].fields[field].ty
+
+                    match (self.dropFunction(fieldType)?) {
+                        Some(runner) => fields.push({ field: field, ty: fieldType, function: runner })
+                        None => {}
+                    }
+                }
+
+                if (fields.length() == 0) { continue }
+
+                immut next = builder.newBlock()
+
+                if (variants.length() > 1) {
+                    immut tag = self.unary(mut builder, 'RecordTag', current, IntTy)
+                    immut condition = self.binary(mut builder, 'IntCompare(Equal)', tag, IntOp(index), BoolTy)
+                    immut body = builder.newBlock()
+                    builder.terminate(BranchT(condition, body, next))
+                    builder.switchTo(body)
+                }
+
+                for each in fields {
+                    immut dest = builder.local(each.ty, None)
+                    builder.emit(FieldGetIns(dest, current, each.field))
+                    builder.emit(CallIns(None, each.function, [LocalOp(dest)], [], 0))
+                }
+
+                builder.terminate(GotoT(next))
+                builder.switchTo(next)
+            }
+        }
+        ListTy(item) => {
+            immut runner = match (self.dropFunction(item)?) {
+                Some(runner) => runner
+                None => 0
+            }
+            self.dropItems(mut builder, LocalOp(value), item, runner)
+        }
+        SetTy(item) => {
+            immut runner = match (self.dropFunction(item)?) {
+                Some(runner) => runner
+                None => 0
+            }
+            immut list = self.unary(mut builder, 'MapKeys', LocalOp(value), ListTy(item))
+            self.dropItems(mut builder, list, item, runner)
+        }
+        FileTy => builder.emit(StdCallIns(None, 'koji_std_file_close', [ValueArg(LocalOp(value))]))
+        MapTy(key, item) => {
+            match (self.dropFunction(key)?) {
+                Some(runner) => {
+                    immut list = self.unary(mut builder, 'MapKeys', LocalOp(value), ListTy(key))
+                    self.dropItems(mut builder, list, key, runner)
+                }
+                None => {}
+            }
+
+            match (self.dropFunction(item)?) {
+                Some(runner) => {
+                    immut list = self.unary(mut builder, 'MapValues', LocalOp(value), ListTy(item))
+                    self.dropItems(mut builder, list, item, runner)
+                }
+                None => {}
+            }
+        }
+        _ => {}
+    }
+
+    builder.terminate(ReturnT(None))
+    self.functions[id] = Some(builder.finish(`drop ${text}`, file, 1, [false]))
+    self.line = line
+    return Ok(Some(id))
+}
+
+// A field of a record that has something to drop.
+type DropField = {
+    field: int
+    ty: Ty
+    function: int
+}
+
+// Calls `function` on each item of `list`.
+function Lowerer.dropItems(mut self, mut builder: Builder, list: Operand, item: Ty, runner: int) {
+    immut length = self.unary(mut builder, 'ListLength', list, IntTy)
+    immut index = builder.local(IntTy, None)
+    builder.emit(CopyIns(LocalPlace(index), IntOp(0)))
+    immut head = builder.newBlock()
+    immut body = builder.newBlock()
+    immut exit = builder.newBlock()
+    builder.terminate(GotoT(head))
+    builder.switchTo(head)
+    immut more = self.binary(mut builder, 'IntCompare(Less)', LocalOp(index), length, BoolTy)
+    builder.terminate(BranchT(more, body, exit))
+    builder.switchTo(body)
+    immut value = builder.local(item, None)
+    builder.emit(ListGetIns(value, list, LocalOp(index), 0))
+    builder.emit(CallIns(None, runner, [LocalOp(value)], [], 0))
+    immut next = self.binary(mut builder, 'IntAdd', LocalOp(index), IntOp(1), IntTy)
+    builder.emit(CopyIns(LocalPlace(index), next))
+    builder.terminate(GotoT(head))
+    builder.switchTo(exit)
+}
+
+// Whether a statement is an expression that gives a value (not a declaration, a loop or a jump).
+function isExpression(node: Node): boolean {
+    return match (unlocated(node).kind) {
+        VarDecl(_, _, _, _) => false
+        Assign(_, _, _) => false
+        While(_, _) => false
+        For(_, _, _, _) => false
+        Return(_) => false
+        Break => false
+        Continue => false
+        FunctionDecl(_, _, _, _, _, _) => false
+        TypeDecl(_, _, _) => false
+        ImportModule(_, _) => false
+        ImportNames(_, _) => false
+        _ => true
+    }
+}
+
+// The body of a function or a lambda, which returns `returns`: a block (whose last expression, if
+// it gives a value, is returned) or an expression.
+function Lowerer.functionBody(mut self, mut builder: Builder, body: Node, returns: Ty): Result[void, string] {
+    immut inner = unlocated(body)
+    mut lastGivesValue = false
+
+    match (inner.kind) {
+        Block(statements) => {
+            if (statements.length() > 0 and isExpression(statements[statements.length() - 1])) {
+                lastGivesValue = match (self.typeOf(statements[statements.length() - 1])) {
+                    Ok(VoidTy) => false
+                    Ok(_) => true
+                    Err(_) => false
+                }
+            }
+        }
+        _ => {}
+    }
+
+    match (inner.kind) {
+        // The value of the last expression is returned.
+        Block(statements) => {
+            if (returns != VoidTy and lastGivesValue) {
+                immut entered = self.enterImports(mut builder, statements)?
+                self.statements(mut builder, statements[..statements.length() - 1])?
+                immut value = self.valueAs(mut builder, statements[statements.length() - 1], returns)?
+                self.exitImports(entered)
+                builder.dropOwned(0, false)
+                builder.terminate(ReturnT(value))
+            } else {
+                immut entered = self.enterImports(mut builder, statements)?
+                self.statements(mut builder, statements)?
+                self.exitImports(entered)
+            }
+        }
+        _ => {
+            if (returns == VoidTy) {
+                self.expression(mut builder, inner)?
+            } else {
+                immut value = self.valueAs(mut builder, inner, returns)?
+                builder.dropOwned(0, false)
+                builder.terminate(ReturnT(value))
+            }
+        }
+    }
+
+    if (returns == VoidTy) {
+        builder.dropOwned(0, false)
+        builder.terminate(ReturnT(None))
+    }
+
+    return Ok()
+}
+
+// A record type for the values a closure captures, or for none.
+function Lowerer.environment(mut self, fields: IrField[]): int {
+    if (fields.length() == 0) {
+        match (self.emptyEnvironment) {
+            Some(empty) => return empty
+            None => {}
+        }
+    }
+
+    self.records.push({ name: 'environment', variants: [{ name: None, fields: fields }] })
+    immut id = self.records.length() - 1
+
+    if (fields.length() == 0) { self.emptyEnvironment = Some(id) }
+
+    return id
+}
+
+type Capture = {
+    name: string
+    local: int
+}
+
+// `(x: int) => x + amount`: a function whose first parameter is the environment, with the local
+// variables it uses (a copy, from the moment the lambda is created). Top-level variables are not
+// captured: the function reads them directly.
+function Lowerer.lambda(mut self, mut builder: Builder, node: Node, params: Param[], body: Node): Result[Operand, string] {
+    immut parts = match (functionParts(self.typeIn(builder, node)?)) {
+        Some(parts) => parts
+        None => return Err(self.unsupported('this function'))
+    }
+    mut names: string[] = []
+    identifiers(body, mut names)
+    names.sort()
+    mut captures: Capture[] = []
+    mut previous = ''
+
+    for name in names {
+        if (name == previous) { continue }
+
+        previous = name
+        mut isParam = false
+
+        for param in params {
+            if (param.name == name) { isParam = true }
+        }
+
+        if (isParam) { continue }
+
+        match (builder.lookup(name)) {
+            Some(LocalVar(id)) => captures.push({ name: name, local: id })
+            _ => {}
+        }
+    }
+
+    mut fields: IrField[] = []
+
+    for capture in captures {
+        fields.push({ name: capture.name, ty: builder.locals[capture.local].ty })
+    }
+
+    immut environment = self.environment(fields)
+    immut id = self.functions.length()
+    self.functions.push(None)
+    immut line = self.line
+    mut inner = Builder.create(parts.returns, false)
+    immut environmentLocal = inner.local(RecordTy(environment), None)
+
+    for i in range(params.length()) {
+        if (i >= parts.params.length()) { break }
+
+        immut local = inner.local(parts.params[i], Some(params[i].name))
+        inner.declare(params[i].name, LocalVar(local))
+    }
+
+    for field in range(fields.length()) {
+        immut local = inner.local(fields[field].ty, Some(fields[field].name))
+        inner.emit(FieldGetIns(local, LocalOp(environmentLocal), field))
+        inner.declare(fields[field].name, LocalVar(local))
+    }
+
+    inner.pushScope()
+    self.functionBody(mut inner, body, parts.returns)?
+    immut count = params.length() + 1
+    mut writeback: boolean[] = []
+
+    for i in range(count) {
+        writeback.push(false)
+    }
+
+    self.functions[id] = Some(inner.finish('anonymous function', self.file, count, writeback))
+    self.line = line
+    mut environmentValue: Option[Operand] = None
+
+    if (captures.length() > 0) {
+        immut dest = builder.local(RecordTy(environment), None)
+        mut values: Operand[] = []
+
+        for capture in captures {
+            values.push(LocalOp(capture.local))
+        }
+
+        builder.emit(RecordNewIns(dest, 0, values))
+        environmentValue = Some(LocalOp(dest))
+    }
+
+    immut closureType = self.typeIn(builder, node)?
+    immut dest = builder.local(closureType, None)
+    builder.emit(MakeClosureIns(dest, id, environmentValue))
+    return Ok(LocalOp(dest))
+}
+
+// A named function used as a value (`immut f = double`): a closure of a function that takes an
+// (empty) environment and calls it.
+function Lowerer.functionValue(mut self, mut builder: Builder, key: string, typeArgs: Ty[], name: string): Result[Operand, string] {
+    immut signature = self.callee(key, typeArgs)?
+
+    if (true in signature.writeback) { return Err(self.unsupported("a function with 'mut' parameters used as a value")) }
+
+    mut wrapper = 0
+
+    match (self.wrappers.get(signature.id)) {
+        Some(found) => wrapper = found
+        None => {
+            immut environment = self.environment([])
+            mut inner = Builder.create(signature.returns, false)
+            inner.local(RecordTy(environment), None)
+            mut args: Operand[] = []
+
+            for ty in signature.params {
+                args.push(LocalOp(inner.local(ty, None)))
+            }
+
+            immut dest = if (signature.returns != VoidTy) { Some(inner.local(signature.returns, None)) } else { None }
+            inner.emit(CallIns(dest, signature.id, args, [], self.line))
+            immut returned = match (dest) {
+                Some(local) => Some(LocalOp(local))
+                None => None
+            }
+            inner.terminate(ReturnT(returned))
+            wrapper = self.functions.length()
+            immut count = signature.params.length() + 1
+            mut writeback: boolean[] = []
+
+            for i in range(count) {
+                writeback.push(false)
+            }
+
+            self.functions.push(Some(inner.finish(name, self.file, count, writeback)))
+            self.wrappers[signature.id] = wrapper
+        }
+    }
+
+    immut dest = builder.local(FunctionTy(signature.params, signature.returns), None)
+    builder.emit(MakeClosureIns(dest, wrapper, None))
+    return Ok(LocalOp(dest))
+}
+
+// Calls a closure (`f(1)`, `makeAdder(5)(1)`).
+function Lowerer.callClosure(mut self, mut builder: Builder, callee: Node, args: Node[]): Result[Option[Operand], string] {
+    immut parts = match (functionParts(self.typeIn(builder, callee)?)) {
+        Some(parts) => parts
+        None => return Err(self.unsupported('this call'))
+    }
+    immut closure = self.value(mut builder, callee)?
+    mut values: Operand[] = []
+
+    for i in range(args.length()) {
+        if (i >= parts.params.length()) { break }
+
+        values.push(self.valueOf(mut builder, args[i], parts.params[i])?)
+    }
+
+    immut dest = if (parts.returns != VoidTy) { Some(builder.local(parts.returns, None)) } else { None }
+    builder.emit(CallClosureIns(dest, closure, values, self.line))
+    return Ok(localOperand(dest))
+}
+
+type FunctionParts = {
+    params: Ty[]
+    returns: Ty
+}
+
+function functionParts(ty: Ty): Option[FunctionParts] {
+    return match (ty) {
+        FunctionTy(params, returns) => Some({ params: params, returns: returns })
+        _ => None
+    }
+}
+
+function localOperand(dest: Option[int]): Option[Operand] {
+    return match (dest) {
+        Some(local) => Some(LocalOp(local))
+        None => None
+    }
+}
+
+// Statements
+
+function Lowerer.statements(mut self, mut builder: Builder, statements: Node[]): Result[void, string] {
+    for statement in statements {
+        self.statement(mut builder, statement)?
+    }
+
+    return Ok()
+}
+
+function Lowerer.block(mut self, mut builder: Builder, node: Node): Result[void, string] {
+    builder.pushScope()
+    immut inner = unlocated(node)
+
+    match (inner.kind) {
+        Block(statements) => {
+            immut entered = self.enterImports(mut builder, statements)?
+            self.statements(mut builder, statements)?
+            self.exitImports(entered)
+        }
+        _ => self.statement(mut builder, inner)?
+    }
+
+    builder.dropOwned(builder.scopes.length() - 1, true)
+    builder.popScope()
+    return Ok()
+}
+
+function Lowerer.atTopLevel(self, builder: Builder): boolean {
+    return builder.isMain and builder.scopes.length() == 1
+}
+
+function Lowerer.statement(mut self, mut builder: Builder, node: Node): Result[void, string] {
+    match (node.kind) {
+        Located(line, statement) => {
+            self.line = line
+            return self.statement(mut builder, statement)
+        }
+        Export(declaration) => return self.statement(mut builder, declaration)
+        FunctionDecl(_, _, _, _, _, _) => {
+            if (self.atTopLevel(builder)) { return Ok() }
+
+            return Err(self.unsupported('a nested function'))
+        }
+        TypeDecl(_, _, _) => {
+            if (self.atTopLevel(builder)) { return Ok() }
+
+            return Err(self.unsupported('a type declared inside a block'))
+        }
+        // Hoisted to the start of the block (`enterImports`).
+        ImportModule(_, _) => return Ok()
+        ImportNames(_, _) => return Ok()
+        VarDecl(name, annotation, value, _) => {
+            immut variableType = self.variableType(node, annotation, value)?
+            immut operand = self.valueAs(mut builder, value, variableType)?
+            mut place = LocalPlace(0)
+
+            if (self.atTopLevel(builder)) {
+                immut id = match (self.globalNamed(name)) {
+                    Some(id) => id
+                    None => return Err(self.unsupported(`'${name}'`))
+                }
+                builder.declare(name, GlobalVar(id))
+                place = GlobalPlace(id)
+            } else {
+                place = LocalPlace(builder.local(variableType, Some(name)))
+            }
+
+            match (operand) {
+                Some(value) => builder.emit(CopyIns(place, value))
+                None => {}
+            }
+
+            // Declared after its value: `immut x = x + 1` reads the outer `x`.
+            match (place) {
+                LocalPlace(id) => builder.declare(name, LocalVar(id))
+                _ => {}
+            }
+
+            // A variable that owns a move-only value drops it at the end of its scope (at the end
+            // of the program, for a top-level variable).
+            if (self.tables.declares.has(nodeId(node))) {
+                match (place) {
+                    GlobalPlace(global) => {
+                        match (self.dropFunction(variableType)?) {
+                            Some(runner) => self.modules[self.module].owned.push({ global: global, function: runner })
+                            None => {}
+                        }
+                    }
+                    LocalPlace(_) => self.own(mut builder, place, variableType)?
+                }
+            }
+
+            return Ok()
+        }
+        Assign(op, target, value) => return self.assign(mut builder, node, target, op, value)
+        While(condition, body) => {
+            immut head = builder.newBlock()
+            immut bodyBlock = builder.newBlock()
+            immut exit = builder.newBlock()
+            builder.terminate(GotoT(head))
+            builder.switchTo(head)
+            immut test = self.condition(mut builder, condition)?
+            builder.terminate(BranchT(test, bodyBlock, exit))
+            builder.switchTo(bodyBlock)
+            builder.loops.push({ next: head, exit: exit, depth: builder.scopes.length() })
+            self.block(mut builder, body)?
+            builder.loops.pop()
+            builder.terminate(GotoT(head))
+            builder.switchTo(exit)
+            return Ok()
+        }
+        For(variable, _, iterable, body) => {
+            if (self.isRangeCall(builder, iterable)) { return self.forRange(mut builder, variable, iterable, body) }
+
+            return self.forList(mut builder, variable, iterable, body)
+        }
+        Break => {
+            if (builder.loops.length() == 0) { return Err(self.unsupported("'break' outside a loop")) }
+
+            immut loop = builder.loops[builder.loops.length() - 1]
+            builder.dropOwned(loop.depth, false)
+            builder.terminate(GotoT(loop.exit))
+            return Ok()
+        }
+        Continue => {
+            if (builder.loops.length() == 0) { return Err(self.unsupported("'continue' outside a loop")) }
+
+            immut loop = builder.loops[builder.loops.length() - 1]
+            builder.dropOwned(loop.depth, false)
+            builder.terminate(GotoT(loop.next))
+            return Ok()
+        }
+        Return(value) => {
+            mut operand: Option[Operand] = None
+
+            match (value) {
+                Some(returned) => operand = self.valueAs(mut builder, returned, builder.returns)?
+                None => {}
+            }
+
+            builder.dropOwned(0, false)
+            builder.terminate(ReturnT(operand))
+            return Ok()
+        }
+        Block(_) => return self.block(mut builder, node)
+        If(condition, thenBranch, elseBranch) => {
+            immut ty = match (self.typeOf(node)) {
+                Ok(ty) => ty
+                Err(_) => VoidTy
+            }
+
+            if (ty == VoidTy) { return self.ifStatement(mut builder, condition, thenBranch, elseBranch) }
+        }
+        _ => {}
+    }
+
+    immut value = self.expression(mut builder, node)?
+    return self.dropTemporary(mut builder, node, value)
+}
+
+function Lowerer.ifStatement(mut self, mut builder: Builder, condition: Node, thenBranch: Node, elseBranch: Option[Node]): Result[void, string] {
+    immut test = self.condition(mut builder, condition)?
+    immut thenBlock = builder.newBlock()
+    immut elseBlock = builder.newBlock()
+    immut exit = if (elseBranch is Some) { builder.newBlock() } else { elseBlock }
+    builder.terminate(BranchT(test, thenBlock, elseBlock))
+    builder.switchTo(thenBlock)
+    self.block(mut builder, thenBranch)?
+    builder.terminate(GotoT(exit))
+
+    match (elseBranch) {
+        Some(branch) => {
+            builder.switchTo(elseBlock)
+            self.block(mut builder, branch)?
+            builder.terminate(GotoT(exit))
+        }
+        None => {}
+    }
+
+    builder.switchTo(exit)
+    return Ok()
+}
+
+// Whether `iterable` is a call of the built-in `range`.
+function Lowerer.isRangeCall(self, builder: Builder, iterable: Node): boolean {
+    match (unlocated(iterable).kind) {
+        Call(callee, _) => {
+            match (unlocated(callee).kind) {
+                Name(name) => return name == 'range' and builder.lookup('range') is None and self.item('range') is None
+                _ => return false
+            }
+        }
+        _ => return false
+    }
+}
+
+// `for i in range(...)`, without building the list.
+function Lowerer.forRange(mut self, mut builder: Builder, variable: string, iterable: Node, body: Node): Result[void, string] {
+    immut args = match (unlocated(iterable).kind) {
+        Call(_, args) => args
+        _ => []
+    }
+    mut values: Operand[] = []
+
+    for arg in args {
+        immut value = self.valueOf(mut builder, arg, IntTy)?
+        // Copied: the bounds are evaluated once.
+        immut local = builder.local(IntTy, None)
+        builder.emit(CopyIns(LocalPlace(local), value))
+        values.push(LocalOp(local))
+    }
+
+    mut start = IntOp(0)
+    mut end = IntOp(0)
+    mut step = IntOp(1)
+
+    match (values.length()) {
+        1 => end = values[0]
+        2 => {
+            start = values[0]
+            end = values[1]
+        }
+        3 => {
+            start = values[0]
+            end = values[1]
+            step = values[2]
+        }
+        _ => return Err(self.unsupported("this call of 'range'"))
+    }
+
+    builder.emit(RangeCheckIns(step, self.line))
+    immut next = builder.local(IntTy, None)
+    immut done = builder.local(BoolTy, None)
+    immut hasValue = builder.local(BoolTy, None)
+    builder.emit(CopyIns(LocalPlace(next), start))
+    builder.emit(CopyIns(LocalPlace(done), BoolOp(false)))
+    immut head = builder.newBlock()
+    immut bodyBlock = builder.newBlock()
+    immut exit = builder.newBlock()
+    builder.terminate(GotoT(head))
+    builder.switchTo(head)
+    immut value = builder.local(IntTy, Some(variable))
+    builder.emit(RangeNextIns(hasValue, value, next, end, step, done))
+    builder.terminate(BranchT(LocalOp(hasValue), bodyBlock, exit))
+    builder.switchTo(bodyBlock)
+    return self.loopBody(mut builder, variable, value, head, exit, body)
+}
+
+// The body of a `for` loop, with `variable` in scope; then back to `next`.
+function Lowerer.loopBody(mut self, mut builder: Builder, variable: string, value: int, next: int, exit: int, body: Node): Result[void, string] {
+    builder.pushScope()
+    builder.declare(variable, LocalVar(value))
+    builder.loops.push({ next: next, exit: exit, depth: builder.scopes.length() })
+    self.block(mut builder, body)?
+    builder.loops.pop()
+    builder.popScope()
+    builder.terminate(GotoT(next))
+    builder.switchTo(exit)
+    return Ok()
+}
+
+// `for item in items`: goes through a copy of the list, so changing `items` in the body does not
+// change the loop.
+function Lowerer.forList(mut self, mut builder: Builder, variable: string, iterable: Node, body: Node): Result[void, string] {
+    immut iterableType = self.typeIn(builder, iterable)?
+    mut listType = iterableType
+    mut value = IntOp(0)
+
+    match (iterableType) {
+        ListTy(_) => value = self.value(mut builder, iterable)?
+        // A map gives its keys, a set its items (a copy, in the order they were added).
+        MapTy(key, _) => {
+            listType = ListTy(key)
+            immut map = self.value(mut builder, iterable)?
+            value = self.unary(mut builder, 'MapKeys', map, listType)
+        }
+        SetTy(key) => {
+            listType = ListTy(key)
+            immut map = self.value(mut builder, iterable)?
+            value = self.unary(mut builder, 'MapKeys', map, listType)
+        }
+        // A string gives its characters.
+        StrTy => {
+            listType = ListTy(CharTy)
+            immut text = self.value(mut builder, iterable)?
+            immut dest = builder.local(listType, None)
+            builder.emit(StdCallIns(Some(dest), 'koji_std_string_chars', [ValueArg(text), ElementArg(CharTy)]))
+            value = LocalOp(dest)
+        }
+        _ => return Err(self.unsupported("a 'for' loop over this value"))
+    }
+
+    immut element = itemOf(listType)
+    immut list = builder.local(listType, None)
+    builder.emit(CopyIns(LocalPlace(list), value))
+    immut length = builder.local(IntTy, None)
+    builder.emit(UnaryIns(length, 'ListLength', LocalOp(list), self.line))
+    immut index = builder.local(IntTy, None)
+    builder.emit(CopyIns(LocalPlace(index), IntOp(0)))
+    immut head = builder.newBlock()
+    immut bodyBlock = builder.newBlock()
+    immut step = builder.newBlock()
+    immut exit = builder.newBlock()
+    builder.terminate(GotoT(head))
+    builder.switchTo(head)
+    immut more = builder.local(BoolTy, None)
+    builder.emit(BinaryIns(more, 'IntCompare(Less)', LocalOp(index), LocalOp(length), self.line))
+    builder.terminate(BranchT(LocalOp(more), bodyBlock, exit))
+    builder.switchTo(step)
+    immut following = builder.local(IntTy, None)
+    builder.emit(BinaryIns(following, 'IntAdd', LocalOp(index), IntOp(1), self.line))
+    builder.emit(CopyIns(LocalPlace(index), LocalOp(following)))
+    builder.terminate(GotoT(head))
+    builder.switchTo(bodyBlock)
+    immut item = builder.local(element, Some(variable))
+    builder.emit(ListGetIns(item, LocalOp(list), LocalOp(index), self.line))
+    return self.loopBody(mut builder, variable, item, step, exit, body)
+}
+
+// The type of an assignable place: a variable, an item of a list or a field.
+function Lowerer.placeType(mut self, builder: Builder, node: Node): Result[Ty, string] {
+    match (unlocated(node).kind) {
+        Name(name) => return Ok(self.variable(builder, name)?.ty)
+        IndexNode(target, _) => {
+            return match (self.placeType(builder, target)?) {
+                ListTy(item) => Ok(item)
+                MapTy(_, value) => Ok(value)
+                _ => Err(self.unsupported('assigning to an item of this value'))
+            }
+        }
+        Member(object, name) => return Ok(self.field(builder, object, name)?.ty)
+        _ => return Err(self.unsupported('assigning to this value'))
+    }
+}
+
+type FieldFound = {
+    index: int
+    ty: Ty
+}
+
+// The position and type of the field `name` of `object` (an object, or a variant the checker
+// narrowed it to: `if (result is Ok) { result.value }`).
+function Lowerer.field(mut self, builder: Builder, object: Node, name: string): Result[FieldFound, string] {
+    immut narrowed = match (self.tables.types.get(nodeId(object))) {
+        Some(VariantType(_, _, variant)) => Some(variant)
+        _ => None
+    }
+    immut record = match (self.typeIn(builder, object)?) {
+        RecordTy(record) => record
+        _ => return Err(self.unsupported('this member'))
+    }
+    immut variants = self.records[record].variants
+    mut chosen: Option[IrVariant] = None
+
+    match (narrowed) {
+        Some(variantName) => {
+            for each in variants {
+                if (each.name == Some(variantName)) {
+                    chosen = Some(each)
+                    break
+                }
+            }
+        }
+        None => {
+            if (variants.length() == 1) { chosen = Some(variants[0]) }
+        }
+    }
+
+    match (chosen) {
+        Some(variant) => {
+            for i in range(variant.fields.length()) {
+                if (variant.fields[i].name == name) { return Ok({ index: i, ty: variant.fields[i].ty }) }
+            }
+        }
+        None => {}
+    }
+
+    return Err(self.unsupported(`the member '${name}'`))
+}
+
+// A constructor call found in an expression: the variant's name and the arguments.
+type ConstructorCall = {
+    name: string
+    args: Node[]
+}
+
+// `Some(1)`, `None` or `Circle(2.0)` when `node` constructs a variant of `record`: a name that is
+// not a variable or a function.
+function Lowerer.constructor(self, builder: Builder, node: Node, record: int): Option[ConstructorCall] {
+    immut inner = unlocated(node)
+    mut found: Option[ConstructorCall] = None
+
+    match (inner.kind) {
+        Name(name) => found = Some({ name: name, args: [] })
+        Call(callee, args) => {
+            if (self.tables.methods.has(inner.id)) { return None }
+
+            match (unlocated(callee).kind) {
+                Name(name) => found = Some({ name: name, args: args })
+                _ => return None
+            }
+        }
+        _ => return None
+    }
+
+    immut call = match (found) {
+        Some(call) => call
+        None => return None
+    }
+    immut isName = builder.lookup(call.name) is Some or self.item(call.name) is Some
+
+    if (isName) { return None }
+
+    for variant in self.records[record].variants {
+        if (variant.name == Some(call.name)) { return Some(call) }
+    }
+
+    return None
+}
+
+// A new value of the variant `name` of `record`.
+function Lowerer.construct(mut self, mut builder: Builder, record: int, name: string, args: Node[]): Result[Operand, string] {
+    immut variant = self.variantIndex(record, name)?
+    immut fields = self.records[record].variants[variant].fields
+    mut values: Operand[] = []
+
+    for i in range(args.length()) {
+        if (i >= fields.length()) { break }
+
+        values.push(self.valueOf(mut builder, args[i], fields[i].ty)?)
+    }
+
+    // `Ok()`: the field of type `void` has no value.
+    if (args.length() == 0 and fields.length() == 1 and fields[0].ty == VoidTy) { values.push(IntOp(0)) }
+
+    immut dest = builder.local(RecordTy(record), None)
+    builder.emit(RecordNewIns(dest, variant, values))
+    return Ok(LocalOp(dest))
+}
+
+// `{ name: 'Ana', age: 30 }`: the fields are evaluated in the order they are written, and stored
+// in the order of the type.
+function Lowerer.objectLiteral(mut self, mut builder: Builder, entries: ObjectEntry[], record: int): Result[Operand, string] {
+    immut fields = self.records[record].variants[0].fields
+    mut values: Option[Operand][] = []
+
+    for each in fields {
+        values.push(None)
+    }
+
+    for entry in entries {
+        mut index = -1
+
+        for i in range(fields.length()) {
+            if (fields[i].name == entry.key) {
+                index = i
+                break
+            }
+        }
+
+        if (index == -1) { return Err(self.unsupported(`the field '${entry.key}'`)) }
+
+        immut value = self.valueOf(mut builder, entry.value, fields[index].ty)?
+        // Kept in a local: a later field could change the variable it reads.
+        immut local = builder.local(fields[index].ty, None)
+        builder.emit(CopyIns(LocalPlace(local), value))
+        values[index] = Some(LocalOp(local))
+    }
+
+    mut operands: Operand[] = []
+
+    for value in values {
+        match (value) {
+            Some(operand) => operands.push(operand)
+            None => return Err(self.unsupported('an object without every field'))
+        }
+    }
+
+    immut dest = builder.local(RecordTy(record), None)
+    builder.emit(RecordNewIns(dest, 0, operands))
+    return Ok(LocalOp(dest))
+}
+
+// A value that is changed in place: a variable, or a part of one (`grid[0]`, `person.tags`).
+function Lowerer.target(mut self, mut builder: Builder, node: Node): Result[Target, string] {
+    match (node.kind) {
+        Located(line, inner) => {
+            self.line = line
+            return self.target(mut builder, inner)
+        }
+        Name(name) => return Ok({ root: self.variable(builder, name)?.place, path: [] })
+        IndexNode(target, index) => {
+            immut containerType = self.placeType(builder, target)?
+            mut container = self.target(mut builder, target)?
+
+            match (containerType) {
+                MapTy(key, _) => container.path.push(KeyStep(self.key(mut builder, index, key)?))
+                _ => container.path.push(IndexStep(self.index(mut builder, index)?))
+            }
+
+            return Ok(container)
+        }
+        Member(object, name) => {
+            immut found = self.field(builder, object, name)?
+            mut record = self.target(mut builder, object)?
+            record.path.push(FieldStep(found.index))
+            return Ok(record)
+        }
+        _ => return Err(self.unsupported('changing this value'))
+    }
+}
+
+// A key of a map, evaluated once.
+function Lowerer.key(mut self, mut builder: Builder, node: Node, ty: Ty): Result[Operand, string] {
+    immut value = self.valueOf(mut builder, node, ty)?
+
+    match (value) {
+        LocalOp(_) => {}
+        _ => return Ok(value)
+    }
+
+    immut local = builder.local(ty, None)
+    builder.emit(CopyIns(LocalPlace(local), value))
+    return Ok(LocalOp(local))
+}
+
+// An `int` index, evaluated once.
+function Lowerer.index(mut self, mut builder: Builder, node: Node): Result[Operand, string] {
+    immut value = self.valueOf(mut builder, node, IntTy)?
+
+    match (value) {
+        IntOp(_) => return Ok(value)
+        _ => {}
+    }
+
+    immut local = builder.local(IntTy, None)
+    builder.emit(CopyIns(LocalPlace(local), value))
+    return Ok(LocalOp(local))
+}
+
+// The value assigned by `target op= value`.
+function Lowerer.assignedValue(mut self, mut builder: Builder, op: string, target: Node, targetType: Ty, value: Node): Result[Option[Operand], string] {
+    if (op == '=') { return self.valueAs(mut builder, value, targetType) }
+
+    immut current = self.value(mut builder, target)?
+    immut valueType = self.typeIn(builder, value)?
+    immut operand = self.value(mut builder, value)?
+    immut result = self.arithmetic(mut builder, op[..op.length() - 1], current, targetType, operand, valueType)?
+    return self.convert(mut builder, Some(result.value), result.ty, targetType)
+}
+
+function Lowerer.assign(mut self, mut builder: Builder, node: Node, target: Node, op: string, value: Node): Result[void, string] {
+    immut targetType = self.placeType(builder, target)?
+
+    match (unlocated(target).kind) {
+        Name(name) => {
+            immut place = self.variable(builder, name)?.place
+
+            match (self.assignedValue(mut builder, op, target, targetType, value)?) {
+                Some(newValue) => {
+                    // The move-only value it had is dropped.
+                    if (self.tables.replaces.has(nodeId(node))) {
+                        match (self.dropFunction(targetType)?) {
+                            Some(runner) => builder.emit(DropIns(place, runner))
+                            None => {}
+                        }
+                    }
+
+                    builder.emit(CopyIns(place, newValue))
+                }
+                None => {}
+            }
+
+            return Ok()
+        }
+        IndexNode(container, index) => {
+            match (self.placeType(builder, container)?) {
+                MapTy(keyType, _) => {
+                    immut map = self.target(mut builder, container)?
+                    immut key = self.key(mut builder, index, keyType)?
+                    immut newValue = self.required(self.assignedValue(mut builder, op, target, targetType, value)?)?
+                    builder.emit(MapSetIns(map, key, Some(newValue), self.line))
+                    return Ok()
+                }
+                _ => {}
+            }
+
+            immut list = self.target(mut builder, container)?
+            immut position = self.index(mut builder, index)?
+            immut newValue = self.required(self.assignedValue(mut builder, op, target, targetType, value)?)?
+            builder.emit(ListSetIns(list, position, newValue, self.line))
+            return Ok()
+        }
+        Member(object, name) => {
+            immut found = self.field(builder, object, name)?
+            immut record = self.target(mut builder, object)?
+            immut newValue = self.required(self.assignedValue(mut builder, op, target, targetType, value)?)?
+            builder.emit(FieldSetIns(record, found.index, newValue, self.line))
+            return Ok()
+        }
+        _ => return Err(self.unsupported('assigning to this value'))
+    }
+}
+
+// A value that must be there (an expression of type `void` has none).
+function Lowerer.required(self, value: Option[Operand]): Result[Operand, string] {
+    return match (value) {
+        Some(operand) => Ok(operand)
+        None => Err(self.unsupported('an expression without a value here'))
+    }
+}
+
+// Expressions
+
+// A `boolean` operand for a branch.
+function Lowerer.condition(mut self, mut builder: Builder, node: Node): Result[Operand, string] {
+    return self.value(mut builder, node)
+}
+
+// The value of an expression, which must have one.
+function Lowerer.value(mut self, mut builder: Builder, node: Node): Result[Operand, string] {
+    immut value = self.expression(mut builder, node)?
+    return self.required(value)
+}
+
+// `valueAs`, for an expression that must have a value.
+function Lowerer.valueOf(mut self, mut builder: Builder, node: Node, target: Ty): Result[Operand, string] {
+    immut value = self.valueAs(mut builder, node, target)?
+    return self.required(value)
+}
+
+// Lowers `node` as a value of type `target`: an `int` becomes a `float` where a `float` is
+// expected, and a literal gets its type from `target` (`[]`, `[1, 2]` for a `float[]`).
+function Lowerer.valueAs(mut self, mut builder: Builder, node: Node, target: Ty): Result[Option[Operand], string] {
+    match (node.kind) {
+        Located(line, inner) => {
+            self.line = line
+            return self.valueAs(mut builder, inner, target)
+        }
+        ListLiteral(items) => {
+            match (target) {
+                ListTy(_) => return Ok(Some(self.listLiteral(mut builder, items, target)?))
+                _ => {}
+            }
+        }
+        MapLiteral(entries) => {
+            match (target) {
+                MapTy(_, _) => return Ok(Some(self.mapLiteral(mut builder, entries, target)?))
+                _ => {}
+            }
+        }
+        ObjectLiteral(entries) => {
+            match (target) {
+                RecordTy(record) => return Ok(Some(self.objectLiteral(mut builder, entries, record)?))
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    match (target) {
+        RecordTy(record) => {
+            match (self.constructor(builder, node, record)) {
+                Some(call) => return Ok(Some(self.construct(mut builder, record, call.name, call.args)?))
+                None => {}
+            }
+        }
+        _ => {}
+    }
+
+    immut source = self.typeIn(builder, node)?
+    immut value = self.expression(mut builder, node)?
+    return self.convert(mut builder, value, source, target)
+}
+
+function Lowerer.mapLiteral(mut self, mut builder: Builder, entries: Entry[], ty: Ty): Result[Operand, string] {
+    mut keyType = VoidTy
+    mut valueType = VoidTy
+
+    match (ty) {
+        MapTy(key, value) => {
+            keyType = key
+            valueType = value
+        }
+        _ => return Err(self.unsupported('this map'))
+    }
+
+    mut values: MapEntry[] = []
+
+    for entry in entries {
+        immut key = self.valueOf(mut builder, entry.key, keyType)?
+        immut value = self.valueOf(mut builder, entry.value, valueType)?
+        values.push({ key: key, value: value })
+    }
+
+    immut dest = builder.local(ty, None)
+    builder.emit(MapNewIns(dest, values))
+    return Ok(LocalOp(dest))
+}
+
+function Lowerer.listLiteral(mut self, mut builder: Builder, items: Node[], ty: Ty): Result[Operand, string] {
+    immut element = itemOf(ty)
+    mut values: Operand[] = []
+
+    for item in items {
+        values.push(self.valueOf(mut builder, item, element)?)
+    }
+
+    immut dest = builder.local(ty, None)
+    builder.emit(ListNewIns(dest, values))
+    return Ok(LocalOp(dest))
+}
+
+// Converts `value` from `from` to `to` (only `int` to `float` changes anything).
+function Lowerer.convert(mut self, mut builder: Builder, value: Option[Operand], source: Ty, to: Ty): Result[Option[Operand], string] {
+    immut operand = match (value) {
+        Some(operand) => operand
+        None => return Ok(None)
+    }
+
+    if (source == IntTy and to == FloatTy) {
+        immut dest = builder.local(FloatTy, None)
+        builder.emit(UnaryIns(dest, 'IntToFloat', operand, self.line))
+        return Ok(Some(LocalOp(dest)))
+    }
+
+    match (source) {
+        ListTy(_) => {
+            match (to) {
+                ListTy(_) if (source != to) => return Err(self.unsupported('converting a list to another type of list'))
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    return Ok(value)
+}
+
+// The text of a value, as `print` and interpolation show it.
+function Lowerer.textOf(mut self, mut builder: Builder, value: Operand, ty: Ty): Operand {
+    immut op = match (ty) {
+        StrTy => return value
+        IntTy => 'IntToStr'
+        FloatTy => 'FloatToStr'
+        BoolTy => 'BoolToStr'
+        CharTy => 'CharToStr'
+        ListTy(_) => 'ListToStr'
+        RecordTy(_) => 'RecordToStr'
+        MapTy(_, _) => 'MapToStr'
+        SetTy(_) => 'MapToStr'
+        FunctionTy(_, _) => 'ClosureToStr'
+        FileTy => 'FileToStr'
+        RegexTy => 'RegexToStr'
+        VoidTy => return self.string('void')
+    }
+    return self.unary(mut builder, op, value, StrTy)
+}
+
+// The structure of a value, as written in code (`x.debug()`: strings in quotes).
+function Lowerer.reprOf(mut self, mut builder: Builder, value: Operand, ty: Ty): Operand {
+    return match (ty) {
+        StrTy => self.unary(mut builder, 'StrRepr', value, StrTy)
+        CharTy => self.unary(mut builder, 'CharRepr', value, StrTy)
+        RecordTy(_) => self.unary(mut builder, 'RecordRepr', value, StrTy)
+        other => self.textOf(mut builder, value, other)
+    }
+}
+
+function Lowerer.unary(mut self, mut builder: Builder, op: string, value: Operand, ty: Ty): Operand {
+    immut dest = builder.local(ty, None)
+    builder.emit(UnaryIns(dest, op, value, self.line))
+    return LocalOp(dest)
+}
+
+function Lowerer.binary(mut self, mut builder: Builder, op: string, left: Operand, right: Operand, ty: Ty): Operand {
+    immut dest = builder.local(ty, None)
+    builder.emit(BinaryIns(dest, op, left, right, self.line))
+    return LocalOp(dest)
+}
+
+function Lowerer.concat(mut self, mut builder: Builder, left: Operand, right: Operand): Operand {
+    return self.binary(mut builder, 'StrConcat', left, right, StrTy)
+}
+
+// What an unsupported expression is, for the error message.
+function describe(node: Node): string {
+    return match (node.kind) {
+        MapLiteral(_) => 'a map'
+        ObjectLiteral(_) => 'an object'
+        Member(_, _) => 'a member access'
+        Match(_, _) => "'match'"
+        Lambda(_, _, _) => 'an anonymous function'
+        Try(_) => "'?'"
+        MutArg(_) => "a 'mut' argument"
+        If(_, _, _) => "this 'if'"
+        _ => 'this expression'
+    }
+}
+
+// Lowers an expression; `None` for an expression without a value (a call of a `void` function).
+function Lowerer.expression(mut self, mut builder: Builder, node: Node): Result[Option[Operand], string] {
+    match (node.kind) {
+        Located(line, inner) => {
+            self.line = line
+            return self.expression(mut builder, inner)
+        }
+        IntLiteral(value) => return Ok(Some(IntOp(value)))
+        FloatLiteral(value) => return Ok(Some(FloatOp(value)))
+        BooleanLiteral(value) => return Ok(Some(BoolOp(value)))
+        StringNode(text) => {
+            // `'a'` where a char is expected.
+            if (self.typeIn(builder, node)? == CharTy) {
+                immut chars = text.chars()
+
+                if (chars.length() > 0) { return Ok(Some(CharOp(chars[0]))) }
+
+                return Ok(Some(IntOp(0)))
+            }
+
+            return Ok(Some(self.string(text)))
+        }
+        Template(parts) => {
+            mut result: Option[Operand] = None
+
+            for part in parts {
+                mut text = IntOp(0)
+
+                match (part) {
+                    Text(value) => text = self.string(value)
+                    Expression(value) => {
+                        immut shown = match (self.tables.templateDisplays.get(value.id)) {
+                            Some(method) => method
+                            None => None
+                        }
+                        text = self.shown(mut builder, value, shown)?
+                    }
+                }
+
+                result = match (result) {
+                    Some(left) => Some(self.concat(mut builder, left, text))
+                    None => Some(text)
+                }
+            }
+
+            return match (result) {
+                Some(value) => Ok(Some(value))
+                None => Ok(Some(self.string('')))
+            }
+        }
+        ListLiteral(items) => {
+            immut ty = self.typeIn(builder, node)?
+            return Ok(Some(self.listLiteral(mut builder, items, ty)?))
+        }
+        MapLiteral(entries) => {
+            immut ty = self.typeIn(builder, node)?
+            return Ok(Some(self.mapLiteral(mut builder, entries, ty)?))
+        }
+        ObjectLiteral(entries) => {
+            return match (self.typeIn(builder, node)?) {
+                RecordTy(record) => Ok(Some(self.objectLiteral(mut builder, entries, record)?))
+                _ => Err(self.unsupported('an object of this type'))
+            }
+        }
+        Member(object, name) => return self.member(mut builder, node, object, name)
+        Match(scrutinee, arms) => return self.lowerMatch(mut builder, node, scrutinee, arms)
+        Lambda(params, _, body) => return Ok(Some(self.lambda(mut builder, node, params, body)?))
+        Try(value) => return self.lowerTry(mut builder, node, value)
+        _ => {}
+    }
+
+    match (node.kind) {
+        Name(_) => {}
+        Call(_, _) => {}
+        _ => return self.compound(mut builder, node)
+    }
+
+    match (self.typeIn(builder, node)) {
+        Ok(RecordTy(record)) => {
+            match (self.constructor(builder, node, record)) {
+                Some(call) => return Ok(Some(self.construct(mut builder, record, call.name, call.args)?))
+                None => {}
+            }
+        }
+        _ => {}
+    }
+
+    match (node.kind) {
+        Name(name) => {
+            if (builder.lookup(name) is None) {
+                match (self.functionNamed(name)) {
+                    Some(key) => {
+                        // A generic one takes the type arguments the checker found.
+                        immut typeArgs = self.callTypeArgs(node)?
+                        return Ok(Some(self.functionValue(mut builder, key, typeArgs, name)?))
+                    }
+                    None => {}
+                }
+            }
+
+            immut found = self.variable(builder, name)?
+
+            // A move takes the value out of the variable.
+            if (self.tables.moves.has(nodeId(node)) and isManaged(found.ty)) {
+                immut dest = builder.local(found.ty, None)
+                builder.emit(TakeIns(dest, found.place))
+                return Ok(Some(LocalOp(dest)))
+            }
+
+            return match (found.place) {
+                LocalPlace(id) => Ok(Some(LocalOp(id)))
+                GlobalPlace(id) => Ok(Some(GlobalOp(id)))
+            }
+        }
+        Call(callee, args) => return self.lowerCall(mut builder, node, callee, args)
+        _ => return Err(self.unsupported(describe(node)))
+    }
+}
+
+// `object.name`: a constant or variant of a standard library module, a member of a module, or a
+// field.
+function Lowerer.member(mut self, mut builder: Builder, node: Node, object: Node, name: string): Result[Option[Operand], string] {
+    match (self.stdModuleOf(builder, object)) {
+        Some(module) => {
+            if (module == 'math' and name == 'pi') { return Ok(Some(FloatOp(3.141592653589793))) }
+
+            if (module == 'math' and name == 'e') { return Ok(Some(FloatOp(2.718281828459045))) }
+
+            return match (self.typeIn(builder, node)?) {
+                // `file.Read`: a variant of a type of the module.
+                RecordTy(record) => Ok(Some(self.construct(mut builder, record, name, [])?))
+                _ => Err(self.unsupported(`'${module}.${name}'`))
+            }
+        }
+        None => {}
+    }
+
+    match (self.moduleOf(builder, object)) {
+        Some(module) => {
+            match (self.modules[module].names.get(name)) {
+                Some(GlobalItem(id)) => return Ok(Some(GlobalOp(id)))
+                Some(FunctionItem(key)) => {
+                    immut typeArgs = self.callTypeArgs(node)?
+                    return Ok(Some(self.functionValue(mut builder, key, typeArgs, name)?))
+                }
+                _ => {}
+            }
+
+            return match (self.typeIn(builder, node)?) {
+                // `shapes.Dot`: a variant without fields.
+                RecordTy(record) => Ok(Some(self.construct(mut builder, record, name, [])?))
+                _ => Err(self.unsupported(`'${name}' of this module`))
+            }
+        }
+        None => {}
+    }
+
+    immut found = self.field(builder, object, name)?
+    immut record = self.value(mut builder, object)?
+    immut dest = builder.local(found.ty, None)
+    builder.emit(FieldGetIns(dest, record, found.index))
+    self.dropTemporary(mut builder, object, Some(record))?
+    return Ok(Some(LocalOp(dest)))
+}
+
+// Indexes, slices, operators and `if`.
+function Lowerer.compound(mut self, mut builder: Builder, node: Node): Result[Option[Operand], string] {
+    match (node.kind) {
+        IndexNode(target, index) => {
+            match (self.typeIn(builder, target)) {
+                Ok(MapTy(keyType, valueType)) => {
+                    immut map = self.value(mut builder, target)?
+                    immut key = self.valueOf(mut builder, index, keyType)?
+                    immut dest = builder.local(valueType, None)
+                    builder.emit(MapGetIns(dest, map, key, self.line))
+                    return Ok(Some(LocalOp(dest)))
+                }
+                _ => {}
+            }
+
+            if (self.typeIn(builder, target)? == StrTy) {
+                immut text = self.value(mut builder, target)?
+                immut position = self.valueOf(mut builder, index, IntTy)?
+                immut line = self.line
+                return self.std(mut builder, node, 'koji_std_string_char_at', [ValueArg(text), ValueArg(position), LocationArg(line)])
+            }
+
+            immut element = match (self.typeIn(builder, target)?) {
+                ListTy(item) => item
+                _ => return Err(self.unsupported('indexing this value'))
+            }
+            immut list = self.value(mut builder, target)?
+            immut position = self.valueOf(mut builder, index, IntTy)?
+            immut dest = builder.local(element, None)
+            builder.emit(ListGetIns(dest, list, position, self.line))
+            return Ok(Some(LocalOp(dest)))
+        }
+        Slice(target, start, end) => {
+            immut ty = self.typeIn(builder, target)?
+            immut list = self.value(mut builder, target)?
+            mut first: Option[Operand] = None
+            mut last: Option[Operand] = None
+
+            match (start) {
+                Some(bound) => first = Some(self.index(mut builder, bound)?)
+                None => {}
+            }
+
+            match (end) {
+                Some(bound) => last = Some(self.index(mut builder, bound)?)
+                None => {}
+            }
+
+            if (ty == StrTy) {
+                mut args = [ValueArg(list)]
+
+                for bound in [first, last] {
+                    match (bound) {
+                        Some(value) => {
+                            args.push(ModeArg(1))
+                            args.push(ValueArg(value))
+                        }
+                        None => {
+                            args.push(ModeArg(0))
+                            args.push(ValueArg(IntOp(0)))
+                        }
+                    }
+                }
+
+                args.push(LocationArg(self.line))
+                return self.std(mut builder, node, 'koji_std_string_slice', args)
+            }
+
+            immut dest = builder.local(ty, None)
+            builder.emit(ListSliceIns(dest, list, first, last, self.line))
+            return Ok(Some(LocalOp(dest)))
+        }
+        Unary(op, operand) => {
+            immut ty = self.typeIn(builder, operand)?
+            immut value = self.value(mut builder, operand)?
+            immut lowered = match (op) {
+                '-' => if (ty == IntTy) { 'IntNeg' } else { if (ty == FloatTy) { 'FloatNeg' } else { '' } }
+                'not' => if (ty == BoolTy) { 'Not' } else { '' }
+                _ => if (ty == IntTy) { 'BitNot' } else { '' }
+            }
+
+            if (lowered == '') { return Err(self.unsupported('this operator')) }
+
+            return Ok(Some(self.unary(mut builder, lowered, value, ty)))
+        }
+        Binary(op, left, right) => {
+            if (op == 'and' or op == 'or') { return Ok(Some(self.shortCircuit(mut builder, left, op, right)?)) }
+
+            if (op == 'in') { return Ok(Some(self.contains(mut builder, left, right)?)) }
+
+            if (op == 'is') {
+                immut record = match (self.typeIn(builder, left)?) {
+                    RecordTy(record) => record
+                    _ => return Err(self.unsupported("'is' on this value"))
+                }
+                immut variantName = match (unlocated(right).kind) {
+                    Name(name) => name
+                    _ => return Err(self.unsupported("'is' with this pattern"))
+                }
+                immut value = self.value(mut builder, left)?
+                return Ok(Some(self.isVariant(mut builder, value, record, variantName)?))
+            }
+
+            mut leftType = self.typeIn(builder, left)?
+            mut rightType = self.typeIn(builder, right)?
+
+            // `floats + [3]`: the literal gets the type of the other list.
+            match (leftType) {
+                ListTy(_) => {
+                    match (rightType) {
+                        ListTy(_) => {
+                            if (isListLiteral(right)) {
+                                rightType = leftType
+                            } else {
+                                if (isListLiteral(left)) { leftType = rightType }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+
+            immut leftValue = self.valueOf(mut builder, left, leftType)?
+            immut rightValue = self.valueOf(mut builder, right, rightType)?
+            return Ok(Some(self.arithmetic(mut builder, op, leftValue, leftType, rightValue, rightType)?.value))
+        }
+        If(condition, thenBranch, Some(elseBranch)) => {
+            immut ty = self.typeIn(builder, node)?
+            immut dest = builder.local(ty, None)
+            immut test = self.condition(mut builder, condition)?
+            immut thenBlock = builder.newBlock()
+            immut elseBlock = builder.newBlock()
+            immut exit = builder.newBlock()
+            builder.terminate(BranchT(test, thenBlock, elseBlock))
+            builder.switchTo(thenBlock)
+
+            match (self.branchValue(mut builder, thenBranch, ty)?) {
+                Some(value) => builder.emit(CopyIns(LocalPlace(dest), value))
+                None => {}
+            }
+
+            builder.terminate(GotoT(exit))
+            builder.switchTo(elseBlock)
+
+            match (self.branchValue(mut builder, elseBranch, ty)?) {
+                Some(value) => builder.emit(CopyIns(LocalPlace(dest), value))
+                None => {}
+            }
+
+            builder.terminate(GotoT(exit))
+            builder.switchTo(exit)
+            return Ok(Some(LocalOp(dest)))
+        }
+        _ => return Err(self.unsupported(describe(node)))
+    }
+}
+
+function isListLiteral(node: Node): boolean {
+    return match (unlocated(node).kind) {
+        ListLiteral(_) => true
+        _ => false
+    }
+}
+
+// The value of an `if` branch used as an expression: the last expression of its block.
+function Lowerer.branchValue(mut self, mut builder: Builder, branch: Node, ty: Ty): Result[Option[Operand], string] {
+    immut inner = unlocated(branch)
+
+    match (inner.kind) {
+        Block(statements) => {
+            if (statements.length() == 0) { return Ok(None) }
+
+            builder.pushScope()
+            immut entered = self.enterImports(mut builder, statements)?
+            self.statements(mut builder, statements[..statements.length() - 1])?
+            immut last = statements[statements.length() - 1]
+            mut result: Option[Operand] = None
+
+            if (leaves(last)) {
+                self.statement(mut builder, last)?
+            } else {
+                result = self.valueAs(mut builder, last, ty)?
+            }
+
+            self.exitImports(entered)
+            builder.dropOwned(builder.scopes.length() - 1, true)
+            builder.popScope()
+            return Ok(result)
+        }
+        _ => {}
+    }
+
+    // `Err(e) => return Err(e)`: the branch leaves, giving no value.
+    if (leaves(inner)) {
+        self.statement(mut builder, branch)?
+        return Ok(None)
+    }
+
+    return self.valueAs(mut builder, inner, ty)
+}
+
+// Whether a statement leaves (`return`, `break`, `continue`).
+function leaves(node: Node): boolean {
+    return match (unlocated(node).kind) {
+        Return(_) => true
+        Break => true
+        Continue => true
+        _ => false
+    }
+}
+
+// `left and right`, `left or right`: `right` only runs when needed.
+function Lowerer.shortCircuit(mut self, mut builder: Builder, left: Node, op: string, right: Node): Result[Operand, string] {
+    immut dest = builder.local(BoolTy, None)
+    immut first = self.condition(mut builder, left)?
+    builder.emit(CopyIns(LocalPlace(dest), first))
+    immut rightBlock = builder.newBlock()
+    immut exit = builder.newBlock()
+
+    if (op == 'and') {
+        builder.terminate(BranchT(LocalOp(dest), rightBlock, exit))
+    } else {
+        builder.terminate(BranchT(LocalOp(dest), exit, rightBlock))
+    }
+
+    builder.switchTo(rightBlock)
+    immut second = self.condition(mut builder, right)?
+    builder.emit(CopyIns(LocalPlace(dest), second))
+    builder.terminate(GotoT(exit))
+    builder.switchTo(exit)
+    return Ok(LocalOp(dest))
+}
+
+// `item in collection`, for a list, a map, a set or a string.
+function Lowerer.contains(mut self, mut builder: Builder, item: Node, collection: Node): Result[Operand, string] {
+    match (self.typeIn(builder, collection)?) {
+        ListTy(element) => {
+            immut value = self.valueOf(mut builder, item, element)?
+            immut list = self.value(mut builder, collection)?
+            return Ok(self.binary(mut builder, 'ListContains', value, list, BoolTy))
+        }
+        MapTy(key, _) => return self.mapContains(mut builder, item, collection, key)
+        SetTy(key) => return self.mapContains(mut builder, item, collection, key)
+        StrTy => {
+            immut itemType = self.typeIn(builder, item)?
+
+            if (itemType == CharTy) {
+                immut needle = self.value(mut builder, item)?
+                immut haystack = self.value(mut builder, collection)?
+                return Ok(self.binary(mut builder, 'StrContainsChar', needle, haystack, BoolTy))
+            }
+
+            if (self.typeIn(builder, item)? == StrTy) {
+                immut needle = self.value(mut builder, item)?
+                immut haystack = self.value(mut builder, collection)?
+                return Ok(self.binary(mut builder, 'StrContains', needle, haystack, BoolTy))
+            }
+
+            return Err(self.unsupported("'in' with these types"))
+        }
+        _ => return Err(self.unsupported("'in' with these types"))
+    }
+}
+
+function Lowerer.mapContains(mut self, mut builder: Builder, item: Node, collection: Node, key: Ty): Result[Operand, string] {
+    immut value = self.valueOf(mut builder, item, key)?
+    immut map = self.value(mut builder, collection)?
+    return Ok(self.binary(mut builder, 'MapContains', value, map, BoolTy))
+}
+
+// The result of an operator and its type.
+type Computed = {
+    value: Operand
+    ty: Ty
+}
+
+function comparisonName(op: string): Option[string] {
+    return match (op) {
+        '==' => Some('Equal')
+        '!=' => Some('NotEqual')
+        '<' => Some('Less')
+        '<=' => Some('LessEqual')
+        '>' => Some('Greater')
+        '>=' => Some('GreaterEqual')
+        _ => None
+    }
+}
+
+// A binary operator on two values.
+function Lowerer.arithmetic(mut self, mut builder: Builder, op: string, left: Operand, leftType: Ty, right: Operand, rightType: Ty): Result[Computed, string] {
+    immut comparison = comparisonName(op)
+    immut equality = comparison == Some('Equal') or comparison == Some('NotEqual')
+    mut lowered = ''
+    mut first = left
+    mut second = right
+    mut resultType = BoolTy
+    immut numeric = (leftType == IntTy or leftType == FloatTy) and (rightType == IntTy or rightType == FloatTy)
+
+    if (leftType == IntTy and rightType == IntTy) {
+        match (comparison) {
+            Some(name) => lowered = `IntCompare(${name})`
+            None => {
+                lowered = match (op) {
+                    '+' => 'IntAdd'
+                    '-' => 'IntSub'
+                    '*' => 'IntMul'
+                    '/' => 'IntDiv'
+                    '%' => 'IntRem'
+                    '**' => 'IntPow'
+                    '&' => 'BitAnd'
+                    '|' => 'BitOr'
+                    '^' => 'BitXor'
+                    '<<' => 'ShiftLeft'
+                    '>>' => 'ShiftRight'
+                    _ => return Err(self.unsupported(`'${op}'`))
+                }
+                resultType = IntTy
+            }
+        }
+    } else {
+        if (numeric) {
+            first = self.required(self.convert(mut builder, Some(left), leftType, FloatTy)?)?
+            second = self.required(self.convert(mut builder, Some(right), rightType, FloatTy)?)?
+
+            match (comparison) {
+                Some(name) => lowered = `FloatCompare(${name})`
+                None => {
+                    lowered = match (op) {
+                        '+' => 'FloatAdd'
+                        '-' => 'FloatSub'
+                        '*' => 'FloatMul'
+                        '/' => 'FloatDiv'
+                        '%' => 'FloatRem'
+                        '**' => 'FloatPow'
+                        _ => return Err(self.unsupported(`'${op}' on floats`))
+                    }
+                    resultType = FloatTy
+                }
+            }
+        } else {
+            match (leftType) {
+                StrTy if (rightType == StrTy) => {
+                    match (comparison) {
+                        Some(name) => lowered = `StrCompare(${name})`
+                        None => {
+                            if (op != '+') { return Err(self.unsupported(`'${op}' on strings`)) }
+
+                            lowered = 'StrConcat'
+                            resultType = StrTy
+                        }
+                    }
+                }
+                StrTy if (rightType == IntTy and op == '*') => {
+                    lowered = 'StrRepeat'
+                    resultType = StrTy
+                }
+                IntTy if (rightType == StrTy and op == '*') => {
+                    lowered = 'StrRepeat'
+                    first = right
+                    second = left
+                    resultType = StrTy
+                }
+                CharTy if (rightType == CharTy) => {
+                    match (comparison) {
+                        Some(name) => lowered = `CharCompare(${name})`
+                        None => return Err(self.unsupported(`'${op}' on chars`))
+                    }
+                }
+                BoolTy if (rightType == BoolTy) => {
+                    if (not equality) { return Err(self.unsupported(`'${op}' on booleans`)) }
+
+                    lowered = `BoolCompare(${comparisonOf(comparison)})`
+                }
+                MapTy(_, _) if (isMapTy(rightType)) => {
+                    if (not equality) { return Err(self.unsupported(`'${op}' on these values`)) }
+
+                    lowered = `MapCompare(${comparisonOf(comparison)})`
+                }
+                SetTy(_) if (isSetTy(rightType)) => {
+                    if (not equality) { return Err(self.unsupported(`'${op}' on these values`)) }
+
+                    lowered = `MapCompare(${comparisonOf(comparison)})`
+                }
+                RecordTy(_) if (isRecordTy(rightType)) => {
+                    if (not equality) { return Err(self.unsupported(`'${op}' on these values`)) }
+
+                    lowered = `RecordCompare(${comparisonOf(comparison)})`
+                }
+                ListTy(_) if (isListTy(rightType)) => {
+                    if (equality) {
+                        lowered = `ListCompare(${comparisonOf(comparison)})`
+                    } else {
+                        if (op != '+' or comparison is Some) { return Err(self.unsupported(`'${op}' on lists`)) }
+
+                        lowered = 'ListConcat'
+                        resultType = leftType
+                    }
+                }
+                _ => return Err(self.unsupported(`'${op}' on these types`))
+            }
+        }
+    }
+
+    return Ok({ value: self.binary(mut builder, lowered, first, second, resultType), ty: resultType })
+}
+
+function comparisonOf(comparison: Option[string]): string {
+    return match (comparison) {
+        Some(name) => name
+        None => ''
+    }
+}
+
+function isMapTy(ty: Ty): boolean {
+    return match (ty) {
+        MapTy(_, _) => true
+        _ => false
+    }
+}
+
+function isSetTy(ty: Ty): boolean {
+    return match (ty) {
+        SetTy(_) => true
+        _ => false
+    }
+}
+
+function isRecordTy(ty: Ty): boolean {
+    return match (ty) {
+        RecordTy(_) => true
+        _ => false
+    }
+}
+
+function isListTy(ty: Ty): boolean {
+    return match (ty) {
+        ListTy(_) => true
+        _ => false
+    }
+}
+
+// The standard library module `node` names (`math` in `math.sqrt(2)`).
+function Lowerer.stdModuleOf(self, builder: Builder, node: Node): Option[string] {
+    return match (unlocated(node).kind) {
+        Name(name) => {
+            if (builder.lookup(name) is Some) {
+                None
+            } else {
+                match (self.item(name)) {
+                    Some(StdItem(module)) => Some(module)
+                    _ => None
+                }
+            }
+        }
+        _ => None
+    }
+}
+
+// The module `node` names, when it is the name of an imported module (`calc` in `calc.add(1, 2)`).
+function Lowerer.moduleOf(self, builder: Builder, node: Node): Option[int] {
+    return match (unlocated(node).kind) {
+        Name(name) => {
+            if (builder.lookup(name) is Some) {
+                None
+            } else {
+                match (self.item(name)) {
+                    Some(ModuleItem(module)) => Some(module)
+                    _ => None
+                }
+            }
+        }
+        _ => None
+    }
+}
+
+// `calc.add(1, 2)`, or `shapes.Circle(2.0)`.
+function Lowerer.moduleCall(mut self, mut builder: Builder, call: Node, module: int, name: string, args: Node[]): Result[Option[Operand], string] {
+    match (self.modules[module].names.get(name)) {
+        Some(FunctionItem(key)) => {
+            immut typeArgs = self.callTypeArgs(call)?
+            return self.callFunction(mut builder, key, typeArgs, None, args)
+        }
+        Some(GlobalItem(global)) => {
+            // A function stored in a top-level variable of another module.
+            immut parts = match (functionParts(self.globals[global].ty)) {
+                Some(parts) => parts
+                None => return Err(self.unsupported('this call'))
+            }
+            mut values: Operand[] = []
+
+            for i in range(args.length()) {
+                if (i >= parts.params.length()) { break }
+
+                values.push(self.valueOf(mut builder, args[i], parts.params[i])?)
+            }
+
+            immut dest = if (parts.returns != VoidTy) { Some(builder.local(parts.returns, None)) } else { None }
+            builder.emit(CallClosureIns(dest, GlobalOp(global), values, self.line))
+            return Ok(localOperand(dest))
+        }
+        _ => {}
+    }
+
+    return match (self.typeIn(builder, call)?) {
+        RecordTy(record) => Ok(Some(self.construct(mut builder, record, name, args)?))
+        _ => Err(self.unsupported(`'${name}' of this module`))
+    }
+}
+
+// Calls
+
+function Lowerer.lowerCall(mut self, mut builder: Builder, node: Node, callee: Node, args: Node[]): Result[Option[Operand], string] {
+    // A method (`point.move(1, 2)`) or an associated function (`Point.origin()`).
+    match (self.tables.methods.get(node.id)) {
+        Some(method) => {
+            if (method.key == 'Set.from') {
+                immut setType = self.typeIn(builder, node)?
+                immut item = match (setType) {
+                    SetTy(item) => item
+                    _ => return Err(self.unsupported("'Set.from'"))
+                }
+                immut list = self.valueOf(mut builder, args[0], ListTy(item))?
+                return Ok(Some(self.unary(mut builder, 'SetFromList', list, setType)))
+            }
+
+            immut key = self.methodKey(method)
+
+            if (not self.signatures.has(key) and not self.genericFunctions.has(key)) {
+                return Err(self.unsupported(`'${method.key}'`))
+            }
+
+            mut receiver: Option[Node] = None
+
+            if (method.hasSelf) {
+                match (unlocated(callee).kind) {
+                    Member(object, _) => receiver = Some(object)
+                    _ => {}
+                }
+            }
+
+            immut typeArgs = self.callTypeArgs(node)?
+            return self.callFunction(mut builder, key, typeArgs, receiver, args)
+        }
+        None => {}
+    }
+
+    immut displays = match (self.tables.displays.get(node.id)) {
+        Some(methods) => methods
+        None => []
+    }
+
+    match (unlocated(callee).kind) {
+        Name(name) => {
+            if (builder.lookup(name) is Some or self.globalNamed(name) is Some) { return self.callClosure(mut builder, callee, args) }
+
+            return self.call(mut builder, node, name, args, displays)
+        }
+        Member(object, name) => {
+            match (self.stdModuleOf(builder, object)) {
+                Some(module) => return self.stdCall(mut builder, node, module, name, args)
+                None => {}
+            }
+
+            match (self.moduleOf(builder, object)) {
+                Some(module) => return self.moduleCall(mut builder, node, module, name, args)
+                None => {}
+            }
+
+            return self.builtinMethod(mut builder, node, object, name, args)
+        }
+        _ => return self.callClosure(mut builder, callee, args)
+    }
+}
+
+// A move-only argument used only by the call, dropped after it.
+type Temporary = {
+    node: Node
+    value: Operand
+}
+
+// Calls the function `key` (`greet`, `Person.greet`), with `receiver` as `self` for a method. A
+// `mut` parameter (or `mut self`) gives its final value back to the variable that was passed.
+function Lowerer.callFunction(mut self, mut builder: Builder, key: string, typeArgs: Ty[], receiver: Option[Node], args: Node[]): Result[Option[Operand], string] {
+    immut signature = self.callee(key, typeArgs)?
+    mut all: Node[] = []
+
+    match (receiver) {
+        Some(object) => all.push(object)
+        None => {}
+    }
+
+    for arg in args {
+        all.push(arg)
+    }
+
+    mut values: Operand[] = []
+    mut writebacks: Writeback[] = []
+    mut temporaries: Temporary[] = []
+
+    for index in range(all.length()) {
+        if (index >= signature.params.length()) { break }
+
+        immut arg = match (unlocated(all[index]).kind) {
+            MutArg(place) => place
+            _ => all[index]
+        }
+
+        if (signature.writeback[index]) {
+            writebacks.push({ param: index, target: self.target(mut builder, arg)? })
+            values.push(self.value(mut builder, arg)?)
+        } else {
+            immut value = self.valueOf(mut builder, arg, signature.params[index])?
+
+            if (self.tables.temporaries.has(nodeId(arg))) { temporaries.push({ node: arg, value: value }) }
+
+            values.push(value)
+        }
+    }
+
+    immut dest = if (signature.returns != VoidTy) { Some(builder.local(signature.returns, None)) } else { None }
+    builder.emit(CallIns(dest, signature.id, values, writebacks, self.line))
+
+    // Move-only values used only by the call (`show(Conn.open())`) are dropped after it.
+    for temporary in temporaries {
+        self.dropTemporary(mut builder, temporary.node, Some(temporary.value))?
+    }
+
+    return Ok(localOperand(dest))
+}
+
+// The text of a value for `print` and interpolation: its type's `display` method, when the
+// checker found one, or the built-in display.
+function Lowerer.shown(mut self, mut builder: Builder, node: Node, method: Option[MethodRef]): Result[Operand, string] {
+    match (method) {
+        Some(found) => {
+            // The method of a generic type takes the type arguments of the value.
+            immut key = self.methodKey(found)
+            mut typeArgs: Ty[] = []
+
+            match (self.typeIn(builder, node)?) {
+                RecordTy(record) => {
+                    if (self.genericFunctions.has(key)) {
+                        match (self.recordTypes.get(record)) {
+                            Some(recordType) => typeArgs = recordType.args
+                            None => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            return self.required(self.callFunction(mut builder, key, typeArgs, Some(node), [])?)
+        }
+        None => {}
+    }
+
+    immut ty = self.typeIn(builder, node)?
+    immut value = self.value(mut builder, node)?
+    return Ok(self.textOf(mut builder, value, ty))
+}
+
+function displayAt(displays: Option[MethodRef][], index: int): Option[MethodRef] {
+    if (index < displays.length()) { return displays[index] }
+
+    return None
+}
+
+function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, args: Node[], displays: Option[MethodRef][]): Result[Option[Operand], string] {
+    match (self.functionNamed(name)) {
+        Some(key) => {
+            immut typeArgs = self.callTypeArgs(call)?
+            return self.callFunction(mut builder, key, typeArgs, None, args)
+        }
+        None => {}
+    }
+
+    match (self.item(name)) {
+        Some(StdFunctionItem(module, member)) => return self.stdCall(mut builder, call, module, member, args)
+        _ => {}
+    }
+
+    match (name) {
+        'print' => {
+            mut line: Option[Operand] = None
+
+            for index in range(args.length()) {
+                immut text = self.shown(mut builder, args[index], displayAt(displays, index))?
+
+                line = match (line) {
+                    Some(left) => {
+                        immut space = self.string(' ')
+                        immut withSpace = self.concat(mut builder, left, space)
+                        Some(self.concat(mut builder, withSpace, text))
+                    }
+                    None => Some(text)
+                }
+            }
+
+            immut value = match (line) {
+                Some(text) => text
+                None => self.string('')
+            }
+            builder.emit(PrintIns(value, self.line))
+            return Ok(None)
+        }
+        'string' if (args.length() == 1) => return Ok(Some(self.shown(mut builder, args[0], displayAt(displays, 0))?))
+        conversion if ((conversion == 'int' or conversion == 'float') and args.length() == 1) => {
+            immut ty = self.typeIn(builder, args[0])?
+            immut value = self.value(mut builder, args[0])?
+            immut line = self.line
+
+            if ((name == 'int' and ty == IntTy) or (name == 'float' and ty == FloatTy)) { return Ok(Some(value)) }
+
+            if (name == 'float' and ty == IntTy) { return Ok(Some(self.unary(mut builder, 'IntToFloat', value, FloatTy))) }
+
+            if (name == 'int' and ty == FloatTy) {
+                return self.std(mut builder, call, 'koji_std_float_to_int', [ValueArg(value), LocationArg(line)])
+            }
+
+            if (name == 'int' and ty == BoolTy) { return Ok(Some(self.choose(mut builder, value, IntOp(1), IntOp(0), IntTy))) }
+
+            if (name == 'float' and ty == BoolTy) {
+                return Ok(Some(self.choose(mut builder, value, FloatOp(1.0), FloatOp(0.0), FloatTy)))
+            }
+
+            if (ty == StrTy) {
+                immut result = match (self.typeIn(builder, call)?) {
+                    RecordTy(record) => record
+                    _ => return Err(self.unsupported(`'${name}' of this value`))
+                }
+                immut runner = if (name == 'int') { 'koji_std_int_from_string' } else { 'koji_std_float_from_string' }
+                return self.std(mut builder, call, runner, [ValueArg(value), RecordArg(result)])
+            }
+
+            return Err(self.unsupported(`'${name}' of this value`))
+        }
+        'char' if (args.length() == 1) => {
+            immut code = self.valueOf(mut builder, args[0], IntTy)?
+            immut option = self.recordOf(builder, call)?
+            return self.std(mut builder, call, 'koji_std_char', [ValueArg(code), RecordArg(option)])
+        }
+        'input' => {
+            mut prompt = NullArg
+
+            if (args.length() > 0) { prompt = ValueArg(self.shown(mut builder, args[0], displayAt(displays, 0))?) }
+
+            immut option = self.recordOf(builder, call)?
+            immut line = self.line
+            return self.std(mut builder, call, 'koji_std_input', [prompt, RecordArg(option), LocationArg(line)])
+        }
+        'panic' if (args.length() == 1) => {
+            immut message = self.valueOf(mut builder, args[0], StrTy)?
+            immut line = self.line
+            builder.emit(StdCallIns(None, 'koji_std_panic', [ValueArg(message), LocationArg(line)]))
+            builder.terminate(UnreachableT)
+            return Ok(None)
+        }
+        _ => return Err(self.unsupported(`'${name}'`))
+    }
+}
+
+// The record of the type of `node` (an `Option` or a `Result` the runtime builds).
+function Lowerer.recordOf(mut self, builder: Builder, node: Node): Result[int, string] {
+    return match (self.typeIn(builder, node)?) {
+        RecordTy(record) => Ok(record)
+        _ => Err(self.unsupported('this value'))
+    }
+}
+
+// `then` if `condition`, else `otherwise`.
+function Lowerer.choose(mut self, mut builder: Builder, condition: Operand, then: Operand, otherwise: Operand, ty: Ty): Operand {
+    immut dest = builder.local(ty, None)
+    immut yes = builder.newBlock()
+    immut no = builder.newBlock()
+    immut exit = builder.newBlock()
+    builder.terminate(BranchT(condition, yes, no))
+    builder.switchTo(yes)
+    builder.emit(CopyIns(LocalPlace(dest), then))
+    builder.terminate(GotoT(exit))
+    builder.switchTo(no)
+    builder.emit(CopyIns(LocalPlace(dest), otherwise))
+    builder.terminate(GotoT(exit))
+    builder.switchTo(exit)
+    return LocalOp(dest)
+}
+
+// Calls a function of the runtime; the result has the type of `call`.
+function Lowerer.std(mut self, mut builder: Builder, call: Node, runner: string, args: StdArg[]): Result[Option[Operand], string] {
+    immut ty = self.typeIn(builder, call)?
+    immut dest = if (ty != VoidTy) { Some(builder.local(ty, None)) } else { None }
+    builder.emit(StdCallIns(dest, runner, args))
+    return Ok(localOperand(dest))
+}
+
+function Lowerer.stdValue(mut self, mut builder: Builder, args: Node[], index: int, ty: Ty): Result[StdArg, string] {
+    return Ok(ValueArg(self.valueOf(mut builder, args[index], ty)?))
+}
+
+function Lowerer.stdResult(mut self, builder: Builder, call: Node): Result[StdArg, string] {
+    return Ok(RecordArg(self.recordOf(builder, call)?))
+}
+
+function position(names: string[], name: string): int {
+    for i in range(names.length()) {
+        if (names[i] == name) { return i }
+    }
+
+    return -1
+}
+
+// `math.sqrt(2)` and the other functions of the standard library modules.
+function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: string, name: string, args: Node[]): Result[Option[Operand], string] {
+    immut line = self.line
+    immut full = `${module}.${name}`
+    mut runner = ''
+    mut arguments: StdArg[] = []
+
+    match (full) {
+        'math.abs' => {
+            if (self.typeIn(builder, args[0])? == IntTy) {
+                runner = 'koji_std_math_abs_int'
+                arguments = [self.stdValue(mut builder, args, 0, IntTy)?, LocationArg(line)]
+            } else {
+                runner = 'koji_std_math_abs_float'
+                arguments = [self.stdValue(mut builder, args, 0, FloatTy)?]
+            }
+        }
+        'math.sqrt' => {
+            runner = 'koji_std_math_sqrt'
+            arguments = [self.stdValue(mut builder, args, 0, FloatTy)?, self.stdResult(builder, call)?]
+        }
+        'math.pow' => {
+            runner = 'koji_std_math_pow'
+            immut base = self.stdValue(mut builder, args, 0, FloatTy)?
+            immut exponent = self.stdValue(mut builder, args, 1, FloatTy)?
+            arguments = [base, exponent, self.stdResult(builder, call)?, LocationArg(line)]
+        }
+        other if (other in ['math.floor', 'math.ceil', 'math.round']) => {
+            runner = 'koji_std_math_round'
+            arguments = [self.stdValue(mut builder, args, 0, FloatTy)?, ModeArg(position(['floor', 'ceil', 'round'], name)), LocationArg(line)]
+        }
+        'time.sleep' => {
+            runner = 'koji_std_time_sleep'
+            arguments = [self.stdValue(mut builder, args, 0, FloatTy)?]
+        }
+        'time.now' => runner = 'koji_std_time_now'
+        'time.monotonic' => runner = 'koji_std_time_monotonic'
+        'path.join' => {
+            runner = 'koji_std_path_join'
+            immut first = self.stdValue(mut builder, args, 0, StrTy)?
+            arguments = [first, self.stdValue(mut builder, args, 1, StrTy)?]
+        }
+        other if (other in ['path.parent', 'path.name', 'path.stem', 'path.extension']) => {
+            runner = 'koji_std_path_part'
+            immut text = self.stdValue(mut builder, args, 0, StrTy)?
+            arguments = [text, ModeArg(position(['parent', 'name', 'stem', 'extension'], name)), self.stdResult(builder, call)?]
+        }
+        'path.isAbsolute' => {
+            runner = 'koji_std_path_is_absolute'
+            arguments = [self.stdValue(mut builder, args, 0, StrTy)?]
+        }
+        other if (other in ['http.get', 'http.delete', 'http.post', 'http.put']) => {
+            runner = 'koji_std_http_request'
+            immut method = position(['get', 'delete', 'post', 'put'], name)
+            immut url = self.stdValue(mut builder, args, 0, StrTy)?
+            immut body = if (method >= 2) { self.stdValue(mut builder, args, 1, StrTy)? } else { NullArg }
+            arguments = [ModeArg(method), url, body, self.stdResult(builder, call)?]
+        }
+        'json.parse' => {
+            runner = 'koji_std_json_parse'
+            immut text = self.stdValue(mut builder, args, 0, StrTy)?
+            immut result = self.recordOf(builder, call)?
+            immut ok = self.variantIndex(result, 'Ok')?
+            immut json = self.records[result].variants[ok].fields[0].ty
+            arguments = [text, RecordArg(result), ElementArg(StrTy), ElementArg(json)]
+        }
+        'json.stringify' => {
+            runner = 'koji_std_json_stringify'
+            immut json = self.typeIn(builder, args[0])?
+            arguments = [self.stdValue(mut builder, args, 0, json)?]
+        }
+        'json.get' => {
+            runner = 'koji_std_json_get'
+            immut json = self.typeIn(builder, args[0])?
+            immut value = self.stdValue(mut builder, args, 0, json)?
+            immut key = self.stdValue(mut builder, args, 1, StrTy)?
+            arguments = [value, key, self.stdResult(builder, call)?]
+        }
+        other if (other in ['json.asString', 'json.asInt', 'json.asFloat', 'json.asBool']) => {
+            runner = 'koji_std_json_as'
+            immut json = self.typeIn(builder, args[0])?
+            immut value = self.stdValue(mut builder, args, 0, json)?
+            arguments = [value, ModeArg(position(['asString', 'asInt', 'asFloat', 'asBool'], name)), self.stdResult(builder, call)?]
+        }
+        'regex.compile' => {
+            runner = 'koji_std_regex_compile'
+            arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
+        }
+        'datetime.now' => {
+            runner = 'koji_std_datetime_now'
+            arguments = [self.stdResult(builder, call)?]
+        }
+        'datetime.today' => runner = 'koji_std_datetime_today'
+        'datetime.format' => {
+            runner = 'koji_std_datetime_format'
+            immut time = self.stdValue(mut builder, args, 0, FloatTy)?
+            arguments = [time, self.stdValue(mut builder, args, 1, StrTy)?]
+        }
+        'datetime.parse' => {
+            runner = 'koji_std_datetime_parse'
+            immut text = self.stdValue(mut builder, args, 0, StrTy)?
+            immut pattern = self.stdValue(mut builder, args, 1, StrTy)?
+            arguments = [text, pattern, self.stdResult(builder, call)?]
+        }
+        'file.open' => {
+            runner = 'koji_std_file_open'
+            immut path = self.stdValue(mut builder, args, 0, StrTy)?
+            immut modeType = self.typeIn(builder, args[1])?
+            immut mode = self.stdValue(mut builder, args, 1, modeType)?
+            arguments = [path, mode, self.stdResult(builder, call)?]
+        }
+        'file.list' => {
+            runner = 'koji_std_file_list'
+            immut path = self.stdValue(mut builder, args, 0, StrTy)?
+            arguments = [path, ElementArg(StrTy), self.stdResult(builder, call)?]
+        }
+        'file.exists' => {
+            runner = 'koji_std_file_exists'
+            arguments = [self.stdValue(mut builder, args, 0, StrTy)?]
+        }
+        'file.createDir' => {
+            runner = 'koji_std_file_create_dir'
+            arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
+        }
+        'system.args' => {
+            runner = 'koji_std_system_args'
+            arguments = [ElementArg(StrTy)]
+        }
+        'system.env' => {
+            runner = 'koji_std_system_env'
+            arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
+        }
+        'system.exit' => {
+            immut code = self.stdValue(mut builder, args, 0, IntTy)?
+            builder.emit(StdCallIns(None, 'koji_std_system_exit', [code]))
+            builder.terminate(UnreachableT)
+            return Ok(None)
+        }
+        'system.run' => {
+            runner = 'koji_std_system_run'
+            immut command = self.stdValue(mut builder, args, 0, StrTy)?
+            immut arguments2 = self.stdValue(mut builder, args, 1, ListTy(StrTy))?
+            arguments = [command, arguments2, self.stdResult(builder, call)?]
+        }
+        _ => return Err(self.unsupported(`'${module}.${name}'`))
+    }
+
+    return self.std(mut builder, call, runner, arguments)
+}
+
+// `items.push(x)`, `text.length()` and the other methods of the built-in types.
+function Lowerer.builtinMethod(mut self, mut builder: Builder, call: Node, object: Node, name: string, args: Node[]): Result[Option[Operand], string] {
+    immut objectType = self.typeIn(builder, object)?
+    immut line = self.line
+
+    if (name == 'display') {
+        immut value = self.value(mut builder, object)?
+        return Ok(Some(self.textOf(mut builder, value, objectType)))
+    }
+
+    if (name == 'debug') {
+        immut value = self.value(mut builder, object)?
+        return Ok(Some(self.reprOf(mut builder, value, objectType)))
+    }
+
+    match (objectType) {
+        MapTy(key, value) => {
+            match (name) {
+                'length' => {
+                    immut map = self.value(mut builder, object)?
+                    return Ok(Some(self.unary(mut builder, 'MapLength', map, IntTy)))
+                }
+                'has' => return Ok(Some(self.has(mut builder, object, args, key)?))
+                'keys' => {
+                    immut map = self.value(mut builder, object)?
+                    return Ok(Some(self.unary(mut builder, 'MapKeys', map, ListTy(key))))
+                }
+                'values' => {
+                    immut map = self.value(mut builder, object)?
+                    return Ok(Some(self.unary(mut builder, 'MapValues', map, ListTy(value))))
+                }
+                'get' => {
+                    immut destType = self.typeIn(builder, call)?
+                    immut map = self.value(mut builder, object)?
+                    immut wanted = self.valueOf(mut builder, args[0], key)?
+                    immut dest = builder.local(destType, None)
+                    builder.emit(MapLookupIns(dest, map, wanted))
+                    return Ok(Some(LocalOp(dest)))
+                }
+                'remove' => return Ok(Some(self.remove(mut builder, call, object, args, key)?))
+                _ => {}
+            }
+        }
+        SetTy(item) => {
+            match (name) {
+                'length' => {
+                    immut map = self.value(mut builder, object)?
+                    return Ok(Some(self.unary(mut builder, 'MapLength', map, IntTy)))
+                }
+                'has' => return Ok(Some(self.has(mut builder, object, args, item)?))
+                'values' => {
+                    immut map = self.value(mut builder, object)?
+                    return Ok(Some(self.unary(mut builder, 'MapKeys', map, ListTy(item))))
+                }
+                'add' => {
+                    immut map = self.target(mut builder, object)?
+                    immut key = self.valueOf(mut builder, args[0], item)?
+                    builder.emit(MapSetIns(map, key, None, line))
+                    return Ok(None)
+                }
+                'remove' => return Ok(Some(self.remove(mut builder, call, object, args, item)?))
+                _ => {}
+            }
+        }
+        StrTy => {
+            match (name) {
+                text if (text in ['trim', 'upper', 'lower']) => {
+                    immut value = self.value(mut builder, object)?
+                    return self.std(mut builder, call, `koji_std_string_${name}`, [ValueArg(value)])
+                }
+                test if (test in ['isSpace', 'isNumeric', 'isAlpha', 'isAlphaNumeric', 'isUpper', 'isLower', 'isTitle']) => {
+                    immut value = self.value(mut builder, object)?
+                    immut mode = position(['isSpace', 'isNumeric', 'isAlpha', 'isAlphaNumeric', 'isUpper', 'isLower', 'isTitle'], name)
+                    return self.std(mut builder, call, 'koji_std_string_is', [ValueArg(value), ModeArg(mode)])
+                }
+                'split' => {
+                    immut value = self.value(mut builder, object)?
+                    immut separator = self.valueOf(mut builder, args[0], StrTy)?
+                    return self.std(mut builder, call, 'koji_std_string_split', [ValueArg(value), ValueArg(separator), ElementArg(StrTy), LocationArg(line)])
+                }
+                'replace' => {
+                    immut value = self.value(mut builder, object)?
+                    immut old = self.valueOf(mut builder, args[0], StrTy)?
+                    immut new = self.valueOf(mut builder, args[1], StrTy)?
+                    return self.std(mut builder, call, 'koji_std_string_replace', [ValueArg(value), ValueArg(old), ValueArg(new), LocationArg(line)])
+                }
+                part if (part in ['startsWith', 'endsWith', 'indexOf']) => {
+                    immut value = self.value(mut builder, object)?
+                    immut wanted = self.valueOf(mut builder, args[0], StrTy)?
+                    mut arguments = [ValueArg(value), ValueArg(wanted)]
+
+                    if (name == 'startsWith') { return self.std(mut builder, call, 'koji_std_string_starts_with', arguments) }
+
+                    if (name == 'endsWith') { return self.std(mut builder, call, 'koji_std_string_ends_with', arguments) }
+
+                    arguments.push(RecordArg(self.recordOf(builder, call)?))
+                    return self.std(mut builder, call, 'koji_std_string_index_of', arguments)
+                }
+                'chars' => {
+                    immut value = self.value(mut builder, object)?
+                    return self.std(mut builder, call, 'koji_std_string_chars', [ValueArg(value), ElementArg(CharTy)])
+                }
+                'length' => {
+                    immut value = self.value(mut builder, object)?
+                    return Ok(Some(self.unary(mut builder, 'StrLength', value, IntTy)))
+                }
+                _ => {}
+            }
+        }
+        FileTy => {
+            if (name in ['read', 'write', 'close']) {
+                immut value = self.value(mut builder, object)?
+                immut fileLine = self.line
+
+                if (name == 'close') { return self.std(mut builder, call, 'koji_std_file_close', [ValueArg(value)]) }
+
+                immut result = self.recordOf(builder, call)?
+                mut arguments = [ValueArg(value)]
+
+                if (name == 'write') { arguments.push(ValueArg(self.valueOf(mut builder, args[0], StrTy)?)) }
+
+                arguments.push(RecordArg(result))
+                arguments.push(LocationArg(fileLine))
+                immut runner = if (name == 'read') { 'koji_std_file_read' } else { 'koji_std_file_write' }
+                return self.std(mut builder, call, runner, arguments)
+            }
+        }
+        RegexTy => {
+            if (name in ['test', 'find', 'findAll', 'replace', 'replaceAll', 'split']) {
+                immut regex = self.value(mut builder, object)?
+                immut input = self.valueOf(mut builder, args[0], StrTy)?
+                mut arguments = [ValueArg(regex), ValueArg(input)]
+                mut runner = ''
+
+                match (name) {
+                    'test' => runner = 'koji_std_regex_test'
+                    'find' => {
+                        arguments.push(RecordArg(self.recordOf(builder, call)?))
+                        runner = 'koji_std_regex_find'
+                    }
+                    'findAll' => {
+                        immut element = itemOf(self.typeIn(builder, call)?)
+                        immut found = match (element) {
+                            RecordTy(record) => record
+                            _ => return Err(self.unsupported("'findAll'"))
+                        }
+                        arguments.push(ElementArg(element))
+                        arguments.push(RecordArg(found))
+                        runner = 'koji_std_regex_find_all'
+                    }
+                    'split' => {
+                        arguments.push(ElementArg(StrTy))
+                        runner = 'koji_std_regex_split'
+                    }
+                    _ => {
+                        arguments.push(ValueArg(self.valueOf(mut builder, args[1], StrTy)?))
+                        arguments.push(ModeArg(if (name == 'replaceAll') { 1 } else { 0 }))
+                        runner = 'koji_std_regex_replace'
+                    }
+                }
+
+                return self.std(mut builder, call, runner, arguments)
+            }
+        }
+        CharTy => {
+            if (name == 'code') {
+                immut c = self.value(mut builder, object)?
+                return Ok(Some(self.unary(mut builder, 'CharCode', c, IntTy)))
+            }
+        }
+        ListTy(element) => {
+            match (name) {
+                'length' => {
+                    immut list = self.value(mut builder, object)?
+                    return Ok(Some(self.unary(mut builder, 'ListLength', list, IntTy)))
+                }
+                'join' => {
+                    immut list = self.value(mut builder, object)?
+                    immut separator = self.valueOf(mut builder, args[0], StrTy)?
+                    return Ok(Some(self.binary(mut builder, 'ListJoin', list, separator, StrTy)))
+                }
+                'push' => {
+                    immut list = self.target(mut builder, object)?
+                    immut value = self.valueOf(mut builder, args[0], element)?
+                    builder.emit(ListPushIns(list, value, line))
+                    return Ok(None)
+                }
+                'insert' => {
+                    immut list = self.target(mut builder, object)?
+                    immut index = self.index(mut builder, args[0])?
+                    immut value = self.valueOf(mut builder, args[1], element)?
+                    builder.emit(ListInsertIns(list, index, value, line))
+                    return Ok(None)
+                }
+                'sortBy' => {
+                    immut list = self.target(mut builder, object)?
+                    immut comparison = self.value(mut builder, args[0])?
+                    builder.emit(ListSortByIns(list, comparison, line))
+                    return Ok(None)
+                }
+                'sort' => {
+                    immut list = self.target(mut builder, object)?
+                    builder.emit(ListSortIns(list, line))
+                    return Ok(None)
+                }
+                removed if (removed == 'pop' or removed == 'removeAt') => {
+                    immut option = match (self.typeIn(builder, call)?) {
+                        RecordTy(record) => record
+                        _ => return Err(self.unsupported(`'${name}'`))
+                    }
+                    immut list = self.target(mut builder, object)?
+                    mut index: Option[Operand] = None
+
+                    if (args.length() > 0) { index = Some(self.index(mut builder, args[0])?) }
+
+                    immut dest = builder.local(RecordTy(option), None)
+                    builder.emit(ListRemoveIns(dest, list, index, self.line))
+                    return Ok(Some(LocalOp(dest)))
+                }
+                'indexOf' => {
+                    immut option = match (self.typeIn(builder, call)?) {
+                        RecordTy(record) => record
+                        _ => return Err(self.unsupported("'indexOf'"))
+                    }
+                    immut list = self.value(mut builder, object)?
+                    immut value = self.valueOf(mut builder, args[0], element)?
+                    immut found = self.binary(mut builder, 'ListIndexOf', list, value, IntTy)
+                    immut present = self.binary(mut builder, 'IntCompare(GreaterEqual)', found, IntOp(0), BoolTy)
+                    return Ok(Some(self.option(mut builder, option, present, found)?))
+                }
+                _ => {}
+            }
+        }
+        RecordTy(source) => {
+            if (name == 'mapErr') { return self.mapErr(mut builder, call, object, source, args) }
+        }
+        _ => {}
+    }
+
+    return Err(self.unsupported(`the method '${name}'`))
+}
+
+function Lowerer.has(mut self, mut builder: Builder, object: Node, args: Node[], key: Ty): Result[Operand, string] {
+    immut wanted = self.valueOf(mut builder, args[0], key)?
+    immut map = self.value(mut builder, object)?
+    return Ok(self.binary(mut builder, 'MapContains', wanted, map, BoolTy))
+}
+
+function Lowerer.remove(mut self, mut builder: Builder, call: Node, object: Node, args: Node[], key: Ty): Result[Operand, string] {
+    immut destType = self.typeIn(builder, call)?
+    immut map = self.target(mut builder, object)?
+    immut wanted = self.valueOf(mut builder, args[0], key)?
+    immut dest = builder.local(destType, None)
+    builder.emit(MapRemoveIns(dest, map, wanted, self.line))
+    return Ok(LocalOp(dest))
+}
+
+// `result.mapErr(Parse)` or `result.mapErr(f)`: converts the error.
+function Lowerer.mapErr(mut self, mut builder: Builder, call: Node, object: Node, source: int, args: Node[]): Result[Option[Operand], string] {
+    immut line = self.line
+    immut target = match (self.typeIn(builder, call)?) {
+        RecordTy(record) => record
+        _ => return Err(self.unsupported("'mapErr'"))
+    }
+    immut err = self.variantIndex(target, 'Err')?
+    immut errorType = self.records[target].variants[err].fields[0].ty
+    // A variant (`mapErr(Parse)`), or a function that converts the error.
+    mut constructor: Option[string] = None
+
+    match (unlocated(args[0]).kind) {
+        Name(name) => {
+            match (errorType) {
+                RecordTy(errorRecord) => {
+                    if (self.constructor(builder, args[0], errorRecord) is Some) { constructor = Some(name) }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    mut converter: Option[Operand] = None
+
+    if (constructor is None) { converter = Some(self.value(mut builder, args[0])?) }
+
+    immut value = self.value(mut builder, object)?
+    immut subject = builder.local(RecordTy(source), None)
+    builder.emit(CopyIns(LocalPlace(subject), value))
+    immut succeeded = self.isVariant(mut builder, LocalOp(subject), source, 'Ok')?
+    immut dest = builder.local(RecordTy(target), None)
+    immut okBlock = builder.newBlock()
+    immut errBlock = builder.newBlock()
+    immut exit = builder.newBlock()
+    builder.terminate(BranchT(succeeded, okBlock, errBlock))
+
+    for variant in ['Ok', 'Err'] {
+        builder.switchTo(if (variant == 'Ok') { okBlock } else { errBlock })
+        immut sourceVariant = self.variantIndex(source, variant)?
+        immut fieldType = self.records[source].variants[sourceVariant].fields[0].ty
+        immut field = builder.local(fieldType, None)
+        builder.emit(FieldGetIns(field, LocalOp(subject), 0))
+        mut inner = LocalOp(field)
+
+        if (variant == 'Err') {
+            immut wrapped = builder.local(errorType, None)
+
+            match (constructor) {
+                Some(name) => {
+                    immut errorRecord = match (errorType) {
+                        RecordTy(record) => record
+                        _ => 0
+                    }
+                    immut index = self.variantIndex(errorRecord, name)?
+                    builder.emit(RecordNewIns(wrapped, index, [inner]))
+                }
+                None => {
+                    match (converter) {
+                        Some(runner) => builder.emit(CallClosureIns(Some(wrapped), runner, [inner], line))
+                        None => {}
+                    }
+                }
+            }
+
+            inner = LocalOp(wrapped)
+        }
+
+        immut index = self.variantIndex(target, variant)?
+        builder.emit(RecordNewIns(dest, index, [inner]))
+        builder.terminate(GotoT(exit))
+    }
+
+    builder.switchTo(exit)
+    return Ok(Some(LocalOp(dest)))
+}
+
+// The position of the variant `name` in `record`.
+function Lowerer.variantIndex(self, record: int, name: string): Result[int, string] {
+    immut variants = self.records[record].variants
+
+    for i in range(variants.length()) {
+        if (variants[i].name == Some(name)) { return Ok(i) }
+    }
+
+    return Err(self.unsupported(`the variant '${name}'`))
+}
+
+// Whether `value` (of type `record`) is the variant `name`.
+function Lowerer.isVariant(mut self, mut builder: Builder, value: Operand, record: int, name: string): Result[Operand, string] {
+    immut variant = self.variantIndex(record, name)?
+    immut tag = self.unary(mut builder, 'RecordTag', value, IntTy)
+    return Ok(self.binary(mut builder, 'IntCompare(Equal)', tag, IntOp(variant), BoolTy))
+}
+
+// `Some(value)` if `present`, else `None`, for the `Option` record `option`.
+function Lowerer.option(mut self, mut builder: Builder, option: int, present: Operand, value: Operand): Result[Operand, string] {
+    immut dest = builder.local(RecordTy(option), None)
+    immut some = self.variantIndex(option, 'Some')?
+    immut none = self.variantIndex(option, 'None')?
+    immut thenBlock = builder.newBlock()
+    immut elseBlock = builder.newBlock()
+    immut exit = builder.newBlock()
+    builder.terminate(BranchT(present, thenBlock, elseBlock))
+    builder.switchTo(thenBlock)
+    builder.emit(RecordNewIns(dest, some, [value]))
+    builder.terminate(GotoT(exit))
+    builder.switchTo(elseBlock)
+    builder.emit(RecordNewIns(dest, none, []))
+    builder.terminate(GotoT(exit))
+    builder.switchTo(exit)
+    return Ok(LocalOp(dest))
+}
+
+// `match`
+
+// The arms are tried in order; the first whose pattern matches (and whose guard holds) runs.
+function Lowerer.lowerMatch(mut self, mut builder: Builder, node: Node, scrutinee: Node, arms: Arm[]): Result[Option[Operand], string] {
+    immut resultType = self.typeOr(builder, node)
+    immut result = if (resultType != VoidTy) { Some(builder.local(resultType, None)) } else { None }
+    // A `match` on a move-only temporary: the variables of the arm own their values, and an arm
+    // without variables drops the whole value.
+    immut owning = self.tables.owningMatches.has(nodeId(scrutinee))
+    immut scrutineeType = self.typeIn(builder, scrutinee)?
+    immut value = self.value(mut builder, scrutinee)?
+    // Kept in a local: the arms may change the variable that was matched.
+    immut subject = builder.local(scrutineeType, None)
+    builder.emit(CopyIns(LocalPlace(subject), value))
+    immut exit = builder.newBlock()
+
+    for arm in arms {
+        immut next = builder.newBlock()
+        builder.pushScope()
+        immut saved = self.owningMatch
+        self.owningMatch = owning
+        self.pattern(mut builder, arm.pattern, LocalOp(subject), scrutineeType, next)?
+        self.owningMatch = saved
+
+        match (arm.guard) {
+            Some(guard) => {
+                immut test = self.condition(mut builder, guard)?
+                immut body = builder.newBlock()
+                builder.terminate(BranchT(test, body, next))
+                builder.switchTo(body)
+            }
+            None => {}
+        }
+
+        match (result) {
+            Some(local) => {
+                match (self.branchValue(mut builder, arm.body, resultType)?) {
+                    Some(armValue) => builder.emit(CopyIns(LocalPlace(local), armValue))
+                    None => {}
+                }
+            }
+            None => self.block(mut builder, arm.body)?
+        }
+
+        builder.dropOwned(builder.scopes.length() - 1, true)
+
+        if (owning and not binds(arm.pattern)) {
+            match (self.dropFunction(scrutineeType)?) {
+                Some(runner) => builder.emit(DropIns(LocalPlace(subject), runner))
+                None => {}
+            }
+        }
+
+        builder.terminate(GotoT(exit))
+        builder.popScope()
+        builder.switchTo(next)
+    }
+
+    // The checker makes sure that some arm matches.
+    builder.terminate(UnreachableT)
+    builder.switchTo(exit)
+    return Ok(localOperand(result))
+}
+
+// Checks `pattern` against `value`, going to `fail` if it does not match, and declares the
+// variables it binds.
+function Lowerer.pattern(mut self, mut builder: Builder, pattern: Pattern, value: Operand, ty: Ty, fail: int): Result[void, string] {
+    match (pattern) {
+        Wildcard => return Ok()
+        Bind(name) => {
+            mut isVariant = false
+
+            match (ty) {
+                RecordTy(record) => {
+                    for variant in self.records[record].variants {
+                        if (variant.name == Some(name) and variant.fields.length() == 0) { isVariant = true }
+                    }
+
+                    if (isVariant) {
+                        immut condition = self.isVariant(mut builder, value, record, name)?
+                        self.test(mut builder, condition, fail)
+                        return Ok()
+                    }
+                }
+                _ => {}
+            }
+
+            immut local = builder.local(ty, Some(name))
+            builder.emit(CopyIns(LocalPlace(local), value))
+            builder.declare(name, LocalVar(local))
+
+            if (self.owningMatch) { self.own(mut builder, LocalPlace(local), ty)? }
+
+            return Ok()
+        }
+        VariantPattern(name, args) => {
+            immut record = match (ty) {
+                RecordTy(record) => record
+                _ => return Err(self.unsupported('this pattern'))
+            }
+            immut condition = self.isVariant(mut builder, value, record, name)?
+            self.test(mut builder, condition, fail)
+            immut variant = self.variantIndex(record, name)?
+            immut fields = self.records[record].variants[variant].fields
+
+            for field in range(args.length()) {
+                if (field >= fields.length()) { break }
+
+                immut fieldType = fields[field].ty
+
+                if (args[field] == Wildcard or fieldType == VoidTy) { continue }
+
+                immut dest = builder.local(fieldType, None)
+                builder.emit(FieldGetIns(dest, value, field))
+                self.pattern(mut builder, args[field], LocalOp(dest), fieldType, fail)?
+            }
+
+            return Ok()
+        }
+        Literal(literal) => {
+            immut literalType = self.typeIn(builder, literal)?
+            immut expected = self.value(mut builder, literal)?
+            immut computed = self.arithmetic(mut builder, '==', value, ty, expected, literalType)?
+            self.test(mut builder, computed.value, fail)
+            return Ok()
+        }
+    }
+}
+
+function Lowerer.test(mut self, mut builder: Builder, condition: Operand, fail: int) {
+    immut ok = builder.newBlock()
+    builder.terminate(BranchT(condition, ok, fail))
+    builder.switchTo(ok)
+}
+
+// Whether a pattern declares variables.
+function binds(pattern: Pattern): boolean {
+    match (pattern) {
+        Bind(name) => {
+            immut first = name.chars()
+            return first.length() > 0 and string(first[0]).isLower()
+        }
+        VariantPattern(_, args) => {
+            for arg in args {
+                if (binds(arg)) { return true }
+            }
+
+            return false
+        }
+        _ => return false
+    }
+}
+
+// `value?`: the `Ok` or `Some` value; otherwise the function returns the `Err` (wrapped in the
+// variant the checker chose) or `None`. At the top level, the program stops.
+function Lowerer.lowerTry(mut self, mut builder: Builder, node: Node, value: Node): Result[Option[Operand], string] {
+    immut record = match (self.typeIn(builder, value)?) {
+        RecordTy(record) => record
+        _ => return Err(self.unsupported("'?' on this value"))
+    }
+    mut isResult = false
+
+    for variant in self.records[record].variants {
+        if (variant.name == Some('Ok')) { isResult = true }
+    }
+
+    immut success = if (isResult) { 'Ok' } else { 'Some' }
+    immut resultType = self.typeIn(builder, node)?
+    immut found = self.value(mut builder, value)?
+    immut subjectLocal = builder.local(RecordTy(record), None)
+    builder.emit(CopyIns(LocalPlace(subjectLocal), found))
+    immut subject = LocalOp(subjectLocal)
+    immut succeeded = self.isVariant(mut builder, subject, record, success)?
+    immut failure = builder.newBlock()
+    immut done = builder.newBlock()
+    builder.terminate(BranchT(succeeded, done, failure))
+    builder.switchTo(failure)
+    mut error: Option[Operand] = None
+    mut errorType = VoidTy
+
+    if (isResult) {
+        immut err = self.variantIndex(record, 'Err')?
+        errorType = self.records[record].variants[err].fields[0].ty
+        immut local = builder.local(errorType, None)
+        builder.emit(FieldGetIns(local, subject, 0))
+        error = Some(LocalOp(local))
+    }
+
+    if (builder.isMain) {
+        immut message = match (error) {
+            Some(operand) => self.textOf(mut builder, operand, errorType)
+            None => self.string('None')
+        }
+        builder.emit(FailIns(message, self.line))
+        builder.terminate(UnreachableT)
+    } else {
+        immut returned = match (builder.returns) {
+            RecordTy(returned) => returned
+            _ => return Err(self.unsupported("'?' in this function"))
+        }
+        mut failureValue = IntOp(0)
+
+        match (error) {
+            None => {
+                immut dest = builder.local(RecordTy(returned), None)
+                immut none = self.variantIndex(returned, 'None')?
+                builder.emit(RecordNewIns(dest, none, []))
+                failureValue = LocalOp(dest)
+            }
+            Some(operand) => {
+                immut err = self.variantIndex(returned, 'Err')?
+                mut wrapped = operand
+
+                match (self.tables.wraps.get(nodeId(node))) {
+                    Some(wrap) => {
+                        if (wrap.module is Some) { return Err(self.unsupported("'?' that wraps an error of another module")) }
+
+                        immut errorRecord = match (self.records[returned].variants[err].fields[0].ty) {
+                            RecordTy(errorRecord) => errorRecord
+                            _ => return Err(self.unsupported("'?' with this error type"))
+                        }
+                        immut variant = self.variantIndex(errorRecord, wrap.variant)?
+                        immut dest = builder.local(RecordTy(errorRecord), None)
+                        builder.emit(RecordNewIns(dest, variant, [operand]))
+                        wrapped = LocalOp(dest)
+                    }
+                    None => {}
+                }
+
+                immut dest = builder.local(RecordTy(returned), None)
+                builder.emit(RecordNewIns(dest, err, [wrapped]))
+                failureValue = LocalOp(dest)
+            }
+        }
+
+        builder.dropOwned(0, false)
+        builder.terminate(ReturnT(Some(failureValue)))
+    }
+
+    builder.switchTo(done)
+
+    // `file.write(text)?` gives `void`: nothing to read.
+    if (resultType == VoidTy) { return Ok(None) }
+
+    immut dest = builder.local(resultType, None)
+    builder.emit(FieldGetIns(dest, subject, 0))
+    return Ok(Some(LocalOp(dest)))
+}
+
+// The imports inside the functions and blocks of `node`.
+function nestedImports(node: Node, mut out: Node[]) {
+    match (unlocated(node).kind) {
+        ImportModule(_, _) => out.push(node)
+        ImportNames(_, _) => out.push(node)
+        Block(statements) => {
+            for statement in statements {
+                nestedImports(statement, mut out)
+            }
+        }
+        FunctionDecl(_, _, _, _, _, body) => nestedImports(body, mut out)
+        Lambda(_, _, body) => nestedImports(body, mut out)
+        If(_, thenBranch, elseBranch) => {
+            nestedImports(thenBranch, mut out)
+
+            match (elseBranch) {
+                Some(branch) => nestedImports(branch, mut out)
+                None => {}
+            }
+        }
+        While(_, body) => nestedImports(body, mut out)
+        For(_, _, _, body) => nestedImports(body, mut out)
+        Match(_, arms) => {
+            for arm in arms {
+                nestedImports(arm.body, mut out)
+            }
+        }
+        // Lambdas inside expressions.
+        VarDecl(_, _, value, _) => nestedImports(value, mut out)
+        Assign(_, _, value) => nestedImports(value, mut out)
+        Return(Some(value)) => nestedImports(value, mut out)
+        Call(callee, args) => {
+            nestedImports(callee, mut out)
+
+            for arg in args {
+                nestedImports(arg, mut out)
+            }
+        }
+        ListLiteral(items) => {
+            for item in items {
+                nestedImports(item, mut out)
+            }
+        }
+        _ => {}
+    }
+}
+
+// The names used in `node` (to find what a lambda captures).
+function identifiers(node: Node, mut out: string[]) {
+    match (node.kind) {
+        Name(name) => out.push(name)
+        Template(parts) => {
+            for part in parts {
+                match (part) {
+                    Expression(value) => identifiers(value, mut out)
+                    Text(_) => {}
+                }
+            }
+        }
+        ListLiteral(items) => identifiersOf(items, mut out)
+        Block(items) => identifiersOf(items, mut out)
+        MapLiteral(entries) => {
+            for entry in entries {
+                identifiers(entry.key, mut out)
+                identifiers(entry.value, mut out)
+            }
+        }
+        ObjectLiteral(entries) => {
+            for entry in entries {
+                identifiers(entry.value, mut out)
+            }
+        }
+        Unary(_, operand) => identifiers(operand, mut out)
+        Binary(_, left, right) => {
+            identifiers(left, mut out)
+            identifiers(right, mut out)
+        }
+        Call(callee, args) => {
+            identifiers(callee, mut out)
+            identifiersOf(args, mut out)
+        }
+        MutArg(inner) => identifiers(inner, mut out)
+        Try(inner) => identifiers(inner, mut out)
+        Export(inner) => identifiers(inner, mut out)
+        Located(_, inner) => identifiers(inner, mut out)
+        IndexNode(target, index) => {
+            identifiers(target, mut out)
+            identifiers(index, mut out)
+        }
+        Slice(target, start, end) => {
+            identifiers(target, mut out)
+
+            for bound in [start, end] {
+                match (bound) {
+                    Some(value) => identifiers(value, mut out)
+                    None => {}
+                }
+            }
+        }
+        Member(object, _) => identifiers(object, mut out)
+        If(condition, thenBranch, elseBranch) => {
+            identifiers(condition, mut out)
+            identifiers(thenBranch, mut out)
+
+            match (elseBranch) {
+                Some(branch) => identifiers(branch, mut out)
+                None => {}
+            }
+        }
+        Match(scrutinee, arms) => {
+            identifiers(scrutinee, mut out)
+
+            for arm in arms {
+                match (arm.guard) {
+                    Some(guard) => identifiers(guard, mut out)
+                    None => {}
+                }
+
+                identifiers(arm.body, mut out)
+            }
+        }
+        Lambda(_, _, body) => identifiers(body, mut out)
+        While(condition, body) => {
+            identifiers(condition, mut out)
+            identifiers(body, mut out)
+        }
+        For(_, _, iterable, body) => {
+            identifiers(iterable, mut out)
+            identifiers(body, mut out)
+        }
+        Return(Some(value)) => identifiers(value, mut out)
+        Assign(_, target, value) => {
+            identifiers(target, mut out)
+            identifiers(value, mut out)
+        }
+        VarDecl(_, _, value, _) => identifiers(value, mut out)
+        _ => {}
+    }
+}
+
+function identifiersOf(nodes: Node[], mut out: string[]) {
+    for node in nodes {
+        identifiers(node, mut out)
+    }
+}
+
+// Programs
+
+// Lowers a checked program: the main file and the modules it imports.
+export function lower(program: Program): Result[IrProgram, string] {
+    mut checked: Map[string, LoadedModule] = [:]
+
+    for module in program.modules {
+        checked[module.path] = module
+    }
+
+    immut entry = program.modules[0]
+    mut lowerer: Lowerer = {
+        table: program.table, tables: program.tables, records: [], recordIds: [:], file: entry.display, line: 0,
+        functions: [], signatures: [:], globals: [], strings: [], stringIds: [:], emptyEnvironment: None, wrappers: [:],
+        genericFunctions: [:], instances: [:], pending: [], substitution: [], typeNames: [], recordTypes: [:],
+        dropFunctions: [:], modules: [], moduleIds: [:], module: 0, owningMatch: false, importTargets: [:], blockItems: [],
+        checked: checked
+    }
+    // The top-level statements of the main file are function 0.
+    lowerer.functions.push(None)
+    lowerer.loadModule(entry.path, true)?
+
+    for module in range(lowerer.modules.length()) {
+        lowerer.enter(module)
+        lowerer.declareFunctions()?
+        lowerer.declareGlobals()?
+    }
+
+    for module in range(lowerer.modules.length()) {
+        lowerer.enter(module)
+        lowerer.bindImports()?
+    }
+
+    // The main file last: at its end, it drops the values owned by every module.
+    mut module = lowerer.modules.length() - 1
+
+    while (module >= 0) {
+        lowerer.enter(module)
+        lowerer.lowerModuleBody()?
+        lowerer.lowerFunctions()?
+        module -= 1
+    }
+
+    lowerer.lowerInstances()?
+    mut functions: IrFunction[] = []
+
+    for each in lowerer.functions {
+        match (each) {
+            Some(found) => functions.push(found)
+            None => return Err('compile error: a declared function was not lowered')
+        }
+    }
+
+    return Ok({
+        file: entry.display, functions: functions, main: 0, globals: lowerer.globals, strings: lowerer.strings,
+        records: lowerer.records
+    })
+}

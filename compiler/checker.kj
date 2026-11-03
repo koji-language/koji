@@ -704,7 +704,7 @@ function modeOf(param: Param): string {
 // Paths
 
 // The directory of a file (`examples` for `examples/shapes.kj`, '' for `shapes.kj`).
-function parentDir(path: string): string {
+export function parentDir(path: string): string {
     immut parts = path.split('/')
 
     if (parts.length() == 1) { return '' }
@@ -713,7 +713,7 @@ function parentDir(path: string): string {
 }
 
 // `path` relative to `dir`, without `.` and `..` parts.
-function resolvePath(dir: string, path: string): string {
+export function resolvePath(dir: string, path: string): string {
     immut joined = if (path.startsWith('/') or dir == '') { path } else { `${dir}/${path}` }
     mut parts: string[] = []
 

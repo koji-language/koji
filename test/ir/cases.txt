@@ -1,0 +1,139 @@
+// Programs for comparing the lowering to the IR (test/bootstrap.rs): each one is a file, and they
+// are separated by a line with four dashes. Some use what 'kojic build' does not support yet.
+----
+function outer(): int {
+    function inner(): int {
+        return 1
+    }
+    return inner()
+}
+print(outer())
+----
+function f() {
+    type P = { x: int }
+}
+f()
+----
+function apply(mut x: int) {
+    x += 1
+}
+immut f = apply
+----
+immut x = if (true) { 1 } else { 2 }
+print(x)
+----
+mut total = 0
+for x in [1, 2] {
+    total += x
+}
+print(total)
+----
+type P = { x: int }
+immut p: P = { x: 1 }
+print(p.x, p.debug(), p.display(), 'a'.debug(), 'b'.chars()[0].code())
+----
+immut m = ['a': 1]
+print(m.keys(), m.values(), m.get('a'), m.has('b'), m.length())
+----
+mut s = Set.from([1, 2])
+s.add(3)
+print(s.remove(1), s.values(), 2 in s)
+----
+mut items = [3, 1, 2]
+items.sort()
+items.sortBy((a: int, b: int) => a > b)
+print(items.pop(), items.removeAt(0), items.indexOf(2), items[0..1], 'abc'[1..])
+----
+immut f = (x: int) => x * 2
+immut g = f
+print(g(2))
+----
+function makeAdder(n: int): (int) => int {
+    return (x: int) => x + n
+}
+print(makeAdder(1)(2))
+----
+immut r: Result[int, string] = Err('x')
+print(r.mapErr((e: string) => e.length()))
+----
+type E = { Parse(error: ParseError) }
+immut r: Result[int, ParseError] = int('x')
+print(r.mapErr(Parse))
+----
+type E = { Parse(error: ParseError) }
+function f(t: string): Result[int, E] {
+    return Ok(int(t)?)
+}
+print(f('1'), f('x'))
+----
+function first[T](items: T[]): Option[T] {
+    if (items.length() == 0) { return None }
+    return Some(items[0])
+}
+print(first([1]), first(['a']), first([1.5]))
+----
+type Pair[A, B] = { a: A, b: B }
+function Pair.swap(self): Pair[B, A] {
+    return { a: self.b, b: self.a }
+}
+immut p: Pair[int, string] = { a: 1, b: 'x' }
+print(p.swap())
+----
+type Conn = { id: int }
+function Conn.drop(mut self) {
+    print('closed', self.id)
+}
+function open(id: int): Conn {
+    return { id: id }
+}
+immut a = open(1)
+mut b = open(2)
+b = open(3)
+immut cs: Conn[] = [open(4)]
+print(a.id, cs.length())
+----
+import math
+import time
+import path
+print(math.sqrt(2), math.pow(2, 3), math.floor(1.5), math.abs(-1), math.pi, time.now() > 0.0, path.join('a', 'b'), path.parent('a/b'))
+----
+import json
+import regex
+print(json.parse('[1]'), json.stringify(json.Int(1)), regex.compile('a+'))
+----
+import file
+import system
+print(file.exists('x'), system.args(), system.env('HOME') is Some)
+----
+import datetime
+print(datetime.today().length() > 0)
+----
+immut c: char = 'a'
+print(c == 'a', c in 'abc', 'ab' in 'abc', string(c), int('3'), float('2.5'), int(true), float(false), int(2.7), char(65))
+----
+mut text = ''
+for c in 'hi' {
+    text += string(c)
+}
+for k in ['a': 1] {
+    print(k)
+}
+print(text, 'a,b'.split(','), ' x '.trim(), 'a'.upper(), 'Ab'.isUpper(), 'abc'.indexOf('b'), 'ab'.replace('a', 'c'), 'ab'.startsWith('a'))
+----
+immut x = 3
+immut y = match (x) {
+    1 => 'one'
+    n if (n > 2) => 'big'
+    _ => 'other'
+}
+print(y, 1e-7, -0.00001, 1e300, 'tab\tquote"', '\u{1}')
+----
+print(input('name? '))
+----
+panic('stop')
+----
+immut g = 2
+function twice(): int {
+    return g * 2
+}
+print(twice(), 2 ** 3, 7 % 3, 1 << 3, 5 & 3, 5 | 3, 5 ^ 3, ~5, -2, not true)

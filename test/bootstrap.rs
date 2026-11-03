@@ -223,11 +223,19 @@ fn the_interpreted_parser_agrees() {
 /// The programs of `test/checker/cases.txt` (after its header, separated by lines `----`), as
 /// files in a directory of their own.
 fn checker_cases() -> Vec<PathBuf> {
-    let text = std::fs::read_to_string("test/checker/cases.txt").unwrap();
+    let files = cases("test/checker/cases.txt", "bootstrap-checker-cases");
+    assert!(files.len() > 200, "too few checker cases: {}", files.len());
+    files
+}
+
+/// The programs of a file of cases (after its header, separated by lines `----`), as files in
+/// the directory `name`.
+fn cases(path: &str, name: &str) -> Vec<PathBuf> {
+    let text = std::fs::read_to_string(path).unwrap();
     let (_, cases) = text.split_once("----\n").expect("the cases start after a line '----'");
-    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-checker-cases");
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     std::fs::create_dir_all(&directory).unwrap();
-    let files: Vec<PathBuf> = cases
+    cases
         .split("\n----\n")
         .enumerate()
         .map(|(index, source)| {
@@ -235,9 +243,7 @@ fn checker_cases() -> Vec<PathBuf> {
             std::fs::write(&file, format!("{}\n", source.trim_end_matches('\n'))).unwrap();
             file
         })
-        .collect();
-    assert!(files.len() > 200, "too few checker cases: {}", files.len());
-    files
+        .collect()
 }
 
 /// The modules of `test/checker/` (imports of every kind, and their errors).
@@ -268,5 +274,30 @@ fn the_interpreted_checker_agrees() {
         let expected = kojic::dump_types(Path::new(file));
         let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "types", file]));
         assert_eq!(found, expected, "what the checkers find in {} differs", file);
+    }
+}
+
+#[test]
+fn the_lowering_in_koji_gives_the_same_ir() {
+    let compiler = koji_compiler();
+    let files = corpus()
+        .into_iter()
+        .chain(parser_cases())
+        .chain(checker_cases())
+        .chain(checker_modules())
+        .chain(cases("test/ir/cases.txt", "bootstrap-ir-cases"));
+    for file in files {
+        let expected = kojic::dump_ir(&file);
+        let found = output(Command::new(compiler).arg("ir").arg(&file));
+        assert_eq!(found, expected, "the IR of {} differs", file.display());
+    }
+}
+
+#[test]
+fn the_interpreted_lowering_agrees() {
+    for file in ["examples/shapes.kj", "examples/modules.kj"] {
+        let expected = kojic::dump_ir(Path::new(file));
+        let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "ir", file]));
+        assert_eq!(found, expected, "the IR of {} differs", file);
     }
 }

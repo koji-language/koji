@@ -1,0 +1,526 @@
+// The intermediate representation of the Koji compiler written in Koji, between the checked
+// syntax tree and the code generator. It follows src/ir/: `text` gives the same text as
+// `kojic dump ir`.
+
+export type Ty = {
+    IntTy
+    FloatTy
+    BoolTy
+    // A Unicode character (its code point).
+    CharTy
+    StrTy
+    ListTy(item: Ty)
+    // A value of a declared type (`IrProgram.records`).
+    RecordTy(id: int)
+    MapTy(key: Ty, value: Ty)
+    SetTy(item: Ty)
+    // A file of the `file` module, and a compiled regular expression of the `regex` module.
+    FileTy
+    RegexTy
+    // A closure: its code takes the environment (a record) as a first, hidden argument.
+    FunctionTy(params: Ty[], returns: Ty)
+    VoidTy
+}
+
+// Whether values of this type are reference-counted.
+export function isManaged(ty: Ty): boolean {
+    return match (ty) {
+        StrTy => true
+        ListTy(_) => true
+        RecordTy(_) => true
+        MapTy(_, _) => true
+        SetTy(_) => true
+        FunctionTy(_, _) => true
+        FileTy => true
+        RegexTy => true
+        _ => false
+    }
+}
+
+// The type of the items of a list type.
+export function itemOf(ty: Ty): Ty {
+    return match (ty) {
+        ListTy(item) => item
+        _ => VoidTy
+    }
+}
+
+// A value read by an instruction.
+export type Operand = {
+    LocalOp(id: int)
+    GlobalOp(id: int)
+    IntOp(value: int)
+    FloatOp(value: float)
+    BoolOp(value: boolean)
+    CharOp(value: char)
+    // A string literal of the program (`IrProgram.strings`).
+    StrOp(id: int)
+}
+
+// Where an instruction writes.
+export type Place = {
+    LocalPlace(id: int)
+    GlobalPlace(id: int)
+}
+
+export type Step = {
+    // An item of a list, a field of a record (its position) and the value of a key of a map.
+    IndexStep(index: Operand)
+    FieldStep(field: int)
+    KeyStep(key: Operand)
+}
+
+// A value that an instruction changes in place: a variable, or a part of the value in one.
+export type Target = {
+    root: Place
+    path: Step[]
+}
+
+export type IrField = {
+    name: string
+    ty: Ty
+}
+
+export type IrVariant = {
+    name: Option[string]
+    fields: IrField[]
+}
+
+// A declared type with its type arguments applied (`Option[int]` and `Option[string]` are two).
+export type IrRecord = {
+    name: string
+    variants: IrVariant[]
+}
+
+// An argument of a function of the standard library.
+export type StdArg = {
+    ValueArg(value: Operand)
+    // A constant that chooses what the function does (`math.floor` or `math.ceil`).
+    ModeArg(mode: int)
+    // The description of a record the function builds, or of the items of a list.
+    RecordArg(id: int)
+    ElementArg(ty: Ty)
+    // Where the call is, for its panics.
+    LocationArg(line: int)
+    NullArg
+}
+
+export type Writeback = {
+    param: int
+    target: Target
+}
+
+export type MapEntry = {
+    key: Operand
+    value: Operand
+}
+
+// The operators are named as `kojic dump ir` shows them (`IntAdd`, `IntCompare(Less)`).
+export type Instruction = {
+    CopyIns(dest: Place, value: Operand)
+    UnaryIns(dest: int, op: string, value: Operand, line: int)
+    BinaryIns(dest: int, op: string, left: Operand, right: Operand, line: int)
+    // Each writeback is a `mut` parameter: when the function returns, the target gets its value.
+    CallIns(dest: Option[int], function: int, args: Operand[], writebacks: Writeback[], line: int)
+    ListNewIns(dest: int, items: Operand[])
+    ListGetIns(dest: int, list: Operand, index: Operand, line: int)
+    ListSetIns(list: Target, index: Operand, value: Operand, line: int)
+    ListPushIns(list: Target, value: Operand, line: int)
+    ListInsertIns(list: Target, index: Operand, value: Operand, line: int)
+    ListSortIns(list: Target, line: int)
+    ListSliceIns(dest: int, list: Operand, start: Option[Operand], end: Option[Operand], line: int)
+    RecordNewIns(dest: int, variant: int, fields: Operand[])
+    FieldGetIns(dest: int, record: Operand, field: int)
+    FieldSetIns(record: Target, field: int, value: Operand, line: int)
+    ListRemoveIns(dest: int, list: Target, index: Option[Operand], line: int)
+    StdCallIns(dest: Option[int], function: string, args: StdArg[])
+    TakeIns(dest: int, source: Place)
+    DropIns(value: Place, function: int)
+    MakeClosureIns(dest: int, function: int, environment: Option[Operand])
+    CallClosureIns(dest: Option[int], closure: Operand, args: Operand[], line: int)
+    ListSortByIns(list: Target, comparison: Operand, line: int)
+    MapNewIns(dest: int, entries: MapEntry[])
+    MapGetIns(dest: int, map: Operand, key: Operand, line: int)
+    MapLookupIns(dest: int, map: Operand, key: Operand)
+    MapSetIns(map: Target, key: Operand, value: Option[Operand], line: int)
+    MapRemoveIns(dest: int, map: Target, key: Operand, line: int)
+    FailIns(message: Operand, line: int)
+    PrintIns(value: Operand, line: int)
+    RangeNextIns(hasValue: int, value: int, next: int, end: Operand, step: Operand, done: int)
+    RangeCheckIns(step: Operand, line: int)
+}
+
+export type Terminator = {
+    GotoT(block: int)
+    BranchT(condition: Operand, thenBlock: int, elseBlock: int)
+    ReturnT(value: Option[Operand])
+    // The end of a function that must return a value, which the checker guarantees is never reached.
+    UnreachableT
+}
+
+export type IrBlock = {
+    instructions: Instruction[]
+    terminator: Terminator
+}
+
+export type IrLocal = {
+    ty: Ty
+    // The variable's name in the source, if it has one (temporaries do not).
+    name: Option[string]
+}
+
+export type IrFunction = {
+    name: string
+    // The file it was declared in, for the messages of panics.
+    file: string
+    // The first locals are the parameters, in order.
+    params: int
+    // For each parameter, whether it is `mut`: its final value is given back to the caller.
+    writeback: boolean[]
+    returns: Ty
+    locals: IrLocal[]
+    // The first block is the entry.
+    blocks: IrBlock[]
+}
+
+export type IrGlobal = {
+    ty: Ty
+    name: string
+}
+
+export type IrProgram = {
+    file: string
+    functions: IrFunction[]
+    main: int
+    globals: IrGlobal[]
+    strings: string[]
+    records: IrRecord[]
+}
+
+// Text, in the formats of Rust's `{:?}` that `kojic dump ir` uses
+
+export function tyText(ty: Ty): string {
+    return match (ty) {
+        IntTy => 'Int'
+        FloatTy => 'Float'
+        BoolTy => 'Bool'
+        CharTy => 'Char'
+        StrTy => 'Str'
+        ListTy(item) => `List(${tyText(item)})`
+        RecordTy(id) => `Record(${id})`
+        MapTy(key, value) => `Map(${tyText(key)}, ${tyText(value)})`
+        SetTy(item) => `Set(${tyText(item)})`
+        FileTy => 'File'
+        RegexTy => 'Regex'
+        FunctionTy(params, returns) => `Function([${tysText(params)}], ${tyText(returns)})`
+        VoidTy => 'Void'
+    }
+}
+
+export function tysText(types: Ty[]): string {
+    mut texts: string[] = []
+
+    for ty in types {
+        texts.push(tyText(ty))
+    }
+
+    return texts.join(', ')
+}
+
+function hex(code: int): string {
+    immut digits = '0123456789abcdef'.chars()
+
+    if (code < 16) { return string(digits[code]) }
+
+    return `${hex(code / 16)}${digits[code % 16]}`
+}
+
+// A character inside a string or char literal of Rust's `{:?}`.
+function escaped(c: char, quote: char): string {
+    match (c) {
+        '\t' => return '\\t'
+        '\r' => return '\\r'
+        '\n' => return '\\n'
+        '\\' => return '\\\\'
+        _ => {}
+    }
+
+    if (c == quote) { return `\\${c}` }
+
+    if (c.code() == 0) { return '\\0' }
+
+    if (c.code() < 32 or c.code() == 127) { return `\\u{${hex(c.code())}}` }
+
+    return string(c)
+}
+
+// A string as Rust's `{:?}` shows it: `"it's \"x\"\n"`.
+export function stringDebug(text: string): string {
+    mut result = '"'
+
+    for c in text.chars() {
+        result += escaped(c, '"')
+    }
+
+    return `${result}"`
+}
+
+function charDebug(c: char): string {
+    return `'${escaped(c, '\'')}'`
+}
+
+// A float as Rust's `{:?}` shows it: like Koji, except that a number below 1e-4 has an exponent
+// (`1e-5`, `1.5e-7`).
+export function floatDebug(value: float): string {
+    immut text = string(value)
+    immut negative = text.startsWith('-')
+    immut digits = if (negative) { text[1..] } else { text }
+
+    if (not digits.startsWith('0.0000')) { return text }
+
+    // `0.000012` is `1.2e-5`: the zeros after the point give the exponent.
+    immut fraction = digits[2..].chars()
+    mut zeros = 0
+
+    while (zeros < fraction.length() and fraction[zeros] == '0') {
+        zeros += 1
+    }
+
+    mut mantissa = string(fraction[zeros])
+
+    if (zeros + 1 < fraction.length()) {
+        mantissa += '.'
+
+        for c in fraction[zeros + 1..] {
+            mantissa += string(c)
+        }
+    }
+
+    immut sign = if (negative) { '-' } else { '' }
+    return `${sign}${mantissa}e-${zeros + 1}`
+}
+
+export function operandText(operand: Operand): string {
+    return match (operand) {
+        LocalOp(id) => `l${id}`
+        GlobalOp(id) => `g${id}`
+        IntOp(value) => string(value)
+        FloatOp(value) => floatDebug(value)
+        BoolOp(value) => string(value)
+        CharOp(value) => charDebug(value)
+        StrOp(id) => `s${id}`
+    }
+}
+
+// The operand as Rust's `{:?}` shows it (inside the arguments of a standard library call).
+function operandDebug(operand: Operand): string {
+    return match (operand) {
+        LocalOp(id) => `Local(${id})`
+        GlobalOp(id) => `Global(${id})`
+        IntOp(value) => `Int(${value})`
+        FloatOp(value) => `Float(${floatDebug(value)})`
+        BoolOp(value) => `Bool(${value})`
+        CharOp(value) => `Char(${charDebug(value)})`
+        StrOp(id) => `Str(${id})`
+    }
+}
+
+function stdArgText(arg: StdArg): string {
+    return match (arg) {
+        ValueArg(value) => `Value(${operandDebug(value)})`
+        ModeArg(mode) => `Mode(${mode})`
+        RecordArg(id) => `Record(${id})`
+        ElementArg(ty) => `Element(${tyText(ty)})`
+        LocationArg(line) => `Location(${line})`
+        NullArg => 'Null'
+    }
+}
+
+export function placeText(place: Place): string {
+    return match (place) {
+        LocalPlace(id) => `l${id}`
+        GlobalPlace(id) => `g${id}`
+    }
+}
+
+function targetText(target: Target): string {
+    mut text = placeText(target.root)
+
+    for step in target.path {
+        immut shown = match (step) {
+            IndexStep(index) => operandText(index)
+            FieldStep(field) => `.${field}`
+            KeyStep(key) => `{${operandText(key)}}`
+        }
+        text += `[${shown}]`
+    }
+
+    return text
+}
+
+function operandsText(operands: Operand[]): string {
+    mut texts: string[] = []
+
+    for operand in operands {
+        texts.push(operandText(operand))
+    }
+
+    return texts.join(', ')
+}
+
+function destText(dest: Option[int]): string {
+    return match (dest) {
+        Some(id) => `l${id} = `
+        None => ''
+    }
+}
+
+function optionalText(operand: Option[Operand]): string {
+    return match (operand) {
+        Some(value) => operandText(value)
+        None => ''
+    }
+}
+
+export function instructionText(instruction: Instruction): string {
+    match (instruction) {
+        CopyIns(dest, value) => return `${placeText(dest)} = ${operandText(value)}`
+        UnaryIns(dest, op, value, _) => return `l${dest} = ${op} ${operandText(value)}`
+        BinaryIns(dest, op, left, right, _) => return `l${dest} = ${op} ${operandText(left)}, ${operandText(right)}`
+        CallIns(dest, callee, args, writebacks, _) => {
+            immut call = `${destText(dest)}call f${callee}(${operandsText(args)})`
+
+            if (writebacks.length() == 0) { return call }
+
+            mut targets: string[] = []
+
+            for writeback in writebacks {
+                targets.push(`${writeback.param} -> ${targetText(writeback.target)}`)
+            }
+
+            return `${call} writeback ${targets.join(', ')}`
+        }
+        PrintIns(value, _) => return `print ${operandText(value)}`
+        ListNewIns(dest, items) => return `l${dest} = list [${operandsText(items)}]`
+        ListGetIns(dest, list, index, _) => return `l${dest} = ${operandText(list)}[${operandText(index)}]`
+        ListSetIns(list, index, value, _) => return `${targetText(list)}[${operandText(index)}] = ${operandText(value)}`
+        ListPushIns(list, value, _) => return `push ${targetText(list)}, ${operandText(value)}`
+        ListInsertIns(list, index, value, _) => return `insert ${targetText(list)}, ${operandText(index)}, ${operandText(value)}`
+        ListSortIns(list, _) => return `sort ${targetText(list)}`
+        RecordNewIns(dest, variant, fields) => return `l${dest} = record variant ${variant} (${operandsText(fields)})`
+        FieldGetIns(dest, record, field) => return `l${dest} = ${operandText(record)}.${field}`
+        FieldSetIns(record, field, value, _) => return `${targetText(record)}.${field} = ${operandText(value)}`
+        ListRemoveIns(dest, list, Some(index), _) => return `l${dest} = remove ${targetText(list)}, ${operandText(index)}`
+        ListRemoveIns(dest, list, None, _) => return `l${dest} = pop ${targetText(list)}`
+        FailIns(message, _) => return `fail ${operandText(message)}`
+        MakeClosureIns(dest, callee, Some(environment)) => return `l${dest} = closure f${callee} with ${operandText(environment)}`
+        MakeClosureIns(dest, callee, None) => return `l${dest} = closure f${callee}`
+        CallClosureIns(dest, closure, args, _) => return `${destText(dest)}call ${operandText(closure)}(${operandsText(args)})`
+        ListSortByIns(list, comparison, _) => return `sort ${targetText(list)} by ${operandText(comparison)}`
+        StdCallIns(dest, callee, args) => {
+            mut texts: string[] = []
+
+            for arg in args {
+                texts.push(stdArgText(arg))
+            }
+
+            return `${destText(dest)}${callee}([${texts.join(', ')}])`
+        }
+        TakeIns(dest, source) => return `l${dest} = take ${placeText(source)}`
+        DropIns(value, callee) => return `drop ${placeText(value)} with f${callee}`
+        MapNewIns(dest, entries) => {
+            mut texts: string[] = []
+
+            for entry in entries {
+                texts.push(`${operandText(entry.key)}: ${operandText(entry.value)}`)
+            }
+
+            return `l${dest} = map [${texts.join(', ')}]`
+        }
+        MapGetIns(dest, map, key, _) => return `l${dest} = ${operandText(map)}{${operandText(key)}}`
+        MapLookupIns(dest, map, key) => return `l${dest} = lookup ${operandText(map)}, ${operandText(key)}`
+        MapSetIns(map, key, Some(value), _) => return `${targetText(map)}{${operandText(key)}} = ${operandText(value)}`
+        MapSetIns(map, key, None, _) => return `add ${targetText(map)}, ${operandText(key)}`
+        MapRemoveIns(dest, map, key, _) => return `l${dest} = remove ${targetText(map)}, ${operandText(key)}`
+        ListSliceIns(dest, list, start, end, _) => return `l${dest} = ${operandText(list)}[${optionalText(start)}..${optionalText(end)}]`
+        RangeNextIns(hasValue, value, next, end, step, done) => {
+            return `l${hasValue}, l${value} = range_next l${next}, ${operandText(end)}, ${operandText(step)}, l${done}`
+        }
+        RangeCheckIns(step, _) => return `range_check ${operandText(step)}`
+    }
+}
+
+export function terminatorText(terminator: Terminator): string {
+    return match (terminator) {
+        GotoT(block) => `goto b${block}`
+        BranchT(condition, thenBlock, elseBlock) => `branch ${operandText(condition)}, b${thenBlock}, b${elseBlock}`
+        ReturnT(Some(value)) => `return ${operandText(value)}`
+        ReturnT(None) => 'return'
+        UnreachableT => 'unreachable'
+    }
+}
+
+// The program as `kojic dump ir` shows it, one line per item.
+export function programText(program: IrProgram): string[] {
+    mut lines: string[] = []
+
+    for i in range(program.strings.length()) {
+        lines.push(`string s${i} = ${stringDebug(program.strings[i])}`)
+    }
+
+    for i in range(program.records.length()) {
+        immut record = program.records[i]
+        lines.push(`record r${i} ${record.name}`)
+
+        for variant in record.variants {
+            mut fields: string[] = []
+
+            for field in variant.fields {
+                fields.push(`${field.name}: ${tyText(field.ty)}`)
+            }
+
+            immut name = match (variant.name) {
+                Some(name) => name
+                None => '{}'
+            }
+            lines.push(`    ${name} (${fields.join(', ')})`)
+        }
+    }
+
+    for i in range(program.globals.length()) {
+        lines.push(`global g${i}: ${tyText(program.globals[i].ty)} // ${program.globals[i].name}`)
+    }
+
+    for i in range(program.functions.length()) {
+        immut each = program.functions[i]
+        lines.push('')
+        mut params: string[] = []
+
+        for param in range(each.params) {
+            params.push(`l${param}: ${tyText(each.locals[param].ty)}`)
+        }
+
+        lines.push(`function f${i} ${each.name}(${params.join(', ')}): ${tyText(each.returns)}`)
+
+        for id in range(each.params, each.locals.length()) {
+            immut local = each.locals[id]
+
+            match (local.name) {
+                Some(name) => lines.push(`    local l${id}: ${tyText(local.ty)} // ${name}`)
+                None => lines.push(`    local l${id}: ${tyText(local.ty)}`)
+            }
+        }
+
+        for id in range(each.blocks.length()) {
+            lines.push(`  b${id}:`)
+
+            for instruction in each.blocks[id].instructions {
+                lines.push(`    ${instructionText(instruction)}`)
+            }
+
+            lines.push(`    ${terminatorText(each.blocks[id].terminator)}`)
+        }
+    }
+
+    return lines
+}

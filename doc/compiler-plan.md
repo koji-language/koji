@@ -439,15 +439,15 @@ The standard library is in the runtime: the generated code calls a Rust function
 
 The compiler written in Koji is in `compiler/`, one file per stage; `compiler/main.kj` is its entry point. It runs with `kojic run compiler/main.kj ...`, and `kojic build` compiles it to an executable (the first step of the bootstrap).
 
-Each stage prints the same text as a `kojic dump <stage>` command of the compiler in Rust, and `test/bootstrap.rs` compares them on the examples, the compiler's own files, every code block of the documentation and edge cases (`test/lexer/`, the syntax errors listed in `test/bootstrap.rs`, and the programs and modules of `test/checker/`). The compiled Koji compiler is checked on all of them, and the interpreted one on a few.
+Each stage prints the same text as a `kojic dump <stage>` command of the compiler in Rust, and `test/bootstrap.rs` compares them on the examples, the compiler's own files, every code block of the documentation and edge cases (`test/lexer/`, the syntax errors listed in `test/bootstrap.rs`, the programs and modules of `test/checker/`, and the programs of `test/ir/cases.txt`). The compiled Koji compiler is checked on all of them, and the interpreted one on a few.
 
 | Stage | File | Compared with | Status |
 | --- | --- | --- | --- |
 | Lexer | `compiler/lexer.kj` | `kojic dump tokens` (`1:5 Identifier count`) | done |
 | Parser | `compiler/parser.kj` | `kojic dump ast` (`(at 1 (immut x _ (int 1)))`; an error is `error: syntax error: ...`) | done |
 | Checker | `compiler/types.kj`, `compiler/checker.kj` | `kojic dump types` (the syntax tree with the type of each node and what the compiler needs to know about it: `(int 1):int`, `!move`, `!method=Person.greet`...) | done |
-| IR | | | next |
-| C generator | | | |
+| IR | `compiler/ir.kj`, `compiler/lower.kj` | `kojic dump ir` (the text of `kojic build --emit ir`; what `kojic build` does not support yet is the same `compile error`) | done |
+| C generator | | | next |
 
 Notes for writing the compiler in Koji:
 
@@ -456,6 +456,8 @@ Notes for writing the compiler in Koji:
 -   There are no tuples: a function that gives several values returns a small record (`IndexParts` in the parser).
 -   The syntax tree in Koji gives each node an `id`: the checker records what it finds about a node by its id (the checker in Rust uses the node's address).
 -   Errors stop the whole check, so a function that fails with `?` does not need to undo what it changed (a scope it pushed, for instance).
+-   Messages name the main file as it was given and a module as its `import` wrote it (`lib/math.kj`), in type errors, panics and compiled code alike: the compiler in Koji has no way to find a file's full path.
+-   `function`, `type`, `import`, `from` and the other keywords cannot name a variable or a parameter (`runner`, `ownerName`...), and `display` and `debug` are reserved method names.
 -   Importing a sum type imports its variants too (`import { Token } from 'lexer.kj'` brings `Identifier`, `End`...); naming them as well is an error.
 
 ---
