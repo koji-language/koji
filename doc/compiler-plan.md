@@ -402,7 +402,8 @@ It compiles a first subset of the language:
 -   object types and sum types (also generic, such as `Option[int]`, and recursive), with object literals, constructors, fields (reading and assigning, also `people[0].age += 1`), `==`, `match` (variants, literals, bindings, guards, as a statement or an expression), `is` and the narrowing it gives (`if (x is Some) { x.value }`);
 -   `Option` and `Result`: `?` (with the automatic wrapping of the error, and stopping the program at the top level), `mapErr` with a variant (`mapErr(Parse)`), and the list methods that give them (`pop`, `removeAt`, `indexOf`);
 -   closures: lambdas, which capture a copy of the local variables they use (top-level variables are read directly), named functions used as values, function types (`(int) => int`), calls of any expression that gives a function (`makeAdder(5)(1)`), `sortBy` and `mapErr` with a function;
--   imports of other files (`import calc from 'calc.kj'` and `import { add } from 'calc.kj'`), with their functions, variables (read as they change), types, methods and generics; each module runs once, before the module that imports it, as in the interpreter;
+-   generic functions used as values where a function type is expected (`immut f: (int[]) => Option[int] = first`);
+-   imports of other files, also inside a function or a block (the module runs the first time the block runs) (`import calc from 'calc.kj'` and `import { add } from 'calc.kj'`), with their functions, variables (read as they change), types, methods and generics; each module runs once, before the module that imports it, as in the interpreter;
 -   `Map` and `Set`: literals (`['Ana': 30]`, `[:]`), `Set.from`, reading and assigning by key (also `groups['even'].push(n)`), `in`, `==`, `for` over the keys or items, `get`, `has`, `remove`, `add`, `keys`, `values` and `length`; any equatable value can be a key, kept in the order it was added;
 -   lists of all those values: literals, indexing and assigning items (also `grid[0][1] = 5`), slices, `+`, `==`, `in`, `for` over a list, `length`, `push`, `insert`, `sort` and `join`;
 -   every operator on those types, with the same panics as the interpreter (overflow, division by zero, `float` overflow, invalid shifts and powers);
@@ -414,7 +415,7 @@ It compiles a first subset of the language:
 -   generic functions and methods of generic types (also with their own type parameters, `Pair.mapFirst[C]`), with one instance for each set of type arguments they are called with (monomorphization), and the constraints `equatable` and `orderable`; a type's `display` method in `print`, interpolation and `string(x)`, and the built-in `display()` and `debug()`;
 -   `if` (also as an expression), `while`, `for` over `range`, `break`, `continue` and `return`.
 
-Only generic functions used as values and imports inside a block are not compiled yet: they are reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
+The whole language compiles; a construct the compiler could not handle would be reported as `compile error: ... is not supported by 'kojic build' yet`. The tests in `test/compiler.rs` compile programs and check that the executable behaves exactly like the interpreter: same output, same panic message and the same exit code.
 
 **Memory**: strings, lists and records (the values of declared types) are reference-counted. A variable owns one reference, and copying a value only adds a reference (value semantics with copy-on-write); changing a list that is shared copies it first, so the other variables never see the change. Assigning a variable releases its old value, and a function releases its values when it returns. Each item of a list and each field of a record takes an 8-byte slot, and the generated code describes their types to the runtime (how to retain, release, show, compare and order them). A generic type gets one description for each set of type arguments (`Option[int]`, `Option[string]`). Maps find their keys with a hash, which the description of each type also gives.
 
@@ -432,7 +433,7 @@ Dropping a type is a generated function: it calls the `drop` method (`mut self`,
 
 The standard library is in the runtime: the generated code calls a Rust function for each library function, giving it the description of the `Option`, `Result` or error it must build. The messages of errors, the conversions of text (`int('42')`), dates, the JSON parser, regular expressions and HTTP requests are the same code in the interpreter and in the runtime.
 
-**Next steps**: generic functions used as values and imports inside a block; then phase 3, the compiler written in Koji.
+**Next step**: phase 3, the compiler written in Koji.
 
 ---
 
@@ -459,6 +460,8 @@ Notes:
 1.  **FFI** (`extern function`), so the compiled standard library can call C functions. With the runtime in Rust, the standard library itself does not need it; it is for calling C libraries from Koji code.
 
 Decided:
+
+-   **Generic functions as values**: allowed where a function type is expected (an annotation, a parameter), which gives the type arguments; without it, an error. A value that stays generic is not planned.
 
 -   **`Ok()`**: a `Result[void, E]` succeeds with `Ok()`, without an argument (there is no `void` value); it is shown as `Ok(void)`.
 

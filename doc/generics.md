@@ -35,7 +35,12 @@ print(map([1, 2, 3], (x: int) => `#${x}`)) // ['#1', '#2', '#3']
 immut nothing: Option[int] = first([]) // T is int, from the expected type
 ```
 
-A generic function can only be called: it cannot be stored in a variable (`g = first` is an error), because its type arguments are only known at a call.
+A generic function can be used as a value where a function type is expected: the expected type gives its type arguments. Without one, its type arguments are not known, and it is an error:
+
+```koji
+immut firstInt: (int[]) => Option[int] = first // first[int]
+immut g = first // Error! the type arguments of 'first' are not known here
+```
 
 ## Generic Types
 

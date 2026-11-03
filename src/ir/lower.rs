@@ -50,6 +50,8 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
         module_ids: HashMap::new(),
         module: 0,
         owning_match: false,
+        import_targets: HashMap::new(),
+        block_items: Vec::new(),
     };
     // The top-level statements of the main file are function 0.
     lowerer.functions.push(None);
@@ -95,6 +97,8 @@ struct Module<'a> {
     names: HashMap<String, Item>,
     /// The modules it imports, in order: they run before it.
     imports: Vec<usize>,
+    /// The modules imported inside its functions and blocks.
+    nested: Vec<usize>,
     /// Its top-level variables that own a move-only value, with the function that drops them
     /// at the end of the program.
     owned: Vec<(GlobalId, FuncId)>,
@@ -189,6 +193,10 @@ struct Lowerer<'a> {
     module: usize,
     /// Lowering the patterns of a `match` whose variables own their values.
     owning_match: bool,
+    /// The module (or `usize::MAX` for the standard library) of each `import`.
+    import_targets: HashMap<usize, usize>,
+    /// The names imported by the blocks being lowered, innermost last.
+    block_items: Vec<HashMap<String, Item>>,
 }
 
 /// A name in scope.
@@ -539,6 +547,7 @@ impl<'a> Lowerer<'a> {
             statements,
             names: HashMap::new(),
             imports: Vec::new(),
+            nested: Vec::new(),
             owned: Vec::new(),
             init,
             initialized,
@@ -555,14 +564,89 @@ impl<'a> Lowerer<'a> {
                 // The standard library is in the runtime.
                 if !import.ends_with(".kj") {
                     imports.push(usize::MAX);
+                    self.import_targets.insert(node_id(statement), usize::MAX);
                     continue;
                 }
                 let resolved = crate::semantic::type_checker::resolve_module_path(&directory, import);
-                imports.push(self.load_module(program, &resolved)?);
+                let module = self.load_module(program, &resolved)?;
+                self.import_targets.insert(node_id(statement), module);
+                imports.push(module);
             }
         }
         self.modules[id].imports = imports;
+        // Imports inside functions and blocks: their modules run when the block first runs.
+        let mut nested = Vec::new();
+        for statement in statements {
+            if !matches!(statement.unlocated(), AstNode::Import { .. }) {
+                nested_imports(statement, &mut nested);
+            }
+        }
+        let mut modules = Vec::new();
+        for import in nested {
+            let AstNode::Import { path: import_path, .. } = import.unlocated() else { continue };
+            let module = if import_path.ends_with(".kj") {
+                let resolved = crate::semantic::type_checker::resolve_module_path(&directory, import_path);
+                let module = self.load_module(program, &resolved)?;
+                modules.push(module);
+                module
+            } else {
+                usize::MAX
+            };
+            self.import_targets.insert(node_id(import), module);
+        }
+        self.modules[id].nested = modules;
         Ok(id)
+    }
+
+    /// The names that the `import`s among `statements` give to their block (hoisted to its
+    /// start, like in the interpreter); the modules they import run then, the first time.
+    /// Gives whether the block has imports (`exit_imports` forgets them at its end).
+    fn enter_imports(&mut self, builder: &mut Builder, statements: &[AstNode]) -> Lower<bool> {
+        if builder.is_main && builder.scopes.len() == 1 {
+            return Ok(false);
+        }
+        let mut names = HashMap::new();
+        for statement in statements {
+            let AstNode::Import { kind, path } = statement.unlocated() else { continue };
+            let Some(&module) = self.import_targets.get(&node_id(statement)) else {
+                return self.unsupported("an import in this place");
+            };
+            if module != usize::MAX {
+                let init = self.modules[module].init;
+                builder.emit(Instruction::Call { dest: None, function: init, args: Vec::new(), writebacks: Vec::new(), line: 0 });
+            }
+            match kind {
+                crate::parser::ast::ImportKind::Module(name) if module == usize::MAX => {
+                    names.insert(name.clone(), Item::Std(path.clone()));
+                }
+                crate::parser::ast::ImportKind::Module(name) => {
+                    names.insert(name.clone(), Item::Module(module));
+                }
+                crate::parser::ast::ImportKind::Names(list) => {
+                    for name in list {
+                        let item = if module == usize::MAX {
+                            Some(Item::StdFunction(path.clone(), name.clone()))
+                        } else {
+                            self.modules[module].names.get(name).cloned()
+                        };
+                        if let Some(item) = item {
+                            names.insert(name.clone(), item);
+                        }
+                    }
+                }
+            }
+        }
+        if names.is_empty() && !statements.iter().any(|s| matches!(s.unlocated(), AstNode::Import { .. })) {
+            return Ok(false);
+        }
+        self.block_items.push(names);
+        Ok(true)
+    }
+
+    fn exit_imports(&mut self, entered: bool) {
+        if entered {
+            self.block_items.pop();
+        }
     }
 
     /// The modules in the order they finish running: the imports of a module before it.
@@ -570,7 +654,9 @@ impl<'a> Lowerer<'a> {
         if order.contains(&module) {
             return;
         }
-        for import in self.modules[module].imports.clone() {
+        let mut imports = self.modules[module].imports.clone();
+        imports.extend(self.modules[module].nested.clone());
+        for import in imports {
             if import != usize::MAX {
                 self.load_order(import, order);
             }
@@ -589,7 +675,11 @@ impl<'a> Lowerer<'a> {
 
     /// What `name` refers to in the module being lowered.
     fn item(&self, name: &str) -> Option<&Item> {
-        self.modules[self.module].names.get(name)
+        self.block_items
+            .iter()
+            .rev()
+            .find_map(|items| items.get(name))
+            .or_else(|| self.modules[self.module].names.get(name))
     }
 
     fn global_named(&self, name: &str) -> Option<GlobalId> {
@@ -1082,13 +1172,19 @@ impl<'a> Lowerer<'a> {
             // The value of the last expression is returned (`function area(...): float {
             // match (shape) { ... } }`).
             AstNode::Block(statements) if *ret != Ty::Void && last_gives_value => {
+                let entered = self.enter_imports(builder, statements)?;
                 let (last, rest) = statements.split_last().expect("a statement");
                 self.statements(builder, rest)?;
                 let value = self.value_as(builder, last, ret)?;
+                self.exit_imports(entered);
                 drop_owned(builder, 0, false);
                 builder.terminate(Terminator::Return(value));
             }
-            AstNode::Block(statements) => self.statements(builder, statements)?,
+            AstNode::Block(statements) => {
+                let entered = self.enter_imports(builder, statements)?;
+                self.statements(builder, statements)?;
+                self.exit_imports(entered);
+            }
             expression if *ret == Ty::Void => {
                 self.expr(builder, expression)?;
             }
@@ -1190,8 +1286,8 @@ impl<'a> Lowerer<'a> {
 
     /// A named function used as a value (`immut f = double`): a closure of a function that
     /// takes an (empty) environment and calls it.
-    fn function_value(&mut self, builder: &mut Builder, key: &str, name: &str) -> Lower<Operand> {
-        let signature = &self.signatures[key];
+    fn function_value(&mut self, builder: &mut Builder, key: &str, type_args: Vec<Ty>, name: &str) -> Lower<Operand> {
+        let signature = &self.callee(key, type_args)?;
         if signature.writeback.iter().any(|w| *w) {
             return self.unsupported("a function with 'mut' parameters used as a value");
         }
@@ -1245,7 +1341,14 @@ impl<'a> Lowerer<'a> {
     fn block(&mut self, builder: &mut Builder, node: &AstNode) -> Lower<()> {
         builder.scopes.push(HashMap::new());
         let result = match node.unlocated() {
-            AstNode::Block(statements) => self.statements(builder, statements),
+            AstNode::Block(statements) => match self.enter_imports(builder, statements) {
+                Ok(entered) => {
+                    let result = self.statements(builder, statements);
+                    self.exit_imports(entered);
+                    result
+                }
+                Err(error) => Err(error),
+            },
             other => self.statement(builder, other),
         };
         drop_owned(builder, builder.scopes.len() - 1, true);
@@ -1265,7 +1368,8 @@ impl<'a> Lowerer<'a> {
             AstNode::TypeDecl { .. } if builder.is_main && builder.scopes.len() == 1 => Ok(()),
             AstNode::TypeDecl { .. } => self.unsupported("a type declared inside a block"),
             AstNode::Import { .. } if builder.is_main && builder.scopes.len() == 1 => Ok(()),
-            AstNode::Import { .. } => self.unsupported("an import inside a block"),
+            // Hoisted to the start of the block (`enter_imports`).
+            AstNode::Import { .. } => Ok(()),
             AstNode::VarDecl { name, ty, value, .. } => {
                 let var_type = self.variable_type(node, ty, value)?;
                 let operand = self.value_as(builder, value, &var_type)?;
@@ -2052,8 +2156,9 @@ impl<'a> Lowerer<'a> {
                 let module = self.module_of(builder, object).expect("a module");
                 match self.modules[module].names.get(name).cloned() {
                     Some(Item::Global(id)) => Ok(Some(Operand::Global(id))),
-                    Some(Item::Function(key)) if !self.generic_functions.contains_key(&key) => {
-                        self.function_value(builder, &key, name).map(Some)
+                    Some(Item::Function(key)) => {
+                        let type_args = self.call_type_args(node)?;
+                        self.function_value(builder, &key, type_args, name).map(Some)
                     }
                     _ => match self.type_in(builder, node)? {
                         // `shapes.Dot`: a variant without fields.
@@ -2083,10 +2188,9 @@ impl<'a> Lowerer<'a> {
             AstNode::Identifier(name) => {
                 if builder.lookup(name).is_none() {
                     if let Some(key) = self.function_named(name) {
-                        if self.generic_functions.contains_key(&key) {
-                            return self.unsupported("a generic function used as a value");
-                        }
-                        return self.function_value(builder, &key, name).map(Some);
+                        // A generic one takes the type arguments the checker found.
+                        let type_args = self.call_type_args(node)?;
+                        return self.function_value(builder, &key, type_args, name).map(Some);
                     }
                 }
                 let (place, ty) = self.variable(builder, name)?;
@@ -2301,9 +2405,11 @@ impl<'a> Lowerer<'a> {
                     return Ok(None);
                 };
                 builder.scopes.push(HashMap::new());
+                let entered = self.enter_imports(builder, statements)?;
                 let result = self
                     .statements(builder, rest)
                     .and_then(|_| self.value_as(builder, last, ty));
+                self.exit_imports(entered);
                 drop_owned(builder, builder.scopes.len() - 1, true);
                 builder.scopes.pop();
                 result
@@ -3403,6 +3509,33 @@ fn drop_owned(builder: &mut Builder, depth: usize, remove: bool) {
     }
     if remove {
         builder.owned.retain(|(scope, _, _)| *scope <= depth);
+    }
+}
+
+/// The `import`s inside the functions and blocks of `node`.
+fn nested_imports<'n>(node: &'n AstNode, out: &mut Vec<&'n AstNode>) {
+    match node.unlocated() {
+        AstNode::Import { .. } => out.push(node),
+        AstNode::Block(statements) => statements.iter().for_each(|statement| nested_imports(statement, out)),
+        AstNode::FunctionDecl { body, .. } | AstNode::Lambda { body, .. } => nested_imports(body, out),
+        AstNode::If { then_branch, else_branch, .. } => {
+            nested_imports(then_branch, out);
+            if let Some(else_branch) = else_branch {
+                nested_imports(else_branch, out);
+            }
+        }
+        AstNode::While { body, .. } | AstNode::For { body, .. } => nested_imports(body, out),
+        AstNode::Match { arms, .. } => arms.iter().for_each(|arm| nested_imports(&arm.body, out)),
+        // Lambdas inside expressions.
+        AstNode::VarDecl { value, .. } | AstNode::Assign { value, .. } | AstNode::Return(Some(value)) => {
+            nested_imports(value, out)
+        }
+        AstNode::Call { callee, args, .. } => {
+            nested_imports(callee, out);
+            args.iter().for_each(|arg| nested_imports(arg, out));
+        }
+        AstNode::ArrayLiteral(items) => items.iter().for_each(|item| nested_imports(item, out)),
+        _ => {}
     }
 }
 

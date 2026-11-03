@@ -1316,6 +1316,84 @@ cannot connect to http://127.0.0.1:1/\n\
 }
 
 #[test]
+fn generic_functions_as_values() {
+    assert_same("generic_values", "function first[T](items: T[]): Option[T] {\n\
+    return if (items.length() > 0) { Some(items[0]) } else { None }\n\
+}\n\
+\n\
+function apply(g: (string[]) => Option[string]): Option[string] {\n\
+    return g(['x'])\n\
+}\n\
+\n\
+function biggest[T: orderable](a: T, b: T): T {\n\
+    return if (a > b) { a } else { b }\n\
+}\n\
+\n\
+immut f: (int[]) => Option[int] = first\n\
+immut pick: (string, string) => string = biggest\n\
+immut many: ((int[]) => Option[int])[] = [first, first]\n\
+print(f([1, 2]), f([]), apply(first), pick('a', 'b'), many[1]([7]), f)\n\
+", "Some(1) None Some('x') b Some(7) <function first>\n\
+");
+}
+
+#[test]
+fn imports_inside_blocks() {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler").join("nested");
+    for (name, source) in [
+        ("main.kj", "print('start')\n\
+\n\
+function greet(name: string): string {\n\
+    import { shout, uses } from 'tools.kj'\n\
+    import math\n\
+\n\
+    print('uses before', uses, math.floor(2.7))\n\
+    return shout(name)\n\
+}\n\
+\n\
+function area(radius: float): float {\n\
+    import math\n\
+\n\
+    math.pi * radius ** 2\n\
+}\n\
+\n\
+print(greet('ana'))\n\
+print(greet('bia'))\n\
+\n\
+if (true) {\n\
+    import tools from 'tools.kj'\n\
+    print(tools.uses, area(1))\n\
+}\n\
+"),
+        ("tools.kj", "print('tools loaded')\n\
+\n\
+export mut uses = 0\n\
+\n\
+export function shout(text: string): string {\n\
+    uses += 1\n\
+    return `${text.upper()}!`\n\
+}\n\
+"),
+    ] {
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(name), source).unwrap();
+    }
+    let main = directory.join("main.kj");
+    let main = main.strip_prefix(std::env::current_dir().unwrap()).unwrap().to_path_buf();
+    let interpreted = interpret(&main, &std::fs::read_to_string(&main).unwrap());
+    let compiled = compile_and_run(&main);
+    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert_eq!(compiled.output, "start\n\
+tools loaded\n\
+uses before 0 2\n\
+ANA!\n\
+uses before 1 2\n\
+BIA!\n\
+2 3.141592653589793\n\
+");
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions", "input", "modules", "types"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));
@@ -1329,12 +1407,8 @@ fn examples_that_compile() {
 }
 
 #[test]
-fn unsupported_constructs_are_reported() {
-    let path = source_file("unsupported", "function f() {\n    import math\n    print(math.pi)\n}\n\nf()\n");
+fn errors_are_reported_before_compiling() {
+    let path = source_file("type_error", "immut n: int = 'text'\n");
     let error = kojic::build_file(&path, &path.with_extension(""), kojic::Emit::Executable).unwrap_err();
-    assert!(
-        error.to_string().ends_with("unsupported.kj:2: an import inside a block is not supported by 'kojic build' yet (use 'kojic run')"),
-        "{}",
-        error
-    );
+    assert!(error.to_string().starts_with("type error: "), "{}", error);
 }

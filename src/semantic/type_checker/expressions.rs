@@ -108,7 +108,15 @@ impl Checker {
                 }
                 Ok(ty)
             }
-            AstNode::Identifier(name) => self.check_identifier(name, expected),
+            AstNode::Identifier(name) => {
+                self.type_args = None;
+                let ty = self.check_identifier(name, expected)?;
+                // A generic function used as a value: the type arguments it takes.
+                if let Some(type_args) = self.type_args.take() {
+                    self.ownership.type_args.insert(node_id(node), type_args);
+                }
+                Ok(ty)
+            }
             AstNode::Unary { op, operand } => {
                 let ty = self.check_value(operand, None)?;
                 match (op, &ty) {
@@ -627,10 +635,24 @@ impl Checker {
                     _ => Ok(symbol.ty),
                 }
             }
-            SymbolKind::Value if symbol.generics > 0 => self.err(format!(
-                "'{}' is generic and can only be called (its type arguments come from the call)",
-                name
-            )),
+            // A generic function used as a value takes its type arguments from the expected
+            // type: `immut f: (int[]) => Option[int] = first`, or a parameter's type.
+            SymbolKind::Value if symbol.generics > 0 => {
+                let mut generic = vec![Type::Unknown; symbol.generics];
+                if let Some(expected) = expected {
+                    self.unify(&symbol.ty, expected, &mut generic);
+                }
+                if generic.iter().any(Type::contains_unknown) {
+                    return self.err(format!(
+                        "the type arguments of '{}' are not known here: call it, or use it where a function type is expected (annotate the variable)",
+                        name
+                    ));
+                }
+                self.ensure_constraints(&generic, &symbol.constraints, name)?;
+                let ty = symbol.ty.substitute(&generic);
+                self.type_args = Some(generic);
+                Ok(ty)
+            }
             SymbolKind::Value if !symbol.modes.is_empty() => self.err(format!(
                 "'{}' has 'mut' or 'take' parameters and can only be called, not used as a value",
                 name

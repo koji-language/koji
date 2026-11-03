@@ -2382,7 +2382,7 @@ fn generic_errors() {
     let errors = [
         ("function eq[T](a: T, b: T): boolean { return a == b }", "operator '==' needs 'T' to be equatable: declare it as '[T: equatable]'"),
         ("function f[T](a: T): int { return a.length }", "a value of type T has no field 'length'"),
-        ("function id[T](a: T): T { return a }\nimmut g = id", "'id' is generic and can only be called"),
+        ("function id[T](a: T): T { return a }\nimmut g = id", "the type arguments of 'id' are not known here"),
         ("function id[T](a: T): T { return a }\nimmut x: int = id('a')", "argument 1 must be int, found string"),
         ("type Box[T] = { value: T }\nimmut b: Box = { value: 1 }", "type 'Box' needs 1 type argument(s)"),
         ("type Box[T] = { value: T }\nimmut b: Box[int, int] = { value: 1 }", "expects 1 type argument(s), found 2"),
@@ -2749,4 +2749,14 @@ fn ok_without_a_value() {
         "Ok(void) Err('failed') true\n"
     );
     assert_error("immut x: Result[int, string] = Ok()", "'Ok' expects 1 argument(s), found 0");
+}
+
+#[test]
+fn generic_functions_as_values() {
+    let first = "function first[T](items: T[]): Option[T] {\n    return if (items.length() > 0) { Some(items[0]) } else { None }\n}\n\n";
+    assert_eq!(
+        run(&format!("{}immut f: (int[]) => Option[int] = first\nprint(f([3, 4]))", first)),
+        "Some(3)\n"
+    );
+    assert_error(&format!("{}immut f = first", first), "the type arguments of 'first' are not known here");
 }
