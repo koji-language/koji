@@ -237,3 +237,12 @@ pub fn dump_types(path: &Path) -> String {
     }
     out
 }
+
+/// The IR of the file at `path` and the modules it imports, as `kojic dump ir` prints it (the
+/// text of `kojic build --emit ir`); an error is a single line, `error: ...`.
+pub fn dump_ir(path: &Path) -> String {
+    match check_file(path).and_then(|program| ir::lower_program(&program)) {
+        Ok(ir) => ir.to_string(),
+        Err(error) => format!("error: {}\n", error),
+    }
+}
