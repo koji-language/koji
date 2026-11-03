@@ -70,7 +70,14 @@ export type ObjectEntry = {
     value: Node
 }
 
+// A node of the tree: what it is, and a number that identifies it (the checker records what it
+// finds about each node by this number).
 export type Node = {
+    id: int
+    kind: NodeKind
+}
+
+export type NodeKind = {
     IntLiteral(value: int)
     FloatLiteral(value: float)
     StringNode(value: string)
@@ -130,6 +137,8 @@ type Parser = {
     functionDepth: int
     // Inside a match arm body, a binary operator on a new line starts the next arm.
     newlineEndsExpression: boolean
+    // The id of the next node.
+    nextId: int
 }
 
 // The token as error messages show it: `'x'`, `'=>'`, `42`, `the end of the file`.
@@ -155,7 +164,12 @@ function largeFloat(text: string): string {
 }
 
 function Parser.create(tokens: Spanned[]): Parser {
-    return { tokens: tokens, position: 0, loopDepth: 0, functionDepth: 0, newlineEndsExpression: false }
+    return { tokens: tokens, position: 0, loopDepth: 0, functionDepth: 0, newlineEndsExpression: false, nextId: 0 }
+}
+
+function Parser.node(mut self, kind: NodeKind): Node {
+    self.nextId += 1
+    return { id: self.nextId - 1, kind: kind }
 }
 
 function Parser.tokenAt(self, index: int): Token {
@@ -300,7 +314,7 @@ function Parser.locatedStatement(mut self): Result[Node, string] {
 
     if (line == 0) { return Ok(statement) }
 
-    return Ok(Located(line, statement))
+    return Ok(self.node(Located(line, statement)))
 }
 
 function Parser.statement(mut self): Result[Node, string] {
@@ -308,12 +322,12 @@ function Parser.statement(mut self): Result[Node, string] {
         Keyword('break') => {
             self.insideLoop('break')?
             self.advance()
-            return Ok(Break)
+            return Ok(self.node(Break))
         }
         Keyword('continue') => {
             self.insideLoop('continue')?
             self.advance()
-            return Ok(Continue)
+            return Ok(self.node(Continue))
         }
         Keyword('return') => return self.returnStatement()
         Keyword('while') => return self.whileLoop()
@@ -355,10 +369,10 @@ function Parser.returnStatement(mut self): Result[Node, string] {
     self.advance()
     immut endsHere = self.isSymbol('}') or self.current() == End or self.isSymbol(';') or self.atNewLine()
 
-    if (endsHere) { return Ok(Return(None)) }
+    if (endsHere) { return Ok(self.node(Return(None))) }
 
     immut value = self.expression(0)?
-    return Ok(Return(Some(value)))
+    return Ok(self.node(Return(Some(value))))
 }
 
 function assignOperator(token: Token): Option[string] {
@@ -374,7 +388,7 @@ function Parser.expressionStatement(mut self): Result[Node, string] {
 
     if (operator is None) { return Ok(target) }
 
-    immut assignable = match (target) {
+    immut assignable = match (target.kind) {
         Name(_) => true
         IndexNode(_, _) => true
         Member(_, _) => true
@@ -389,7 +403,7 @@ function Parser.expressionStatement(mut self): Result[Node, string] {
     immut value = self.expression(0)?
 
     return match (operator) {
-        Some(op) => Ok(Assign(op, target, value))
+        Some(op) => Ok(self.node(Assign(op, target, value)))
         None => Ok(target)
     }
 }
@@ -405,7 +419,7 @@ function Parser.declaration(mut self, name: string, isImmut: boolean): Result[No
 
     self.expectSymbol('=', "'=' in declaration")?
     immut value = self.expression(0)?
-    return Ok(VarDecl(name, annotation, value, isImmut))
+    return Ok(self.node(VarDecl(name, annotation, value, isImmut)))
 }
 
 // Types
@@ -494,7 +508,7 @@ function Parser.blockInner(mut self): Result[Node, string] {
     }
 
     self.advance()
-    return Ok(Block(statements))
+    return Ok(self.node(Block(statements)))
 }
 
 function Parser.loopBody(mut self): Result[Node, string] {
@@ -534,7 +548,7 @@ function Parser.whileLoop(mut self): Result[Node, string] {
     self.advance()
     immut condition = self.condition('while')?
     immut body = self.loopBody()?
-    return Ok(While(condition, body))
+    return Ok(self.node(While(condition, body)))
 }
 
 function Parser.forLoop(mut self): Result[Node, string] {
@@ -547,7 +561,7 @@ function Parser.forLoop(mut self): Result[Node, string] {
     self.expect(Keyword('in'), "'in'")?
     immut iterable = self.expression(0)?
     immut body = self.loopBody()?
-    return Ok(For(variable, isMut, iterable, body))
+    return Ok(self.node(For(variable, isMut, iterable, body)))
 }
 
 // Functions
@@ -608,7 +622,7 @@ function Parser.functionDeclaration(mut self): Result[Node, string] {
     immut params = self.params()?
     immut returns = self.optionalReturnType()?
     immut body = self.functionBody(true)?
-    return Ok(FunctionDecl(name, owner, typeParams, params, returns, body))
+    return Ok(self.node(FunctionDecl(name, owner, typeParams, params, returns, body)))
 }
 
 // Whether the `(` at `open` starts an anonymous function: `(...) =>` or `(...): type =>`.
@@ -641,7 +655,7 @@ function Parser.lambda(mut self): Result[Node, string] {
     immut returns = self.optionalReturnType()?
     self.expectSymbol('=>', "'=>' in anonymous function")?
     immut body = self.functionBody(false)?
-    return Ok(Lambda(params, returns, body))
+    return Ok(self.node(Lambda(params, returns, body)))
 }
 
 // Modules
@@ -656,11 +670,11 @@ function Parser.export(mut self): Result[Node, string] {
         return Err(self.failure(`expected 'function', 'mut', 'immut' or 'type' after 'export', found ${describe(next)}`))
     }
 
-    immut declaration = Export(self.statement()?)
+    immut declaration = self.node(Export(self.statement()?))
 
     if (line == 0) { return Ok(declaration) }
 
-    return Ok(Located(line, declaration))
+    return Ok(self.node(Located(line, declaration)))
 }
 
 function Parser.importStatement(mut self): Result[Node, string] {
@@ -681,16 +695,16 @@ function Parser.importStatement(mut self): Result[Node, string] {
         self.expectSymbol('}', "'}' after the imported names")?
         self.expect(Keyword('from'), "'from' after the imported names")?
         immut path = self.expectString('module path')?
-        return Ok(ImportNames(names, path))
+        return Ok(self.node(ImportNames(names, path)))
     }
 
     immut name = self.expectIdentifier('module name')?
 
-    if (not self.isKeyword('from')) { return Ok(ImportModule(name, name)) }
+    if (not self.isKeyword('from')) { return Ok(self.node(ImportModule(name, name))) }
 
     self.advance()
     immut path = self.expectString('module path')?
-    return Ok(ImportModule(name, path))
+    return Ok(self.node(ImportModule(name, path)))
 }
 
 // Type declarations
@@ -740,7 +754,7 @@ function Parser.typeDeclaration(mut self): Result[Node, string] {
     }
 
     immut definition = if (parts.length() == 1) { parts[0] } else { Intersection(parts) }
-    return Ok(TypeDecl(name, params, definition))
+    return Ok(self.node(TypeDecl(name, params, definition)))
 }
 
 function Parser.typeParameter(mut self): Result[TypeParam, string] {
@@ -920,13 +934,13 @@ function Parser.expression(mut self, minimum: int): Result[Node, string] {
         if (self.isSymbol('.')) {
             self.advance()
             immut name = self.expectName("member name after '.'")?
-            left = Member(left, name)
+            left = self.node(Member(left, name))
             continue
         }
 
         if (self.isSymbol('?')) {
             self.advance()
-            left = Try(left)
+            left = self.node(Try(left))
             continue
         }
 
@@ -940,7 +954,7 @@ function Parser.expression(mut self, minimum: int): Result[Node, string] {
         // `**` is right-associative; the others are left-associative.
         immut next = if (op == '**') { power } else { power + 1 }
         immut right = self.expression(next)?
-        left = Binary(op, left, right)
+        left = self.node(Binary(op, left, right))
     }
 
     return Ok(left)
@@ -961,32 +975,32 @@ function Parser.prefix(mut self): Result[Node, string] {
     immut line = self.currentLine()
 
     return match (self.advance()) {
-        Int(value) => Ok(IntLiteral(value))
-        Float(value) => Ok(FloatLiteral(value))
+        Int(value) => Ok(self.node(IntLiteral(value)))
+        Float(value) => Ok(self.node(FloatLiteral(value)))
         LargeFloat(text) => Err(atLine(line, largeFloat(text)))
-        StringLiteral(value) => Ok(StringNode(value))
-        TemplateString(raw) => parseTemplate(raw, line)
-        Boolean(value) => Ok(BooleanLiteral(value))
-        Identifier(name) => Ok(Name(name))
+        StringLiteral(value) => Ok(self.node(StringNode(value)))
+        TemplateString(raw) => self.template(raw, line)
+        Boolean(value) => Ok(self.node(BooleanLiteral(value)))
+        Identifier(name) => Ok(self.node(Name(name)))
         Symbol('[') => self.grouped(true)
         Symbol('{') => self.grouped(false)
         Keyword('if') => self.ifExpression()
         Keyword('match') => self.matchExpression()
         Symbol('-') => {
             immut operand = self.expression(unaryPower)?
-            Ok(Unary('-', operand))
+            Ok(self.node(Unary('-', operand)))
         }
         Symbol('~') => {
             immut operand = self.expression(unaryPower)?
-            Ok(Unary('~', operand))
+            Ok(self.node(Unary('~', operand)))
         }
         Symbol('!') => {
             immut operand = self.expression(notPower)?
-            Ok(Unary('not', operand))
+            Ok(self.node(Unary('not', operand)))
         }
         Keyword('not') => {
             immut operand = self.expression(notPower)?
-            Ok(Unary('not', operand))
+            Ok(self.node(Unary('not', operand)))
         }
         Symbol('(') => {
             immut inner = self.groupedExpression()?
@@ -1038,13 +1052,13 @@ function Parser.objectLiteral(mut self): Result[Node, string] {
         entries.push({ key: key, value: value })
     }
 
-    return Ok(ObjectLiteral(entries))
+    return Ok(self.node(ObjectLiteral(entries)))
 }
 
 function Parser.argument(mut self): Result[Node, string] {
     if (self.isKeyword('mut')) {
         self.advance()
-        return Ok(MutArg(self.expression(0)?))
+        return Ok(self.node(MutArg(self.expression(0)?)))
     }
 
     return self.expression(0)
@@ -1058,7 +1072,7 @@ function Parser.call(mut self, callee: Node): Result[Node, string] {
     self.newlineEndsExpression = saved
     immut values = args?
     self.expectSymbol(')', "')' at the end of the arguments")?
-    return Ok(Call(callee, values))
+    return Ok(self.node(Call(callee, values)))
 }
 
 function Parser.arguments(mut self): Result[Node[], string] {
@@ -1080,7 +1094,7 @@ function Parser.brackets(mut self): Result[Node, string] {
     if (self.isSymbol(':')) {
         self.advance()
         self.expectSymbol(']', "']' after '[:'")?
-        return Ok(MapLiteral([]))
+        return Ok(self.node(MapLiteral([])))
     }
 
     mut keys: Node[] = []
@@ -1111,11 +1125,11 @@ function Parser.brackets(mut self): Result[Node, string] {
         }
     }
 
-    if (entries.length() == 0) { return Ok(ListLiteral(keys)) }
+    if (entries.length() == 0) { return Ok(self.node(ListLiteral(keys))) }
 
     if (entries.length() != keys.length()) { return Err(self.failure("a map literal needs 'key: value' for every entry")) }
 
-    return Ok(MapLiteral(entries))
+    return Ok(self.node(MapLiteral(entries)))
 }
 
 // The inside of `[...]` after a value: an index `[i]` or a slice `[a..b]`, `[..b]`, `[a..]`.
@@ -1134,10 +1148,10 @@ function Parser.index(mut self, target: Node): Result[Node, string] {
     immut parts = result?
     self.expectSymbol(']', "']' after the index")?
 
-    if (parts.isSlice) { return Ok(Slice(target, parts.start, parts.end)) }
+    if (parts.isSlice) { return Ok(self.node(Slice(target, parts.start, parts.end))) }
 
     return match (parts.start) {
-        Some(index) => Ok(IndexNode(target, index))
+        Some(index) => Ok(self.node(IndexNode(target, index)))
         None => Err(self.failure("expected an index"))
     }
 }
@@ -1162,14 +1176,14 @@ function Parser.ifExpression(mut self): Result[Node, string] {
     immut condition = self.condition('if')?
     immut thenBranch = self.block()?
 
-    if (not self.isKeyword('else')) { return Ok(If(condition, thenBranch, None)) }
+    if (not self.isKeyword('else')) { return Ok(self.node(If(condition, thenBranch, None))) }
 
     self.advance()
 
     if (self.isKeyword('if')) { return Err(self.failure("Koji does not have 'else if'; use 'match' with guards")) }
 
     immut elseBranch = self.block()?
-    return Ok(If(condition, thenBranch, Some(elseBranch)))
+    return Ok(self.node(If(condition, thenBranch, Some(elseBranch))))
 }
 
 // After `match`.
@@ -1194,7 +1208,7 @@ function Parser.matchExpression(mut self): Result[Node, string] {
 
     if (arms.length() == 0) { return Err(self.failure('match with no arms')) }
 
-    return Ok(Match(scrutinee, arms))
+    return Ok(self.node(Match(scrutinee, arms)))
 }
 
 function Parser.matchArm(mut self): Result[Arm, string] {
@@ -1248,30 +1262,30 @@ function Parser.pattern(mut self): Result[Pattern, string] {
         }
         Int(value) => {
             self.advance()
-            return Ok(Literal(IntLiteral(value)))
+            return Ok(Literal(self.node(IntLiteral(value))))
         }
         Float(value) => {
             self.advance()
-            return Ok(Literal(FloatLiteral(value)))
+            return Ok(Literal(self.node(FloatLiteral(value))))
         }
         LargeFloat(text) => return Err(self.failure(largeFloat(text)))
         Symbol('-') => {
             self.advance()
 
             return match (self.advance()) {
-                Int(value) => Ok(Literal(IntLiteral(-value)))
-                Float(value) => Ok(Literal(FloatLiteral(-value)))
+                Int(value) => Ok(Literal(self.node(IntLiteral(-value))))
+                Float(value) => Ok(Literal(self.node(FloatLiteral(-value))))
                 LargeFloat(text) => Err(self.failure(largeFloat(text)))
                 other => Err(self.failure(`unexpected pattern: -${describe(other)}`))
             }
         }
         StringLiteral(value) => {
             self.advance()
-            return Ok(Literal(StringNode(value)))
+            return Ok(Literal(self.node(StringNode(value))))
         }
         Boolean(value) => {
             self.advance()
-            return Ok(Literal(BooleanLiteral(value)))
+            return Ok(Literal(self.node(BooleanLiteral(value))))
         }
         other => return Err(self.failure(`unexpected pattern: ${describe(other)}`))
     }
@@ -1280,7 +1294,7 @@ function Parser.pattern(mut self): Result[Pattern, string] {
 // Template strings
 
 // Splits the raw contents of a template string into text and `${...}` expressions.
-function parseTemplate(raw: string, line: int): Result[Node, string] {
+function Parser.template(mut self, raw: string, line: int): Result[Node, string] {
     immut chars = raw.chars()
     mut parts: Part[] = []
     mut text = ''
@@ -1331,18 +1345,18 @@ function parseTemplate(raw: string, line: int): Result[Node, string] {
 
         if (depth != 0) { return Err(atLine(line, "unclosed interpolation: expected '}'")) }
 
-        immut expression = interpolation(inner, line)?
+        immut expression = self.interpolation(inner, line)?
         parts.push(Expression(expression))
         i += 1
     }
 
     if (text != '') { parts.push(Text(text)) }
 
-    return Ok(Template(parts))
+    return Ok(self.node(Template(parts)))
 }
 
 // The expression inside `${...}`, parsed without lines (its errors take the template's line).
-function interpolation(source: string, line: int): Result[Node, string] {
+function Parser.interpolation(mut self, source: string, line: int): Result[Node, string] {
     mut tokens: Spanned[] = []
 
     for spanned in tokenize(source) {
@@ -1350,8 +1364,11 @@ function interpolation(source: string, line: int): Result[Node, string] {
     }
 
     mut parser = Parser.create(tokens)
+    parser.nextId = self.nextId
+    immut result = parser.expression(0)
+    self.nextId = parser.nextId
 
-    immut expression = match (parser.expression(0)) {
+    immut expression = match (result) {
         Ok(node) => node
         Err(message) => return Err(atLine(line, `in interpolation: ${message}`))
     }
@@ -1365,8 +1382,20 @@ function interpolation(source: string, line: int): Result[Node, string] {
 
 // Files
 
+// A parsed file: its statements, and the id its nodes did not use (the first one of the next file,
+// so that the nodes of a program have different ids).
+export type ParsedFile = {
+    statements: Node[]
+    nextId: int
+}
+
 // The statements of a file, or the message of its syntax error (`line 3: expected ...`).
 export function parse(source: string): Result[Node[], string] {
+    return Ok(parseFrom(source, 0)?.statements)
+}
+
+// Like `parse`, numbering the nodes from `firstId`.
+export function parseFrom(source: string, firstId: int): Result[ParsedFile, string] {
     immut tokens = tokenize(source)
 
     for spanned in tokens {
@@ -1377,6 +1406,7 @@ export function parse(source: string): Result[Node[], string] {
     }
 
     mut parser = Parser.create(tokens)
+    parser.nextId = firstId
     mut statements: Node[] = []
 
     while (true) {
@@ -1391,7 +1421,7 @@ export function parse(source: string): Result[Node[], string] {
         }
     }
 
-    return Ok(statements)
+    return Ok({ statements: statements, nextId: parser.nextId })
 }
 
 // The text form of the tree (`kojic dump ast`): one S-expression per node.
@@ -1548,7 +1578,7 @@ function armsText(arms: Arm[]): string {
 
 // One node as an S-expression: `(binary + (int 1) (name x))`.
 export function dump(node: Node): string {
-    match (node) {
+    match (node.kind) {
         IntLiteral(value) => return `(int ${value})`
         FloatLiteral(value) => return `(float ${value})`
         StringNode(value) => return `(string ${value.debug()})`
