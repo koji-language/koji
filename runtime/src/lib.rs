@@ -13,7 +13,7 @@ mod file;
 mod list;
 mod map;
 mod record;
-pub mod regex;
+mod regex;
 mod stdlib;
 mod numbers;
 mod output;
@@ -21,4 +21,5 @@ mod string;
 
 pub use numbers::{float_pow, format_float, int_pow, PowFailure};
 pub use string::repr_string;
+pub use regex::regex_error_message;
 pub use stdlib::{error_message, float_to_int, is_title, parse_float, parse_int};

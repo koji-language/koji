@@ -18,7 +18,7 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
 
 /// The last line of the `regex` crate's message (`unclosed group`), without the drawing of the
 /// pattern above it.
-use koji_runtime::regex::regex_error_message;
+use koji_runtime::regex_error_message;
 
 /// `TooLarge` for a pattern too large to compile, `Unsupported` for valid syntax that the
 /// engine does not support (look-around, backreferences), `InvalidPattern` otherwise.
