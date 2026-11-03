@@ -1155,6 +1155,17 @@ fn imports_are_hoisted() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn panics_name_modules_as_imports_write_them() {
+    // Like type errors: the main file as it was given, a module as its `import` wrote it.
+    let dir = temp_dir("panic-module");
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("lib/numbers.kj"), "export function half(n: int): int {\n    return n / 0\n}\n").unwrap();
+    let main = dir.join("main.kj");
+    let (_, result) = execute("import { half } from 'lib/numbers.kj'\nprint(half(4))\n", "", &main);
+    assert_eq!(result.unwrap_err().to_string(), "panic: lib/numbers.kj:2: division by zero");
+}
+
+#[test]
 fn modules_and_imports() {
     let dir = temp_dir("modules");
     std::fs::write(

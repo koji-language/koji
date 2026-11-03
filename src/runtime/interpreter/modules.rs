@@ -27,16 +27,8 @@ impl Interpreter {
             types: RefCell::new(Vec::new()),
         });
 
-        let display: Rc<str> = if *path == self.program.entry {
-            Rc::from(
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|cwd| path.strip_prefix(cwd).ok().map(|p| p.display().to_string()))
-                    .unwrap_or_else(|| path.display().to_string()),
-            )
-        } else {
-            Rc::from(path.display().to_string())
-        };
+        // Named like the checker's messages name it.
+        let display: Rc<str> = Rc::from(self.program.display(path));
         let saved = (
             std::mem::replace(&mut self.file, display),
             std::mem::replace(

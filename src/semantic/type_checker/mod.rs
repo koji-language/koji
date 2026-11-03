@@ -49,6 +49,18 @@ pub struct Program {
     pub table: Rc<TypeTable>,
 }
 
+impl Program {
+    /// How messages name the module at `path`: the main file as it was given, an imported one
+    /// as its `import` wrote it (`lib/math.kj`).
+    pub fn display(&self, path: &Path) -> String {
+        self.order
+            .iter()
+            .find(|(module, _)| module == path)
+            .map(|(_, display)| display.clone())
+            .unwrap_or_else(|| path.display().to_string())
+    }
+}
+
 /// What the interpreter needs to know about move-only values, found by the type checker. AST
 /// nodes are identified by their address (`node_id`): the parsed modules are never moved.
 #[derive(Debug, Clone, Default)]

@@ -27,7 +27,7 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
         types: &program.ownership.types,
         variable_types: &program.ownership.variable_types,
         function_types: &program.ownership.function_types,
-        file: display_path(&program.entry),
+        file: program.display(&program.entry),
         line: 0,
         functions: Vec::new(),
         signatures: HashMap::new(),
@@ -78,7 +78,7 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
         .map(|function| function.expect("every declared function is lowered"))
         .collect();
     Ok(Program {
-        file: display_path(&program.entry),
+        file: program.display(&program.entry),
         functions,
         main: 0,
         globals: lowerer.globals,
@@ -89,8 +89,7 @@ pub fn lower_program(program: &CheckedProgram) -> Lower<Program> {
 
 /// A file of the program.
 struct Module<'a> {
-    /// Its name in messages: the main file relative to the current directory, like the
-    /// interpreter.
+    /// Its name in messages, like the checker's and the interpreter's.
     file: String,
     statements: &'a [AstNode],
     /// What its names refer to: its own functions and top-level variables, and what it imports.
@@ -120,15 +119,6 @@ enum Item {
     /// { sqrt } from 'math'`).
     Std(String),
     StdFunction(String, String),
-}
-
-/// The file name used in messages: relative to the current directory when possible, like the
-/// interpreter.
-fn display_path(path: &Path) -> String {
-    std::env::current_dir()
-        .ok()
-        .and_then(|cwd| path.strip_prefix(cwd).ok().map(|p| p.display().to_string()))
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 #[derive(Clone)]
@@ -539,11 +529,11 @@ impl<'a> Lowerer<'a> {
             self.functions.len() - 1
         };
         let initialized = (!is_entry).then(|| {
-            self.globals.push(Global { ty: Ty::Bool, name: format!("{} initialized", path.display()) });
+            self.globals.push(Global { ty: Ty::Bool, name: format!("{} initialized", program.display(path)) });
             self.globals.len() - 1
         });
         self.modules.push(Module {
-            file: if is_entry { display_path(path) } else { path.display().to_string() },
+            file: program.display(path),
             statements,
             names: HashMap::new(),
             imports: Vec::new(),
