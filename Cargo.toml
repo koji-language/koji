@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+koji_runtime = { path = "runtime" }
 regex = "1"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
@@ -14,3 +15,7 @@ path = "test/lexer.rs"
 [[test]]
 name = "language"
 path = "test/language.rs"
+
+[[test]]
+name = "compiler"
+path = "test/compiler.rs"

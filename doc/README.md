@@ -1,6 +1,6 @@
 # Koji Language Documentation
 
-Welcome to the **Koji Documentation**. Here you will find the syntax, the types, functions, error handling, modules and the standard library.
+Welcome to the **Koji documentation**. Here you will find the syntax, the types, functions, error handling, modules and the standard library.
 
 ## Contents
 

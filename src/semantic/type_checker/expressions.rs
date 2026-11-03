@@ -18,7 +18,14 @@ impl Checker {
         Ok(ty)
     }
 
+    /// Checks an expression and records its type for the compiler (`Ownership::types`).
     pub(super) fn check_expr(&mut self, node: &AstNode, expected: Option<&Type>) -> CheckResult<Type> {
+        let ty = self.check_expr_kind(node, expected)?;
+        self.ownership.types.insert(node_id(node), ty.clone());
+        Ok(ty)
+    }
+
+    fn check_expr_kind(&mut self, node: &AstNode, expected: Option<&Type>) -> CheckResult<Type> {
         match node {
             AstNode::Located { line, node } => {
                 self.state.line = *line;
@@ -54,9 +61,13 @@ impl Checker {
                     _ => None,
                 };
                 let mut element_ty = Type::Unknown;
+                let mut ints = Vec::new();
                 for element in elements {
                     let ty = self.check_value(element, expected_element.as_ref())?;
                     self.consume(element, &ty)?;
+                    if ty == Type::Int {
+                        ints.push(node_id(element));
+                    }
                     element_ty = match self.join(&element_ty, &ty) {
                         Some(joined) => joined,
                         None => {
@@ -74,11 +85,20 @@ impl Checker {
                         element_ty = expected_element;
                     }
                 }
+                // `[1, 2.5]` and `xs: float[] = [1]`: the ints are stored as floats.
+                if element_ty == Type::Float {
+                    self.ownership.to_float.extend(ints);
+                }
                 Ok(Type::List(Box::new(element_ty)))
             }
             AstNode::MapLiteral(entries) => self.check_map_literal(entries, expected),
             AstNode::ObjectLiteral(entries) => {
                 let ty = self.check_object(entries, expected)?;
+                // The fields are kept in the order of the type's declaration.
+                if let Some(fields) = self.table.fields_of(&ty) {
+                    let order = fields.into_iter().map(|(name, _)| name).collect();
+                    self.ownership.field_orders.insert(node_id(node), order);
+                }
                 // A value of a type with `drop` remembers its type, to call it.
                 if let Type::Named { id, .. } = &ty {
                     if let Some(info) = self.methods.get(&(*id, "drop".to_string())) {
@@ -88,7 +108,15 @@ impl Checker {
                 }
                 Ok(ty)
             }
-            AstNode::Identifier(name) => self.check_identifier(name, expected),
+            AstNode::Identifier(name) => {
+                self.type_args = None;
+                let ty = self.check_identifier(name, expected)?;
+                // A generic function used as a value: the type arguments it takes.
+                if let Some(type_args) = self.type_args.take() {
+                    self.ownership.type_args.insert(node_id(node), type_args);
+                }
+                Ok(ty)
+            }
             AstNode::Unary { op, operand } => {
                 let ty = self.check_value(operand, None)?;
                 match (op, &ty) {
@@ -124,7 +152,15 @@ impl Checker {
                     (self.check_value(left, expected.as_ref())?, right_ty)
                 } else {
                     let left_ty = self.check_value(left, None)?;
-                    let expected = (left_ty == Type::Char).then_some(Type::Char);
+                    // `floats + [3]`: a list literal takes the type of the other list.
+                    // In `c in 'aeiou'`, the string is not a char.
+                    let expected = match &left_ty {
+                        Type::Char if *op != BinaryOperator::In => Some(Type::Char),
+                        Type::List(_) if matches!(right.unlocated(), AstNode::ArrayLiteral(_)) => Some(left_ty.clone()),
+                        // `result == Ok()`: the other side tells the type arguments.
+                        Type::Named { .. } => Some(left_ty.clone()),
+                        _ => None,
+                    };
                     (left_ty.clone(), self.check_value(right, expected.as_ref())?)
                 };
                 // A type parameter only has the comparisons its constraint allows.
@@ -155,7 +191,12 @@ impl Checker {
                 method,
                 displays,
             } => {
+                self.type_args = None;
                 let ty = self.check_call(callee, args, method, expected)?;
+                // Set by a generic call (the calls in its arguments took theirs already).
+                if let Some(type_args) = self.type_args.take() {
+                    self.ownership.type_args.insert(node_id(node), type_args);
+                }
                 // `print(person)` and `string(person)` use `Person.display`, if declared.
                 if let AstNode::Identifier(name) = callee.unlocated() {
                     let is_display = matches!(
@@ -594,10 +635,24 @@ impl Checker {
                     _ => Ok(symbol.ty),
                 }
             }
-            SymbolKind::Value if symbol.generics > 0 => self.err(format!(
-                "'{}' is generic and can only be called (its type arguments come from the call)",
-                name
-            )),
+            // A generic function used as a value takes its type arguments from the expected
+            // type: `immut f: (int[]) => Option[int] = first`, or a parameter's type.
+            SymbolKind::Value if symbol.generics > 0 => {
+                let mut generic = vec![Type::Unknown; symbol.generics];
+                if let Some(expected) = expected {
+                    self.unify(&symbol.ty, expected, &mut generic);
+                }
+                if generic.iter().any(Type::contains_unknown) {
+                    return self.err(format!(
+                        "the type arguments of '{}' are not known here: call it, or use it where a function type is expected (annotate the variable)",
+                        name
+                    ));
+                }
+                self.ensure_constraints(&generic, &symbol.constraints, name)?;
+                let ty = symbol.ty.substitute(&generic);
+                self.type_args = Some(generic);
+                Ok(ty)
+            }
             SymbolKind::Value if !symbol.modes.is_empty() => self.err(format!(
                 "'{}' has 'mut' or 'take' parameters and can only be called, not used as a value",
                 name
@@ -629,6 +684,9 @@ impl Checker {
                             let wanted = field_ty.substitute(&generic);
                             let value_ty = self.check_value(&entry.value, Some(&wanted))?;
                             self.consume(&entry.value, &value_ty)?;
+                            if wanted == Type::Float && value_ty == Type::Int {
+                                self.ownership.to_float.insert(node_id(&entry.value));
+                            }
                             self.unify(field_ty, &value_ty, &mut generic);
                             let wanted = field_ty.substitute(&generic);
                             if !self.assignable(&wanted, &value_ty) {

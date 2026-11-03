@@ -96,6 +96,7 @@ impl Checker {
                 }
                 let mut symbol = Symbol::value(var_ty, *is_const);
                 symbol.is_imut = *is_imut;
+                symbol.decl = Some(node_id(node));
                 self.declare(name, symbol)?;
                 Ok(Type::Void)
             }
@@ -322,9 +323,7 @@ impl Checker {
                 }
                 if symbol.ty.contains_unknown() {
                     let refined = self.join(&symbol.ty, &new_ty).unwrap_or(symbol.ty.clone());
-                    if let Some(symbol) = self.lookup_mut(name) {
-                        symbol.ty = refined;
-                    }
+                    self.set_variable_type(name, refined);
                 }
                 Ok(())
             }

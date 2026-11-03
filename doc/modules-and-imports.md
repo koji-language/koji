@@ -58,7 +58,7 @@ print(result) // 15
 
 Paths are relative to the importing file. Standard library modules are imported by name, without a path: `import math` (see [Standard Library](stdlib.md)).
 
-Imports apply to the whole file, wherever they are written: types and functions declared before an `import` can already use it. The convention is to write them at the top of the file.
+Imports apply to the whole file, wherever they are written: types and functions declared before an `import` can already use it. The convention is to write them at the top of the file. An `import` inside a function or a block applies to that block only; the module runs the first time the block runs.
 
 ## Exported Variables
 

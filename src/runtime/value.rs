@@ -165,54 +165,10 @@ pub struct FileHandle {
     pub file: Option<std::fs::File>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DateTime {
-    pub year: i64,
-    pub month: i64,
-    pub day: i64,
-    pub hour: i64,
-    pub minute: i64,
-    pub second: i64,
-}
+pub use koji_runtime::datetime::DateTime;
 
-impl DateTime {
-    pub fn field(&self, name: &str) -> Option<i64> {
-        Some(match name {
-            "year" => self.year,
-            "month" => self.month,
-            "day" => self.day,
-            "hour" => self.hour,
-            "minute" => self.minute,
-            "second" => self.second,
-            _ => return None,
-        })
-    }
-}
-
-impl std::fmt::Display for DateTime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            self.year, self.month, self.day, self.hour, self.minute, self.second
-        )
-    }
-}
-
-pub fn format_float(value: f64) -> String {
-    if value.is_nan() {
-        "NaN".to_string()
-    } else if value.is_infinite() {
-        if value > 0.0 { "inf" } else { "-inf" }.to_string()
-    } else if value.abs() >= 1e16 {
-        // Large values in scientific notation, so they never look like an int.
-        format!("{:e}", value)
-    } else if value.fract() == 0.0 {
-        format!("{:.1}", value)
-    } else {
-        format!("{}", value)
-    }
-}
+/// The text of a float, shared with the runtime of compiled programs.
+pub use koji_runtime::format_float;
 
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
@@ -281,20 +237,7 @@ impl Value {
                 let _ = write!(out, "{}", n);
             }
             Value::Float(f) => out.push_str(&format_float(*f)),
-            Value::Str(s) => {
-                out.push('\'');
-                for c in s.chars() {
-                    match c {
-                        '\'' => out.push_str("\\'"),
-                        '\\' => out.push_str("\\\\"),
-                        '\n' => out.push_str("\\n"),
-                        '\t' => out.push_str("\\t"),
-                        '\r' => out.push_str("\\r"),
-                        other => out.push(other),
-                    }
-                }
-                out.push('\'');
-            }
+            Value::Str(s) => out.push_str(&koji_runtime::repr_string(s)),
             Value::Char(c) => {
                 out.push('\'');
                 match c {

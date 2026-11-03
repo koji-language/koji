@@ -237,6 +237,9 @@ impl Checker {
             };
             self.unify(param, &actual, &mut generic);
             let wanted = param.substitute(&generic);
+            if wanted == Type::Float && actual == Type::Int {
+                self.ownership.to_float.insert(node_id(arg));
+            }
             if !self.assignable(&wanted, &actual) {
                 return self.err(format!(
                     "argument {} must be {}, found {}",
@@ -253,6 +256,7 @@ impl Checker {
         }
         self.ensure_copyable_args(&generic)?;
         self.ensure_constraints(&generic, constraints, what)?;
+        self.type_args = Some(generic.clone());
         Ok(ret.substitute(&generic))
     }
 }

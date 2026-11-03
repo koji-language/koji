@@ -23,7 +23,7 @@ print(2 in numbers) // true
 numbers[0] = 10 // changes the first element
 ```
 
-Methods such as `push`, `pop`, `insert` and `sort` change a list (see [Built-in Methods](methods.md#list-methods)).
+Methods such as `push`, `pop`, `insert` and `sort` change a list (see [Built-in Methods](builtin-methods.md#list-methods)).
 
 ### Slices
 
@@ -65,7 +65,7 @@ for name in ages {
 }
 ```
 
-Like lists, maps are values: assigning a map gives an independent copy. See the [methods of maps](methods.md#map-and-set-methods).
+Like lists, maps are values: assigning a map gives an independent copy. See the [methods of maps](builtin-methods.md#map-and-set-methods).
 
 ## Set
 

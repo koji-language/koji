@@ -32,7 +32,7 @@ The `for` loop runs a block once for each item of a list, each character (`char`
 
 #### Counting with `range`
 
-`range(start, end)` gives the integers from `start` up to, but not including, `end` (see [`range`](builtins.md#range) for the other forms):
+`range(start, end)` gives the integers from `start` up to, but not including, `end` (see [`range`](builtin-functions.md#range) for the other forms):
 
 ```koji
 range(0, 5) // [0, 1, 2, 3, 4]

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::runtime::interpreter::{as_float, some, Exec, Interpreter};
-use crate::runtime::value::{DateTime, FileHandle, Native, SumType, Value, VariantValue};
+use crate::runtime::value::{FileHandle, Native, SumType, Value, VariantValue};
 use crate::semantic::builtin_sums::{builtin_sum, stdlib_functions, BUILTIN_SUMS};
 
 mod datetime;
@@ -148,63 +148,12 @@ pub fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) -> Exec
     }
 }
 
-/// Standard library error types whose values have a human-readable message.
-pub const ERROR_TYPES: &[&str] = &[
-    "ParseError",
-    "MathError",
-    "FileError",
-    "HttpError",
-    "JsonError",
-    "DateError",
-    "RegexError",
-    "SystemError",
-];
-
 /// Human-readable text of a standard library error (`NotFound('a.txt')` → `file 'a.txt' not
 /// found`), used by `print`, interpolation and `.display()`.
 pub fn error_message(error: &VariantValue) -> Option<String> {
-    if !ERROR_TYPES.contains(&error.sum.name.as_str()) {
-        return None;
-    }
-    let text = |i: usize| error.values.get(i).map(Value::display).unwrap_or_default();
-    if error.sum.name == "SystemError" {
-        return Some(match error.name.as_str() {
-            "NotFound" => format!("command '{}' not found", text(0)),
-            "PermissionDenied" => format!("permission denied to run '{}'", text(0)),
-            _ => format!("cannot run '{}': {}", text(0), text(1)),
-        });
-    }
-    let message = match error.name.as_str() {
-        "InvalidNumber" => format!("'{}' is not a valid number", text(0)),
-        "OutOfRange" => format!("'{}' is out of range", text(0)),
-        "Complex" => "the result is not a real number (it is complex)".to_string(),
-        "Indeterminate" => "the result is indeterminate".to_string(),
-        "Infinite" => "the result is infinite".to_string(),
-        "NotFound" => format!("file '{}' not found", text(0)),
-        "PermissionDenied" => format!("permission denied for '{}'", text(0)),
-        "IsDirectory" => format!("'{}' is a directory", text(0)),
-        "InvalidUtf8" => format!("file '{}' is not valid UTF-8 text", text(0)),
-        "Io" => format!("cannot access '{}': {}", text(0), text(1)),
-        "InvalidUrl" => format!("invalid URL '{}'", text(0)),
-        "ConnectionFailed" => format!("cannot connect to '{}': {}", text(0), text(1)),
-        "Timeout" => format!("the request to '{}' timed out", text(0)),
-        "Tls" => format!("secure connection to '{}' failed: {}", text(0), text(1)),
-        "InvalidResponse" => format!("invalid response from '{}': {}", text(0), text(1)),
-        "Syntax" => format!("invalid JSON at line {}, column {}: {}", text(1), text(2), text(0)),
-        "NumberOutOfRange" => format!(
-            "the number {} at line {}, column {} is too large",
-            text(0),
-            text(1),
-            text(2)
-        ),
-        "PatternMismatch" => format!("'{}' does not match the pattern '{}'", text(0), text(1)),
-        "InvalidDate" => format!("'{}' is not a valid date", text(0)),
-        "InvalidPattern" => format!("invalid regular expression '{}': {}", text(0), text(1)),
-        "Unsupported" => format!("unsupported regular expression '{}': {}", text(0), text(1)),
-        "TooLarge" => format!("regular expression '{}' is too large", text(0)),
-        _ => return None,
-    };
-    Some(message)
+    // Shared with the runtime of compiled programs.
+    let texts: Vec<String> = error.values.iter().map(Value::display).collect();
+    koji_runtime::error_message(&error.sum.name, &error.name, &texts)
 }
 
 fn unix_now() -> f64 {

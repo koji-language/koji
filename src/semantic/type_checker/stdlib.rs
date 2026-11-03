@@ -179,6 +179,7 @@ impl Checker {
             asts: HashMap::new(),
             methods: HashMap::new(),
             last_arg_types: Vec::new(),
+            type_args: None,
             ownership: Ownership::default(),
             state: ModuleState::default(),
         }
@@ -271,6 +272,7 @@ impl Checker {
                         narrowed: false,
                         generics: 0,
                         constraints: Vec::new(),
+                        decl: None,
                         line: 0,
                     },
                 );

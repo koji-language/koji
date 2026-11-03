@@ -2,6 +2,7 @@ pub mod lexer;
 pub mod parser;
 pub mod semantic;
 pub mod ir;
+pub mod backend;
 pub mod runtime;
 
 pub mod error;
@@ -42,4 +43,76 @@ pub fn run_source(
 ) -> Result<(), EzError> {
     let program = Checker::new().check_source(path, source)?;
     Interpreter::new(program, out, input).run()
+}
+
+/// What `kojic build` produces.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Emit {
+    /// An executable.
+    Executable,
+    /// The generated C file.
+    C,
+    /// The IR, as text.
+    Ir,
+}
+
+/// The libraries the runtime (a Rust static library) needs from the system.
+#[cfg(target_os = "macos")]
+const SYSTEM_LIBRARIES: &[&str] = &["-lSystem", "-lc", "-lm"];
+#[cfg(not(target_os = "macos"))]
+const SYSTEM_LIBRARIES: &[&str] = &["-lpthread", "-ldl", "-lm", "-lrt", "-lutil"];
+
+/// Compiles the file at `path` to `output`: checks it, lowers it to the IR, generates C and
+/// links it with the runtime using the system's C compiler (`cc`, or the `KOJI_CC` variable).
+pub fn build_file(path: &Path, output: &Path, emit: Emit) -> Result<(), EzError> {
+    let program = check_file(path)?;
+    let ir = ir::lower_program(&program)?;
+    let write = |text: String| {
+        std::fs::write(output, text).map_err(|e| {
+            EzError::CompileError(format!("cannot write '{}': {}", output.display(), e))
+        })
+    };
+    match emit {
+        Emit::Ir => return write(ir.to_string()),
+        Emit::C => return write(backend::c::generate(&ir)),
+        Emit::Executable => {}
+    }
+
+    let source = backend::c::generate(&ir);
+    let directory = std::env::temp_dir().join(format!(
+        "kojic-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let io_error = |e: std::io::Error| EzError::CompileError(format!("cannot write the C file: {}", e));
+    std::fs::create_dir_all(&directory).map_err(io_error)?;
+    let c_file = directory.join("main.c");
+    std::fs::write(&c_file, source).map_err(io_error)?;
+
+    let compiler = std::env::var("KOJI_CC").unwrap_or_else(|_| "cc".to_string());
+    let runtime = std::env::var("KOJI_RUNTIME").unwrap_or_else(|_| env!("KOJI_RUNTIME_LIB").to_string());
+    let result = std::process::Command::new(&compiler)
+        .arg("-O2")
+        .arg("-o")
+        .arg(output)
+        .arg(&c_file)
+        .arg(&runtime)
+        .args(SYSTEM_LIBRARIES)
+        .output();
+    let _ = std::fs::remove_dir_all(&directory);
+    match result {
+        Ok(result) if result.status.success() => Ok(()),
+        Ok(result) => Err(EzError::CompileError(format!(
+            "the C compiler '{}' failed:\n{}",
+            compiler,
+            String::from_utf8_lossy(&result.stderr).trim_end()
+        ))),
+        Err(e) => Err(EzError::CompileError(format!(
+            "cannot run the C compiler '{}': {} (set KOJI_CC to choose another one)",
+            compiler, e
+        ))),
+    }
 }

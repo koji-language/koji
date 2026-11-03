@@ -28,11 +28,65 @@ For a standard library error, `display()` is a readable message (`'abc' is not a
 | `str.isTitle()`         | Whether every word starts with an uppercase letter followed by lowercase ones | `'Hello World'.isTitle() → true` |
 | `str.split(sep)`        | Splits at every `sep`                        | `'a b'.split(' ') → ['a', 'b']`         |
 | `str.replace(old, new)` | Replaces every `old` with `new`              | `'hello'.replace('l', 'L') → 'heLLo'`   |
+| `str.startsWith(s)`     | Whether it starts with `s`                   | `'Koji'.startsWith('Ko') → true`        |
+| `str.endsWith(s)`       | Whether it ends with `s`                     | `'Koji'.endsWith('ji') → true`          |
+| `str.indexOf(s)`        | Position (in characters) of the first `s`    | `'Koji'.indexOf('j') → Some(2)`         |
+| `str.chars()`           | Its characters                               | `'ab'.chars() → ['a', 'b']`             |
+
+## Char Methods
+
+| Method       | Description             | Example              |
+| ------------ | ----------------------- | -------------------- |
+| `c.code()`   | The code of the character | `'A'.code() → 65`  |
 
 The `is...` methods return `false` for an empty string.
 
-## List and Dictionary Methods
+## List Methods
 
-| Method       | Description                                    | Example                 |
-| ------------ | ---------------------------------------------- | ----------------------- |
-| `x.length()` | Number of items (of keys, for a dictionary)    | `[1, 2, 3].length() → 3` |
+| Method                | Description                                                    | Example                              |
+| --------------------- | -------------------------------------------------------------- | ------------------------------------ |
+| `list.length()`       | Number of items                                                | `[1, 2, 3].length() → 3`             |
+| `list.push(x)`        | Adds `x` at the end                                            | `[1, 2]` → `[1, 2, 3]`               |
+| `list.insert(i, x)`   | Adds `x` at position `i` (`i` can be the length)               | `insert(0, 9)` → `[9, 1, 2]`         |
+| `list.pop()`          | Removes the last item: `Some(item)`, or `None` if empty        | `[1, 2].pop() → Some(2)`             |
+| `list.removeAt(i)`    | Removes the item at `i`: `Some(item)`, or `None` out of range  | `[1, 2].removeAt(0) → Some(1)`       |
+| `list.sort()`         | Sorts the items, which must be orderable                       | `[3, 1, 2]` → `[1, 2, 3]`            |
+| `list.sortBy(f)`      | Sorts with `f(a, b)`: whether `a` goes before `b` (stable)     | `sortBy((a, b) => a.age < b.age)`    |
+| `list.indexOf(x)`     | Position of the first `x` (equatable items)                    | `[5, 6].indexOf(6) → Some(1)`        |
+| `list.join(sep)`      | Joins a list of strings, with `sep` between them               | `['a', 'b'].join(', ') → 'a, b'`     |
+
+`push`, `insert`, `pop`, `removeAt`, `sort` and `sortBy` change the list, like a `mut self` method: the variable must be `mut`, not `immut` or a parameter without `mut`. They change it in place; other copies of the list do not change. To check whether a list has an item, use `x in list`.
+
+## Map and Set Methods
+
+| Method               | Description                                                   |
+| -------------------- | ------------------------------------------------------------- |
+| `map.get(key)`       | `Some(value)`, or `None` if the key is missing                |
+| `map.has(key)`       | Whether the key is in the map (also `key in map`)             |
+| `map.remove(key)`    | Removes the key: `Some(value)`, or `None` if it was missing   |
+| `map.keys()`         | The keys, in the order they were added                        |
+| `map.values()`       | The values, in the same order                                 |
+| `set.add(item)`      | Adds the item (nothing changes if it is already there)        |
+| `set.remove(item)`   | Removes the item: whether it was there                        |
+| `set.has(item)`      | Whether the item is in the set (also `item in set`)           |
+| `set.values()`       | The items, in the order they were added                       |
+| `x.length()`         | Number of keys or items                                       |
+| `Set.from(list)`     | A set with the items of a list                                |
+
+`map[key] = value` adds or replaces a value; `remove` and `add` change the map or the set like a `mut self` method.
+
+## Building Text
+
+There is no string builder: text is built with `+=`, which appends in place when the variable is the only owner of its string (strings have [value semantics](memory.md)), or with `join`:
+
+```koji
+mut line = ''
+
+for i in range(3) {
+    line += `${i};`
+}
+
+print(line) // 0;1;2;
+
+print(['a', 'b', 'c'].join(', ')) // a, b, c
+```

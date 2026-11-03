@@ -43,6 +43,8 @@ pub struct Program {
     pub entry: PathBuf,
     pub modules: HashMap<PathBuf, Rc<Vec<AstNode>>>,
     pub ownership: Ownership,
+    /// The declared types (used by the compiler).
+    pub table: Rc<TypeTable>,
 }
 
 /// What the interpreter needs to know about move-only values, found by the type checker. AST
@@ -68,6 +70,24 @@ pub struct Ownership {
     /// Calls of built-in methods that change the value they are called on (`items.push(x)`),
     /// by their callee (`items.push`).
     pub mutating_calls: HashSet<usize>,
+    /// The type of each expression, as checked (used by the compiler).
+    pub types: HashMap<usize, Type>,
+    /// The `drop` method of each type that declares one: its module and its name.
+    pub drop_methods: HashMap<TypeId, (PathBuf, String)>,
+    /// The type of each function declaration (with `self` first for a method; a generic one
+    /// uses `Type::Param` for its type parameters, the owner's first).
+    pub function_types: HashMap<usize, Type>,
+    /// The type arguments of each call of a generic function or method, as inferred
+    /// (`first([1, 2])` calls `first[int]`). Inside a generic function they can contain its
+    /// own type parameters.
+    pub type_args: HashMap<usize, Vec<Type>>,
+    /// The fields of each object literal, in the order of its type's declaration.
+    pub field_orders: HashMap<usize, Vec<String>>,
+    /// `int` expressions stored as `float` (the items of `[1, 2.5]`).
+    pub to_float: HashSet<usize>,
+    /// The type of each declared variable (`VarDecl`), after the later uses that refine it
+    /// (`mut items = []` then `items.push(1)`).
+    pub variable_types: HashMap<usize, Type>,
 }
 
 /// Identity of an AST node, for the `Ownership` tables.
@@ -120,6 +140,9 @@ struct Symbol {
     /// and their constraints.
     generics: usize,
     constraints: Vec<Constraint>,
+    /// The `VarDecl` that declared it, so its final type can be recorded
+    /// (`Ownership::variable_types`).
+    decl: Option<usize>,
     /// Line where it is declared.
     line: usize,
 }
@@ -138,6 +161,7 @@ impl Symbol {
             narrowed: false,
             generics: 0,
             constraints: Vec::new(),
+            decl: None,
             line: 0,
         }
     }
@@ -155,6 +179,7 @@ impl Symbol {
             narrowed: false,
             generics: 0,
             constraints: Vec::new(),
+            decl: None,
             line: 0,
         }
     }
@@ -267,6 +292,8 @@ pub struct Checker {
     methods: HashMap<(TypeId, String), MethodInfo>,
     /// Argument types of the last built-in call checked.
     last_arg_types: Vec<Type>,
+    /// The type arguments of the last generic call checked, until the call records them.
+    type_args: Option<Vec<Type>>,
     ownership: Ownership,
     state: ModuleState,
 }
@@ -302,6 +329,7 @@ impl Checker {
             entry,
             modules: self.asts,
             ownership: self.ownership,
+            table: Rc::new(self.table),
         })
     }
 
@@ -313,6 +341,7 @@ impl Checker {
             entry,
             modules: self.asts,
             ownership: self.ownership,
+            table: Rc::new(self.table),
         })
     }
 
@@ -389,11 +418,26 @@ impl Checker {
             .find_map(|scope| scope.types.get(name))
     }
 
+    /// Gives a better-known type to a variable, and records it for the compiler.
+    fn set_variable_type(&mut self, name: &str, ty: Type) {
+        let mut decl = None;
+        if let Some(symbol) = self.lookup_mut(name) {
+            symbol.ty = ty.clone();
+            decl = symbol.decl;
+        }
+        if let Some(decl) = decl {
+            self.ownership.variable_types.insert(decl, ty);
+        }
+    }
+
     fn declare(&mut self, name: &str, mut symbol: Symbol) -> CheckResult<()> {
         if self.current_scope().vars.contains_key(name) {
             return self.err(format!("'{}' is already declared in this scope", name));
         }
         symbol.line = self.state.line;
+        if let Some(decl) = symbol.decl {
+            self.ownership.variable_types.insert(decl, symbol.ty.clone());
+        }
         self.current_scope().vars.insert(name.to_string(), symbol);
         Ok(())
     }

@@ -1,6 +1,6 @@
 # Roadmap
 
-This document outlines the planned features and milestones for the Koji programming language. The detailed plan for the compiler is in the [compiler plan](compiler-plan.md).
+This document outlines the planned features and milestones for the Koji programming language.
 
 ---
 
@@ -24,7 +24,7 @@ This document outlines the planned features and milestones for the Koji programm
 -   [x] Module system with mandatory `export`
 -   [ ] Value semantics with copy-on-write, move-only types and `drop`
 -   [x] User-defined generics, with `equatable` and `orderable` constraints
--   [ ] A compiler targeting native binaries (`kojic build`, through C)
+-   [x] A compiler targeting native binaries (`kojic build`, through C)
 -   [ ] A self-hosted compiler, written in Koji
 
 ---

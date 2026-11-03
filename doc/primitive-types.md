@@ -17,6 +17,15 @@ immut avogadro: float = 6.022e23 // scientific notation
 
 A float literal too large to be represented (`1e400`) is a compile-time error.
 
+An `int` can be used where a `float` is expected, and it becomes a `float`. This applies to a single value, and to the items of a list literal; a list that already exists is not converted, since that would copy it:
+
+```koji
+immut ratio: float = 1 // 1.0
+immut weights: float[] = [1, 2.5] // [1.0, 2.5]
+immut counts = [1, 2]
+immut values: float[] = counts // Error! cannot assign a value of type int[] to 'values' of type float[]
+```
+
 When a numeric result does not fit in an `int` or a `float` (a representation limit), the program panics. For example, `9223372036854775807 + 1` and `1e308 * 10` stop the program. Results that do not exist in the real numbers (a domain problem, like the square root of a negative number) are reported by the `math` functions as a `MathError` (see [math](standard-library/math.md)).
 
 ## Text
