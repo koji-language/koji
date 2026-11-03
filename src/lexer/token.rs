@@ -204,3 +204,27 @@ impl Token {
         }
     }
 }
+
+impl Token {
+    /// The token as error messages show it (`'x'`, `'=>'`, `42`, `the end of the file`),
+    /// shared with the compiler written in Koji.
+    pub fn describe(&self) -> String {
+        if let Some(keyword) = self.keyword_name() {
+            return format!("'{}'", keyword);
+        }
+        if let Some(symbol) = self.symbol() {
+            return format!("'{}'", symbol);
+        }
+        match self {
+            Token::Identifier(name) => format!("'{}'", name),
+            Token::Int(n) => n.to_string(),
+            Token::Float(f) => koji_runtime::format_float(*f),
+            Token::StringLiteral(text) => koji_runtime::repr_string(text),
+            Token::TemplateString(_) => "a template string".to_string(),
+            Token::Boolean(b) => b.to_string(),
+            Token::Illegal(c) => format!("'{}'", c),
+            Token::EOF => "the end of the file".to_string(),
+            other => format!("{:?}", other),
+        }
+    }
+}

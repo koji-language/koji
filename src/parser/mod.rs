@@ -124,11 +124,7 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            self.error_here(format!(
-                "expected {}, found {:?}",
-                description,
-                self.current()
-            ))
+            self.error_here(format!("expected {}, found {}", description, self.current().describe()))
         }
     }
 
@@ -139,7 +135,7 @@ impl Parser {
                 Ok(name)
             }
             Token::Interface => self.error_here("'interface' is a reserved word: it cannot be a name".to_string()),
-            other => self.error_here(format!("expected {}, found {:?}", description, other)),
+            other => self.error_here(format!("expected {}, found {}", description, other.describe())),
         }
     }
 
@@ -311,7 +307,10 @@ impl Parser {
         match expression {
             AstNode::Identifier(_) | AstNode::Index { .. } | AstNode::Member { .. } => {}
             other => {
-                return self.error_here(format!("invalid assignment target: {:?}", other));
+                let _ = other;
+                return self.error_here(
+                    "invalid assignment target: only a variable, a field or an item can be assigned".to_string(),
+                );
             }
         }
 
@@ -569,8 +568,8 @@ impl Parser {
             Token::Func | Token::Mut | Token::Immut | Token::Type
         ) {
             return self.error_here(format!(
-                "expected 'function', 'mut', 'immut' or 'type' after 'export', found {:?}",
-                self.current()
+                "expected 'function', 'mut', 'immut' or 'type' after 'export', found {}",
+                self.current().describe()
             ));
         }
         let declaration = AstNode::Export(Box::new(self.parse_statement()?));
@@ -618,7 +617,7 @@ impl Parser {
                 self.advance();
                 Ok(s)
             }
-            other => self.error_here(format!("expected {}, found {:?}", description, other)),
+            other => self.error_here(format!("expected {}, found {}", description, other.describe())),
         }
     }
 
@@ -908,7 +907,7 @@ impl Parser {
                 Ok(inner)
             }
             other => {
-                let message = format!("unexpected expression: {:?}", other);
+                let message = format!("unexpected expression: {}", other.describe());
                 if line == 0 {
                     error(message)
                 } else {
@@ -1165,7 +1164,7 @@ impl Parser {
                 match self.advance() {
                     Token::Int(n) => Ok(Pattern::Literal(AstNode::IntLiteral(-n))),
                     Token::Float(n) => Ok(Pattern::Literal(AstNode::FloatLiteral(-n))),
-                    other => self.error_here(format!("unexpected pattern: -{:?}", other)),
+                    other => self.error_here(format!("unexpected pattern: -{}", other.describe())),
                 }
             }
             Token::StringLiteral(s) => {
@@ -1176,7 +1175,7 @@ impl Parser {
                 self.advance();
                 Ok(Pattern::Literal(AstNode::BooleanLiteral(b)))
             }
-            other => self.error_here(format!("unexpected pattern: {:?}", other)),
+            other => self.error_here(format!("unexpected pattern: {}", other.describe())),
         }
     }
 }
@@ -1244,8 +1243,8 @@ fn parse_template(raw: &str, line: usize) -> Result<AstNode, EzError> {
             };
             if *sub_parser.current() != Token::EOF {
                 return at_line(format!(
-                    "unexpected token inside interpolation: {:?}",
-                    sub_parser.current()
+                    "unexpected token inside interpolation: {}",
+                    sub_parser.current().describe()
                 ));
             }
             parts.push(TemplatePart::Expression(expression, RefCell::new(None)));
@@ -1268,8 +1267,8 @@ pub fn parse(tokens: &[Token]) -> Result<AstNode, EzError> {
     let expression = parser.parse_expression(0)?;
     if *parser.current() != Token::EOF {
         return error(format!(
-            "unexpected token after expression: {:?}",
-            parser.current()
+            "unexpected token after expression: {}",
+            parser.current().describe()
         ));
     }
     Ok(expression)
