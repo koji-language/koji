@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod dump;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -1155,6 +1156,9 @@ impl Parser {
                 self.advance();
                 Ok(Pattern::Literal(AstNode::IntLiteral(n)))
             }
+            Token::Float(n) if !n.is_finite() => {
+                self.error_here("float literal is too large (float has no infinity)".to_string())
+            }
             Token::Float(n) => {
                 self.advance();
                 Ok(Pattern::Literal(AstNode::FloatLiteral(n)))
@@ -1163,6 +1167,9 @@ impl Parser {
                 self.advance();
                 match self.advance() {
                     Token::Int(n) => Ok(Pattern::Literal(AstNode::IntLiteral(-n))),
+                    Token::Float(n) if !n.is_finite() => {
+                        self.error_here("float literal is too large (float has no infinity)".to_string())
+                    }
                     Token::Float(n) => Ok(Pattern::Literal(AstNode::FloatLiteral(-n))),
                     other => self.error_here(format!("unexpected pattern: -{}", other.describe())),
                 }
