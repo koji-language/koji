@@ -62,9 +62,14 @@ impl Checker {
                 statement.unlocated(),
                 AstNode::TypeDecl { .. }
             );
+            // A private alias (`type Counts = Map[string, int]`) does not make its type private.
+            let is_alias = matches!(
+                statement.unlocated(),
+                AstNode::TypeDecl { definition: TypeDef::Alias(_), .. }
+            );
             if !statement.is_exported() {
                 module.private.insert(name.to_string());
-                if let Some(TypeRef::Type(Type::Named { id, .. })) = scope.types.get(name).filter(|_| is_type) {
+                if let Some(TypeRef::Type(Type::Named { id, .. })) = scope.types.get(name).filter(|_| is_type && !is_alias) {
                     private_ids.insert(*id);
                 }
                 continue;

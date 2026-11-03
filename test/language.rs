@@ -1238,6 +1238,11 @@ fn export_rules() {
         "type Hidden = { value: int }\nexport function make(): Hidden { return { value: 1 } }",
         "uses the private type 'Hidden'",
     );
+    // A private alias does not make the type it names private.
+    assert_eq!(
+        run("type Counts = Map[string, int]\nexport type Stats = { counts: Map[string, int] }\nimmut stats: Stats = { counts: ['a': 1] }\nprint(stats.counts)"),
+        "['a': 1]\n"
+    );
     // Exports of the main file are allowed (and simply unused).
     assert_eq!(run("export immut answer = 42\nprint(answer)"), "42\n");
 }
