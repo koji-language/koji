@@ -38,6 +38,8 @@ pub enum Ty {
     Set(Box<Ty>),
     /// A file of the `file` module (a move-only resource, closed when dropped).
     File,
+    /// A compiled regular expression of the `regex` module.
+    Regex,
     /// A closure: a function with the values it captured. Its code takes the environment (a
     /// record) as a first, hidden argument.
     Function(Vec<Ty>, Box<Ty>),
@@ -47,7 +49,7 @@ pub enum Ty {
 impl Ty {
     /// Whether values of this type are reference-counted.
     pub fn is_managed(&self) -> bool {
-        matches!(self, Ty::Str | Ty::List(_) | Ty::Record(_) | Ty::Map(..) | Ty::Set(_) | Ty::Function(..) | Ty::File)
+        matches!(self, Ty::Str | Ty::List(_) | Ty::Record(_) | Ty::Map(..) | Ty::Set(_) | Ty::Function(..) | Ty::File | Ty::Regex)
     }
 
     /// The type of the items of a list type.
@@ -130,6 +132,8 @@ pub enum UnaryOp {
     CharToStr,
     /// `<file 'notes.txt'>`.
     FileToStr,
+    /// `<regex '[0-9]+'>`.
+    RegexToStr,
     /// A char as written in code (`'a'`).
     CharRepr,
     /// The code of a char, as an `int`.

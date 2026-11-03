@@ -1212,6 +1212,44 @@ error: 'x' does not match the pattern 'yyyy'\n\
 }
 
 #[test]
+fn regular_expressions() {
+    assert_same("regular_expressions", "import regex\n\
+\n\
+match (regex.compile('[0-9]+')) {\n\
+    Ok(numbers) => {\n\
+        immut text = 'olá 12, mundo 345 e 6'\n\
+        print(numbers, numbers.test(text), numbers.test('abc'))\n\
+        print(numbers.find(text), numbers.find('none'))\n\
+        print(numbers.findAll(text))\n\
+\n\
+        for found in numbers.findAll(text) {\n\
+            print(found.value, found.start, found.end)\n\
+        }\n\
+\n\
+        print(numbers.replace(text, '#'), numbers.replaceAll(text, '#'), numbers.split('a1b22c'))\n\
+    }\n\
+    Err(error) => print(error)\n\
+}\n\
+\n\
+print(regex.compile('('), regex.compile('a').debug())\n\
+\n\
+match (regex.compile('[')) {\n\
+    Ok(r) => print(r)\n\
+    Err(error) => print('error:', error)\n\
+}\n\
+", "<regex '[0-9]+'> true false\n\
+Some({ value: '12', start: 4, end: 6 }) None\n\
+[{ value: '12', start: 4, end: 6 }, { value: '345', start: 14, end: 17 }, { value: '6', start: 20, end: 21 }]\n\
+12 4 6\n\
+345 14 17\n\
+6 20 21\n\
+olá #, mundo 345 e 6 olá #, mundo # e # ['a', 'b', 'c']\n\
+Err(InvalidPattern('(', 'unclosed group')) Ok(<regex 'a'>)\n\
+error: invalid regular expression '[': unclosed character class\n\
+");
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions", "input", "modules", "types"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));

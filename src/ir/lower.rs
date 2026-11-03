@@ -325,6 +325,9 @@ impl<'a> Lowerer<'a> {
             Type::Named { id, .. } if self.table.get(*id).name == "File" && matches!(self.table.get(*id).kind, TypeKind::Builtin { .. }) => {
                 Ok(Ty::File)
             }
+            Type::Named { id, .. } if self.table.get(*id).name == "Regex" && matches!(self.table.get(*id).kind, TypeKind::Builtin { .. }) => {
+                Ok(Ty::Regex)
+            }
             Type::Named { id, args } | Type::Variant { id, args, .. } => match &self.table.get(*id).kind {
                 // A type parameter seen from inside its generic function (`T` in the body of
                 // `first[T]`): the type argument of the instance being lowered.
@@ -1941,6 +1944,7 @@ impl<'a> Lowerer<'a> {
             Ty::Map(..) | Ty::Set(_) => UnaryOp::MapToStr,
             Ty::Function(..) => UnaryOp::ClosureToStr,
             Ty::File => UnaryOp::FileToStr,
+            Ty::Regex => UnaryOp::RegexToStr,
             Ty::Void => return Ok(self.string("void")),
         };
         Ok(self.unary(builder, op, value, Ty::Str))
@@ -2662,6 +2666,35 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
+            (Ty::Regex, "test" | "find" | "findAll" | "replace" | "replaceAll" | "split") => {
+                let regex = self.expr(builder, object)?.expect("a regex");
+                let input = self.value_as(builder, &args[0], &Ty::Str)?.expect("a string");
+                let mut arguments = vec![StdArg::Value(regex), StdArg::Value(input)];
+                let function = match name {
+                    "test" => "koji_std_regex_test",
+                    "find" => {
+                        let Ty::Record(option) = self.type_in(builder, call)? else { unreachable!("an Option") };
+                        arguments.push(StdArg::Record(option));
+                        "koji_std_regex_find"
+                    }
+                    "findAll" => {
+                        let Ty::List(element) = self.type_in(builder, call)? else { unreachable!("a list") };
+                        let Ty::Record(found) = *element.clone() else { unreachable!("a Match") };
+                        arguments.extend([StdArg::Element(*element), StdArg::Record(found)]);
+                        "koji_std_regex_find_all"
+                    }
+                    "split" => {
+                        arguments.push(StdArg::Element(Ty::Str));
+                        "koji_std_regex_split"
+                    }
+                    _ => {
+                        arguments.push(StdArg::Value(self.value_as(builder, &args[1], &Ty::Str)?.expect("a string")));
+                        arguments.push(StdArg::Mode((name == "replaceAll") as i32));
+                        "koji_std_regex_replace"
+                    }
+                };
+                self.std(builder, call, function, arguments)
+            }
             (Ty::Str, "chars") => {
                 let text = self.expr(builder, object)?.expect("a string");
                 self.std(builder, call, "koji_std_string_chars", vec![StdArg::Value(text), StdArg::Element(Ty::Char)])
@@ -3287,6 +3320,7 @@ impl<'a> Lowerer<'a> {
                 ("koji_std_path_part", vec![value_as(self, builder, 0, Ty::Str)?, StdArg::Mode(part), result(self, builder)?])
             }
             ("path", "isAbsolute") => ("koji_std_path_is_absolute", vec![value_as(self, builder, 0, Ty::Str)?]),
+            ("regex", "compile") => ("koji_std_regex_compile", vec![value_as(self, builder, 0, Ty::Str)?, result(self, builder)?]),
             ("datetime", "now") => ("koji_std_datetime_now", vec![result(self, builder)?]),
             ("datetime", "today") => ("koji_std_datetime_today", Vec::new()),
             ("datetime", "format") => {

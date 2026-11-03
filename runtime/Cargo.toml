@@ -4,5 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "The runtime of compiled Koji programs: strings, output and panics, called from the generated C."
 
+[dependencies]
+regex = "1"
+
 [lib]
 path = "src/lib.rs"

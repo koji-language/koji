@@ -13,6 +13,7 @@ mod file;
 mod list;
 mod map;
 mod record;
+pub mod regex;
 mod stdlib;
 mod numbers;
 mod output;

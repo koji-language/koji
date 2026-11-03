@@ -41,6 +41,7 @@ fn c_type(ty: &Ty) -> &'static str {
         Ty::Map(..) | Ty::Set(_) => "KojiMap *",
         Ty::Function(..) => "KojiClosure *",
         Ty::File => "KojiFile *",
+        Ty::Regex => "KojiRegex *",
         Ty::Void => "void",
     }
 }
@@ -54,6 +55,7 @@ fn share(ty: &Ty, expression: String) -> String {
         Ty::Map(..) | Ty::Set(_) => format!("koji_map_share({})", expression),
         Ty::Function(..) => format!("koji_closure_share({})", expression),
         Ty::File => format!("koji_file_share({})", expression),
+        Ty::Regex => format!("koji_regex_share({})", expression),
         _ => expression,
     }
 }
@@ -67,6 +69,7 @@ fn retain(ty: &Ty) -> Option<&'static str> {
         Ty::Map(..) | Ty::Set(_) => Some("koji_map_retain"),
         Ty::Function(..) => Some("koji_closure_retain"),
         Ty::File => Some("koji_file_retain"),
+        Ty::Regex => Some("koji_regex_retain"),
         _ => None,
     }
 }
@@ -79,6 +82,7 @@ fn release(ty: &Ty) -> Option<&'static str> {
         Ty::Map(..) | Ty::Set(_) => Some("koji_map_release"),
         Ty::Function(..) => Some("koji_closure_release"),
         Ty::File => Some("koji_file_release"),
+        Ty::Regex => Some("koji_regex_release"),
         _ => None,
     }
 }
@@ -96,6 +100,7 @@ fn element_type(ty: &Ty) -> &'static str {
         Ty::Map(..) | Ty::Set(_) => "&koji_element_map",
         Ty::Function(..) => "&koji_element_closure",
         Ty::File => "&koji_element_file",
+        Ty::Regex => "&koji_element_regex",
         Ty::Void => "&koji_element_void",
     }
 }
@@ -356,6 +361,9 @@ impl Generator<'_> {
             Ty::File => {
                 let _ = writeln!(self.out, "    koji_file_set_variable(&{}, {});", dest, expression);
             }
+            Ty::Regex => {
+                let _ = writeln!(self.out, "    koji_regex_set_variable(&{}, {});", dest, expression);
+            }
             _ => {
                 let _ = writeln!(self.out, "    {} = {};", dest, expression);
             }
@@ -475,6 +483,7 @@ impl Generator<'_> {
                     UnaryOp::BoolToStr => format!("koji_string_from_bool({})", value),
                     UnaryOp::CharToStr => format!("koji_string_from_char({})", value),
                     UnaryOp::FileToStr => format!("koji_file_repr({})", value),
+                    UnaryOp::RegexToStr => format!("koji_regex_repr({})", value),
                     UnaryOp::CharRepr => format!("koji_char_repr({})", value),
                     UnaryOp::CharCode => format!("(int64_t){}", value),
                     UnaryOp::ListToStr => format!("koji_list_repr({})", value),
@@ -763,7 +772,7 @@ impl Generator<'_> {
                     Ty::List(_) => "list",
                     Ty::Record(_) => "record",
                     Ty::Map(..) | Ty::Set(_) => "map",
-                    Ty::Function(..) | Ty::File | Ty::Void => {
+                    Ty::Function(..) | Ty::File | Ty::Regex | Ty::Void => {
                         unreachable!("functions, files and void are not orderable")
                     }
                 };

@@ -177,6 +177,9 @@ dependencies = [
 [[package]]
 name = "koji_runtime"
 version = "0.1.0"
+dependencies = [
+ "regex",
+]
 
 [[package]]
 name = "kojic"
