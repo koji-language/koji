@@ -249,6 +249,44 @@ print(total)
 }
 
 #[test]
+fn mut_arguments_see_the_other_arguments() {
+    // A `mut` argument (or `mut self`) is the variable itself: the function gets its value at
+    // the call, after the other arguments ran.
+    assert_same(
+        "mut_arguments",
+        "\
+type Counter = { n: int, log: string[] }
+
+function Counter.bump(mut self): int {
+    self.n += 1
+    return self.n
+}
+
+function Counter.note(mut self, value: int): string {
+    self.log.push(`${value} at ${self.n}`)
+    return `noted ${value}`
+}
+
+function add(mut items: int[], value: int) {
+    items.push(value)
+}
+
+function grow(mut items: int[]): int {
+    items.push(0)
+    return items.length()
+}
+
+mut counter: Counter = { n: 0, log: [] }
+print(counter.note(counter.bump()), counter.n, counter.log)
+mut items = [1]
+add(mut items, grow(mut items))
+print(items)
+",
+        "noted 1 1 ['1 at 1']\n[1, 0, 2]\n",
+    );
+}
+
+#[test]
 fn panics() {
     assert_same_panic("division", "print(1)\nprint(10 / (5 - 5))\n", "division by zero");
     assert_same_panic("overflow", "immut big = 9223372036854775807\nprint(big + 1)\n", "integer overflow");

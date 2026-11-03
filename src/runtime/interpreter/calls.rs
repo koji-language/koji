@@ -171,6 +171,14 @@ impl Interpreter {
             Value::Function(closure) => closure,
             other => return self.call_value(other, args),
         };
+        // A `mut` argument is the variable itself: the function gets its value at the call,
+        // after the other arguments ran (`c.wrap(c.bump())` sees the bumped `c`).
+        let mut args = args;
+        for (i, place) in &places {
+            if let Some(value) = self.read_place(place, env)? {
+                args[*i] = value;
+            }
+        }
         let (value, scope) = self.run_closure(closure, args)?;
         for (i, place) in places {
             let param = &closure.params[i].name;
