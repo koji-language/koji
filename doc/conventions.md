@@ -26,6 +26,18 @@
     print(count)
     ```
 
+-   Special cases come first, with an early `return` (or `break` and `continue` in a loop), so the main code is not nested inside `if` and `else`:
+
+    ```koji
+    function describe(age: int): string {
+        if (age < 0) { return 'invalid' }
+
+        if (age < 18) { return 'minor' }
+
+        return 'adult'
+    }
+    ```
+
 -   A comment after code on the same line is separated from it by exactly one space. Comments are not aligned into columns:
 
     ```koji
