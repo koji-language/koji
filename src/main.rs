@@ -13,6 +13,7 @@ Usage:
         --emit ir                     write the intermediate representation instead
     kojic dump tokens <file.kj>       show the tokens of a file (for comparing compilers)
     kojic dump ast <file.kj>          show the syntax tree of a file
+    kojic dump types <file.kj>        show what the checker finds (types, moves...)
     kojic help                        show this message";
 
 fn main() -> ExitCode {
@@ -22,6 +23,10 @@ fn main() -> ExitCode {
     }
     // `kojic dump tokens <file.kj>`: for comparing with the compiler written in Koji.
     if let [dump, stage, file] = args.as_slice() {
+        if dump == "dump" && stage == "types" {
+            print!("{}", kojic::dump_types(std::path::Path::new(file)));
+            return ExitCode::SUCCESS;
+        }
         if dump == "dump" && (stage == "tokens" || stage == "ast") {
             return match std::fs::read_to_string(file) {
                 Ok(source) => {

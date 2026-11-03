@@ -42,6 +42,8 @@ pub const STDLIB_MODULES: &[&str] = &["time", "file", "path", "datetime", "math"
 pub struct Program {
     pub entry: PathBuf,
     pub modules: HashMap<PathBuf, Rc<Vec<AstNode>>>,
+    /// Each module (its path and how messages name it), in the order they were loaded.
+    pub order: Vec<(PathBuf, String)>,
     pub ownership: Ownership,
     /// The declared types (used by the compiler).
     pub table: Rc<TypeTable>,
@@ -288,6 +290,7 @@ pub struct Checker {
     stdlib: HashMap<String, ModuleId>,
     loading: Vec<PathBuf>,
     asts: HashMap<PathBuf, Rc<Vec<AstNode>>>,
+    order: Vec<(PathBuf, String)>,
     /// Methods and associated functions of each type, by type and name.
     methods: HashMap<(TypeId, String), MethodInfo>,
     /// Argument types of the last built-in call checked.
@@ -328,6 +331,7 @@ impl Checker {
         Ok(Program {
             entry,
             modules: self.asts,
+            order: self.order,
             ownership: self.ownership,
             table: Rc::new(self.table),
         })
@@ -340,6 +344,7 @@ impl Checker {
         Ok(Program {
             entry,
             modules: self.asts,
+            order: self.order,
             ownership: self.ownership,
             table: Rc::new(self.table),
         })

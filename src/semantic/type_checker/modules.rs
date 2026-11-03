@@ -7,6 +7,7 @@ impl Checker {
         let program = parse_source(source).map_err(|e| prefix_error(display, e))?;
         let program = Rc::new(program);
         self.asts.insert(path.to_path_buf(), Rc::clone(&program));
+        self.order.push((path.to_path_buf(), display.to_string()));
         self.loading.push(path.to_path_buf());
 
         let dir = path

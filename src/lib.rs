@@ -135,3 +135,105 @@ pub fn dump_ast(source: &str) -> String {
         Err(error) => format!("error: {}\n", error),
     }
 }
+
+/// What the checker finds in the file at `path` and the modules it imports, as `kojic dump
+/// types` prints it: each module (`module math.kj`), then its syntax tree, where each node is
+/// followed by its type (`(int 1):int`) and what the compiler needs to know about it (`!move`,
+/// `!method=Person.greet`...). An error is a single line, `error: ...`.
+pub fn dump_types(path: &Path) -> String {
+    use parser::ast::{AstNode, TemplatePart};
+    use semantic::type_checker::node_id;
+
+    let program = match check_file(path) {
+        Ok(program) => program,
+        Err(error) => return format!("error: {}\n", error),
+    };
+    let ownership = &program.ownership;
+    let table = &program.table;
+    let types = |types: &[semantic::types::Type]| {
+        types.iter().map(|ty| table.display(ty)).collect::<Vec<_>>().join(", ")
+    };
+    let displays = |methods: Vec<Option<parser::ast::MethodRef>>| -> String {
+        if methods.iter().all(Option::is_none) {
+            return String::new();
+        }
+        let methods: Vec<String> =
+            methods.into_iter().map(|method| method.map(|method| method.key).unwrap_or_else(|| "_".to_string())).collect();
+        format!("!displays=({})", methods.join(" "))
+    };
+    let annotate = |node: &AstNode| -> String {
+        let id = node_id(node);
+        let mut text = String::new();
+        if let Some(ty) = ownership.types.get(&id) {
+            text.push_str(&format!(":{}", table.display(ty)));
+        }
+        let flags = [
+            (&ownership.moves, "move"),
+            (&ownership.declares, "declares"),
+            (&ownership.replaces, "replaces"),
+            (&ownership.temporaries, "temporary"),
+            (&ownership.owning_matches, "owning"),
+            (&ownership.char_literals, "char"),
+            (&ownership.mutating_calls, "mutating"),
+            (&ownership.to_float, "float"),
+        ];
+        for (set, flag) in flags {
+            if set.contains(&id) {
+                text.push_str(&format!("!{}", flag));
+            }
+        }
+        if let Some((_, key)) = ownership.drops.get(&id) {
+            text.push_str(&format!("!drop={}", key));
+        }
+        if let Some(ty) = ownership.function_types.get(&id) {
+            text.push_str(&format!("!function={}", table.display(ty)));
+        }
+        if let Some(args) = ownership.type_args.get(&id) {
+            text.push_str(&format!("!type-args=({})", types(args)));
+        }
+        if let Some(fields) = ownership.field_orders.get(&id) {
+            text.push_str(&format!("!fields=({})", fields.join(" ")));
+        }
+        if let Some(ty) = ownership.variable_types.get(&id) {
+            text.push_str(&format!("!variable={}", table.display(ty)));
+        }
+        match node {
+            AstNode::Call { method, displays: shown, .. } => {
+                if let Some(method) = &*method.borrow() {
+                    let kind = if method.has_self { "method" } else { "associated" };
+                    text.push_str(&format!("!{}={}", kind, method.key));
+                }
+                text.push_str(&displays(shown.borrow().clone()));
+            }
+            AstNode::TemplateString(parts) => {
+                let shown = parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        TemplatePart::Expression(_, display) => Some(display.borrow().clone()),
+                        TemplatePart::Text(_) => None,
+                    })
+                    .collect();
+                text.push_str(&displays(shown));
+            }
+            AstNode::Try { wrap, .. } => {
+                if let Some(wrap) = &*wrap.borrow() {
+                    match &wrap.module {
+                        Some(module) => text.push_str(&format!("!wrap={}.{}", module, wrap.variant)),
+                        None => text.push_str(&format!("!wrap={}", wrap.variant)),
+                    }
+                }
+            }
+            _ => {}
+        }
+        text
+    };
+    let mut out = String::new();
+    for (path, display) in &program.order {
+        out.push_str(&format!("module {}\n", display));
+        for statement in program.modules[path].iter() {
+            out.push_str(&parser::dump::annotated(statement, &annotate));
+            out.push('\n');
+        }
+    }
+    out
+}

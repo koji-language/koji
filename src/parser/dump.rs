@@ -7,12 +7,15 @@ fn text(value: &str) -> String {
     koji_runtime::repr_string(value)
 }
 
-fn optional(node: &Option<Box<AstNode>>) -> String {
-    node.as_ref().map(|node| dump(node)).unwrap_or_else(|| "_".to_string())
+/// What `kojic dump types` adds after a node (`:int`, `!move`...); empty for `kojic dump ast`.
+pub type Annotate<'a> = &'a dyn Fn(&AstNode) -> String;
+
+fn optional(node: &Option<Box<AstNode>>, a: Annotate) -> String {
+    node.as_ref().map(|node| annotated(node, a)).unwrap_or_else(|| "_".to_string())
 }
 
-fn list(nodes: &[AstNode]) -> String {
-    nodes.iter().map(dump).map(|node| format!(" {}", node)).collect()
+fn list(nodes: &[AstNode], a: Annotate) -> String {
+    nodes.iter().map(|node| format!(" {}", annotated(node, a))).collect()
 }
 
 /// A written type, as in the source: `int`, `Map[string, int]`, `int[]`, `(int) => string`.
@@ -71,14 +74,14 @@ fn definition(value: &TypeDef) -> String {
     }
 }
 
-fn pattern(pattern: &Pattern) -> String {
+fn pattern(pattern: &Pattern, a: Annotate) -> String {
     match pattern {
         Pattern::Wildcard => "(wildcard)".to_string(),
         Pattern::Identifier(name) => format!("(bind {})", name),
         Pattern::Variant { name, args } => {
-            format!("(variant {}{})", name, args.iter().map(|arg| format!(" {}", self::pattern(arg))).collect::<String>())
+            format!("(variant {}{})", name, args.iter().map(|arg| format!(" {}", self::pattern(arg, a))).collect::<String>())
         }
-        Pattern::Literal(literal) => format!("(literal {})", dump(literal)),
+        Pattern::Literal(literal) => format!("(literal {})", annotated(literal, a)),
     }
 }
 
@@ -104,6 +107,23 @@ fn assign(op: &AssignOperator) -> &'static str {
 
 /// One node as an S-expression: `(binary + (int 1) (name x))`.
 pub fn dump(node: &AstNode) -> String {
+    annotated(node, &|_| String::new())
+}
+
+/// `dump`, with what `a` gives for each node after it (`Located` and `Export` are the node
+/// they wrap, so only that node is annotated).
+pub fn annotated(node: &AstNode, a: Annotate) -> String {
+    match node {
+        AstNode::Located { line, node } => format!("(at {} {})", line, annotated(node, a)),
+        AstNode::Export(node) => format!("(export {})", annotated(node, a)),
+        other => format!("{}{}", plain(other, a), a(other)),
+    }
+}
+
+fn plain(node: &AstNode, a: Annotate) -> String {
+    let dump = |node: &AstNode| annotated(node, a);
+    let list = |nodes: &[AstNode]| list(nodes, a);
+    let optional = |node: &Option<Box<AstNode>>| optional(node, a);
     match node {
         AstNode::IntLiteral(n) => format!("(int {})", n),
         AstNode::FloatLiteral(f) => format!("(float {})", koji_runtime::format_float(*f)),
@@ -152,7 +172,7 @@ pub fn dump(node: &AstNode) -> String {
                 .iter()
                 .map(|arm| {
                     let guard = arm.guard.as_ref().map(dump).unwrap_or_else(|| "_".to_string());
-                    format!(" (arm {} {} {})", pattern(&arm.pattern), guard, dump(&arm.body))
+                    format!(" (arm {} {} {})", pattern(&arm.pattern, a), guard, dump(&arm.body))
                 })
                 .collect();
             format!("(match {}{})", dump(scrutinee), arms)

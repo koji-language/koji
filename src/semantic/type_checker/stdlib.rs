@@ -177,6 +177,7 @@ impl Checker {
             stdlib: HashMap::new(),
             loading: Vec::new(),
             asts: HashMap::new(),
+            order: Vec::new(),
             methods: HashMap::new(),
             last_arg_types: Vec::new(),
             type_args: None,
