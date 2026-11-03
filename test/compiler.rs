@@ -206,6 +206,49 @@ print(found)
 }
 
 #[test]
+fn arms_that_leave() {
+    // An arm of a `match` used as a value may leave with `return`, `break` or `continue`.
+    assert_same(
+        "arms_that_leave",
+        "\
+function next(r: Result[int, string]): Result[int, string] {
+    immut n = match (r) {
+        Ok(n) => n
+        Err(message) => {
+            immut text = `bad ${message}`
+            return Err(text)
+        }
+    }
+    return Ok(n + 1)
+}
+
+function first(items: string[]): string {
+    immut item = match (items.length()) {
+        0 => return 'none'
+        _ => items[0]
+    }
+    return item
+}
+
+print(next(Ok(1)), next(Err('e')), first([]), first(['a']))
+mut total = 0
+
+for i in range(5) {
+    immut value = match (i) {
+        3 => break
+        1 => continue
+        other => other * 10
+    }
+    total += value
+}
+
+print(total)
+",
+        "Ok(2) Err('bad e') none a\n20\n",
+    );
+}
+
+#[test]
 fn panics() {
     assert_same_panic("division", "print(1)\nprint(10 / (5 - 5))\n", "division by zero");
     assert_same_panic("overflow", "immut big = 9223372036854775807\nprint(big + 1)\n", "integer overflow");

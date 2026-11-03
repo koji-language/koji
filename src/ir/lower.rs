@@ -2406,13 +2406,19 @@ impl<'a> Lowerer<'a> {
                 };
                 builder.scopes.push(HashMap::new());
                 let entered = self.enter_imports(builder, statements)?;
-                let result = self
-                    .statements(builder, rest)
-                    .and_then(|_| self.value_as(builder, last, ty));
+                let result = self.statements(builder, rest).and_then(|_| match last.unlocated() {
+                    AstNode::Return(_) | AstNode::Break | AstNode::Continue => self.statement(builder, last).map(|_| None),
+                    _ => self.value_as(builder, last, ty),
+                });
                 self.exit_imports(entered);
                 drop_owned(builder, builder.scopes.len() - 1, true);
                 builder.scopes.pop();
                 result
+            }
+            // `Err(e) => return Err(e)`: the branch leaves, giving no value.
+            AstNode::Return(_) | AstNode::Break | AstNode::Continue => {
+                self.statement(builder, branch)?;
+                Ok(None)
             }
             other => self.value_as(builder, other, ty),
         }
