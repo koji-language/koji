@@ -3,6 +3,8 @@ pub enum Token {
     Identifier(String),
     Int(i64),
     Float(f64),
+    /// A float literal too large for a `float` (`1e400`), as written: the parser rejects it.
+    LargeFloat(String),
     StringLiteral(String),
     /// Raw content between backticks, still with `${...}` and escape characters. The parser interprets it.
     TemplateString(String),
@@ -195,6 +197,7 @@ impl Token {
             Token::Identifier(name) => format!("Identifier {}", name),
             Token::Int(n) => format!("Int {}", n),
             Token::Float(f) => format!("Float {}", koji_runtime::format_float(*f)),
+            Token::LargeFloat(text) => format!("LargeFloat {}", text),
             Token::StringLiteral(text) => format!("String {}", koji_runtime::repr_string(text)),
             Token::TemplateString(raw) => format!("Template {}", koji_runtime::repr_string(raw)),
             Token::Boolean(b) => format!("Boolean {}", b),
@@ -219,6 +222,7 @@ impl Token {
             Token::Identifier(name) => format!("'{}'", name),
             Token::Int(n) => n.to_string(),
             Token::Float(f) => koji_runtime::format_float(*f),
+            Token::LargeFloat(text) => text.clone(),
             Token::StringLiteral(text) => koji_runtime::repr_string(text),
             Token::TemplateString(_) => "a template string".to_string(),
             Token::Boolean(b) => b.to_string(),

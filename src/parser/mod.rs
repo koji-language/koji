@@ -28,6 +28,11 @@ const MULTIPLICATIVE_BP: u8 = 11;
 const UNARY_BP: u8 = 12;
 const POWER_BP: u8 = 13;
 
+/// The error for a literal like `1e400`: a finite number, but too large for a `float`.
+fn large_float(text: &str) -> String {
+    format!("float literal {} is too large for a float", text)
+}
+
 fn error<T>(message: String) -> Result<T, EzError> {
     Err(EzError::ParserError(message))
 }
@@ -864,8 +869,8 @@ impl Parser {
         let line = self.current_line();
         match self.advance() {
             Token::Int(n) => Ok(AstNode::IntLiteral(n)),
-            Token::Float(n) if !n.is_finite() => {
-                let message = "float literal is too large (float has no infinity)".to_string();
+            Token::LargeFloat(text) => {
+                let message = large_float(&text);
                 if line == 0 {
                     error(message)
                 } else {
@@ -1156,9 +1161,7 @@ impl Parser {
                 self.advance();
                 Ok(Pattern::Literal(AstNode::IntLiteral(n)))
             }
-            Token::Float(n) if !n.is_finite() => {
-                self.error_here("float literal is too large (float has no infinity)".to_string())
-            }
+            Token::LargeFloat(text) => self.error_here(large_float(&text)),
             Token::Float(n) => {
                 self.advance();
                 Ok(Pattern::Literal(AstNode::FloatLiteral(n)))
@@ -1167,9 +1170,7 @@ impl Parser {
                 self.advance();
                 match self.advance() {
                     Token::Int(n) => Ok(Pattern::Literal(AstNode::IntLiteral(-n))),
-                    Token::Float(n) if !n.is_finite() => {
-                        self.error_here("float literal is too large (float has no infinity)".to_string())
-                    }
+                    Token::LargeFloat(text) => self.error_here(large_float(&text)),
                     Token::Float(n) => Ok(Pattern::Literal(AstNode::FloatLiteral(-n))),
                     other => self.error_here(format!("unexpected pattern: -{}", other.describe())),
                 }

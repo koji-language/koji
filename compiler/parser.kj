@@ -138,7 +138,7 @@ export function describe(token: Token): string {
         Identifier(name) => `'${name}'`
         Int(value) => string(value)
         Float(value) => string(value)
-        LargeFloat => 'inf'
+        LargeFloat(text) => text
         StringLiteral(value) => value.debug()
         TemplateString(_) => 'a template string'
         Boolean(value) => string(value)
@@ -147,6 +147,11 @@ export function describe(token: Token): string {
         Illegal(c) => `'${c}'`
         End => 'the end of the file'
     }
+}
+
+// The error for a literal like `1e400`: a finite number, but too large for a `float`.
+function largeFloat(text: string): string {
+    return `float literal ${text} is too large for a float`
 }
 
 function Parser.create(tokens: Spanned[]): Parser {
@@ -958,7 +963,7 @@ function Parser.prefix(mut self): Result[Node, string] {
     return match (self.advance()) {
         Int(value) => Ok(IntLiteral(value))
         Float(value) => Ok(FloatLiteral(value))
-        LargeFloat => Err(atLine(line, 'float literal is too large (float has no infinity)'))
+        LargeFloat(text) => Err(atLine(line, largeFloat(text)))
         StringLiteral(value) => Ok(StringNode(value))
         TemplateString(raw) => parseTemplate(raw, line)
         Boolean(value) => Ok(BooleanLiteral(value))
@@ -1249,14 +1254,14 @@ function Parser.pattern(mut self): Result[Pattern, string] {
             self.advance()
             return Ok(Literal(FloatLiteral(value)))
         }
-        LargeFloat => return Err(self.failure('float literal is too large (float has no infinity)'))
+        LargeFloat(text) => return Err(self.failure(largeFloat(text)))
         Symbol('-') => {
             self.advance()
 
             return match (self.advance()) {
                 Int(value) => Ok(Literal(IntLiteral(-value)))
                 Float(value) => Ok(Literal(FloatLiteral(-value)))
-                LargeFloat => Err(self.failure('float literal is too large (float has no infinity)'))
+                LargeFloat(text) => Err(self.failure(largeFloat(text)))
                 other => Err(self.failure(`unexpected pattern: -${describe(other)}`))
             }
         }

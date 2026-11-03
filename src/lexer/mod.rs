@@ -245,7 +245,10 @@ impl Lexer {
                 return Token::Int(value);
             }
         }
-        Token::Float(num_str.parse::<f64>().unwrap_or(0.0))
+        match num_str.parse::<f64>() {
+            Ok(value) if value.is_finite() => Token::Float(value),
+            _ => Token::LargeFloat(num_str),
+        }
     }
 
     /// Reads a string delimited by `quote` (double or single quotes).
@@ -340,6 +343,14 @@ mod tests {
     #[test]
     fn integers_and_floats_are_distinct() {
         assert_eq!(lex("42 2.5"), vec![Token::Int(42), Token::Float(2.5), Token::EOF]);
+    }
+
+    #[test]
+    fn float_literals_too_large_keep_their_text() {
+        assert_eq!(
+            lex("1e400 1.5e308 1e-400"),
+            vec![Token::LargeFloat("1e400".to_string()), Token::Float(1.5e308), Token::Float(0.0), Token::EOF]
+        );
     }
 
     #[test]
