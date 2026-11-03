@@ -1,6 +1,6 @@
 # Koji Language Documentation
 
-Welcome to the **Koji documentation**. Here you will find the syntax, the types, functions, error handling, modules and the standard library.
+Welcome to the **Koji Documentation**. Here you will find the syntax, the types, functions, error handling, modules and the standard library.
 
 ## Contents
 
@@ -17,6 +17,7 @@ Welcome to the **Koji documentation**. Here you will find the syntax, the types,
 -   [Composite Types](composite-types.md)
 -   [Sum Types](sum-types.md)
 -   [Custom Types](custom-types.md)
+-   [Generics](generics.md)
 
 ### Code
 
@@ -25,6 +26,7 @@ Welcome to the **Koji documentation**. Here you will find the syntax, the types,
 -   [Functions](functions.md)
 -   [String Interpolation](string-interpolation.md)
 -   [Error Handling](error-handling.md)
+-   [Values and Memory](memory.md)
 -   [Modules and Imports](modules-and-imports.md)
 
 ### Reference
