@@ -165,39 +165,7 @@ pub struct FileHandle {
     pub file: Option<std::fs::File>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DateTime {
-    pub year: i64,
-    pub month: i64,
-    pub day: i64,
-    pub hour: i64,
-    pub minute: i64,
-    pub second: i64,
-}
-
-impl DateTime {
-    pub fn field(&self, name: &str) -> Option<i64> {
-        Some(match name {
-            "year" => self.year,
-            "month" => self.month,
-            "day" => self.day,
-            "hour" => self.hour,
-            "minute" => self.minute,
-            "second" => self.second,
-            _ => return None,
-        })
-    }
-}
-
-impl std::fmt::Display for DateTime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            self.year, self.month, self.day, self.hour, self.minute, self.second
-        )
-    }
-}
+pub use koji_runtime::datetime::DateTime;
 
 /// The text of a float, shared with the runtime of compiled programs.
 pub use koji_runtime::format_float;

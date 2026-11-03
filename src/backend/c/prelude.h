@@ -181,6 +181,11 @@ KojiRecord *koji_std_file_list(const KojiString *path, const KojiElementType *el
 bool koji_std_file_exists(const KojiString *path);
 KojiRecord *koji_std_file_create_dir(const KojiString *path, const KojiRecordType *result);
 
+KojiRecord *koji_std_datetime_now(const KojiRecordType *type);
+KojiString *koji_std_datetime_today(void);
+KojiString *koji_std_datetime_format(double timestamp, const KojiString *pattern);
+KojiRecord *koji_std_datetime_parse(const KojiString *text, const KojiString *pattern, const KojiRecordType *result);
+
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
 _Noreturn void koji_panic(const char *location, const char *message);

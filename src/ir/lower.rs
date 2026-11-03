@@ -3287,6 +3287,15 @@ impl<'a> Lowerer<'a> {
                 ("koji_std_path_part", vec![value_as(self, builder, 0, Ty::Str)?, StdArg::Mode(part), result(self, builder)?])
             }
             ("path", "isAbsolute") => ("koji_std_path_is_absolute", vec![value_as(self, builder, 0, Ty::Str)?]),
+            ("datetime", "now") => ("koji_std_datetime_now", vec![result(self, builder)?]),
+            ("datetime", "today") => ("koji_std_datetime_today", Vec::new()),
+            ("datetime", "format") => {
+                ("koji_std_datetime_format", vec![value_as(self, builder, 0, Ty::Float)?, value_as(self, builder, 1, Ty::Str)?])
+            }
+            ("datetime", "parse") => (
+                "koji_std_datetime_parse",
+                vec![value_as(self, builder, 0, Ty::Str)?, value_as(self, builder, 1, Ty::Str)?, result(self, builder)?],
+            ),
             ("file", "open") => {
                 let path = value_as(self, builder, 0, Ty::Str)?;
                 let mode_type = self.type_in(builder, &args[1])?;

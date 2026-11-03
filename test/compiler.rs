@@ -1182,6 +1182,36 @@ print('not printed')\n\
 }
 
 #[test]
+fn dates() {
+    assert_same("dates", "import datetime\n\
+import { DateTime } from 'datetime'\n\
+\n\
+immut now: DateTime = datetime.now()\n\
+print(now.year >= 2026, now.month >= 1, datetime.today().length())\n\
+print(datetime.format(0, 'yyyy-mm-dd hh:min:ss'), datetime.format(1700000000.7, 'dd/mm/yyyy'))\n\
+print(datetime.parse('2024-02-29 12:30:00', 'yyyy-mm-dd hh:min:ss'), datetime.parse('2023-02-29', 'yyyy-mm-dd'), datetime.parse('2024/01/01', 'yyyy-mm-dd'))\n\
+\n\
+match (datetime.parse('31/12/1999', 'dd/mm/yyyy')) {\n\
+    Ok(timestamp) => print(datetime.format(timestamp, 'yyyy-mm-dd'))\n\
+    Err(error) => print(error)\n\
+}\n\
+\n\
+match (datetime.parse('x', 'yyyy')) {\n\
+    Ok(timestamp) => print(timestamp)\n\
+    Err(error) => print('error:', error)\n\
+}\n\
+\n\
+print(string(now).length())\n\
+", "true true 10\n\
+1970-01-01 00:00:00 14/11/2023\n\
+Ok(1709209800) Err(InvalidDate('2023-02-29')) Err(PatternMismatch('2024/01/01', 'yyyy-mm-dd'))\n\
+1999-12-31\n\
+error: 'x' does not match the pattern 'yyyy'\n\
+19\n\
+");
+}
+
+#[test]
 fn examples_that_compile() {
     for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions", "input", "modules", "types"] {
         let path = PathBuf::from(format!("examples/{}.kj", example));

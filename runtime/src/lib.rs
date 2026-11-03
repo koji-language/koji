@@ -8,6 +8,7 @@
 //! produce exactly the same output.
 
 mod closure;
+pub mod datetime;
 mod file;
 mod list;
 mod map;
