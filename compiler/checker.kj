@@ -262,6 +262,9 @@ type Checker = {
     state: ModuleState
     // The id of the first node of the next module parsed.
     nextId: int
+    // Whether each type is move-only, as found so far (emptied when a type is resolved or a
+    // `drop` method declared, which can change the answer).
+    moveOnly: Map[Type, boolean]
 }
 
 // Built-in types
@@ -477,7 +480,8 @@ function Checker.create(): Checker {
     }
     return {
         table: table, builtins: builtins, modules: [], moduleByPath: [:], stdlib: [:], loading: [], loaded: [],
-        methods: [:], lastArgTypes: [], typeArgs: None, tables: emptyTables(), state: emptyState(), nextId: 0
+        methods: [:], lastArgTypes: [], typeArgs: None, tables: emptyTables(), state: emptyState(), nextId: 0,
+        moveOnly: [:]
     }
 }
 
@@ -1492,6 +1496,7 @@ function Checker.hoist(mut self, statements: Node[]): Result[void, string] {
                 immut kind = self.resolveTypeDef(name, definition)?
                 self.exitTypeParams(pushed)
                 self.table[each.id].kind = kind
+                self.moveOnly = [:]
 
                 match (kind) {
                     SumKind(_) => self.declareConstructors(each.id)
@@ -1688,7 +1693,10 @@ function Checker.declareMethod(mut self, statements: Node[], statement: Node): R
     }
     self.tables.functionTypes[nodeId(statement)] = ty
 
-    if (name == 'drop') { self.tables.dropMethods[id] = { module: self.state.path, key: full, hasSelf: true } }
+    if (name == 'drop') {
+        self.tables.dropMethods[id] = { module: self.state.path, key: full, hasSelf: true }
+        self.moveOnly = [:]
+    }
 
     mut modes: string[] = []
 
@@ -1824,7 +1832,7 @@ function unify(pattern: Type, actual: Type, mut generic: Type[]) {
 
 // Whether `ty` meets `constraint`: a type is equatable when everything it holds is (no functions,
 // no move-only values), and orderable when it is a number, a string or a char.
-function Checker.satisfies(self, ty: Type, constraint: int): boolean {
+function Checker.satisfies(mut self, ty: Type, constraint: int): boolean {
     if (constraint == unconstrained) { return true }
 
     if (constraint == equatable) {
@@ -1844,7 +1852,7 @@ function Checker.satisfies(self, ty: Type, constraint: int): boolean {
     }
 }
 
-function Checker.equatableIn(self, ty: Type, mut visited: Set[int]): boolean {
+function Checker.equatableIn(mut self, ty: Type, mut visited: Set[int]): boolean {
     if (self.isMoveOnly(ty)) { return false }
 
     match (ty) {
@@ -1898,7 +1906,7 @@ function Checker.equatableIn(self, ty: Type, mut visited: Set[int]): boolean {
 
 // The type arguments `args` must meet the `constraints` of their parameters (`what` names the
 // generic function or type, for the message).
-function Checker.ensureConstraints(self, args: Type[], constraints: int[], what: string): Result[void, string] {
+function Checker.ensureConstraints(mut self, args: Type[], constraints: int[], what: string): Result[void, string] {
     for i in range(args.length()) {
         if (i >= constraints.length()) { break }
 
@@ -1911,7 +1919,7 @@ function Checker.ensureConstraints(self, args: Type[], constraints: int[], what:
 }
 
 // Type parameters cannot stand for move-only values yet: a generic function could copy them.
-function Checker.ensureCopyableArgs(self, args: Type[]): Result[void, string] {
+function Checker.ensureCopyableArgs(mut self, args: Type[]): Result[void, string] {
     for arg in args {
         if (self.isMoveOnly(arg)) {
             return Err(self.failure(`a type parameter cannot be ${self.show(arg)}: type parameters cannot be move-only values yet`))
@@ -2013,9 +2021,32 @@ function Checker.checkGenericCall(mut self, signature: Type, initial: Type[], co
 
 // Move-only values
 
-function Checker.isMoveOnly(self, ty: Type): boolean {
+// `substitute`, without building a new type for a type with no arguments (a `ParamType` gives
+// `UnknownType` then, which is neither move-only nor different for `equatable`).
+function applied(ty: Type, args: Type[]): Type {
+    if (args.length() == 0) { return ty }
+
+    return substitute(ty, args)
+}
+
+function Checker.isMoveOnly(mut self, ty: Type): boolean {
+    // Most values are of a type that holds nothing (an `int`, a `string`...).
+    match (ty) {
+        ListType(_) => {}
+        NamedType(_, _) => {}
+        VariantType(_, _, _) => {}
+        _ => return false
+    }
+
+    match (self.moveOnly.get(ty)) {
+        Some(known) => return known
+        None => {}
+    }
+
     mut visited: Set[int] = Set.from([])
-    return self.moveOnlyIn(ty, mut visited)
+    immut found = self.moveOnlyIn(ty, mut visited)
+    self.moveOnly[ty] = found
+    return found
 }
 
 function Checker.moveOnlyIn(self, ty: Type, mut visited: Set[int]): boolean {
@@ -2042,7 +2073,7 @@ function Checker.moveOnlyIn(self, ty: Type, mut visited: Set[int]): boolean {
     match (self.table[parts.id].kind) {
         ShapeKind(fields) => {
             for each in fields {
-                if (self.moveOnlyIn(substitute(each.ty, parts.args), mut visited)) { return true }
+                if (self.moveOnlyIn(applied(each.ty, parts.args), mut visited)) { return true }
             }
 
             return false
@@ -2050,14 +2081,14 @@ function Checker.moveOnlyIn(self, ty: Type, mut visited: Set[int]): boolean {
         SumKind(variants) => {
             for each in variants {
                 for fieldType in each.fields {
-                    if (self.moveOnlyIn(substitute(fieldType.ty, parts.args), mut visited)) { return true }
+                    if (self.moveOnlyIn(applied(fieldType.ty, parts.args), mut visited)) { return true }
                 }
             }
 
             return false
         }
-        MapKind(_, value) => return self.moveOnlyIn(substitute(value, parts.args), mut visited)
-        SetKind(item) => return self.moveOnlyIn(substitute(item, parts.args), mut visited)
+        MapKind(_, value) => return self.moveOnlyIn(applied(value, parts.args), mut visited)
+        SetKind(item) => return self.moveOnlyIn(applied(item, parts.args), mut visited)
         _ => return false
     }
 }
@@ -2078,7 +2109,7 @@ function Checker.ensureNotMoved(self, name: string): Result[void, string] {
 }
 
 // A function cannot use a move-only variable of the functions around it: it would get a copy.
-function Checker.ensureNotCapturedMoveOnly(self, name: string, ty: Type): Result[void, string] {
+function Checker.ensureNotCapturedMoveOnly(mut self, name: string, ty: Type): Result[void, string] {
     if (self.state.functionScopes.length() == 0) { return Ok() }
 
     immut boundary = self.state.functionScopes[self.state.functionScopes.length() - 1]
@@ -3471,7 +3502,7 @@ function Checker.notEquatable(self, op: string, ty: Type): string {
     return self.failure(`values of type ${self.show(ty)} cannot be compared with '${op}': it is not equatable (it holds functions or move-only values)`)
 }
 
-function Checker.binaryType(self, op: string, left: Type, right: Type): Result[Type, string] {
+function Checker.binaryType(mut self, op: string, left: Type, right: Type): Result[Type, string] {
     immut comparison = op in ['==', '!=', '>', '>=', '<', '<=', 'is', 'in']
 
     if (left == UnknownType or right == UnknownType) {

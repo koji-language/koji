@@ -76,8 +76,16 @@ function Lexer.advance(mut self) {
     self.position += 1
 }
 
+// The character classes follow Unicode, like the lexer in Rust; ASCII characters, the most
+// common ones, are classified without building a string.
 function isSpace(c: char): boolean {
+    if (c.code() < 128) { return c == ' ' or (c.code() >= 9 and c.code() <= 13) }
+
     return string(c).isSpace()
+}
+
+function isAsciiLetter(c: char): boolean {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
 }
 
 function isDigit(c: char): boolean {
@@ -85,11 +93,15 @@ function isDigit(c: char): boolean {
 }
 
 function startsName(c: char): boolean {
-    return string(c).isAlpha() or c == '_'
+    if (c.code() < 128) { return isAsciiLetter(c) or c == '_' }
+
+    return string(c).isAlpha()
 }
 
 function continuesName(c: char): boolean {
-    return string(c).isAlphaNumeric() or c == '_'
+    if (c.code() < 128) { return isAsciiLetter(c) or isDigit(c) or c == '_' }
+
+    return string(c).isAlphaNumeric()
 }
 
 // Skips whitespace and comments.
@@ -258,10 +270,21 @@ function Lexer.template(mut self): Token {
     return TemplateString(raw)
 }
 
-// Whether the text at the current position starts with `symbol`.
-function Lexer.startsWith(self, symbol: string): boolean {
-    immut parts = symbol.chars()
+// The characters of each long symbol.
+immut longSymbolChars = symbolChars()
 
+function symbolChars(): char[][] {
+    mut result: char[][] = []
+
+    for symbol in longSymbols {
+        result.push(symbol.chars())
+    }
+
+    return result
+}
+
+// Whether the text at the current position starts with the characters `parts`.
+function Lexer.startsWith(self, parts: char[]): boolean {
     for i in range(parts.length()) {
         if (not self.is(i, parts[i])) { return false }
     }
@@ -270,13 +293,13 @@ function Lexer.startsWith(self, symbol: string): boolean {
 }
 
 function Lexer.symbol(mut self): Token {
-    for symbol in longSymbols {
-        if (self.startsWith(symbol)) {
-            for i in range(symbol.length()) {
+    for i in range(longSymbols.length()) {
+        if (self.startsWith(longSymbolChars[i])) {
+            for each in longSymbolChars[i] {
                 self.advance()
             }
 
-            return Symbol(symbol)
+            return Symbol(longSymbols[i])
         }
     }
 
