@@ -32,17 +32,6 @@ immut usage = [
     '(libkoji_runtime.a) and KOJI_CC the C compiler (default: cc).'
 ].join('\n')
 
-// Writes a message to the standard error output.
-function printError(message: string) {
-    match (file.open('/dev/stderr', file.Append)) {
-        Ok(output) => {
-            output.write(`${message}\n`)
-            output.close()
-        }
-        Err(_) => print(message)
-    }
-}
-
 // The text of a system error, as the kojic written in Rust shows it.
 function ioMessage(error: file.FileError): string {
     return match (error) {
@@ -207,14 +196,10 @@ function buildOptions(args: string[]): Build {
 
 // The libraries the runtime (a Rust static library) needs from the system.
 function systemLibraries(): string[] {
-    immut kernel = match (system.run('uname', ['-s'])) {
-        Ok(output) => output.stdout.trim()
-        Err(_) => ''
+    return match (system.os) {
+        MacOS => ['-lSystem', '-lc', '-lm']
+        _ => ['-lpthread', '-ldl', '-lm', '-lrt', '-lutil']
     }
-
-    if (kernel == 'Darwin') { return ['-lSystem', '-lc', '-lm'] }
-
-    return ['-lpthread', '-ldl', '-lm', '-lrt', '-lutil']
 }
 
 function variable(name: string, otherwise: string): string {
@@ -243,7 +228,7 @@ function compileC(source: string, output: string): Result[void, string] {
     }
 
     immut result = system.run(compiler, args)
-    system.run('rm', ['-f', c])
+    file.remove(c)
 
     return match (result) {
         Ok(run) => {

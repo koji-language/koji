@@ -1,6 +1,6 @@
 # system
 
-The `system` module gives access to the command line, the environment, the exit code and other programs.
+The `system` module gives access to the command line, the environment, the exit code, other programs and the operating system.
 
 ## Functions
 
@@ -15,6 +15,33 @@ The `system` module gives access to the command line, the environment, the exit 
 
 -   `run(command: string, args: string[]) -> Result[Output, SystemError]`  
     Runs the program `command` with the arguments `args`, waits for it to end, and returns what it printed. A program that ends with an error code is still `Ok`: check `status`.
+
+## Constants
+
+-   `os: OperatingSystem`  
+    The operating system the program runs on:
+
+    ```koji
+    type OperatingSystem = {
+        Linux
+        MacOS
+        Windows
+        Other(name: string) // another system, by its name: 'freebsd'
+    }
+    ```
+
+    Since it is a sum type, a `match` on it must handle every system, or have a `_` arm:
+
+    ```koji
+    import system
+
+    immut separator = match (system.os) {
+        Windows => ';'
+        _ => ':'
+    }
+
+    print(separator)
+    ```
 
 ## The `Output` Type
 

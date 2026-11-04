@@ -2598,6 +2598,14 @@ function Lowerer.member(mut self, mut builder: Builder, node: Node, object: Node
 
             if (module == 'math' and name == 'e') { return Ok(Some(FloatOp(2.718281828459045))) }
 
+            // `system.os`: the variant for the system the program runs on.
+            if (module == 'system' and name == 'os') {
+                return match (self.typeIn(builder, node)?) {
+                    RecordTy(record) => self.std(mut builder, node, 'koji_std_system_os', [RecordArg(record)])
+                    _ => Err(self.unsupported("'system.os'"))
+                }
+            }
+
             return match (self.typeIn(builder, node)?) {
                 // `file.Read`: a variant of a type of the module.
                 RecordTy(record) => Ok(Some(self.construct(mut builder, record, name, [])?))
@@ -3318,7 +3326,7 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
     }
 
     match (name) {
-        'print' => {
+        printed if (printed == 'print' or printed == 'printError') => {
             mut line: Option[Operand] = None
 
             for index in range(args.length()) {
@@ -3338,6 +3346,11 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
                 Some(text) => text
                 None => self.string('')
             }
+            if (name == 'printError') {
+                builder.emit(StdCallIns(None, 'koji_print_error', [ValueArg(value), LocationArg(self.line)]))
+                return Ok(None)
+            }
+
             builder.emit(PrintIns(value, self.line))
             return Ok(None)
         }
@@ -3561,6 +3574,10 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             runner = 'koji_std_file_list'
             immut path = self.stdValue(mut builder, args, 0, StrTy)?
             arguments = [path, ElementArg(StrTy), self.stdResult(builder, call)?]
+        }
+        'file.remove' => {
+            runner = 'koji_std_file_remove'
+            arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
         }
         'file.exists' => {
             runner = 'koji_std_file_exists'

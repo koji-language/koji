@@ -171,6 +171,7 @@ impl Checker {
                 regex_match,
                 regex,
                 regex_error: ids["RegexError"],
+                operating_system: ids["OperatingSystem"],
             },
             modules: Vec::new(),
             module_by_path: HashMap::new(),
@@ -202,6 +203,7 @@ impl Checker {
             "DateError" => b.date_error,
             "SystemError" => b.system_error,
             "RegexError" => b.regex_error,
+            "OperatingSystem" => b.operating_system,
             other => panic!("unknown built-in sum type '{}'", other),
         }
     }
@@ -209,7 +211,7 @@ impl Checker {
     /// Scope with the built-in functions, types and constructors.
     pub(super) fn prelude(&self) -> Scope {
         let mut scope = Scope::default();
-        for name in ["print", "input", "range", "int", "float", "string", "char", "panic"] {
+        for name in ["print", "printError", "input", "range", "int", "float", "string", "char", "panic"] {
             scope.vars.insert(name.to_string(), Symbol::builtin(name));
         }
         let primitives = [
@@ -298,6 +300,10 @@ impl Checker {
         if name == "math" {
             module.members.insert("pi".to_string(), Symbol::value(Type::Float, true));
             module.members.insert("e".to_string(), Symbol::value(Type::Float, true));
+        }
+        // `system.os`: the operating system the program runs on.
+        if name == "system" {
+            module.members.insert("os".to_string(), Symbol::value(Self::named(b.operating_system), true));
         }
         let object_types: &[(&str, TypeId)] = match name {
             "file" => &[("File", b.file)],
@@ -407,7 +413,7 @@ impl Checker {
         };
         let json = Self::named(b.json);
         match name {
-            "print" => Ok(Type::Void),
+            "print" | "printError" => Ok(Type::Void),
             "panic" => {
                 check(self, &[s])?;
                 Ok(Type::Never)
@@ -468,7 +474,7 @@ impl Checker {
                 check(self, &[s])?;
                 Ok(Type::Boolean)
             }
-            "file.createDir" => {
+            "file.createDir" | "file.remove" => {
                 check(self, &[s])?;
                 Ok(result_with(Type::Void, b.file_error))
             }

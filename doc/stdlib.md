@@ -8,7 +8,7 @@ The **Koji Standard Library** provides a collection of built-in modules to help 
     Delay execution and measure elapsed time.
 
 -   [`file`](standard-library/file.md)  
-    Read from and write to files, and list and create directories.
+    Read from, write to and remove files, and list and create directories.
 
 -   [`path`](standard-library/path.md)  
     Join paths and get their parts: parent directory, name and extension.
@@ -29,4 +29,4 @@ The **Koji Standard Library** provides a collection of built-in modules to help 
     Work with regular expressions to search, match, and replace patterns in strings.
 
 -   [`system`](standard-library/system.md)  
-    Read the command-line arguments and the environment, end the program with an exit code, and run other programs.
+    Read the command-line arguments and the environment, end the program with an exit code, run other programs, and know the operating system.

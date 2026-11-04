@@ -38,6 +38,19 @@ pub extern "C" fn koji_print(text: *const KojiString, location: *const c_char) {
     }
 }
 
+/// Writes `text` and a line break to the standard error output (`printError`), after what
+/// `print` wrote.
+#[no_mangle]
+pub extern "C" fn koji_print_error(text: *const KojiString, location: *const c_char) {
+    let text = unsafe { &*text };
+    let _ = std::io::stdout().flush();
+    let mut errors = std::io::stderr().lock();
+    if let Err(error) = writeln!(errors, "{}", text.as_str()).and_then(|_| errors.flush()) {
+        drop(errors);
+        panic_at(location, &format!("cannot write output: {}", error));
+    }
+}
+
 /// An `Err` or `None` that reached the top level of the program with `?`.
 #[no_mangle]
 pub extern "C" fn koji_fail(location: *const c_char, message: *const KojiString) -> ! {

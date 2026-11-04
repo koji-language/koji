@@ -52,6 +52,14 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
                 Err(error) => err(file_error(&path, &error)),
             })
         }
+        // Removes a file (not a directory).
+        "file.remove" => {
+            let path = str_arg(interpreter, &args, 0)?.to_string();
+            Ok(match std::fs::remove_file(&path) {
+                Ok(()) => ok(Value::Void),
+                Err(error) => err(file_error(&path, &error)),
+            })
+        }
         other => Err(interpreter.error(format!("unknown built-in function '{}'", other))),
     }
 }

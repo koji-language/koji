@@ -17,6 +17,19 @@ The `file` module provides functionality for working with files.
 
     With `import file`, the modes are `file.Read`, `file.Write` and `file.Append`. With `import { Mode } from 'file'`, they can be written `Read`, `Write` and `Append`. Since the mode is a sum type, an invalid mode does not compile.
 
+-   `remove(path: string) -> Result[void, FileError]`  
+    Removes the file at `path`. It does not remove a directory: that gives `Err(IsDirectory(path))`.
+
+    ```koji
+    import file
+
+    match (file.remove('old-notes.txt')) {
+        Ok(_) => print('removed')
+        Err(NotFound(path)) => print(`${path} was already gone`)
+        Err(error) => print(error)
+    }
+    ```
+
 ## Directories
 
 -   `list(path: string) -> Result[string[], FileError]`  

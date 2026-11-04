@@ -330,6 +330,68 @@ print(run())
 }
 
 #[test]
+fn errors_files_and_the_operating_system() {
+    // `printError`, `file.remove` and `system.os`, interpreted and compiled: the same standard
+    // output and standard error output.
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler-system");
+    std::fs::create_dir_all(&directory).unwrap();
+    let scratch = directory.join("scratch.txt");
+    let folder = directory.join("folder");
+    let _ = std::fs::create_dir_all(&folder);
+    let source = format!(
+        "\
+import file
+import system
+
+type Point = {{ x: int }}
+
+function Point.display(self): string {{
+    return `(${{self.x}})`
+}}
+
+immut point: Point = {{ x: 1 }}
+print('out', point)
+printError('error', point, 2)
+printError()
+print('after')
+
+match (file.open('{scratch}', file.Write)) {{
+    Ok(output) => print(output.write('x'))
+    Err(error) => print(error)
+}}
+
+print(file.exists('{scratch}'), file.remove('{scratch}'), file.exists('{scratch}'))
+print(file.remove('{scratch}'))
+print(file.remove('{folder}') is Err)
+
+immut known = match (system.os) {{
+    Linux => true
+    MacOS => true
+    Windows => true
+    Other(_) => false
+}}
+print(known)
+",
+        scratch = scratch.display(),
+        folder = folder.display()
+    );
+    let path = source_file("system", &source);
+    let interpreted = Command::new(env!("CARGO_BIN_EXE_kojic")).arg("run").arg(&path).output().unwrap();
+    let executable = path.with_extension("");
+    kojic::build_file(&path, &executable, kojic::Emit::Executable).unwrap();
+    let compiled = Command::new(&executable).output().unwrap();
+    assert!(interpreted.status.success() && compiled.status.success());
+    assert_eq!(String::from_utf8_lossy(&compiled.stdout), String::from_utf8_lossy(&interpreted.stdout));
+    assert_eq!(String::from_utf8_lossy(&compiled.stderr), String::from_utf8_lossy(&interpreted.stderr));
+    let expected = format!(
+        "out (1)\nafter\nOk(void)\ntrue Ok(void) false\nErr(NotFound('{}'))\ntrue\ntrue\n",
+        scratch.display()
+    );
+    assert_eq!(String::from_utf8_lossy(&compiled.stdout), expected);
+    assert_eq!(String::from_utf8_lossy(&compiled.stderr), "error (1) 2\n\n");
+}
+
+#[test]
 fn panics() {
     assert_same_panic("division", "print(1)\nprint(10 / (5 - 5))\n", "division by zero");
     assert_same_panic("overflow", "immut big = 9223372036854775807\nprint(big + 1)\n", "integer overflow");

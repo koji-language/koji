@@ -1166,6 +1166,18 @@ fn panics_name_modules_as_imports_write_them() {
 }
 
 #[test]
+fn errors_files_and_the_operating_system_are_checked() {
+    assert_error("printError(print)", "'print' is a built-in function and must be called");
+    assert_error("import file\nimmut x: int = file.remove('a')", "of type Result[void, FileError] to 'x' of type int");
+    assert_error("import file\nfile.remove(1)", "argument 1 of 'file.remove' must be string, found int");
+    assert_error(
+        "import system\nimmut n = match (system.os) {\n    Linux => 1\n    MacOS => 2\n}",
+        "match is not exhaustive: Windows is not handled",
+    );
+    assert_error("import system\nsystem.os = system.Linux", "'os' is read-only outside 'system'");
+}
+
+#[test]
 fn modules_and_imports() {
     let dir = temp_dir("modules");
     std::fs::write(

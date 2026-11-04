@@ -2135,6 +2135,11 @@ impl<'a> Lowerer<'a> {
                 match (module.as_str(), name.as_str()) {
                     ("math", "pi") => Ok(Some(Operand::Float(std::f64::consts::PI))),
                     ("math", "e") => Ok(Some(Operand::Float(std::f64::consts::E))),
+                    // `system.os`: the variant for the system the program runs on.
+                    ("system", "os") => match self.type_in(builder, node)? {
+                        Ty::Record(record) => self.std(builder, node, "koji_std_system_os", vec![StdArg::Record(record)]),
+                        _ => self.unsupported("'system.os'"),
+                    },
                     _ => match self.type_in(builder, node)? {
                         // `file.Read`: a variant of a type of the module.
                         Ty::Record(record) => self.construct(builder, record, name, &[]).map(Some),
@@ -3274,7 +3279,7 @@ impl<'a> Lowerer<'a> {
             return self.std_call(builder, call, &module, &function, args);
         }
         match name {
-            "print" => {
+            "print" | "printError" => {
                 let mut line: Option<Operand> = None;
                 for (index, arg) in args.iter().enumerate() {
                     let text = self.shown(builder, arg, displays.get(index).and_then(Option::as_ref))?;
@@ -3288,6 +3293,15 @@ impl<'a> Lowerer<'a> {
                     });
                 }
                 let value = line.unwrap_or_else(|| self.string(""));
+                if name == "printError" {
+                    let line = self.line;
+                    builder.emit(Instruction::StdCall {
+                        dest: None,
+                        function: "koji_print_error",
+                        args: vec![StdArg::Value(value), StdArg::Location(line)],
+                    });
+                    return Ok(None);
+                }
                 builder.emit(Instruction::Print {
                     value,
                     line: self.line,
@@ -3468,6 +3482,7 @@ impl<'a> Lowerer<'a> {
             }
             ("file", "exists") => ("koji_std_file_exists", vec![value_as(self, builder, 0, Ty::Str)?]),
             ("file", "createDir") => ("koji_std_file_create_dir", vec![value_as(self, builder, 0, Ty::Str)?, result(self, builder)?]),
+            ("file", "remove") => ("koji_std_file_remove", vec![value_as(self, builder, 0, Ty::Str)?, result(self, builder)?]),
             ("system", "args") => ("koji_std_system_args", vec![StdArg::Element(Ty::Str)]),
             ("system", "env") => ("koji_std_system_env", vec![value_as(self, builder, 0, Ty::Str)?, result(self, builder)?]),
             ("system", "exit") => {

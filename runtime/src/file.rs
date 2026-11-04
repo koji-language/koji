@@ -153,6 +153,16 @@ pub extern "C" fn koji_std_file_exists(path: *const KojiString) -> bool {
     std::path::Path::new(string_text(path)).exists()
 }
 
+/// `file.remove(path)`: removes a file (not a directory).
+#[no_mangle]
+pub extern "C" fn koji_std_file_remove(path: *const KojiString, result: *const KojiRecordType) -> *mut KojiRecord {
+    let path = string_text(path).to_string();
+    match std::fs::remove_file(&path) {
+        Ok(()) => make(result, "Ok", &[0]),
+        Err(error) => file_error(result, &path, &error),
+    }
+}
+
 /// `file.createDir(path)`, with the missing parent directories.
 #[no_mangle]
 pub extern "C" fn koji_std_file_create_dir(path: *const KojiString, result: *const KojiRecordType) -> *mut KojiRecord {

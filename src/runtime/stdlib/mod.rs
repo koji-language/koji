@@ -67,6 +67,14 @@ pub fn err(value: Value) -> Value {
     variant("Result", "Err", vec![value])
 }
 
+/// `system.os`: the operating system the program runs on.
+fn operating_system() -> Value {
+    match koji_runtime::operating_system() {
+        Ok(name) => variant("OperatingSystem", name, vec![]),
+        Err(name) => variant("OperatingSystem", "Other", vec![Value::str(name)]),
+    }
+}
+
 /// Members of a standard library module.
 pub fn module_members(module: &str) -> Vec<(String, Value)> {
     let mut members: Vec<(String, Value)> = stdlib_functions(module)
@@ -76,6 +84,9 @@ pub fn module_members(module: &str) -> Vec<(String, Value)> {
     if module == "math" {
         members.push(("pi".to_string(), Value::Float(std::f64::consts::PI)));
         members.push(("e".to_string(), Value::Float(std::f64::consts::E)));
+    }
+    if module == "system" {
+        members.push(("os".to_string(), operating_system()));
     }
     for definition in BUILTIN_SUMS.iter().filter(|s| s.module == Some(module)) {
         let sum = sum(definition.name);

@@ -192,13 +192,29 @@ Most decisions follow from a few ideas:
 
 **Why**: an invalid mode does not compile, unlike a string such as `'rw'`.
 
-### Proposed: printing errors, removing files and the operating system
+### `printError`
 
-Not decided yet. A program for the command line (the compiler written in Koji, for instance) needs to:
+**Decision**: a built-in `printError(...)` writes to the standard error output, with the same arguments as `print`: the values shown as their `display()` text, separated by spaces, and a line break.
 
--   **print to the standard error output**: proposed, a built-in `printError(...)` with the same arguments as `print`. Alternatives: `system.printError(...)`, which needs an import for something as basic as `print`; files for the standard outputs (`file.stderr.write(...)`), which would be shared move-only values, and whose `write` returns a `Result` that `print` does not;
--   **remove a file**: proposed, `file.remove(path): Result[void, FileError]`, for files only, like `createDir` for directories (a `removeDir` can come later). Alternative: one `remove` for files and directories, which can remove a directory by mistake;
--   **know the operating system**: proposed, a constant `system.os` of a sum type, `{ Linux, MacOS, Windows, Other(name: string) }`, so that a `match` on it is checked. Alternative: a string (`'linux'`), which a typo (`'macOS'`) gets past the compiler.
+**Why**: `print` and `printError` are a symmetric pair, and reporting an error is as basic as printing, so it needs no import. The name is in full words, like the rest of the language.
+
+**Alternatives**: `system.printError(...)`, which needs an import for something as basic as `print`; values for the standard outputs (`file.stderr.write(...)`), which would be shared move-only values, and whose `write` returns a `Result` that `print` does not; the abbreviation `eprint`.
+
+### `file.remove`
+
+**Decision**: `file.remove(path)` removes a file and returns a `Result[void, FileError]`; it does not remove a directory (`Err(IsDirectory(path))`).
+
+**Why**: removing a file is the common case, and a separate function for directories (a `removeDir`, when a program needs it) means a directory is never removed by mistake.
+
+**Alternatives**: one `remove` for files and directories.
+
+### `system.os`
+
+**Decision**: `system.os` is a constant of the sum type `OperatingSystem = { Linux, MacOS, Windows, Other(name: string) }`.
+
+**Why**: a `match` on it is checked: every system is handled, or there is a `_` arm. `Other` keeps the list open for systems without a variant. It is a constant, like `math.pi`, since it never changes while a program runs.
+
+**Alternatives**: a string (`'linux'`), which a typo (`'macOS'`) gets past the compiler.
 
 ## Conventions
 

@@ -117,7 +117,7 @@ impl Interpreter {
     pub fn new(mut program: Program, out: Box<dyn Write>, input: Box<dyn BufRead>) -> Self {
         let ownership = std::mem::take(&mut program.ownership);
         let prelude = Env::new(None);
-        for name in ["print", "input", "range", "int", "float", "string", "char", "panic"] {
+        for name in ["print", "printError", "input", "range", "int", "float", "string", "char", "panic"] {
             prelude.define(name, Value::Builtin(Rc::from(name)));
         }
         for sum in BUILTIN_SUMS.iter().filter(|sum| sum.module.is_none()) {

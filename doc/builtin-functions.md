@@ -5,6 +5,7 @@ These functions are available in every file, without `import`.
 | Function | Description |
 | --- | --- |
 | `print(values...)` | Shows the values, separated by spaces, followed by a new line |
+| `printError(values...)` | Like `print`, on the standard error output |
 | `input(prompt)` | Reads a line typed by the user |
 | `range(...)` | A list of consecutive integers |
 | `int(x)`, `float(x)`, `string(x)`, `char(code)` | Conversions |
@@ -19,6 +20,16 @@ immut name: string = 'John'
 
 print(`Hello, ${name}!`) // Hello, John!
 print('total:', 3, [1, 2]) // total: 3 [1, 2]
+```
+
+## `printError`
+
+Like `print`, but writes to the **standard error output**, which is where error messages go: they stay visible when the standard output is redirected to a file or to another program.
+
+```koji
+immut name: string = 'notes.txt'
+
+printError('cannot read', name) // cannot read notes.txt (on the standard error output)
 ```
 
 ## `input`

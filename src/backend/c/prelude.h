@@ -159,6 +159,7 @@ bool koji_std_path_is_absolute(const KojiString *path);
 KojiList *koji_std_system_args(const KojiElementType *element);
 KojiRecord *koji_std_system_env(const KojiString *name, const KojiRecordType *option);
 _Noreturn void koji_std_system_exit(int64_t code);
+KojiRecord *koji_std_system_os(const KojiRecordType *os);
 KojiRecord *koji_std_system_run(const KojiString *command, const KojiList *arguments, const KojiRecordType *result);
 
 KojiRecord *koji_std_char(int64_t code, const KojiRecordType *option);
@@ -180,6 +181,7 @@ KojiRecord *koji_std_file_write(const KojiFile *file, const KojiString *text, co
 KojiRecord *koji_std_file_list(const KojiString *path, const KojiElementType *element, const KojiRecordType *result);
 bool koji_std_file_exists(const KojiString *path);
 KojiRecord *koji_std_file_create_dir(const KojiString *path, const KojiRecordType *result);
+KojiRecord *koji_std_file_remove(const KojiString *path, const KojiRecordType *result);
 
 KojiRecord *koji_std_datetime_now(const KojiRecordType *type);
 KojiString *koji_std_datetime_today(void);
@@ -211,6 +213,7 @@ KojiRecord *koji_std_http_request(int32_t method, const KojiString *url, const K
 
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
+void koji_print_error(const KojiString *text, const char *location);
 _Noreturn void koji_panic(const char *location, const char *message);
 _Noreturn void koji_panic_shift(const char *location, int64_t amount);
 int64_t koji_int_pow(int64_t base, int64_t exponent, const char *location);

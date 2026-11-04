@@ -124,6 +124,12 @@ pub const BUILTIN_SUMS: &[BuiltinSum] = &[
             ("Io", &[("command", "string"), ("message", "string")]),
         ],
     },
+    BuiltinSum {
+        name: "OperatingSystem",
+        module: Some("system"),
+        params: 0,
+        variants: &[("Linux", &[]), ("MacOS", &[]), ("Windows", &[]), ("Other", &[("name", "string")])],
+    },
 ];
 
 
@@ -138,7 +144,7 @@ pub fn builtin_sum(name: &str) -> &'static BuiltinSum {
 pub fn stdlib_functions(module: &str) -> &'static [&'static str] {
     match module {
         "time" => &["sleep", "now", "monotonic"],
-        "file" => &["open", "list", "exists", "createDir"],
+        "file" => &["open", "list", "exists", "createDir", "remove"],
         "path" => &["join", "parent", "name", "stem", "extension", "isAbsolute"],
         "datetime" => &["now", "today", "format", "parse"],
         "math" => &["abs", "sqrt", "pow", "floor", "ceil", "round"],

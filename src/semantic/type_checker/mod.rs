@@ -270,6 +270,7 @@ pub struct BuiltinTypes {
     pub regex_match: TypeId,
     pub regex: TypeId,
     pub regex_error: TypeId,
+    pub operating_system: TypeId,
 }
 
 /// Per-module checking state.

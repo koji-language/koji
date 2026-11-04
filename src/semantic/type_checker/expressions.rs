@@ -201,7 +201,7 @@ impl Checker {
                 if let AstNode::Identifier(name) = callee.unlocated() {
                     let is_display = matches!(
                         self.lookup(name).map(|s| &s.kind),
-                        Some(SymbolKind::Builtin(builtin)) if builtin == "print" || builtin == "string"
+                        Some(SymbolKind::Builtin(builtin)) if builtin == "print" || builtin == "printError" || builtin == "string"
                     );
                     if is_display {
                         let types = std::mem::take(&mut self.last_arg_types);

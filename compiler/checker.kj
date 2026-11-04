@@ -137,6 +137,7 @@ type Builtins = {
     regexMatch: int
     regex: int
     regexError: int
+    operatingSystem: int
 }
 
 // The checking state of a module.
@@ -361,6 +362,10 @@ function builtinSums(): BuiltinSum[] {
                 variant('NotFound', [field('command', 'string')]), variant('PermissionDenied', [field('command', 'string')]),
                 variant('Io', [field('command', 'string'), field('message', 'string')])
             ]
+        },
+        {
+            name: 'OperatingSystem', module: Some('system'), params: 0,
+            variants: [variant('Linux', []), variant('MacOS', []), variant('Windows', []), variant('Other', [field('name', 'string')])]
         }
     ]
 }
@@ -369,7 +374,7 @@ function builtinSums(): BuiltinSum[] {
 function stdlibFunctions(module: string): string[] {
     return match (module) {
         'time' => ['sleep', 'now', 'monotonic']
-        'file' => ['open', 'list', 'exists', 'createDir']
+        'file' => ['open', 'list', 'exists', 'createDir', 'remove']
         'path' => ['join', 'parent', 'name', 'stem', 'extension', 'isAbsolute']
         'datetime' => ['now', 'today', 'format', 'parse']
         'math' => ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
@@ -476,7 +481,8 @@ function Checker.create(): Checker {
         mathError: sumId(ids, 'MathError'), fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
         httpError: sumId(ids, 'HttpError'), json: json, map: map, output: output, systemError: sumId(ids, 'SystemError'),
         set: set, jsonError: sumId(ids, 'JsonError'), dateError: sumId(ids, 'DateError'), file: file,
-        datetime: datetime, response: response, regexMatch: regexMatch, regex: regex, regexError: sumId(ids, 'RegexError')
+        datetime: datetime, response: response, regexMatch: regexMatch, regex: regex, regexError: sumId(ids, 'RegexError'),
+        operatingSystem: sumId(ids, 'OperatingSystem')
     }
     return {
         table: table, builtins: builtins, modules: [], moduleByPath: [:], stdlib: [:], loading: [], loaded: [],
@@ -500,6 +506,7 @@ function Checker.builtinSumId(self, name: string): int {
         'JsonError' => b.jsonError
         'DateError' => b.dateError
         'SystemError' => b.systemError
+        'OperatingSystem' => b.operatingSystem
         _ => b.regexError
     }
 }
@@ -508,7 +515,7 @@ function Checker.builtinSumId(self, name: string): int {
 function Checker.prelude(self): Scope {
     mut scope = emptyScope()
 
-    for name in ['print', 'input', 'range', 'int', 'float', 'string', 'char', 'panic'] {
+    for name in ['print', 'printError', 'input', 'range', 'int', 'float', 'string', 'char', 'panic'] {
         scope.vars[name] = builtinSymbol(name)
     }
 
@@ -603,6 +610,9 @@ function Checker.stdlibModule(mut self, name: string): int {
         module.members['pi'] = valueSymbol(FloatType, true)
         module.members['e'] = valueSymbol(FloatType, true)
     }
+
+    // `system.os`: the operating system the program runs on.
+    if (name == 'system') { module.members['os'] = valueSymbol(named(b.operatingSystem), true) }
 
     match (name) {
         'file' => module.types['File'] = KnownType(named(b.file))
@@ -3115,7 +3125,7 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
             match (unlocated(callee).kind) {
                 Name(name) => {
                     immut isDisplay = match (self.lookup(name)) {
-                        Some(symbol) => symbol.kind == BuiltinSymbol('print') or symbol.kind == BuiltinSymbol('string')
+                        Some(symbol) => symbol.kind in [BuiltinSymbol('print'), BuiltinSymbol('printError'), BuiltinSymbol('string')]
                         None => false
                     }
 
@@ -4527,6 +4537,7 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
 
     match (name) {
         'print' => return Ok(VoidType)
+        'printError' => return Ok(VoidType)
         'panic' => {
             self.checkExactly(name, types, [s])?
             return Ok(NeverType)
@@ -4583,7 +4594,7 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
             self.checkExactly(name, types, [s])?
             return Ok(BooleanType)
         }
-        'file.createDir' => {
+        other if (other == 'file.createDir' or other == 'file.remove') => {
             self.checkExactly(name, types, [s])?
             return Ok(self.resultWith(VoidType, b.fileError))
         }

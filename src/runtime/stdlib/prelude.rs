@@ -1,4 +1,5 @@
-//! Functions available without import: `print`, `input`, `range`, conversions and `panic`.
+//! Functions available without import: `print`, `printError`, `input`, `range`, conversions and
+//! `panic`.
 
 use super::*;
 
@@ -10,6 +11,16 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
             let line = text.join(" ");
             writeln!(interpreter.out, "{}", line)
                 .and_then(|_| interpreter.out.flush())
+                .map_err(|e| interpreter.error(format!("cannot write output: {}", e)))?;
+            Ok(Value::Void)
+        }
+        // Like `print`, to the standard error output (after what `print` wrote).
+        "printError" => {
+            let text: Vec<String> = args.iter().map(Value::display).collect();
+            let _ = interpreter.out.flush();
+            let mut errors = std::io::stderr().lock();
+            writeln!(errors, "{}", text.join(" "))
+                .and_then(|_| errors.flush())
                 .map_err(|e| interpreter.error(format!("cannot write output: {}", e)))?;
             Ok(Value::Void)
         }

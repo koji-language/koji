@@ -427,6 +427,26 @@ pub extern "C" fn koji_std_system_env(name: *const KojiString, option: *const Ko
     some_string(option, std::env::var(text(name)).ok())
 }
 
+/// The variant of `OperatingSystem` for the system the program runs on (`Linux`, `MacOS` or
+/// `Windows`), or, for another one, its name for `Other(name)`. Shared with the interpreter.
+pub fn operating_system() -> Result<&'static str, &'static str> {
+    match std::env::consts::OS {
+        "linux" => Ok("Linux"),
+        "macos" => Ok("MacOS"),
+        "windows" => Ok("Windows"),
+        other => Err(other),
+    }
+}
+
+/// `system.os`, a value of the `OperatingSystem` record `os`.
+#[no_mangle]
+pub extern "C" fn koji_std_system_os(os: *const KojiRecordType) -> *mut KojiRecord {
+    match operating_system() {
+        Ok(variant) => make(os, variant, &[]),
+        Err(name) => make(os, "Other", &[slot(new_string(name.to_string()))]),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn koji_std_system_exit(code: i64) -> ! {
     let _ = std::io::stdout().flush();
