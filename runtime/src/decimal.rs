@@ -19,7 +19,8 @@ use std::ffi::c_char;
 use crate::output::panic_at;
 
 const DIGITS: u32 = 34;
-/// The zeros that only hold places from which a number is shown in scientific notation.
+/// The zeros after the point, before the first digit, from which a fraction is shown in
+/// scientific notation.
 const PLACE_HOLDERS: i64 = 6;
 const MIN_EXPONENT: i64 = -6176;
 const MAX_EXPONENT: i64 = 6111;
@@ -861,11 +862,10 @@ pub fn parse_parts(text: &str) -> Result<Parts, ParseFailure> {
 }
 
 impl std::fmt::Display for Decimal {
-    /// In full, as in everyday writing (`10`, `1.5`, `0.001`, `2500000`), without trailing zeros,
-    /// unless the number needs many zeros that only hold places, where science writes it in
-    /// scientific notation: six or more zeros after its last significant digit (`3e6`, `1e20`), six
-    /// or more after the point before its first one (`1e-7`), or an integer part longer than the
-    /// 34 digits a decimal holds.
+    /// In full, as in everyday writing (`10`, `1.5`, `0.001`, `3000000`), without trailing zeros.
+    /// A whole number is always in full. A fraction that needs many zeros only to hold places,
+    /// six or more after the point before its first digit, is in scientific notation, as science
+    /// writes it (`1e-7`, `1.602176634e-19`).
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         let value = self.normalized();
         if value.is_zero() {
@@ -874,7 +874,7 @@ impl std::fmt::Display for Decimal {
         let sign = if value.negative { "-" } else { "" };
         let digits = value.coefficient.to_string();
         let position = digits.len() as i64 + value.exponent;
-        if value.exponent >= PLACE_HOLDERS || -position >= PLACE_HOLDERS || position > DIGITS as i64 {
+        if -position >= PLACE_HOLDERS {
             let mantissa = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits };
             return write!(formatter, "{}{}e{}", sign, mantissa, position - 1);
         }
@@ -1410,10 +1410,10 @@ mod tests {
         assert_eq!(show(d("1").divide(d("98765432109876543210")).unwrap()), "1.012499999886093750011548828123843e-20");
         assert_eq!(show(d("1").add(d("1e-40"))), "1");
         assert_eq!(show(d("1").subtract(d("1e-40"))), "1");
-        assert_eq!(show(d("1e34").subtract(d("0.5"))), "1e34");
+        assert_eq!(show(d("1e34").subtract(d("0.5"))), "10000000000000000000000000000000000");
         assert_eq!(show(d("1e34").subtract(d("1.5"))), "9999999999999999999999999999999998");
         assert_eq!(show(d("1.50").multiply(d("2"))), "3");
-        assert_eq!(show(d("12345678901234567890").multiply(d("98765432109876543210"))), "1.219326311370217952237463801111264e39");
+        assert_eq!(show(d("12345678901234567890").multiply(d("98765432109876543210"))), "1219326311370217952237463801111264000000");
         assert!(d("1.50").compare(d("1.5")).is_eq());
         assert_eq!(d("1.50").hash(), d("1.5").hash());
         assert_eq!(Decimal::from_bits(0, 0), ZERO);
@@ -1424,15 +1424,14 @@ mod tests {
         assert_eq!(show(d("9999999999999999999999999999999999e6111").add(d("1e6111"))), "decimal overflow");
         assert_eq!(show(d("1e-6176").divide(d("10")).unwrap()), "decimal underflow");
         assert_eq!(d("3e-6176").divide(d("2")).unwrap().unwrap().compare(d("2e-6176")), Ordering::Equal);
-        assert_eq!(d("1e6144").to_string(), "1e6144");
-        assert_eq!(d("1e33").to_string(), "1e33");
-        // Scientific notation where science uses it: many zeros that only hold places.
+        assert_eq!(d("1e6144").to_string(), format!("1{}", "0".repeat(6144)));
+        assert_eq!(d("1e33").to_string(), format!("1{}", "0".repeat(33)));
+        // A whole number in full; a fraction with many zeros before its first digit in scientific
+        // notation.
         for (text, shown) in [
             ("2500000", "2500000"),
-            ("3000000", "3e6"),
-            ("299792458", "299792458"),
-            ("300000000", "3e8"),
-            ("6.02214076e23", "6.02214076e23"),
+            ("3000000", "3000000"),
+            ("6.02214076e23", "602214076000000000000000"),
             ("12000000000.5", "12000000000.5"),
             ("0.000001", "0.000001"),
             ("0.0000001", "1e-7"),
@@ -1442,7 +1441,7 @@ mod tests {
         ] {
             assert_eq!(d(text).to_string(), shown, "{}", text);
         }
-        assert_eq!(d("-1.5e34").to_string(), "-1.5e34");
+        assert_eq!(d("-1.5e34").to_string(), format!("-15{}", "0".repeat(33)));
         assert!(parse("1e6145").is_err());
     }
 
@@ -1461,7 +1460,7 @@ mod tests {
     fn powers_and_roots() {
         assert_eq!(show(d("1.1").power(2).unwrap()), "1.21");
         assert_eq!(show(d("2").power(-2).unwrap()), "0.25");
-        assert_eq!(show(d("2").power(128).unwrap()), "3.402823669209384634633746074317682e38");
+        assert_eq!(show(d("2").power(128).unwrap()), "340282366920938463463374607431768200000");
         assert_eq!(d("0.0625").sqrt().unwrap().to_string(), "0.25");
         assert_eq!(d("2").sqrt().unwrap().to_string(), "1.414213562373095048801688724209698");
     }
@@ -1492,7 +1491,7 @@ mod tests {
         assert_eq!(d("1e300").remainder(d("7")).unwrap().to_string(), "1");
         assert_eq!(show(d("1.1").power(2).unwrap()), "1.21");
         assert_eq!(show(d("2").power(-2).unwrap()), "0.25");
-        assert_eq!(show(d("2").power(128).unwrap()), "3.402823669209384634633746074317682e38");
+        assert_eq!(show(d("2").power(128).unwrap()), "340282366920938463463374607431768200000");
         assert_eq!(d("2").sqrt().unwrap().to_string(), "1.414213562373095048801688724209698");
         assert_eq!(d("0.0625").sqrt().unwrap().to_string(), "0.25");
         assert_eq!(d("2.5").to_int(2), Some(3));
