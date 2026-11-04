@@ -22,6 +22,23 @@ The executable is created at `target/release/kojic`. To call it as `kojic` from 
 cargo install --path .
 ```
 
+### From the Seed
+
+Koji also has a compiler written in Koji (`compiler/`), which can be built without the compiler in Rust, from the C that it generates for itself (`bootstrap/kojic.c.gz`). It needs `cargo` only for the runtime library, `gzip` and a C compiler:
+
+```sh
+bootstrap/build.sh
+```
+
+The compiler is created at `build/kojic`, with the runtime library at `build/libkoji_runtime.a`. It has the same commands, and needs the path of the runtime library in `KOJI_RUNTIME` to build or run programs:
+
+```sh
+export KOJI_RUNTIME=$PWD/build/libkoji_runtime.a
+build/kojic run hello.kj
+```
+
+`bootstrap/build.sh --seed` writes the seed again from the compiler it built: after a change to the compiler, so that the next build starts from it.
+
 ## Your First Program
 
 Create a file named `hello.kj`:

@@ -3,11 +3,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 #[path = "koji/mod.rs"]
 mod koji;
 
-/// The compiler written in Koji, compiled by `kojic build` (once for all the tests).
+/// The compiler written in Koji, built from the seed (once for all the tests).
 fn koji_compiler() -> &'static Path {
     koji::compiler()
 }
@@ -21,6 +22,12 @@ fn output(command: &mut Command) -> String {
 /// The files to compare: the examples, the compiler itself, the code blocks of the
 /// documentation and the lexer's edge cases.
 fn corpus() -> Vec<PathBuf> {
+    // Written once: the tests run at the same time, and one would read a file another rewrites.
+    static FILES: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    FILES.get_or_init(write_corpus).clone()
+}
+
+fn write_corpus() -> Vec<PathBuf> {
     let mut files = Vec::new();
     for directory in ["examples", "compiler", "test/lexer"] {
         for entry in std::fs::read_dir(directory).unwrap() {
@@ -184,6 +191,12 @@ immut y = b
 
 /// The cases above as files (in a directory of their own).
 fn parser_cases() -> Vec<PathBuf> {
+    // Written once: the tests run at the same time, and one would read a file another rewrites.
+    static FILES: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    FILES.get_or_init(write_parser_cases).clone()
+}
+
+fn write_parser_cases() -> Vec<PathBuf> {
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-parser-cases");
     std::fs::create_dir_all(&directory).unwrap();
     PARSER_CASES
@@ -219,6 +232,12 @@ fn the_interpreted_parser_agrees() {
 /// The programs of `test/checker/cases.txt` (after its header, separated by lines `----`), as
 /// files in a directory of their own.
 fn checker_cases() -> Vec<PathBuf> {
+    // Written once: the tests run at the same time, and one would read a file another rewrites.
+    static FILES: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    FILES.get_or_init(write_checker_cases).clone()
+}
+
+fn write_checker_cases() -> Vec<PathBuf> {
     let files = cases("test/checker/cases.txt", "bootstrap-checker-cases");
     assert!(files.len() > 200, "too few checker cases: {}", files.len());
     files
@@ -438,26 +457,28 @@ fn the_compiler_in_koji_runs_programs() {
     }
 }
 
-/// Phase 4: the compiler written in Koji compiles itself. Stage 1 is the compiler in Koji built by
-/// the kojic written in Rust; stage 1 builds stage 2 from the same source, and the C that stage 2
-/// generates for the compiler must be the same as stage 1's. Slow (the C compiler builds the
-/// compiler once more): run it with `cargo test --test bootstrap -- --ignored`.
+/// The compiler written in Koji compiles itself, from the seed: stage 1 is the seed
+/// (`bootstrap/kojic.c.gz`), stage 2 the compiler of `compiler/` built by stage 1, and stage 3
+/// the same compiler built by stage 2. Stage 3 must generate the same C as stage 2 (the fixed
+/// point): the seed written again from stage 2 (`bootstrap/build.sh --seed`) builds the same
+/// compiler. Slow (the C compiler builds the compiler once more): run it with
+/// `cargo test --test bootstrap -- --ignored`.
 #[test]
 #[ignore]
 fn the_compiler_in_koji_compiles_itself() {
-    let stage1 = koji_compiler();
+    let stage2 = koji_compiler();
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-stages");
     std::fs::create_dir_all(&directory).unwrap();
     let c_of = |compiler: &Path| output(Command::new(compiler).args(["dump", "c", "compiler/main.kj"]));
-    let stage1_c = c_of(stage1);
-    assert!(stage1_c == kojic::dump_c(Path::new("compiler/main.kj")), "stage 1 generates another C than kojic");
-    let stage2 = directory.join("stage2");
-    let built = Command::new(stage1)
+    let stage2_c = c_of(stage2);
+    assert!(stage2_c == kojic::dump_c(Path::new("compiler/main.kj")), "stage 2 generates another C than kojic");
+    let stage3 = directory.join("stage3");
+    let built = Command::new(stage2)
         .args(["build", "compiler/main.kj", "-o"])
-        .arg(&stage2)
+        .arg(&stage3)
         .env("KOJI_RUNTIME", env!("KOJI_RUNTIME_LIB"))
         .output()
         .unwrap();
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    assert!(c_of(&stage2) == stage1_c, "stage 2 generates another C than stage 1");
+    assert!(c_of(&stage3) == stage2_c, "stage 3 generates another C than stage 2");
 }
