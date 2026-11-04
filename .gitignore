@@ -5,5 +5,5 @@
 *.so
 *.dll
 build/
-/target
+target/
 /runtime/Cargo.lock
