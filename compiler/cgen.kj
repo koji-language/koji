@@ -568,6 +568,7 @@ function Generator.binary(self, op: string, left: string, right: string, line: i
         'DecimalDiv' => `koji_decimal_div(${left}, ${right}, ${location})`
         'DecimalRem' => `koji_decimal_rem(${left}, ${right}, ${location})`
         'DecimalPow' => `koji_decimal_pow(${left}, ${right}, ${location})`
+        'DecimalPower' => `koji_decimal_power(${left}, ${right}, ${location})`
         'DecimalCompare' => `(koji_decimal_compare(${left}, ${right}) ${symbol(parts.comparison)} 0)`
         name if (name in ['IntCompare', 'FloatCompare', 'BoolCompare', 'CharCompare']) => `(${left} ${symbol(parts.comparison)} ${right})`
         'StrCompare' => {

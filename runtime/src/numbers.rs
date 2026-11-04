@@ -4,20 +4,78 @@ use std::ffi::c_char;
 
 use crate::output::panic_at;
 
-/// The text of a float: always with a decimal point (`2.0`), so it never looks like an int, and
-/// in scientific notation from 1e16 on.
+/// The text of a float, as it is stored: in hexadecimal, `0x1.8p1` for 3.0 (a mantissa in base
+/// 16 and a power of 2), which is also how a float is written in code. Exact, and never mistaken
+/// for a decimal.
 pub fn format_float(value: f64) -> String {
     if value.is_nan() {
-        "NaN".to_string()
-    } else if value.is_infinite() {
-        if value > 0.0 { "inf" } else { "-inf" }.to_string()
-    } else if value.abs() >= 1e16 {
-        format!("{:e}", value)
-    } else if value.fract() == 0.0 {
-        format!("{:.1}", value)
-    } else {
-        format!("{}", value)
+        return "NaN".to_string();
     }
+    if value.is_infinite() {
+        return if value > 0.0 { "inf" } else { "-inf" }.to_string();
+    }
+    let bits = value.to_bits();
+    let sign = if bits >> 63 == 1 { "-" } else { "" };
+    let stored_exponent = ((bits >> 52) & 0x7FF) as i64;
+    let fraction = bits & ((1 << 52) - 1);
+    if stored_exponent == 0 && fraction == 0 {
+        return format!("{}0x0p0", sign);
+    }
+    // A subnormal number has no leading 1: 0x0.0000000000001p-1022.
+    let (lead, exponent) = if stored_exponent == 0 { (0, -1022) } else { (1, stored_exponent - 1023) };
+    let digits = format!("{:013x}", fraction);
+    let digits = digits.trim_end_matches('0');
+    if digits.is_empty() {
+        format!("{}0x{}p{}", sign, lead, exponent)
+    } else {
+        format!("{}0x{}.{}p{}", sign, lead, digits, exponent)
+    }
+}
+
+/// A float written in hexadecimal (`0x1.8p1`, `-0xff`, `0x1p-1074`), rounded to the nearest
+/// float when it has more digits than a float holds.
+pub fn parse_hex_float(text: &str) -> Option<f64> {
+    let (negative, rest) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let rest = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X"))?;
+    let (number, power) = match rest.find(['p', 'P']) {
+        Some(at) => (&rest[..at], rest[at + 1..].parse::<i64>().ok()?),
+        None => (rest, 0),
+    };
+    let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+    if whole.is_empty() && fraction.is_empty() {
+        return None;
+    }
+    // The first 30 hex digits exactly; the others only say whether something follows.
+    let mut mantissa: u128 = 0;
+    let mut kept = 0;
+    let mut sticky = false;
+    let mut exponent = power;
+    for (index, c) in whole.chars().chain(fraction.chars()).enumerate() {
+        let digit = c.to_digit(16)? as u128;
+        let in_fraction = index >= whole.len();
+        if kept < 30 {
+            if mantissa != 0 || digit != 0 {
+                kept += 1;
+            }
+            mantissa = mantissa << 4 | digit;
+            if in_fraction {
+                exponent -= 4;
+            }
+        } else {
+            sticky |= digit != 0;
+            if !in_fraction {
+                exponent += 4;
+            }
+        }
+    }
+    let mantissa = mantissa | sticky as u128;
+    // 2^exponent in two halves: each one stays a normal float.
+    let exponent = exponent.clamp(-4000, 4000) as i32;
+    let value = mantissa as f64 * 2f64.powi(exponent / 2) * 2f64.powi(exponent - exponent / 2);
+    Some(if negative { -value } else { value })
 }
 
 /// Why `int ** int` has no `int` result.
@@ -26,7 +84,7 @@ pub fn int_pow(base: i64, exponent: i64) -> Result<i64, &'static str> {
         return Err("division by zero");
     }
     if exponent < 0 {
-        return Err("negative exponent with int operands; use a float base");
+        return Err("negative exponent with int operands; use a decimal base");
     }
     let exponent = u32::try_from(exponent).map_err(|_| "integer overflow")?;
     base.checked_pow(exponent).ok_or("integer overflow")

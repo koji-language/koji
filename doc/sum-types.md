@@ -73,11 +73,11 @@ Sum types support nested patterns and destructuring:
 
 ```koji
 type Shape = {
-	Circle(radius: float)
-	Rectangle(width: float, height: float)
+	Circle(radius: decimal)
+	Rectangle(width: decimal, height: decimal)
 }
 
-function area(shape: Shape): float {
+function area(shape: Shape): decimal {
 	match (shape) {
 		Circle(radius) => 3.14 * radius * radius
 		Rectangle(width, height) => width * height

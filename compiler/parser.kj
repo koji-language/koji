@@ -80,10 +80,10 @@ export type Node = {
 
 export type NodeKind = {
     IntLiteral(value: int)
-    // A literal with a point or an exponent: a float, or a decimal where a decimal is expected.
+    // A literal with a point or an exponent (`1.5`): a decimal, as written.
+    DecimalLiteral(text: string)
+    // A float in hexadecimal (`0x1.8p1`).
     FloatLiteral(value: float, text: string)
-    // Such a literal too large for a float (`1e400`): only a decimal can hold it.
-    LargeFloatLiteral(text: string)
     StringNode(value: string)
     Template(parts: Part[])
     BooleanLiteral(value: boolean)
@@ -150,8 +150,9 @@ export function describe(token: Token): string {
     return match (token) {
         Identifier(name) => `'${name}'`
         Int(value) => string(value)
-        Float(value, _) => string(value)
-        LargeFloat(text) => text
+        Decimal(text) => text
+        Float(_, text) => text
+        BadNumber(text, _) => text
         StringLiteral(value) => value.debug()
         TemplateString(_) => 'a template string'
         Boolean(value) => string(value)
@@ -975,8 +976,9 @@ function Parser.prefix(mut self): Result[Node, string] {
 
     return match (self.advance()) {
         Int(value) => Ok(self.node(IntLiteral(value)))
+        Decimal(text) => Ok(self.node(DecimalLiteral(text)))
         Float(value, text) => Ok(self.node(FloatLiteral(value, text)))
-        LargeFloat(text) => Ok(self.node(LargeFloatLiteral(text)))
+        BadNumber(_, reason) => Err(atLine(line, reason))
         StringLiteral(value) => Ok(self.node(StringNode(value)))
         TemplateString(raw) => self.template(raw, line)
         Boolean(value) => Ok(self.node(BooleanLiteral(value)))
@@ -1264,21 +1266,23 @@ function Parser.pattern(mut self): Result[Pattern, string] {
             self.advance()
             return Ok(Literal(self.node(IntLiteral(value))))
         }
+        Decimal(text) => {
+            self.advance()
+            return Ok(Literal(self.node(DecimalLiteral(text))))
+        }
         Float(value, text) => {
             self.advance()
             return Ok(Literal(self.node(FloatLiteral(value, text))))
         }
-        LargeFloat(text) => {
-            self.advance()
-            return Ok(Literal(self.node(LargeFloatLiteral(text))))
-        }
+        BadNumber(_, reason) => return Err(self.failure(reason))
         Symbol('-') => {
             self.advance()
 
             return match (self.advance()) {
                 Int(value) => Ok(Literal(self.node(IntLiteral(-value))))
+                Decimal(text) => Ok(Literal(self.node(DecimalLiteral(`-${text}`))))
                 Float(value, text) => Ok(Literal(self.node(FloatLiteral(-value, `-${text}`))))
-                LargeFloat(text) => Ok(Literal(self.node(LargeFloatLiteral(`-${text}`))))
+                BadNumber(_, reason) => Err(self.failure(reason))
                 other => Err(self.failure(`unexpected pattern: -${describe(other)}`))
             }
         }
@@ -1597,8 +1601,8 @@ export function annotated(node: Node, a: (Node) => string): string {
 function plain(node: Node, a: (Node) => string): string {
     match (node.kind) {
         IntLiteral(value) => return `(int ${value})`
+        DecimalLiteral(text) => return `(decimal ${text})`
         FloatLiteral(value, _) => return `(float ${value})`
-        LargeFloatLiteral(text) => return `(float ${text})`
         StringNode(value) => return `(string ${value.debug()})`
         Template(parts) => return `(template${partsText(parts, a)})`
         BooleanLiteral(value) => return `(bool ${value})`

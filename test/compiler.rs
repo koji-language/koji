@@ -82,13 +82,17 @@ fn arithmetic() {
     assert_same(
         "arithmetic",
         "\
-immut half: float = 1
+immut half: decimal = 1
 print(1 + 2 * 3, 7 / 2, -7 / 2, -7 % 3, 2 ** 10, 0 ** 0)
 print(half / 2, 7 / 2.0, 2.0 ** 0.5, 5.5 % 2, 1e20, 0.1 + 0.2, -half)
 print(6 & 3, 6 | 3, 6 ^ 3, 1 << 4, -16 >> 2, ~0)
 print(1 < 2, 2.5 >= 2, 3 == 3.0, 1 != 1)
 ",
-        "7 3 -3 -1 1024 1\n0.5 3.5 1.4142135623730951 1.5 1e20 0.30000000000000004 -1.0\n2 7 5 16 -4 -1\ntrue true true false\n",
+        "7 3 -3 -1 1024 1\n\
+0.5 3.5 1.414213562373095048801688724209698 1.5 100000000000000000000 0.3 -1\n\
+2 7 5 16 -4 -1\n\
+true true true false\n\
+",
     );
 }
 
@@ -110,7 +114,12 @@ print('quote \\' and backslash \\\\ and ünicode')
 print()
 print('a', 1, 2.5, false)
 ",
-        "Hello, Koji! 2 2.0 true\n012 ababab ccc true true false\nquote ' and backslash \\ and ünicode\n\na 1 2.5 false\n",
+        "Hello, Koji! 2 2 true\n\
+012 ababab ccc true true false\n\
+quote ' and backslash \\ and ünicode\n\
+\n\
+a 1 2.5 false\n\
+",
     );
 }
 
@@ -133,7 +142,7 @@ function greet(name: string): string {
     return `Hello, ${name}!`
 }
 
-function half(x: float): float {
+function half(x: decimal): decimal {
     return x / 2
 }
 
@@ -403,13 +412,14 @@ mut w = ds
 w.sortBy((x: decimal, y: decimal) => x > y)
 print(w)
 ",
-        "[{ name: 'pen', price: 2.0, count: 3, tax: 0.07 }, { name: 'ink', price: 10.5, count: 1, tax: 0.2 }, { name: 'cap', price: 0.05, count: 9, tax: 0.0 }] 19.47\n\
-[Circle(1.5), Square(2.0, 's')] true\n\
-[1.5, 9.75, 2.25, 3.0] Some(3.0) Some(1.5) [9.75, 2.25] true Some(0)\n\
-[1.5: 2.5, 3.0: 4.0] 2.5 [1.5, 3.0] [2.5, 4.0]\n\
+        "[{ name: 'pen', price: 2, count: 3, tax: 0.07 }, { name: 'ink', price: 10.5, count: 1, tax: 0.2 }, { name: 'cap', price: 0.05, count: 9, tax: 0 }] 19.47\n\
+[Circle(1.5), Square(2, 's')] true\n\
+[1.5, 9.75, 2.25, 3] Some(3) Some(1.5) [9.75, 2.25] true Some(0)\n\
+[1.5: 2.5, 3: 4] 2.5 [1.5, 3] [2.5, 4]\n\
 Set([9.75, 2.25, 1.5]) [9.75] [9.75, 2.25, 9.75, 2.25]\n\
 2.5 2\n\
-[9.75, 2.25]\n",
+[9.75, 2.25]\n\
+",
     );
 }
 
@@ -472,10 +482,10 @@ fn panics() {
     assert_same_panic("division", "print(1)\nprint(10 / (5 - 5))\n", "division by zero");
     assert_same_panic("overflow", "immut big = 9223372036854775807\nprint(big + 1)\n", "integer overflow");
     assert_same_panic("negation", "immut small = -9223372036854775807 - 1\nprint(-small)\n", "integer overflow");
-    assert_same_panic("float_overflow", "print(1e308 * 10)\n", "float overflow");
+    assert_same_panic("float_overflow", "print(float(1e308) * float(10))\n", "float overflow");
     assert_same_panic("shift", "print(1 << 64)\n", "invalid shift amount 64");
-    assert_same_panic("power", "print(2 ** -1)\n", "negative exponent with int operands; use a float base");
-    assert_same_panic("complex", "print((-8.0) ** 0.5)\n", "-8.0 ** 0.5 is not a real number (use math.pow to handle it)");
+    assert_same_panic("power", "print(2 ** -1)\n", "negative exponent with int operands; use a decimal base");
+    assert_same_panic("complex", "print((-8.0) ** 0.5)\n", "-8 ** 0.5 is not a real number (use math.pow to handle it)");
     assert_same_panic("range_step", "for i in range(0, 10, 0) { print(i) }\n", "range() step cannot be 0");
     assert_same_panic(
         "panic_in_function",
@@ -511,7 +521,7 @@ names.push('Bia')
 names.sort()
 print(names, names.join(', '), `${names}`, 'ab' in 'cab', string(['it\\'s']))
 
-immut floats: float[] = [1, 2.5]
+immut floats: decimal[] = [1, 2.5]
 print(floats, floats + [3], [1, 2.5], numbers[1..3], numbers[..2], numbers[3..])
 
 mut empty: string[] = []
@@ -521,8 +531,9 @@ print(empty, empty.length(), [[1], []], 'koji'.length())
 [1, 2, 3, 5, 99] [10, 3, 1, 2, 5] true true true false\n\
 [[1, 20], [3, 4]] [3] 4\n\
 ['Ana', 'Bia'] Ana, Bia ['Ana', 'Bia'] true ['it\\'s']\n\
-[1.0, 2.5] [1.0, 2.5, 3.0] [1.0, 2.5] [2, 3] [1, 2] [5, 99]\n\
-[] 0 [[1], []] 4\n",
+[1, 2.5] [1, 2.5, 3] [1, 2.5] [2, 3] [1, 2] [5, 99]\n\
+[] 0 [[1], []] 4\n\
+",
     );
 }
 
@@ -698,8 +709,8 @@ fn methods_and_display() {
     assert_same(
         "methods",
         "type Point = {\n\
-    x: float\n\
-    y: float\n\
+    x: decimal\n\
+    y: decimal\n\
 }\n\
 \n\
 type Account = {\n\
@@ -711,12 +722,12 @@ function Point.origin(): Point {\n\
     return { x: 0, y: 0 }\n\
 }\n\
 \n\
-function Point.move(mut self, dx: float, dy: float) {\n\
+function Point.move(mut self, dx: decimal, dy: decimal) {\n\
     self.x += dx\n\
     self.y += dy\n\
 }\n\
 \n\
-function Point.length(self): float {\n\
+function Point.length(self): decimal {\n\
     return (self.x ** 2 + self.y ** 2) ** 0.5\n\
 }\n\
 \n\
@@ -752,9 +763,9 @@ mut log = ['start']\n\
 reset(mut count, mut log)\n\
 print(count, log)\n\
 ",
-        "(3.0, 4.0) (0.0, 0.0) 5.0 { x: 3.0, y: 4.0 } 'it\\'s' [{ x: 3.0, y: 4.0 }]\n\
-at (3.0, 4.0) (3.0, 4.0) (3.0, 4.0)\n\
-(1.0, 1.0) (0.0, 0.0)\n\
+        "(3, 4) (0, 0) 5 { x: 3, y: 4 } 'it\\'s' [{ x: 3, y: 4 }]\n\
+at (3, 4) (3, 4) (3, 4)\n\
+(1, 1) (0, 0)\n\
 1 2 { owner: 'Ana', history: [10, 5] }\n\
 0 ['start', 'reset']\n\
 ",
@@ -1059,12 +1070,12 @@ export function increment(): int {\n\
 print('shapes loaded', increment())\n\
 \n\
 export type Shape = {\n\
-    Circle(radius: float)\n\
-    Square(side: float)\n\
+    Circle(radius: decimal)\n\
+    Square(side: decimal)\n\
     Dot\n\
 }\n\
 \n\
-function Shape.area(self): float {\n\
+function Shape.area(self): decimal {\n\
     return match (self) {\n\
         Circle(radius) => 3.0 * radius * radius\n\
         Square(side) => side * side\n\
@@ -1110,10 +1121,10 @@ export function describe(): string {\n\
 shapes loaded 1\n\
 main starts 1\n\
 2 7 c\n\
-Circle(1.0) 3.0\n\
-Square(2.0) 4.0\n\
-Dot 0.0\n\
-Square(1.0) 1.0\n\
+Circle(1) 3\n\
+Square(2) 4\n\
+Dot 0\n\
+Square(1) 1\n\
 from main from shapes 3\n\
 ");
     // A panic in a module shows the module's file.
@@ -1332,9 +1343,9 @@ immut answer = input('name? ')\n\
 print(answer, input())\n\
 print('bye')\n\
 ",
-        "Ok(4.0) Err(Complex) Ok(1.5) Ok(1024.0) Err(Complex) Err(Infinite)\n\
-3 2.5 2 3 3 3.141592653589793 2.718281828459045\n\
-Ok(42) Ok(7) Err(InvalidNumber('x')) Err(OutOfRange('99999999999999999999')) Ok(2.5) Err(InvalidNumber('nan')) 3 1 0.0\n\
+        "Ok(4) Err(Complex) Ok(1.5) Ok(1024) Err(Complex) Err(Infinite)\n\
+3 2.5 2 3 3 3.141592653589793238462643383279503 2.718281828459045235360287471352662\n\
+Ok(42) Ok(7) Err(InvalidNumber('x')) Err(OutOfRange('99999999999999999999')) Ok(0x1.4p1) Err(InvalidNumber('nan')) 3 1 0x0p0\n\
 error: 'abc' is not a valid number InvalidNumber('abc')\n\
 [Hello, Koji World]   HELLO, KOJI WORLD     hello, koji world   true true false\n\
 ['a', 'b', '', 'c'] bANANa true false Some(4) None\n\
@@ -1521,7 +1532,7 @@ match (json.parse(text)) {\n\
         print(json.get(value, 'name'), json.get(value, 'missing'))\n\
 \n\
         match (json.get(value, 'version')) {\n\
-            Some(version) => print(json.asInt(version), json.asFloat(version), json.asString(version))\n\
+            Some(version) => print(json.asInt(version), json.asDecimal(version), json.asString(version))\n\
             None => print('no version')\n\
         }\n\
 \n\
@@ -1537,7 +1548,7 @@ match (json.parse(text)) {\n\
     Err(error) => print(error)\n\
 }\n\
 \n\
-immut built: Json = Object(['list': Array([Int(1), Float(2.0), Bool(false), Null]), 'text': String('x')])\n\
+immut built: Json = Object(['list': Array([Int(1), Decimal(2.0), Bool(false), Null]), 'text': String('x')])\n\
 print(json.stringify(built))\n\
 print(json.parse('[1, 2,'), json.parse('99999999999999999999'))\n\
 \n\
@@ -1545,10 +1556,10 @@ match (json.parse('{\"a\": }')) {\n\
     Ok(value) => print(value)\n\
     Err(error) => print('error:', error)\n\
 }\n\
-", "Object(['name': String('Koji 2'), 'version': Int(1), 'ratio': Float(2.5), 'tags': Array([String('fast'), String('safe')]), 'nested': Object(['ok': Bool(true), 'none': Null]), 'big': Float(1e300), 'escaped': String('a\"b\\ncé')])\n\
-{\"name\":\"Koji 2\",\"version\":1,\"ratio\":2.5,\"tags\":[\"fast\",\"safe\"],\"nested\":{\"ok\":true,\"none\":null},\"big\":1e300,\"escaped\":\"a\\\"b\\ncé\"}\n\
+", "Object(['name': String('Koji 2'), 'version': Int(1), 'ratio': Decimal(2.5), 'tags': Array([String('fast'), String('safe')]), 'nested': Object(['ok': Bool(true), 'none': Null]), 'big': Decimal(1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000), 'escaped': String('a\"b\\ncé')])\n\
+{\"name\":\"Koji 2\",\"version\":1,\"ratio\":2.5,\"tags\":[\"fast\",\"safe\"],\"nested\":{\"ok\":true,\"none\":null},\"big\":1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0,\"escaped\":\"a\\\"b\\ncé\"}\n\
 Some(String('Koji 2')) None\n\
-Some(1) Some(1.0) None\n\
+Some(1) Some(1) None\n\
 Some('fast')\n\
 Some('safe')\n\
 {\"list\":[1,2.0,false,null],\"text\":\"x\"}\n\
@@ -1609,7 +1620,7 @@ function greet(name: string): string {\n\
     return shout(name)\n\
 }\n\
 \n\
-function area(radius: float): float {\n\
+function area(radius: decimal): decimal {\n\
     import math\n\
 \n\
     math.pi * radius ** 2\n\
@@ -1646,7 +1657,7 @@ uses before 0 2\n\
 ANA!\n\
 uses before 1 2\n\
 BIA!\n\
-2 3.141592653589793\n\
+2 3.141592653589793238462643383279503\n\
 ");
 }
 

@@ -244,21 +244,21 @@ record r0 MathError
     Complex ()
     Indeterminate ()
     Infinite ()
-record r1 Result[float, MathError]
-    Ok (value: Float)
+record r1 Result[decimal, MathError]
+    Ok (value: Decimal)
     Err (error: Record(0))
 global g0: Bool // lib/calc.kj initialized
 
 function f0 main(): Void
     local l0: Int
     local l1: Str
-    local l2: Float
+    local l2: Decimal
     local l3: Record(1)
     local l4: Record(1)
     local l5: Int
     local l6: Bool
-    local l7: Float
-    local l8: Float // root
+    local l7: Decimal
+    local l8: Decimal // root
     local l9: Str
     local l10: Int
     local l11: Bool
@@ -270,8 +270,8 @@ function f0 main(): Void
     l0 = call f2(2, 3)
     l1 = IntToStr l0
     print l1
-    l2 = IntToFloat 16
-    l3 = koji_std_math_sqrt([Value(Local(2)), Record(1)])
+    l2 = IntToDecimal 16
+    l3 = koji_std_math_sqrt_decimal([Value(Local(2)), Record(1)])
     l4 = l3
     l5 = RecordTag l4
     l6 = IntCompare(Equal) l5, 0
@@ -285,7 +285,7 @@ function f0 main(): Void
   b3:
     l7 = l4.0
     l8 = l7
-    l9 = FloatToStr l8
+    l9 = DecimalToStr l8
     print l9
     goto b1
   b4:
@@ -314,8 +314,8 @@ function f2 add(l0: Int, l1: Int): Int
 ==== examples/shapes.kj
 string s0 = ": "
 record r0 Shape
-    Circle (radius: Float)
-    Rectangle (width: Float, height: Float)
+    Circle (radius: Decimal)
+    Rectangle (width: Decimal, height: Decimal)
 global g0: List(Record(0)) // shapes
 
 function f0 main(): Void
@@ -330,12 +330,12 @@ function f0 main(): Void
     local l8: Record(0) // shape
     local l9: Str
     local l10: Str
-    local l11: Float
+    local l11: Decimal
     local l12: Str
     local l13: Str
   b0:
-    l0 = record variant 0 (1.0)
-    l1 = record variant 1 (2.0, 3.0)
+    l0 = record variant 0 (1e0)
+    l1 = record variant 1 (2e0, 3e0)
     l2 = list [l0, l1]
     g0 = l2
     l3 = g0
@@ -350,7 +350,7 @@ function f0 main(): Void
     l9 = RecordToStr l8
     l10 = StrConcat l9, s0
     l11 = call f1(l8)
-    l12 = FloatToStr l11
+    l12 = DecimalToStr l11
     l13 = StrConcat l10, l12
     print l13
     goto b3
@@ -361,22 +361,22 @@ function f0 main(): Void
   b4:
     return
 
-function f1 area(l0: Record(0)): Float
-    local l1: Float
+function f1 area(l0: Record(0)): Decimal
+    local l1: Decimal
     local l2: Record(0)
     local l3: Int
     local l4: Bool
-    local l5: Float
-    local l6: Float // radius
-    local l7: Float
-    local l8: Float
+    local l5: Decimal
+    local l6: Decimal // radius
+    local l7: Decimal
+    local l8: Decimal
     local l9: Int
     local l10: Bool
-    local l11: Float
-    local l12: Float // width
-    local l13: Float
-    local l14: Float // height
-    local l15: Float
+    local l11: Decimal
+    local l12: Decimal // width
+    local l13: Decimal
+    local l14: Decimal // height
+    local l15: Decimal
   b0:
     l2 = l0
     l3 = RecordTag l2
@@ -391,8 +391,8 @@ function f1 area(l0: Record(0)): Float
   b3:
     l5 = l2.0
     l6 = l5
-    l7 = FloatMul 3.14, l6
-    l8 = FloatMul l7, l6
+    l7 = DecimalMul 314e-2, l6
+    l8 = DecimalMul l7, l6
     l1 = l8
     goto b1
   b4:
@@ -402,7 +402,7 @@ function f1 area(l0: Record(0)): Float
     l12 = l11
     l13 = l2.1
     l14 = l13
-    l15 = FloatMul l12, l14
+    l15 = DecimalMul l12, l14
     l1 = l15
     goto b1
 ==== examples/types.kj
@@ -417,7 +417,7 @@ string s7 = "large"
 string s8 = " ("
 string s9 = ") - "
 record r0 Product
-    {} (id: Int, name: Str, price: Float)
+    {} (id: Int, name: Str, price: Decimal)
 global g0: Map(Str, Str) // translations
 global g1: Str // label
 
@@ -425,7 +425,7 @@ function f0 main(): Void
     local l0: Map(Str, Str)
     local l1: Int
     local l2: Str
-    local l3: Float
+    local l3: Decimal
     local l4: Record(0)
     local l5: Str
     local l6: Str
@@ -440,7 +440,7 @@ function f0 main(): Void
     g0 = l0
     l1 = 1
     l2 = s4
-    l3 = 2.5
+    l3 = 25e-1
     l4 = record variant 0 (l1, l2, l3)
     l5 = call f1(l4)
     print l5
@@ -477,7 +477,7 @@ function f1 describe(l0: Record(0)): Str
     local l4: Str
     local l5: Str
     local l6: Str
-    local l7: Float
+    local l7: Decimal
     local l8: Str
     local l9: Str
   b0:
@@ -488,33 +488,33 @@ function f1 describe(l0: Record(0)): Str
     l5 = StrConcat l2, l4
     l6 = StrConcat l5, s9
     l7 = l0.2
-    l8 = FloatToStr l7
+    l8 = DecimalToStr l7
     l9 = StrConcat l6, l8
     return l9
 ==== test/checker/cycle.kj
 error: type error: cycle_b.kj:1: circular import of 'cycle_a.kj'
 ==== test/checker/generic_value.kj
-error: type error: test/checker/generic_value.kj:2: 'first' is generic and can only be called (its type arguments come from the call)
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/missing.kj
-error: type error: test/checker/missing.kj:1: module 'lib/shapes.kj' has no member 'nothing'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/modules.kj
-error: compile error: test/checker/modules.kj:17: '?' that wraps an error of another module is not supported by 'kojic build' yet (use 'kojic run')
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/mut_value.kj
-error: type error: test/checker/mut_value.kj:2: 'grow' has 'mut' or 'take' parameters and can only be called, not used as a value
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/nofile.kj
 error: type error: test/checker/nofile.kj:1: cannot import 'lib/none.kj': No such file or directory (os error 2)
 ==== test/checker/private.kj
-error: type error: test/checker/private.kj:1: 'secret' is not exported by 'lib/shapes.kj'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/private_type.kj
-error: type error: test/checker/private_type.kj:2: module 'shapes' has no type 'Hidden'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/readonly.kj
-error: type error: test/checker/readonly.kj:2: 'count' is read-only outside 'lib/shapes.kj'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/readonly_member.kj
-error: type error: test/checker/readonly_member.kj:2: 'origin' is read-only outside 'lib/shapes.kj'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/syntax.kj
 error: syntax error: lib/broken.kj:1: expected parameter name, found '{'
 ==== test/checker/wrap.kj
-error: compile error: test/checker/wrap.kj:4: '?' that wraps an error of another module is not supported by 'kojic build' yet (use 'kojic run')
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/ir/cases.txt #0
 record r0 environment
     {} ()
@@ -1025,8 +1025,8 @@ record r0 Option[int]
 record r1 Option[string]
     Some (value: Str)
     None ()
-record r2 Option[float]
-    Some (value: Float)
+record r2 Option[decimal]
+    Some (value: Decimal)
     None ()
 
 function f0 main(): Void
@@ -1038,7 +1038,7 @@ function f0 main(): Void
     local l5: Str
     local l6: Str
     local l7: Str
-    local l8: List(Float)
+    local l8: List(Decimal)
     local l9: Record(2)
     local l10: Str
     local l11: Str
@@ -1052,7 +1052,7 @@ function f0 main(): Void
     l5 = RecordToStr l4
     l6 = StrConcat l2, s1
     l7 = StrConcat l6, l5
-    l8 = list [1.5]
+    l8 = list [15e-1]
     l9 = call f3(l8)
     l10 = RecordToStr l9
     l11 = StrConcat l7, s1
@@ -1096,11 +1096,11 @@ function f2 first[Str](l0: List(Str)): Record(1)
     l5 = record variant 0 (l4)
     return l5
 
-function f3 first[Float](l0: List(Float)): Record(2)
+function f3 first[Decimal](l0: List(Decimal)): Record(2)
     local l1: Int
     local l2: Bool
     local l3: Record(2)
-    local l4: Float
+    local l4: Decimal
     local l5: Record(2)
   b0:
     l1 = ListLength l0
@@ -1252,19 +1252,19 @@ record r0 MathError
     Complex ()
     Indeterminate ()
     Infinite ()
-record r1 Result[float, MathError]
-    Ok (value: Float)
+record r1 Result[decimal, MathError]
+    Ok (value: Decimal)
     Err (error: Record(0))
 record r2 Option[string]
     Some (value: Str)
     None ()
 
 function f0 main(): Void
-    local l0: Float
+    local l0: Decimal
     local l1: Record(1)
     local l2: Str
-    local l3: Float
-    local l4: Float
+    local l3: Decimal
+    local l4: Decimal
     local l5: Record(1)
     local l6: Str
     local l7: Str
@@ -1281,7 +1281,7 @@ function f0 main(): Void
     local l18: Str
     local l19: Str
     local l20: Str
-    local l21: Float
+    local l21: Decimal
     local l22: Bool
     local l23: Str
     local l24: Str
@@ -1294,16 +1294,16 @@ function f0 main(): Void
     local l31: Str
     local l32: Str
   b0:
-    l0 = IntToFloat 2
-    l1 = koji_std_math_sqrt([Value(Local(0)), Record(1)])
+    l0 = IntToDecimal 2
+    l1 = koji_std_math_sqrt_decimal([Value(Local(0)), Record(1)])
     l2 = RecordToStr l1
-    l3 = IntToFloat 2
-    l4 = IntToFloat 3
-    l5 = koji_std_math_pow([Value(Local(3)), Value(Local(4)), Record(1), Location(4)])
+    l3 = IntToDecimal 2
+    l4 = IntToDecimal 3
+    l5 = koji_std_math_pow_decimal([Value(Local(3)), Value(Local(4)), Record(1), Location(4)])
     l6 = RecordToStr l5
     l7 = StrConcat l2, s0
     l8 = StrConcat l7, l6
-    l9 = koji_std_math_round([Value(Float(1.5)), Mode(0), Location(4)])
+    l9 = koji_decimal_to_int([Value(Decimal(15e-1)), Mode(0), Location(4)])
     l10 = IntToStr l9
     l11 = StrConcat l8, s0
     l12 = StrConcat l11, l10
@@ -1312,11 +1312,11 @@ function f0 main(): Void
     l15 = IntToStr l14
     l16 = StrConcat l12, s0
     l17 = StrConcat l16, l15
-    l18 = FloatToStr 3.141592653589793
+    l18 = DecimalToStr 3141592653589793238462643383279503e-33
     l19 = StrConcat l17, s0
     l20 = StrConcat l19, l18
     l21 = koji_std_time_now([])
-    l22 = FloatCompare(Greater) l21, 0.0
+    l22 = DecimalCompare(Greater) l21, 0e-6176
     l23 = BoolToStr l22
     l24 = StrConcat l20, s0
     l25 = StrConcat l24, l23
@@ -1337,7 +1337,7 @@ record r0 Json
     Null ()
     Bool (value: Bool)
     Int (value: Int)
-    Float (value: Float)
+    Decimal (value: Decimal)
     String (value: Str)
     Array (items: List(Record(0)))
     Object (fields: Map(Str, Record(0)))
@@ -1523,16 +1523,16 @@ function f0 main(): Void
     l24 = StrConcat l23, l22
     branch false, b4, b5
   b4:
-    l25 = 1.0
+    l25 = 0x1p0
     goto b6
   b5:
-    l25 = 0.0
+    l25 = 0x0p0
     goto b6
   b6:
     l26 = FloatToStr l25
     l27 = StrConcat l24, s1
     l28 = StrConcat l27, l26
-    l29 = koji_std_float_to_int([Value(Float(2.7)), Location(2)])
+    l29 = DecimalToInt 27e-1
     l30 = IntToStr l29
     l31 = StrConcat l28, s1
     l32 = StrConcat l31, l30
@@ -1688,7 +1688,7 @@ function f0 main(): Void
     local l5: Str
     local l6: Str
     local l7: Str
-    local l8: Float
+    local l8: Decimal
     local l9: Str
     local l10: Str
     local l11: Str
@@ -1706,14 +1706,14 @@ function f0 main(): Void
     branch l2, b3, b2
   b1:
     g1 = l0
-    l5 = FloatToStr 1e-7
+    l5 = DecimalToStr 1e-7
     l6 = StrConcat g1, s3
     l7 = StrConcat l6, l5
-    l8 = FloatNeg 1e-5
-    l9 = FloatToStr l8
+    l8 = DecimalNeg 1e-5
+    l9 = DecimalToStr l8
     l10 = StrConcat l7, s3
     l11 = StrConcat l10, l9
-    l12 = FloatToStr 1e300
+    l12 = DecimalToStr 1e300
     l13 = StrConcat l11, s3
     l14 = StrConcat l13, l12
     l15 = StrConcat l14, s3
@@ -2004,7 +2004,7 @@ record r0 Json
     Null ()
     Bool (value: Bool)
     Int (value: Int)
-    Float (value: Float)
+    Decimal (value: Decimal)
     String (value: Str)
     Array (items: List(Record(0)))
     Object (fields: Map(Str, Record(0)))

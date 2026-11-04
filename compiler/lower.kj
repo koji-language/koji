@@ -2557,12 +2557,8 @@ function Lowerer.expression(mut self, mut builder: Builder, node: Node): Result[
             return self.expression(mut builder, inner)
         }
         IntLiteral(value) => return Ok(Some(IntOp(value)))
-        FloatLiteral(value, text) => {
-            if (self.typeIn(builder, node)? == DecimalTy) { return self.decimalConstant(text) }
-
-            return Ok(Some(FloatOp(value)))
-        }
-        LargeFloatLiteral(text) => return self.decimalConstant(text)
+        DecimalLiteral(text) => return self.decimalConstant(text)
+        FloatLiteral(value, _) => return Ok(Some(FloatOp(value)))
         BooleanLiteral(value) => return Ok(Some(BoolOp(value)))
         StringNode(text) => {
             // `'a'` where a char is expected.
@@ -2678,9 +2674,10 @@ function Lowerer.expression(mut self, mut builder: Builder, node: Node): Result[
 function Lowerer.member(mut self, mut builder: Builder, node: Node, object: Node, name: string): Result[Option[Operand], string] {
     match (self.stdModuleOf(builder, object)) {
         Some(module) => {
-            if (module == 'math' and name == 'pi') { return Ok(Some(FloatOp(3.141592653589793))) }
+            // With the 34 digits of a decimal.
+            if (module == 'math' and name == 'pi') { return self.decimalConstant('3.141592653589793238462643383279503') }
 
-            if (module == 'math' and name == 'e') { return Ok(Some(FloatOp(2.718281828459045))) }
+            if (module == 'math' and name == 'e') { return self.decimalConstant('2.718281828459045235360287471352662') }
 
             // `system.os`: the variant for the system the program runs on.
             if (module == 'system' and name == 'os') {
@@ -3033,8 +3030,9 @@ function Lowerer.arithmetic(mut self, mut builder: Builder, op: string, left: Op
     immut decimal = (leftType == DecimalTy and (rightType == IntTy or rightType == DecimalTy)) or (leftType == IntTy and rightType == DecimalTy)
 
     if (decimal) {
-        // `decimal ** int` keeps its int exponent; the other operations convert an int.
-        immut power = op == '**'
+        // `decimal ** int` keeps its int exponent (an exact power); the other operations convert an
+        // int.
+        immut power = op == '**' and rightType == IntTy
         first = self.required(self.convert(mut builder, Some(left), leftType, DecimalTy)?)?
 
         if (not power) { second = self.required(self.convert(mut builder, Some(right), rightType, DecimalTy)?)? }
@@ -3048,7 +3046,7 @@ function Lowerer.arithmetic(mut self, mut builder: Builder, op: string, left: Op
                     '*' => 'DecimalMul'
                     '/' => 'DecimalDiv'
                     '%' => 'DecimalRem'
-                    '**' => 'DecimalPow'
+                    '**' => if (power) { 'DecimalPow' } else { 'DecimalPower' }
                     _ => return Err(self.unsupported(`'${op}' on decimals`))
                 }
                 resultType = DecimalTy
@@ -3482,7 +3480,20 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
 
             if (name == 'decimal' and ty == FloatTy) { return Ok(Some(self.unary(mut builder, 'FloatToDecimal', value, DecimalTy))) }
 
-            if (name == 'float' and ty == DecimalTy) { return Ok(Some(self.unary(mut builder, 'DecimalToFloat', value, FloatTy))) }
+            if (name == 'float' and ty == DecimalTy) {
+                // `float(0.1)`: the nearest float, found while compiling.
+                match (unlocated(args[0]).kind) {
+                    DecimalLiteral(text) => {
+                        match (float(text)) {
+                            Ok(number) => return Ok(Some(FloatOp(number)))
+                            Err(_) => {}
+                        }
+                    }
+                    _ => {}
+                }
+
+                return Ok(Some(self.unary(mut builder, 'DecimalToFloat', value, FloatTy)))
+            }
 
             if (name == 'int' and ty == DecimalTy) { return Ok(Some(self.unary(mut builder, 'DecimalToInt', value, IntTy))) }
 
@@ -3495,7 +3506,7 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
             if (name == 'int' and ty == BoolTy) { return Ok(Some(self.choose(mut builder, value, IntOp(1), IntOp(0), IntTy))) }
 
             if (name == 'float' and ty == BoolTy) {
-                return Ok(Some(self.choose(mut builder, value, FloatOp(1.0), FloatOp(0.0), FloatTy)))
+                return Ok(Some(self.choose(mut builder, value, FloatOp(float(1)), FloatOp(float(0)), FloatTy)))
             }
 
             if (ty == StrTy) {
@@ -3585,6 +3596,16 @@ function Lowerer.stdValue(mut self, mut builder: Builder, args: Node[], index: i
     return Ok(ValueArg(self.valueOf(mut builder, args[index], ty)?))
 }
 
+// A number given to the standard library as a decimal: an int or a float is converted.
+function Lowerer.decimalArg(mut self, mut builder: Builder, arg: Node): Result[Operand, string] {
+    if (self.typeIn(builder, arg)? == FloatTy) {
+        immut value = self.value(mut builder, arg)?
+        return Ok(self.unary(mut builder, 'FloatToDecimal', value, DecimalTy))
+    }
+
+    return self.valueOf(mut builder, arg, DecimalTy)
+}
+
 function Lowerer.stdResult(mut self, builder: Builder, call: Node): Result[StdArg, string] {
     return Ok(RecordArg(self.recordOf(builder, call)?))
 }
@@ -3621,25 +3642,28 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
                 }
             }
         }
+        // The root of an int is a decimal.
         'math.sqrt' => {
-            if (self.typeIn(builder, args[0])? == DecimalTy) {
-                runner = 'koji_std_math_sqrt_decimal'
-                arguments = [self.stdValue(mut builder, args, 0, DecimalTy)?, self.stdResult(builder, call)?]
-            } else {
+            if (self.typeIn(builder, args[0])? == FloatTy) {
                 runner = 'koji_std_math_sqrt'
                 arguments = [self.stdValue(mut builder, args, 0, FloatTy)?, self.stdResult(builder, call)?]
+            } else {
+                runner = 'koji_std_math_sqrt_decimal'
+                arguments = [self.stdValue(mut builder, args, 0, DecimalTy)?, self.stdResult(builder, call)?]
             }
         }
         'math.pow' => {
-            runner = 'koji_std_math_pow'
-            immut base = self.stdValue(mut builder, args, 0, FloatTy)?
-            immut exponent = self.stdValue(mut builder, args, 1, FloatTy)?
+            immut floats = self.typeIn(builder, args[0])? == FloatTy or self.typeIn(builder, args[1])? == FloatTy
+            immut ty = if (floats) { FloatTy } else { DecimalTy }
+            runner = if (floats) { 'koji_std_math_pow' } else { 'koji_std_math_pow_decimal' }
+            immut base = self.stdValue(mut builder, args, 0, ty)?
+            immut exponent = self.stdValue(mut builder, args, 1, ty)?
             arguments = [base, exponent, self.stdResult(builder, call)?, LocationArg(line)]
         }
         other if (other in ['math.floor', 'math.ceil', 'math.round']) => {
             immut mode = ModeArg(position(['floor', 'ceil', 'round'], name))
 
-            if (self.typeIn(builder, args[0])? == DecimalTy) {
+            if (self.typeIn(builder, args[0])? != FloatTy) {
                 runner = 'koji_decimal_to_int'
                 arguments = [self.stdValue(mut builder, args, 0, DecimalTy)?, mode, LocationArg(line)]
             } else {
@@ -3649,7 +3673,7 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
         }
         'time.sleep' => {
             runner = 'koji_std_time_sleep'
-            arguments = [self.stdValue(mut builder, args, 0, FloatTy)?]
+            arguments = [ValueArg(self.decimalArg(mut builder, args[0])?)]
         }
         'time.now' => runner = 'koji_std_time_now'
         'time.monotonic' => runner = 'koji_std_time_monotonic'
@@ -3694,11 +3718,11 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             immut key = self.stdValue(mut builder, args, 1, StrTy)?
             arguments = [value, key, self.stdResult(builder, call)?]
         }
-        other if (other in ['json.asString', 'json.asInt', 'json.asFloat', 'json.asBool']) => {
+        other if (other in ['json.asString', 'json.asInt', 'json.asDecimal', 'json.asBool']) => {
             runner = 'koji_std_json_as'
             immut json = self.typeIn(builder, args[0])?
             immut value = self.stdValue(mut builder, args, 0, json)?
-            arguments = [value, ModeArg(position(['asString', 'asInt', 'asFloat', 'asBool'], name)), self.stdResult(builder, call)?]
+            arguments = [value, ModeArg(position(['asString', 'asInt', 'asDecimal', 'asBool'], name)), self.stdResult(builder, call)?]
         }
         'regex.compile' => {
             runner = 'koji_std_regex_compile'
@@ -3711,7 +3735,7 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
         'datetime.today' => runner = 'koji_std_datetime_today'
         'datetime.format' => {
             runner = 'koji_std_datetime_format'
-            immut time = self.stdValue(mut builder, args, 0, FloatTy)?
+            immut time = ValueArg(self.decimalArg(mut builder, args[0])?)
             arguments = [time, self.stdValue(mut builder, args, 1, StrTy)?]
         }
         'datetime.parse' => {

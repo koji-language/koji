@@ -107,3 +107,113 @@ export function decimalText(parts: DecimalParts): string {
     immut zeros = '0' * (17 - low.length())
     return `${sign}${parts.high}${zeros}${low}e${parts.exponent}`
 }
+
+// The int that `0xff` writes.
+export function hexInt(text: string): Result[int, string] {
+    immut digits = text[2..].lower()
+
+    if (digits.length() > 16 or (digits.length() == 16 and hexValue(digits.chars()[0]) >= 8)) {
+        return Err(`${text} is too large for an int`)
+    }
+
+    mut value = 0
+
+    for c in digits {
+        value = value * 16 + hexValue(c)
+    }
+
+    return Ok(value)
+}
+
+// The float that `0x1.8p1` writes (1.5 * 2^1), which it must write exactly: at most 53
+// significant bits, in the range of a float.
+export function hexFloat(text: string): Result[float, string] {
+    immut lower = text.lower()
+    immut negative = lower.startsWith('-')
+    immut unsigned = if (negative) { lower[3..] } else { lower[2..] }
+    mut digits = unsigned
+    mut exponent = 0
+
+    match (unsigned.indexOf('p')) {
+        Some(at) => {
+            digits = unsigned[..at]
+            immut written = unsigned[at + 1..]
+            immut power = if (written.startsWith('+')) { written[1..] } else { written }
+
+            match (int(power)) {
+                Ok(value) => exponent = value
+                Err(_) => return Err(`${text} is out of the range of a float`)
+            }
+        }
+        None => {}
+    }
+
+    // The digits without the point: each one after it is 4 bits below.
+    mut mantissa = ''
+
+    for c in digits {
+        if (c == '.') {
+            continue
+        }
+
+        if (mantissa == '' and c == '0') {
+            continue
+        }
+
+        mantissa += string(c)
+    }
+
+    match (digits.indexOf('.')) {
+        Some(at) => exponent -= 4 * (digits.length() - at - 1)
+        None => {}
+    }
+
+    while (mantissa.endsWith('0')) {
+        mantissa = mantissa[..mantissa.length() - 1]
+        exponent += 4
+    }
+
+    if (mantissa == '') { return Ok(if (negative) { -float(0) } else { float(0) }) }
+
+    if (mantissa.length() > 14) { return Err(`${text} has more digits than a float holds (53 bits): it would be rounded`) }
+
+    mut value = 0
+
+    for c in mantissa {
+        value = value * 16 + hexValue(c)
+    }
+
+    // An odd mantissa: its bits are the significant ones.
+    while (value % 2 == 0) {
+        value = value / 2
+        exponent += 1
+    }
+
+    mut bits = 0
+    mut rest = value
+
+    while (rest > 0) {
+        rest = rest / 2
+        bits += 1
+    }
+
+    if (bits > 53) { return Err(`${text} has more digits than a float holds (53 bits): it would be rounded`) }
+
+    if (bits + exponent > 1024) { return Err(`${text} is too large for a float`) }
+
+    if (exponent < -1074) { return Err(`${text} is too small for a float: it would be rounded`) }
+
+    // value * 2^exponent, in two halves of the power so that each one is a float.
+    immut half = exponent / 2
+    immut result = float(value) * float(2) ** half * float(2) ** (exponent - half)
+    return Ok(if (negative) { -result } else { result })
+}
+
+function hexValue(c: char): int {
+    immut digit = '0123456789abcdef'.indexOf(string(c).lower())
+
+    return match (digit) {
+        Some(value) => value
+        None => 0
+    }
+}

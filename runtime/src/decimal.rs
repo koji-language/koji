@@ -542,13 +542,38 @@ impl Decimal {
                 return Some(Err(if exponent > 0 { Limit::Underflow } else { Limit::Overflow }));
             }
         }
+        if result.sticky {
+            // Not exact in 38 digits: the rounding of each step would add up; e^(n ln x) with 64
+            // digits instead.
+            let magnitude = Decimal { negative: false, ..self };
+            return Some(real::power(magnitude, Decimal::from_int(exponent)).map(|value| Decimal { negative, ..value }));
+        }
         if exponent > 0 {
-            return Some(finish(negative, result.coefficient, result.exponent, result.sticky));
+            return Some(finish(negative, result.coefficient, result.exponent, false));
         }
         // 1 / (coefficient * 10^exponent), the divisor with up to 38 digits.
         let scale = 35 + digits(result.coefficient);
         let (quotient, rest) = wide_divide(&scaled(1, scale), result.coefficient);
         Some(finish_wide(negative, quotient, -result.exponent - scale as i64, rest != 0 || result.sticky))
+    }
+
+    /// `self ** exponent` for any exponent: exact for an int exponent, otherwise `exp(y ln x)`
+    /// computed with 64 digits and rounded to 34 (correct but for results within 10^-60 of a
+    /// halfway point). `Err(None)` when there is no real result (a negative base with a fractional
+    /// exponent), `Err(Some(limit))` when it does not fit, and `None` for zero to a negative power.
+    pub fn power_of(self, exponent: Decimal) -> Option<Result<Decimal, Option<Limit>>> {
+        if let Some(n) = exponent.to_int(3) {
+            if Decimal::from_int(n).compare(exponent).is_eq() {
+                return self.power(n).map(|result| result.map_err(Some));
+            }
+        }
+        if self.is_zero() {
+            return if exponent.negative { None } else { Some(Ok(ZERO)) };
+        }
+        if self.negative {
+            return Some(Err(None));
+        }
+        Some(real::power(self, exponent).map_err(Some))
     }
 
     /// The square root, correctly rounded; `None` for a negative number.
@@ -818,27 +843,286 @@ pub fn parse_parts(text: &str) -> Result<Parts, ParseFailure> {
 }
 
 impl std::fmt::Display for Decimal {
-    /// Like a float: `1.5`, `2.0` for a whole number, `1.5e40` from 1e34 on.
+    /// In full, as in everyday writing: `10`, `1.5`, `0.001`, `100000000000000000000`, never
+    /// with an exponent or trailing zeros.
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         let value = self.normalized();
         if value.is_zero() {
-            return write!(formatter, "0.0");
+            return write!(formatter, "0");
         }
         let sign = if value.negative { "-" } else { "" };
         let digits = value.coefficient.to_string();
         let position = digits.len() as i64 + value.exponent;
-        if position > DIGITS as i64 {
-            let mantissa = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits };
-            return write!(formatter, "{}{}e{}", sign, mantissa, position - 1);
-        }
         if value.exponent >= 0 {
-            return write!(formatter, "{}{}{}.0", sign, digits, "0".repeat(value.exponent as usize));
+            return write!(formatter, "{}{}{}", sign, digits, "0".repeat(value.exponent as usize));
         }
         if position > 0 {
             let point = position as usize;
             return write!(formatter, "{}{}.{}", sign, &digits[..point], &digits[point..]);
         }
         write!(formatter, "{}0.{}{}", sign, "0".repeat((-position) as usize), digits)
+    }
+}
+
+/// `exp` and `ln` with 64 digits after the point, in fixed point on big integers, for powers with a
+/// fractional exponent.
+mod real {
+    use super::{finish, parse_parts, Decimal, Limit};
+    use std::cmp::Ordering;
+
+    /// Digits after the point.
+    const PLACES: u32 = 64;
+
+    /// A big unsigned integer, 64-bit words, least significant first, without leading zeros.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Big(Vec<u64>);
+
+    impl Big {
+        fn from(n: u128) -> Big {
+            Big(vec![n as u64, (n >> 64) as u64]).trimmed()
+        }
+
+        fn trimmed(mut self) -> Big {
+            while self.0.last() == Some(&0) {
+                self.0.pop();
+            }
+            self
+        }
+
+        fn is_zero(&self) -> bool {
+            self.0.is_empty()
+        }
+
+        fn compare(&self, other: &Big) -> Ordering {
+            self.0.len().cmp(&other.0.len()).then_with(|| self.0.iter().rev().cmp(other.0.iter().rev()))
+        }
+
+        fn add(&self, other: &Big) -> Big {
+            let mut out = Vec::with_capacity(self.0.len().max(other.0.len()) + 1);
+            let mut carry = 0u128;
+            for i in 0..self.0.len().max(other.0.len()) {
+                let sum = *self.0.get(i).unwrap_or(&0) as u128 + *other.0.get(i).unwrap_or(&0) as u128 + carry;
+                out.push(sum as u64);
+                carry = sum >> 64;
+            }
+            out.push(carry as u64);
+            Big(out).trimmed()
+        }
+
+        /// `self - other`, for `self >= other`.
+        fn subtract(&self, other: &Big) -> Big {
+            let mut out = Vec::with_capacity(self.0.len());
+            let mut borrow = 0i128;
+            for i in 0..self.0.len() {
+                let difference = self.0[i] as i128 - *other.0.get(i).unwrap_or(&0) as i128 - borrow;
+                borrow = (difference < 0) as i128;
+                out.push((difference + (borrow << 64)) as u64);
+            }
+            Big(out).trimmed()
+        }
+
+        fn multiply(&self, other: &Big) -> Big {
+            let mut out = vec![0u64; self.0.len() + other.0.len() + 1];
+            for (i, &a) in self.0.iter().enumerate() {
+                let mut carry = 0u128;
+                for (j, &b) in other.0.iter().enumerate() {
+                    let current = out[i + j] as u128 + a as u128 * b as u128 + carry;
+                    out[i + j] = current as u64;
+                    carry = current >> 64;
+                }
+                let mut k = i + other.0.len();
+                while carry != 0 {
+                    let current = out[k] as u128 + carry;
+                    out[k] = current as u64;
+                    carry = current >> 64;
+                    k += 1;
+                }
+            }
+            Big(out).trimmed()
+        }
+
+        fn multiply_small(&self, factor: u64) -> Big {
+            self.multiply(&Big::from(factor as u128))
+        }
+
+        fn divide_small(&self, divisor: u64) -> (Big, u64) {
+            let mut out = vec![0u64; self.0.len()];
+            let mut rest = 0u128;
+            for i in (0..self.0.len()).rev() {
+                let current = rest << 64 | self.0[i] as u128;
+                out[i] = (current / divisor as u128) as u64;
+                rest = current % divisor as u128;
+            }
+            (Big(out).trimmed(), rest as u64)
+        }
+
+        fn times_ten_to(&self, n: u32) -> Big {
+            let mut out = self.clone();
+            for _ in 0..n / 19 {
+                out = out.multiply_small(10_000_000_000_000_000_000);
+            }
+            out.multiply_small(10u64.pow(n % 19))
+        }
+
+        /// Divided by 10^n, toward zero.
+        fn over_ten_to(&self, n: u32) -> Big {
+            let mut out = self.clone();
+            for _ in 0..n / 19 {
+                out = out.divide_small(10_000_000_000_000_000_000).0;
+            }
+            out.divide_small(10u64.pow(n % 19)).0
+        }
+
+        fn digits(&self) -> String {
+            if self.is_zero() {
+                return "0".to_string();
+            }
+            let mut parts = Vec::new();
+            let mut rest = self.clone();
+            while !rest.is_zero() {
+                let (quotient, digits) = rest.divide_small(10_000_000_000_000_000_000);
+                parts.push(digits);
+                rest = quotient;
+            }
+            let mut text = parts.pop().unwrap_or(0).to_string();
+            for part in parts.iter().rev() {
+                text.push_str(&format!("{:019}", part));
+            }
+            text
+        }
+    }
+
+    /// A signed number with `PLACES` digits after the point.
+    #[derive(Clone, Debug)]
+    struct Fixed {
+        negative: bool,
+        magnitude: Big,
+    }
+
+    impl Fixed {
+        fn one() -> Fixed {
+            Fixed { negative: false, magnitude: Big::from(1).times_ten_to(PLACES) }
+        }
+
+        fn from_int(n: i64) -> Fixed {
+            Fixed { negative: n < 0, magnitude: Big::from(n.unsigned_abs() as u128).times_ten_to(PLACES) }
+        }
+
+        fn from_decimal(d: Decimal) -> Fixed {
+            let coefficient = Big::from(d.coefficient);
+            let shift = d.exponent + PLACES as i64;
+            let magnitude = if shift >= 0 { coefficient.times_ten_to(shift as u32) } else { coefficient.over_ten_to((-shift) as u32) };
+            Fixed { negative: d.negative && !magnitude.is_zero(), magnitude }
+        }
+
+        fn from_float(f: f64) -> Fixed {
+            Fixed::from_decimal(Decimal::from_float(f))
+        }
+
+        fn to_float(&self) -> f64 {
+            let value: f64 = format!("{}e-{}", self.magnitude.digits(), PLACES).parse().unwrap_or(0.0);
+            if self.negative {
+                -value
+            } else {
+                value
+            }
+        }
+
+        fn negate(&self) -> Fixed {
+            Fixed { negative: !self.negative && !self.magnitude.is_zero(), magnitude: self.magnitude.clone() }
+        }
+
+        fn add(&self, other: &Fixed) -> Fixed {
+            if self.negative == other.negative {
+                return Fixed { negative: self.negative, magnitude: self.magnitude.add(&other.magnitude) };
+            }
+            match self.magnitude.compare(&other.magnitude) {
+                Ordering::Less => Fixed { negative: other.negative, magnitude: other.magnitude.subtract(&self.magnitude) },
+                _ => {
+                    let magnitude = self.magnitude.subtract(&other.magnitude);
+                    Fixed { negative: self.negative && !magnitude.is_zero(), magnitude }
+                }
+            }
+        }
+
+        fn subtract(&self, other: &Fixed) -> Fixed {
+            self.add(&other.negate())
+        }
+
+        fn multiply(&self, other: &Fixed) -> Fixed {
+            let magnitude = self.magnitude.multiply(&other.magnitude).over_ten_to(PLACES);
+            Fixed { negative: self.negative != other.negative && !magnitude.is_zero(), magnitude }
+        }
+
+        fn divide_small(&self, n: u64) -> Fixed {
+            let magnitude = self.magnitude.divide_small(n).0;
+            Fixed { negative: self.negative && !magnitude.is_zero(), magnitude }
+        }
+    }
+
+    /// e^x by its series, for |x| below 3.
+    fn exp_series(x: &Fixed) -> Fixed {
+        let mut sum = Fixed::one();
+        let mut term = Fixed::one();
+        for n in 1.. {
+            term = term.multiply(x).divide_small(n);
+            if term.magnitude.is_zero() {
+                break;
+            }
+            sum = sum.add(&term);
+        }
+        sum
+    }
+
+    /// ln(10), by Newton's method on e^y = 10: y + 10 e^-y - 1.
+    fn ln10() -> &'static Fixed {
+        static VALUE: std::sync::OnceLock<Fixed> = std::sync::OnceLock::new();
+        VALUE.get_or_init(|| newton_ln(&Fixed::from_int(10), 10f64.ln()))
+    }
+
+    /// ln(m) for m from 1 to 10, from a first estimate.
+    fn newton_ln(m: &Fixed, estimate: f64) -> Fixed {
+        let mut y = Fixed::from_float(estimate);
+        // 16 correct digits, then 32, then 64: three steps, and one more for the last digits.
+        for _ in 0..4 {
+            y = y.add(&m.multiply(&exp_series(&y.negate()))).subtract(&Fixed::one());
+        }
+        y
+    }
+
+    /// x^y = e^(y ln x), for a positive x and a fractional y.
+    pub fn power(x: Decimal, y: Decimal) -> Result<Decimal, Limit> {
+        // Far out of range, before computing: log10 of the result, from floats.
+        let count = super::digits(x.coefficient) as i64;
+        let k = x.exponent + count - 1;
+        let mantissa = x.coefficient as f64 / 10f64.powi(count as i32 - 1);
+        let rough = y.to_float().unwrap_or(f64::MAX) * (mantissa.log10() + k as f64);
+        if rough.is_nan() || rough > 6200.0 {
+            return Err(Limit::Overflow);
+        }
+        if rough < -6250.0 {
+            return Err(Limit::Underflow);
+        }
+        // ln x = ln(m) + k ln 10, with m from 1 to 10.
+        let m = Fixed::from_decimal(Decimal { negative: false, coefficient: x.coefficient, exponent: 1 - count });
+        let ln_m = newton_ln(&m, m.to_float().ln());
+        let ln_x = ln_m.add(&Fixed::from_int(k).multiply(ln10()));
+        let t = Fixed::from_decimal(y).multiply(&ln_x);
+        // e^t = 10^n e^r, with r from 0 to ln 10.
+        let mut n = (t.to_float() / std::f64::consts::LN_10).floor() as i64;
+        let mut r = t.subtract(&Fixed::from_int(n).multiply(ln10()));
+        while r.negative {
+            n -= 1;
+            r = r.add(ln10());
+        }
+        while r.magnitude.compare(&ln10().magnitude) != Ordering::Less {
+            n += 1;
+            r = r.subtract(ln10());
+        }
+        let value = exp_series(&r);
+        // The digits of e^r (its value times 10^64), rounded to 34 at the end.
+        let parts = parse_parts(&format!("{}e{}", value.magnitude.digits(), n - PLACES as i64)).map_err(|_| Limit::Overflow)?;
+        finish(false, parts.magnitude, parts.exponent, parts.sticky)
     }
 }
 
@@ -896,6 +1180,19 @@ pub extern "C" fn koji_decimal_rem(a: KojiDecimal, b: KojiDecimal, location: *co
 #[no_mangle]
 pub extern "C" fn koji_decimal_pow(base: KojiDecimal, exponent: i64, location: *const c_char) -> KojiDecimal {
     located(divided(from_c(base).power(exponent), location), location)
+}
+
+/// `base ** exponent` with a decimal exponent (an int exponent is exact).
+#[no_mangle]
+pub extern "C" fn koji_decimal_power(base: KojiDecimal, exponent: KojiDecimal, location: *const c_char) -> KojiDecimal {
+    match divided(from_c(base).power_of(from_c(exponent)), location) {
+        Ok(value) => to_c(value),
+        Err(Some(limit)) => panic_at(location, limit.message()),
+        Err(None) => panic_at(
+            location,
+            &format!("{} ** {} is not a real number (use math.pow to handle it)", from_c(base), from_c(exponent)),
+        ),
+    }
 }
 
 #[no_mangle]
@@ -1080,12 +1377,12 @@ mod tests {
         assert_eq!(show(d("2").divide(d("3")).unwrap()), "0.6666666666666666666666666666666667");
         assert_eq!(show(d("1").divide(d("4")).unwrap()), "0.25");
         assert_eq!(show(d("1").divide(d("98765432109876543210")).unwrap()), "0.00000000000000000001012499999886093750011548828123843");
-        assert_eq!(show(d("1").add(d("1e-40"))), "1.0");
-        assert_eq!(show(d("1").subtract(d("1e-40"))), "1.0");
-        assert_eq!(show(d("1e34").subtract(d("0.5"))), "1e34");
-        assert_eq!(show(d("1e34").subtract(d("1.5"))), "9999999999999999999999999999999998.0");
-        assert_eq!(show(d("1.50").multiply(d("2"))), "3.0");
-        assert_eq!(show(d("12345678901234567890").multiply(d("98765432109876543210"))), "1.219326311370217952237463801111264e39");
+        assert_eq!(show(d("1").add(d("1e-40"))), "1");
+        assert_eq!(show(d("1").subtract(d("1e-40"))), "1");
+        assert_eq!(show(d("1e34").subtract(d("0.5"))), "10000000000000000000000000000000000");
+        assert_eq!(show(d("1e34").subtract(d("1.5"))), "9999999999999999999999999999999998");
+        assert_eq!(show(d("1.50").multiply(d("2"))), "3");
+        assert_eq!(show(d("12345678901234567890").multiply(d("98765432109876543210"))), "1219326311370217952237463801111264000000");
         assert!(d("1.50").compare(d("1.5")).is_eq());
         assert_eq!(d("1.50").hash(), d("1.5").hash());
         assert_eq!(Decimal::from_bits(0, 0), ZERO);
@@ -1096,7 +1393,7 @@ mod tests {
         assert_eq!(show(d("9999999999999999999999999999999999e6111").add(d("1e6111"))), "decimal overflow");
         assert_eq!(show(d("1e-6176").divide(d("10")).unwrap()), "decimal underflow");
         assert_eq!(d("3e-6176").divide(d("2")).unwrap().unwrap().compare(d("2e-6176")), Ordering::Equal);
-        assert_eq!(d("1e6144").to_string(), "1e6144");
+        assert_eq!(d("1e6144").to_string(), format!("1{}", "0".repeat(6144)));
         assert!(parse("1e6145").is_err());
     }
 
@@ -1115,19 +1412,38 @@ mod tests {
     fn powers_and_roots() {
         assert_eq!(show(d("1.1").power(2).unwrap()), "1.21");
         assert_eq!(show(d("2").power(-2).unwrap()), "0.25");
-        assert_eq!(show(d("2").power(128).unwrap()), "3.402823669209384634633746074317682e38");
+        assert_eq!(show(d("2").power(128).unwrap()), "340282366920938463463374607431768200000");
         assert_eq!(d("0.0625").sqrt().unwrap().to_string(), "0.25");
         assert_eq!(d("2").sqrt().unwrap().to_string(), "1.414213562373095048801688724209698");
+    }
+
+    #[test]
+    fn fractional_powers() {
+        let pow = |x: &str, y: &str| match d(x).power_of(d(y)) {
+            Some(Ok(value)) => value.to_string(),
+            Some(Err(Some(limit))) => limit.message().to_string(),
+            Some(Err(None)) => "complex".to_string(),
+            None => "division by zero".to_string(),
+        };
+        assert_eq!(pow("2", "0.5"), d("2").sqrt().unwrap().to_string());
+        assert_eq!(pow("4", "0.5"), "2");
+        assert_eq!(pow("2.5", "1.5"), "3.952847075210474164998616930540898");
+        assert_eq!(pow("10", "-2.5"), "0.003162277660168379331998893544432719");
+        assert_eq!(pow("1.000001", "1000000"), "2.718280469319376883819799708454356");
+        assert_eq!(pow("-8", "0.5"), "complex");
+        assert_eq!(pow("10", "7000.5"), "decimal overflow");
+        assert_eq!(pow("0", "-1.5"), "division by zero");
+        assert_eq!(pow("2", "10"), "1024");
     }
 
     #[test]
     fn remainders() {
         assert_eq!(d("7.5").remainder(d("2")).unwrap().to_string(), "1.5");
         assert_eq!(d("-7.5").remainder(d("2")).unwrap().to_string(), "-1.5");
-        assert_eq!(d("1e300").remainder(d("7")).unwrap().to_string(), "1.0");
+        assert_eq!(d("1e300").remainder(d("7")).unwrap().to_string(), "1");
         assert_eq!(show(d("1.1").power(2).unwrap()), "1.21");
         assert_eq!(show(d("2").power(-2).unwrap()), "0.25");
-        assert_eq!(show(d("2").power(128).unwrap()), "3.402823669209384634633746074317682e38");
+        assert_eq!(show(d("2").power(128).unwrap()), "340282366920938463463374607431768200000");
         assert_eq!(d("2").sqrt().unwrap().to_string(), "1.414213562373095048801688724209698");
         assert_eq!(d("0.0625").sqrt().unwrap().to_string(), "0.25");
         assert_eq!(d("2.5").to_int(2), Some(3));
@@ -1158,6 +1474,7 @@ mod reference {
                 "mul" => a.multiply(b).ok(),
                 "div" => a.divide(b).and_then(Result::ok),
                 "rem" => a.remainder(b),
+                "pow" => a.power_of(b).and_then(|result| result.ok()),
                 _ => a.sqrt(),
             };
             let same = found.is_some_and(|f| f.compare(expected).is_eq() && (f.negative == expected.negative || f.is_zero()));

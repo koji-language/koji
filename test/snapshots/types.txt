@@ -47,22 +47,22 @@ module examples/modules.kj
 (at 1 (import math 'math'))
 (at 2 (import (add) 'lib/calc.kj'))
 (at 4 (call (name print) (call (name add):(int, int) => int (int 2):int (int 3):int):int):void)
-(at 6 (match (call (member (name math):module sqrt) (int 16):int):Result[float, MathError] (arm (variant Ok (bind root)) _ (call (name print) (name root):float):void) (arm (variant Err (bind error)) _ (call (name print) (name error):MathError):void)):void)
+(at 6 (match (call (member (name math):module sqrt) (int 16):int):Result[decimal, MathError] (arm (variant Ok (bind root)) _ (call (name print) (name root):decimal):void) (arm (variant Err (bind error)) _ (call (name print) (name error):MathError):void)):void)
 module lib/calc.kj
 (at 1 (export (function add () ((param a int) (param b int)) int (block (at 2 (return (binary + (name a):int (name b):int):int))))!function=(int, int) => int))
 ==== examples/shapes.kj
 module examples/shapes.kj
-(at 1 (type Shape () (sum (variant Circle (field radius float)) (variant Rectangle (field width float) (field height float)))))
-(at 6 (function area () ((param shape Shape)) float (block (at 7 (match (name shape):Shape (arm (variant Circle (bind radius)) _ (binary * (binary * (float 3.14):float (name radius):float):float (name radius):float):float) (arm (variant Rectangle (bind width) (bind height)) _ (binary * (name width):float (name height):float):float)):float)))!function=(Shape) => float)
-(at 13 (immut shapes Shape[] (list (call (name Circle) (float 1.0):float):Shape (call (name Rectangle) (float 2.0):float (float 3.0):float):Shape):Shape[])!variable=Shape[])
-(at 15 (for shape (name shapes):Shape[] (block (at 16 (call (name print) (template (expr (name shape):Shape) (text ': ') (expr (call (name area):(Shape) => float (name shape):Shape):float)):string):void))))
+(at 1 (type Shape () (sum (variant Circle (field radius decimal)) (variant Rectangle (field width decimal) (field height decimal)))))
+(at 6 (function area () ((param shape Shape)) decimal (block (at 7 (match (name shape):Shape (arm (variant Circle (bind radius)) _ (binary * (binary * (decimal 3.14):decimal (name radius):decimal):decimal (name radius):decimal):decimal) (arm (variant Rectangle (bind width) (bind height)) _ (binary * (name width):decimal (name height):decimal):decimal)):decimal)))!function=(Shape) => decimal)
+(at 13 (immut shapes Shape[] (list (call (name Circle) (decimal 1.0):decimal):Shape (call (name Rectangle) (decimal 2.0):decimal (decimal 3.0):decimal):Shape):Shape[])!variable=Shape[])
+(at 15 (for shape (name shapes):Shape[] (block (at 16 (call (name print) (template (expr (name shape):Shape) (text ': ') (expr (call (name area):(Shape) => decimal (name shape):Shape):decimal)):string):void))))
 ==== examples/types.kj
 module examples/types.kj
-(at 1 (type Product () (shape (field id int) (field name string) (field price float))))
+(at 1 (type Product () (shape (field id int) (field name string) (field price decimal))))
 (at 7 (type Dictionary () (alias Map[string, string])))
-(at 9 (function describe () ((param product Product)) string (block (at 10 (return (template (expr (member (name product):Product name):string) (text ' (') (expr (member (name product):Product id):int) (text ') - ') (expr (member (name product):Product price):float)):string))))!function=(Product) => string)
+(at 9 (function describe () ((param product Product)) string (block (at 10 (return (template (expr (member (name product):Product name):string) (text ' (') (expr (member (name product):Product id):int) (text ') - ') (expr (member (name product):Product price):decimal)):string))))!function=(Product) => string)
 (at 13 (immut translations Dictionary (map (entry (string 'hello'):string (string 'olá'):string) (entry (string 'world'):string (string 'mundo'):string)):Map[string, string])!variable=Map[string, string])
-(at 19 (call (name print) (call (name describe):(Product) => string (object (field 'id' (int 1):int) (field 'name' (string 'Pen'):string) (field 'price' (float 2.5):float)):Product!fields=(id name price)):string):void)
+(at 19 (call (name print) (call (name describe):(Product) => string (object (field 'id' (int 1):int) (field 'name' (string 'Pen'):string) (field 'price' (decimal 2.5):decimal)):Product!fields=(id name price)):string):void)
 (at 20 (call (name print) (index (name translations):Map[string, string] (string 'hello'):string):string):void)
 (at 22 (immut label string (match (call (member (name translations):Map[string, string] length)):int (arm (literal (int 0):int) _ (string 'empty'):string) (arm (bind n) (binary < (name n):int (int 3):int):boolean (string 'small'):string) (arm (wildcard) _ (string 'large'):string)):string)!variable=string)
 (at 28 (call (name print) (name label):string):void)
@@ -98,7 +98,7 @@ module case13.kj
 (at 1 (for mut x (list (int 1):int):int[] (block (at 1 (assign += (name x) (int 1):int)))))
 ==== parser cases #14
 module case14.kj
-(at 1 (immut x _ (float 9.223372036854776e18):float)!variable=float)
+(at 1 (immut x _ (decimal 9223372036854775808):decimal)!variable=decimal)
 ==== parser cases #15
 error: type error: case15.kj:1: undefined variable 'y'
 ==== parser cases #16
@@ -114,7 +114,7 @@ error: syntax error: case3.kj:1: declare 'name' with 'mut' or 'immut': 'mut name
 ==== test/checker/cases.txt #4
 error: type error: case4.kj:1: list elements must have the same type: found int and string
 ==== test/checker/cases.txt #5
-error: type error: case5.kj:1: cannot assign a value of type float to 'x' of type int
+error: type error: case5.kj:1: cannot assign a value of type decimal to 'x' of type int
 ==== test/checker/cases.txt #6
 error: type error: case6.kj:3: 'is' checks a variant ('result is Some'); to compare values, use '=='
 ==== test/checker/cases.txt #7
@@ -180,7 +180,8 @@ error: type error: case36.kj:2: 'make' is exported, but its type uses the privat
 ==== test/checker/cases.txt #37
 error: type error: case37.kj:2: argument 2 of 'file.open' must be Mode, found string
 ==== test/checker/cases.txt #38
-error: type error: case38.kj:1: float literal 1e400 is too large for a float
+module case38.kj
+(at 1 (immut x _ (decimal 1e400):decimal)!variable=decimal)
 ==== test/checker/cases.txt #39
 error: type error: case39.kj:2: argument 1 of 'json.stringify' must be Json, found int
 ==== test/checker/cases.txt #40
@@ -216,7 +217,7 @@ error: type error: case54.kj:1: operator '+' cannot be applied to char and int
 ==== test/checker/cases.txt #55
 error: type error: case55.kj:2: cannot assign a value of type int[] to 'values' of type float[]
 ==== test/checker/cases.txt #56
-error: type error: case56.kj:1: list elements must have the same type: found int[] and float[]
+error: type error: case56.kj:1: list elements must have the same type: found int[] and decimal[]
 ==== test/checker/cases.txt #57
 error: type error: case57.kj:1: 'Ok' expects 1 argument(s), found 0
 ==== test/checker/cases.txt #58
@@ -363,10 +364,10 @@ error: type error: case121.kj:1: map values must have the same type: found int a
 error: type error: case122.kj:1: list elements must have the same type: found int and string
 ==== test/checker/cases.txt #123
 module case123.kj
-(at 1 (immut x _ (list (int 1):int!float (float 2.5):float):float[])!variable=float[])
+(at 1 (immut x _ (list (int 1):int!decimal (decimal 2.5):decimal):decimal[])!variable=decimal[])
 (at 2 (immut y float[] (list (int 1):int!float (int 2):int!float):float[])!variable=float[])
 (at 3 (immut z float (int 1):int)!variable=float)
-(at 4 (call (name print) (name x):float[] (name y):float[] (name z):float):void)
+(at 4 (call (name print) (name x):decimal[] (name y):float[] (name z):float):void)
 ==== test/checker/cases.txt #124
 error: type error: case124.kj:2: cannot assign a value of type int[] to 'y' of type float[]
 ==== test/checker/cases.txt #125
@@ -452,7 +453,7 @@ error: type error: case161.kj:2: argument 1 of 'math.sqrt' must be a number, fou
 ==== test/checker/cases.txt #162
 module case162.kj
 (at 1 (import math 'math'))
-(at 2 (call (name print) (call (member (name math):module abs) (unary - (int 1):int):int):int (call (member (name math):module abs) (float 1.5):float):float (call (member (name math):module floor) (float 1.5):float):int):void)
+(at 2 (call (name print) (call (member (name math):module abs) (unary - (int 1):int):int):int (call (member (name math):module abs) (decimal 1.5):decimal):decimal (call (member (name math):module floor) (decimal 1.5):decimal):int):void)
 ==== test/checker/cases.txt #163
 error: type error: case163.kj:2: 'time.now' expects 0 argument(s), found 1
 ==== test/checker/cases.txt #164
@@ -520,14 +521,14 @@ error: type error: case189.kj:1: operator '-' cannot be applied to string
 ==== test/checker/cases.txt #190
 error: type error: case190.kj:1: operator 'not' cannot be applied to int
 ==== test/checker/cases.txt #191
-error: type error: case191.kj:1: operator '~' cannot be applied to float
+error: type error: case191.kj:1: operator '~' cannot be applied to decimal
 ==== test/checker/cases.txt #192
 error: type error: case192.kj:1: operator '+' cannot be applied to int and string
 ==== test/checker/cases.txt #193
 module case193.kj
 (at 1 (immut x _ (binary * (string 'a'):string (int 2):int):string)!variable=string)
 (at 2 (immut y _ (binary + (list (int 1):int):int[] (list (int 2):int):int[]):int[])!variable=int[])
-(at 3 (call (name print) (name x):string (name y):int[] (binary << (int 1):int (int 2):int):int (binary % (int 7):int (int 2):int):int (binary ** (int 2):int (int 3):int):int (binary ** (float 1.5):float (int 2):int):float):void)
+(at 3 (call (name print) (name x):string (name y):int[] (binary << (int 1):int (int 2):int):int (binary % (int 7):int (int 2):int):int (binary ** (int 2):int (int 3):int):int (binary ** (decimal 1.5):decimal (int 2):int):decimal):void)
 ==== test/checker/cases.txt #194
 error: type error: case194.kj:1: operator '+' cannot be applied to int[] and string[]
 ==== test/checker/cases.txt #195
@@ -600,7 +601,7 @@ error: type error: case223.kj:1: type 'Option' needs 1 type argument(s), e.g. Op
 ==== test/checker/cases.txt #224
 error: type error: case224.kj:1: the alias 'A' cannot have type parameters
 ==== test/checker/cases.txt #225
-error: type error: case225.kj:2: 'area' is exported, but its type uses the private type 'Shape' (export 'Shape' too)
+error: type error: case225.kj:3: 1.0 is a decimal: write float(1.0) for the nearest float, or the float in hexadecimal
 ==== test/checker/cases.txt #226
 module case226.kj
 (at 1 (export (type P () (shape (field x int)))))
@@ -665,78 +666,42 @@ module case237.kj
 (at 8 (call (name print) (call (name count):(Tree) => int (call (name Branch) (name Leaf):Tree (name Leaf):Tree):Tree):int):void)
 ==== test/checker/cases.txt #238
 module case238.kj
-(at 1 (immut a decimal (float 1.5):decimal)!variable=decimal)
-(at 2 (immut b decimal[] (list (int 1):int!decimal (float 2.25):decimal):decimal[])!variable=decimal[])
+(at 1 (immut a decimal (decimal 1.5):decimal)!variable=decimal)
+(at 2 (immut b decimal[] (list (int 1):int!decimal (decimal 2.25):decimal):decimal[])!variable=decimal[])
 (at 3 (mut c _ (binary + (binary * (name a):decimal (int 2):int):decimal (index (name b):decimal[] (int 0):int):decimal):decimal)!variable=decimal)
-(at 4 (assign += (name c) (float 0.5):decimal))
+(at 4 (assign += (name c) (decimal 0.5):decimal))
 (at 5 (call (name print) (unary - (name a):decimal):decimal (name c):decimal (binary is (call (name decimal) (string '3'):string):Result[decimal, ParseError] (name Ok)):boolean (binary ** (name a):decimal (int 2):int):decimal):void)
 ==== test/checker/cases.txt #239
-error: type error: case239.kj:3: operator '+' cannot be applied to decimal and float
+module case239.kj
+(at 1 (immut a decimal (decimal 0.1):decimal)!variable=decimal)
+(at 2 (immut f _ (decimal 0.2):decimal)!variable=decimal)
+(at 3 (call (name print) (binary + (name a):decimal (name f):decimal):decimal):void)
 ==== test/checker/cases.txt #240
 error: type error: case240.kj:1: decimal literal 1234567890123456789012345678901234567.0 has more than 34 significant digits, the precision of a decimal
 ==== test/checker/cases.txt #241
 module case241.kj
-(at 1 (match (call (name decimal) (int 1):int):decimal (arm (literal (float 1.5):decimal) _ (call (name print) (int 1):int):void) (arm (wildcard) _ (call (name print) (int 2):int):void)):void)
+(at 1 (match (call (name decimal) (int 1):int):decimal (arm (literal (decimal 1.5):decimal) _ (call (name print) (int 1):int):void) (arm (wildcard) _ (call (name print) (int 2):int):void)):void)
 ==== test/checker/cycle.kj
 error: type error: cycle_b.kj:1: circular import of 'cycle_a.kj'
 ==== test/checker/generic_value.kj
-error: type error: test/checker/generic_value.kj:2: 'first' is generic and can only be called (its type arguments come from the call)
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/missing.kj
-error: type error: test/checker/missing.kj:1: module 'lib/shapes.kj' has no member 'nothing'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/modules.kj
-module test/checker/modules.kj
-(at 2 (import shapes 'lib/shapes.kj'))
-(at 3 (import (Shape Box area first grow count) 'lib/shapes.kj'))
-(at 4 (import math 'math'))
-(at 6 (immut circle _ (call (name Circle) (int 1):int!float):Shape)!variable=Shape)
-(at 7 (immut square _ (call (member (name shapes):module Square) (float 2.0):float):Shape)!variable=Shape)
-(at 8 (call (name print) (call (name area):(Shape) => float (name circle):Shape):float (call (member (name shapes):module area) (name square):Shape):float (member (name math):module pi):float):void)
-(at 9 (immut box Box (object (field 'label' (string 'a'):string) (field 'size' (int 1):int)):Box!fields=(label size))!variable=Box)
-(at 10 (immut other shapes.Box (object (field 'size' (int 2):int) (field 'label' (string 'b'):string)):Box!fields=(label size))!variable=Box)
-(at 11 (call (name print) (name box):Box (name other):Box (call (name first) (list (int 1):int (int 2):int):int[]):Option[int]!type-args=(int) (call (member (name shapes):module first) (list (string 'a'):string):string[]):Option[string]!type-args=(string) (name count):int):void)
-(at 12 (mut items _ (list (int 1):int):int[])!variable=int[])
-(at 13 (call (name grow) (mut (name items))):void)
-(at 14 (call (member (name shapes):module grow) (mut (name items))):void)
-(at 16 (function parse () ((param text string)) Result[int, shapes.Problem] (block (at 17 (return (call (name Ok) (try (call (name int) (name text):string):Result[int, ParseError]):int!wrap=shapes.Parse):Result[int, Problem]))))!function=(string) => Result[int, Problem])
-(at 20 (call (name print) (call (name parse):(string) => Result[int, Problem] (string '12'):string):Result[int, Problem] (name items):int[]):void)
-module lib/shapes.kj
-(at 3 (export (type Shape () (sum (variant Circle (field radius float)) (variant Square (field side float))))))
-(at 8 (type Hidden () (shape (field value int))))
-(at 10 (export (type Box () (shape (field label string) (field size int)))))
-(at 12 (export (mut count _ (int 0):int)!variable=int))
-(at 13 (export (immut origin _ (list (int 0):int (int 0):int):int[])!variable=int[]))
-(at 15 (export (function area () ((param shape Shape)) float (block (at 16 (return (match (name shape):Shape (arm (variant Circle (bind radius)) _ (binary * (binary * (float 3.14):float (name radius):float):float (name radius):float):float) (arm (variant Square (bind side)) _ (binary * (name side):float (name side):float):float)):float))))!function=(Shape) => float))
-(at 22 (function secret () () Hidden (block (at 23 (return (object (field 'value' (int 1):int)):Hidden!fields=(value)))))!function=() => Hidden)
-(at 26 (export (function first (T) ((param items T[])) Option[T] (block (at 27 (if (binary == (call (member (name items):T[] length)):int (int 0):int):boolean (block (at 27 (return (name None):Option[T]))) _):void) (at 29 (return (call (name Some) (index (name items):T[] (int 0):int):T):Option[T]))))!function=(T0[]) => Option[T0]))
-(at 32 (export (type Problem () (sum (variant Missing (field name string)) (variant Parse (field error ParseError))))))
-(at 37 (export (function grow () ((param mut items int[])) _ (block (at 38 (call (member (name items):int[] push)!mutating (member (call (name secret):() => Hidden):Hidden value):int):void)))!function=(int[]) => void))
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/mut_value.kj
-error: type error: test/checker/mut_value.kj:2: 'grow' has 'mut' or 'take' parameters and can only be called, not used as a value
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/nofile.kj
 error: type error: test/checker/nofile.kj:1: cannot import 'lib/none.kj': No such file or directory (os error 2)
 ==== test/checker/private.kj
-error: type error: test/checker/private.kj:1: 'secret' is not exported by 'lib/shapes.kj'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/private_type.kj
-error: type error: test/checker/private_type.kj:2: module 'shapes' has no type 'Hidden'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/readonly.kj
-error: type error: test/checker/readonly.kj:2: 'count' is read-only outside 'lib/shapes.kj'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/readonly_member.kj
-error: type error: test/checker/readonly_member.kj:2: 'origin' is read-only outside 'lib/shapes.kj'
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/syntax.kj
 error: syntax error: lib/broken.kj:1: expected parameter name, found '{'
 ==== test/checker/wrap.kj
-module test/checker/wrap.kj
-(at 1 (import shapes 'lib/shapes.kj'))
-(at 3 (function parse () ((param text string)) Result[int, shapes.Problem] (block (at 4 (return (call (name Ok) (try (call (name int) (name text):string):Result[int, ParseError]):int!wrap=shapes.Parse):Result[int, Problem]))))!function=(string) => Result[int, Problem])
-(at 7 (call (name print) (call (name parse):(string) => Result[int, Problem] (string 'x'):string):Result[int, Problem]):void)
-module lib/shapes.kj
-(at 3 (export (type Shape () (sum (variant Circle (field radius float)) (variant Square (field side float))))))
-(at 8 (type Hidden () (shape (field value int))))
-(at 10 (export (type Box () (shape (field label string) (field size int)))))
-(at 12 (export (mut count _ (int 0):int)!variable=int))
-(at 13 (export (immut origin _ (list (int 0):int (int 0):int):int[])!variable=int[]))
-(at 15 (export (function area () ((param shape Shape)) float (block (at 16 (return (match (name shape):Shape (arm (variant Circle (bind radius)) _ (binary * (binary * (float 3.14):float (name radius):float):float (name radius):float):float) (arm (variant Square (bind side)) _ (binary * (name side):float (name side):float):float)):float))))!function=(Shape) => float))
-(at 22 (function secret () () Hidden (block (at 23 (return (object (field 'value' (int 1):int)):Hidden!fields=(value)))))!function=() => Hidden)
-(at 26 (export (function first (T) ((param items T[])) Option[T] (block (at 27 (if (binary == (call (member (name items):T[] length)):int (int 0):int):boolean (block (at 27 (return (name None):Option[T]))) _):void) (at 29 (return (call (name Some) (index (name items):T[] (int 0):int):T):Option[T]))))!function=(T0[]) => Option[T0]))
-(at 32 (export (type Problem () (sum (variant Missing (field name string)) (variant Parse (field error ParseError))))))
-(at 37 (export (function grow () ((param mut items int[])) _ (block (at 38 (call (member (name items):int[] push)!mutating (member (call (name secret):() => Hidden):Hidden value):int):void)))!function=(int[]) => void))
+error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)

@@ -11,7 +11,7 @@
 | `**`     | Exponentiation                    |
 | `%`      | Modulus (remainder)               |
 
-Division follows the type of the operands: dividing two `int` values gives an `int` (truncated toward zero), and dividing `float` values gives a `float`. If one operand is a `float`, the result is a `float`. The remainder `%` has the sign of the dividend.
+Division follows the type of the operands: dividing two `int` values gives an `int` (truncated toward zero), and dividing `decimal` values gives a `decimal` (`7 / 2.0` is `3.5`); an `int` operand takes the type of the other one. A `decimal` and a `float` do not mix: one is converted with `decimal(x)` or `float(x)`. The remainder `%` has the sign of the dividend.
 
 ```koji
 7 / 2 // 3
@@ -26,7 +26,7 @@ Division follows the type of the operands: dividing two `int` values gives an `i
 Operators cannot return a `Result`, so an invalid arithmetic operation panics:
 
 -   division by zero (`1 / 0`, `1.5 % 0.0`, `0.0 ** -1.0`);
--   results that do not fit in an `int` or a `float` (overflow);
+-   results that do not fit in an `int`, a `decimal` or a `float` (overflow);
 -   `**` with a result that is not a real number (`(-8.0) ** 0.5`).
 
 `0 ** 0` is `1`.

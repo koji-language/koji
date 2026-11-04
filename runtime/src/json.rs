@@ -14,7 +14,7 @@ pub enum JsonTree {
     Null,
     Bool(bool),
     Int(i64),
-    Float(f64),
+    Decimal(crate::decimal::Decimal),
     String(String),
     Array(Vec<JsonTree>),
     /// The fields in the order they first appear.
@@ -163,7 +163,8 @@ impl JsonParser {
         }
     }
 
-    /// Numbers without `.`, `e` or `E` are `Int`; the others are `Float`.
+    /// Numbers without `.`, `e` or `E` are `Int`; the others are `Decimal`, exactly as written
+    /// (rounded to 34 digits).
     fn number(&mut self) -> Result<JsonTree, Failure> {
         let start = self.position;
         while matches!(
@@ -185,10 +186,18 @@ impl JsonParser {
                 Err(_) => Err(out_of_range()),
             };
         }
-        match text.parse::<f64>() {
-            Ok(n) if n.is_finite() => Ok(JsonTree::Float(n)),
-            Ok(_) => Err(out_of_range()),
-            Err(_) => Err(invalid()),
+        let well_formed = text.chars().filter(|c| c.is_ascii_digit()).count() > 0
+            && !text.ends_with(['.', 'e', 'E', '-', '+'])
+            && !text.contains(".e")
+            && !text.starts_with('.')
+            && !text.starts_with("-.");
+        if !well_formed {
+            return Err(invalid());
+        }
+        match crate::decimal::parse(&text) {
+            Ok(n) => Ok(JsonTree::Decimal(n)),
+            Err(crate::decimal::ParseFailure::OutOfRange) => Err(out_of_range()),
+            Err(crate::decimal::ParseFailure::Invalid) => Err(invalid()),
         }
     }
 
@@ -271,15 +280,11 @@ pub fn write_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// A float in JSON: always with a decimal point or an exponent.
-pub fn write_float(f: f64, out: &mut String) {
-    let text = if f.abs() >= 1e16 {
-        format!("{:e}", f)
-    } else {
-        format!("{}", f)
-    };
+/// A decimal in JSON: always with a decimal point, so that it is read back as a decimal.
+pub fn write_decimal(value: crate::decimal::Decimal, out: &mut String) {
+    let text = value.to_string();
     out.push_str(&text);
-    if !text.contains(['.', 'e', 'E']) {
+    if !text.contains('.') {
         out.push_str(".0");
     }
 }
@@ -302,7 +307,10 @@ fn build(tree: &JsonTree, types: &Types) -> *mut KojiRecord {
         JsonTree::Null => make(types.json, "Null", &[]),
         JsonTree::Bool(b) => make(types.json, "Bool", &[*b as u64]),
         JsonTree::Int(n) => make(types.json, "Int", &[*n as u64]),
-        JsonTree::Float(f) => make(types.json, "Float", &[f.to_bits()]),
+        JsonTree::Decimal(d) => {
+            let (lo, hi) = d.to_bits();
+            make(types.json, "Decimal", &[lo, hi])
+        }
         JsonTree::String(s) => make(types.json, "String", &[slot(new_string(s.clone()))]),
         JsonTree::Array(items) => {
             let items = items.iter().map(|item| build(item, types) as usize as u64).collect();
@@ -361,7 +369,7 @@ fn stringify(value: *const KojiRecord, out: &mut String) {
         "Int" => {
             let _ = write!(out, "{}", slots[0] as i64);
         }
-        "Float" => write_float(f64::from_bits(slots[0]), out),
+        "Decimal" => write_decimal(crate::decimal::Decimal::from_bits(slots[0], slots[1]), out),
         "String" => write_string(string_text(slots[0] as usize as *const KojiString), out),
         "Array" => {
             let list = unsafe { &*(slots[0] as usize as *const KojiList) };
@@ -411,24 +419,27 @@ pub extern "C" fn koji_std_json_get(value: *const KojiRecord, key: *const KojiSt
     make(option, "None", &[])
 }
 
-/// `json.asString`, `asInt`, `asFloat` and `asBool`: `kind` is 0, 1, 2 or 3.
+/// `json.asString`, `asInt`, `asDecimal` and `asBool`: `kind` is 0, 1, 2 or 3.
 #[no_mangle]
 pub extern "C" fn koji_std_json_as(value: *const KojiRecord, kind: i32, option: *const KojiRecordType) -> *mut KojiRecord {
     let slots = record_slots(value);
     let variant = record_variant(value);
-    let found = match (kind, variant.as_str()) {
+    let found: Option<Vec<u64>> = match (kind, variant.as_str()) {
         (0, "String") => {
             crate::string::koji_string_retain(slots[0] as usize as *const KojiString);
-            Some(slots[0])
+            Some(vec![slots[0]])
         }
-        (1, "Int") | (3, "Bool") => Some(slots[0]),
-        (2, "Float") => Some(slots[0]),
-        // An int is also a float.
-        (2, "Int") => Some((slots[0] as i64 as f64).to_bits()),
+        (1, "Int") | (3, "Bool") => Some(vec![slots[0]]),
+        (2, "Decimal") => Some(vec![slots[0], slots[1]]),
+        // An int is also a decimal.
+        (2, "Int") => {
+            let (lo, hi) = crate::decimal::Decimal::from_int(slots[0] as i64).to_bits();
+            Some(vec![lo, hi])
+        }
         _ => None,
     };
     match found {
-        Some(slot) => make(option, "Some", &[slot]),
+        Some(words) => make(option, "Some", &words),
         None => make(option, "None", &[]),
     }
 }

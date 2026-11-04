@@ -1,13 +1,17 @@
 // The lexer of the Koji compiler: source text to tokens. `kojic dump tokens` prints the text of
 // `dump`.
 
+import { hexFloat, hexInt } from 'decimal.kj'
+
 export type Token = {
     Identifier(name: string)
     Int(value: int)
-    // A literal with a point or an exponent, and its text (a decimal keeps every digit of it).
+    // A literal with a point or an exponent (`1.5`, `2e3`): a decimal, as written.
+    Decimal(text: string)
+    // A float in hexadecimal (`0x1.8p1`), exactly the value it writes, and its text.
     Float(value: float, text: string)
-    // Such a literal too large for a float (`1e400`), as written: only a decimal can hold it.
-    LargeFloat(text: string)
+    // A number that cannot be one (`0x1.fffffffffffff8p0` has more digits than a float), and why.
+    BadNumber(text: string, reason: string)
     StringLiteral(value: string)
     // The text between backticks, with its escapes and `${...}` (the parser splits it).
     TemplateString(raw: string)
@@ -156,6 +160,10 @@ function Lexer.name(mut self): Token {
 }
 
 function Lexer.number(mut self): Token {
+    if (self.is(0, '0') and (self.is(1, 'x') or self.is(1, 'X')) and self.has(2) and (isHexDigit(self.at(2)) or self.at(2) == '.')) {
+        return self.hexNumber()
+    }
+
     mut text = ''
     mut hasDot = false
 
@@ -199,9 +207,55 @@ function Lexer.number(mut self): Token {
         }
     }
 
-    return match (float(text)) {
-        Ok(f) => Float(f, text)
-        Err(_) => LargeFloat(text)
+    return Decimal(text)
+}
+
+function isHexDigit(c: char): boolean {
+    return isDigit(c) or string(c).lower() in ['a', 'b', 'c', 'd', 'e', 'f']
+}
+
+// `0xff`, an int, or `0x1.8p1`, a float: hexadecimal digits, a point, and a power of 2.
+function Lexer.hexNumber(mut self): Token {
+    mut text = `${self.at(0)}${self.at(1)}`
+    self.advance()
+    self.advance()
+    mut isFloat = false
+
+    while (self.has(0) and (isHexDigit(self.at(0)) or (self.at(0) == '.' and not isFloat))) {
+        if (self.at(0) == '.') { isFloat = true }
+
+        text += string(self.at(0))
+        self.advance()
+    }
+
+    if (self.is(0, 'p') or self.is(0, 'P')) {
+        immut digitAt = if (self.is(1, '+') or self.is(1, '-')) { 2 } else { 1 }
+
+        if (self.has(digitAt) and isDigit(self.at(digitAt))) {
+            isFloat = true
+
+            for i in range(digitAt) {
+                text += string(self.at(0))
+                self.advance()
+            }
+
+            while (self.has(0) and isDigit(self.at(0))) {
+                text += string(self.at(0))
+                self.advance()
+            }
+        }
+    }
+
+    if (isFloat) {
+        return match (hexFloat(text)) {
+            Ok(value) => Float(value, text)
+            Err(reason) => BadNumber(text, reason)
+        }
+    }
+
+    return match (hexInt(text)) {
+        Ok(value) => Int(value)
+        Err(reason) => BadNumber(text, reason)
     }
 }
 
@@ -352,8 +406,9 @@ export function dump(token: Token): string {
     return match (token) {
         Identifier(name) => `Identifier ${name}`
         Int(value) => `Int ${value}`
+        Decimal(text) => `Decimal ${text}`
         Float(value, _) => `Float ${value}`
-        LargeFloat(text) => `LargeFloat ${text}`
+        BadNumber(text, _) => `BadNumber ${text}`
         StringLiteral(value) => `String ${value.debug()}`
         TemplateString(raw) => `Template ${raw.debug()}`
         Boolean(value) => `Boolean ${value}`

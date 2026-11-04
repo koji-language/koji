@@ -47,15 +47,15 @@ Most decisions follow from a few ideas:
 
 **Alternatives**: structural types and interfaces, as in TypeScript and Go. `interface` stays a reserved word, as a precaution.
 
-### `int` and `float`
+### `int`, `decimal` and `float`
 
-**Decision**: an `int` becomes a `float` only as a single value (a variable, an argument, a field, the items of a list literal), never inside an existing value: an `int[]` is not a `float[]`. `int / int` is an `int` truncated toward zero, and `%` has the sign of the dividend.
+**Decision**: an `int` becomes a `decimal` or a `float` only as a single value (a variable, an argument, a field, the items of a list literal), never inside an existing value: an `int[]` is not a `decimal[]`. `int / int` is an `int` truncated toward zero, and `%` has the sign of the dividend.
 
 **Why**: converting a single value is free; converting a list would copy it without the code saying so. Integer division follows Go and Rust.
 
-### A `float` is always finite
+### Numbers are always finite
 
-**Decision**: there is no NaN and no infinity. A result that does not fit (`1e308 * 10`, `9223372036854775807 + 1`) panics, like a literal that does not fit (`1e400`) is a compile error. In `math`, a result that does not exist in the real numbers is an `Err(MathError)`: `sqrt(-1)` is `Complex`, `pow(0, -1)` is `Infinite`.
+**Decision**: there is no NaN and no infinity, in a `decimal` or a `float`. A result that does not fit (`float(1e308) * float(10)`, `9223372036854775807 + 1`) panics, like a literal that does not fit (`0x1p1024`, `1e7000`) is a compile error. In `math`, a result that does not exist in the real numbers is an `Err(MathError)`: `sqrt(-1)` is `Complex`, `pow(0, -1)` is `Infinite`.
 
 **Why**: NaN spreads silently through computations and breaks equality (`NaN != NaN`). The rule separates two kinds of problems: a **representation limit** (the result exists but does not fit: a larger type would hold it) panics, and a **domain problem** (the result does not exist in the reals) is an error the code can handle. Operators cannot return a `Result`, so they always panic, including on division by zero. `0 ** 0` is `1`, the value of the expression in algebra (only the limit form 0⁰ is indeterminate). `MathError.Indeterminate` is kept for future functions.
 
@@ -63,13 +63,19 @@ Most decisions follow from a few ideas:
 
 ### `decimal`
 
-**Decision**: `decimal` is a number with 34 significant digits in base 10 (the precision of IEEE 754 decimal128), computed by the runtime in software, in 16 bytes. A literal where a decimal is expected is exactly the number written, and one that does not hold exactly (more than 34 significant digits, or out of range) is a compile error. An operation rounds its exact result to 34 digits, half to even. `1.50` equals `1.5` and is shown as `1.5`. `decimal(x)` of a `float` is the shortest decimal that is the same float again (`decimal(0.1 + 0.2)` is `0.30000000000000004`). It follows the rules of `float`: no NaN, no infinity, a panic when a result does not fit, and also when it is too small to be anything but zero. An `int` becomes a `decimal` as it becomes a `float`; a `float` and a `decimal` never mix, and converting is explicit (`decimal(x)`, `float(x)`). `**` takes an `int` exponent.
+**Decision**: `decimal` is a number with 34 significant digits in base 10 (the precision of IEEE 754 decimal128), computed by the runtime in software, in 16 bytes, and it is the type of a literal with a point or an exponent (`1.5`, `2e3`): exactly the number written. A literal that does not hold exactly (more than 34 significant digits, or out of range) is a compile error. An operation rounds its exact result to 34 digits, half to even. A decimal is shown in full, as in everyday writing: `10`, `1.5`, `100000000000000000000`, without an exponent or trailing zeros (`1.50` equals `1.5`). It panics when a result does not fit, and also when it is too small to be anything but zero. `**` takes any decimal exponent: an `int` exponent is exact, another is computed with 64 digits. The standard library uses decimals where it does not compute heavily: seconds in `time`, the numbers of `json`, `math.pi` and `math.e`.
 
-**Why**: Koji keeps the precision of the program above the influence of the hardware. A `float` is binary: `0.1` is not one tenth, and `0.1 + 0.2` is `0.30000000000000004`. A `decimal` holds the numbers people write and read (money, measures, data) exactly as written, and its rounding happens where people expect it, in base 10. 34 digits hold every `float` exactly (the shortest decimal of a float has at most 17 digits), so converting a float to a decimal and back loses nothing, and a decimal never looks as close as a float would: 16 digits would round `0.30000000000000004` to `0.3`. Measured, the common operations stay fast (an addition with the same exponent or an exact product in about 5 ns; a rounded product about 50 ns and a division about 70 ns, `runtime/bench/decimal.c`): a value is not normalized, so most operations need no division, and it is passed in two registers, never allocated. Half to even does not drift when many results are rounded. Equal values print the same. Mixing would hide a conversion, which rounds.
+**Why**: Koji keeps the precision of the program above the influence of the hardware. A `float` is binary: `0.1` is not one tenth, and `0.1 + 0.2` is `0.30000000000000004` in a float. A `decimal` holds the numbers people write and read (money, measures, data) exactly as written, and its rounding happens where people expect it, in base 10. 34 digits hold every `float` exactly (the shortest decimal of a float has at most 17 digits), so converting a float to a decimal and back loses nothing, and a decimal never looks as close as a float would: 16 digits would round `0.30000000000000004` to `0.3`. Measured, the common operations stay fast (an addition with the same exponent or an exact product in about 5 ns; a rounded product about 50 ns and a division about 70 ns, `runtime/bench/decimal.c`): a value is not normalized, so most operations need no division, and it is passed in two registers, never allocated. Half to even does not drift when many results are rounded. Equal values print the same; a number shown in full is the one people read (the exponent of a scientific notation is easy to miss).
 
 **Alternatives**: 16 digits (decimal64), which fits in 8 bytes but is about as precise as a `float`; precision without limit (Java's `BigDecimal`, Python's `Decimal`), whose division needs a precision chosen somewhere (in Python, a global context); rational numbers (Raku), exact for the four operations but whose denominators grow without limit; keeping only `float`.
 
-Still open: whether a literal like `1.5` is a `decimal` everywhere, with the binary type renamed (`binary`) and written in base 2. Until then, a literal is a `float` where no `decimal` is expected.
+### `float` is written as it is stored
+
+**Decision**: `float` stays the 64-bit binary type of the processor, for complex computations. It is written and shown in base 16, as it is stored: a mantissa after `0x` and a power of 2 after `p` (`0x1.999999999999ap-4` is the float nearest to 0.1). A float literal must be exact (at most 53 bits, in range). A decimal literal is not a float: `float(0.1)` converts it (computed while compiling), and `decimal(x)` of a float is the shortest decimal that is the same float again, so `decimal(float(0.1) + float(0.2))` is `0.30000000000000004`. A `float` and a `decimal` never mix: `price * rate` with a decimal and a float is an error, and one of them is converted.
+
+**Why**: the value a program shows is the value it holds. A float shown in base 10 looks like the decimal it approximates (`0.1`), hiding the rounding that makes `0.1 + 0.2 != 0.3`; in base 16 it is exact and short, and a hexadecimal literal is what C, Java and Go use for exact floats. Converting explicitly shows where a value is rounded. Floats keep the speed of the processor where it matters (simulations, graphics), and the conventions say which type to use.
+
+**Alternatives**: renaming `float` to `binary` and writing it in base 2 (`0b1.1p1`), exact too but much longer; showing a float as its shortest decimal, as most languages do; letting a decimal literal become a float where a float is expected, which would round without the code saying so.
 
 ### `char`
 

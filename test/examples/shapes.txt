@@ -1,2 +1,2 @@
-Circle(1.0): 3.14
-Rectangle(2.0, 3.0): 6.0
+Circle(1): 3.14
+Rectangle(2, 3): 6

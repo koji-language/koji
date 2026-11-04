@@ -99,6 +99,13 @@ pub fn parse_int(text: &str) -> Result<i64, &'static str> {
 /// `float('...')`: only decimal notation is accepted (no `nan` or `inf`).
 pub fn parse_float(text: &str) -> Result<f64, &'static str> {
     let trimmed = text.trim();
+    if trimmed.trim_start_matches(['-', '+']).starts_with("0x") {
+        return match crate::numbers::parse_hex_float(trimmed) {
+            Some(n) if n.is_finite() => Ok(n),
+            Some(_) => Err("OutOfRange"),
+            None => Err("InvalidNumber"),
+        };
+    }
     let well_formed = !trimmed.is_empty()
         && trimmed.chars().any(|c| c.is_ascii_digit())
         && trimmed.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E'));
@@ -377,6 +384,25 @@ pub extern "C" fn koji_std_math_pow(base: f64, exponent: f64, result: *const Koj
     }
 }
 
+/// `math.pow` of decimals: like `**`, but a result that is not a real number is an error.
+#[no_mangle]
+pub extern "C" fn koji_std_math_pow_decimal(
+    base: crate::decimal::KojiDecimal,
+    exponent: crate::decimal::KojiDecimal,
+    result: *const KojiRecordType,
+    location: *const c_char,
+) -> *mut KojiRecord {
+    match crate::decimal::from_c(base).power_of(crate::decimal::from_c(exponent)) {
+        Some(Ok(value)) => {
+            let (lo, hi) = value.to_bits();
+            make(result, "Ok", &[lo, hi])
+        }
+        Some(Err(Some(limit))) => panic_at(location, limit.message()),
+        Some(Err(None)) => math_error(result, "Complex"),
+        None => math_error(result, "Infinite"),
+    }
+}
+
 /// `math.floor`, `math.ceil` and `math.round`: `mode` is 0, 1 or 2.
 #[no_mangle]
 pub extern "C" fn koji_std_math_round(value: f64, mode: i32, location: *const c_char) -> i64 {
@@ -391,24 +417,28 @@ pub extern "C" fn koji_std_math_round(value: f64, mode: i32, location: *const c_
 // time
 
 #[no_mangle]
-pub extern "C" fn koji_std_time_sleep(seconds: f64) {
+pub extern "C" fn koji_std_time_sleep(seconds: crate::decimal::KojiDecimal) {
+    let seconds = crate::decimal::from_c(seconds).to_float().unwrap_or(f64::MAX);
     if seconds > 0.0 {
         let _ = std::io::stdout().flush();
-        std::thread::sleep(std::time::Duration::from_secs_f64(seconds));
+        std::thread::sleep(std::time::Duration::from_secs_f64(seconds.min(1e9)));
     }
 }
 
-#[no_mangle]
-pub extern "C" fn koji_std_time_now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+/// A duration as a decimal of seconds, exact to the nanosecond.
+fn seconds(duration: std::time::Duration) -> crate::decimal::KojiDecimal {
+    let nanoseconds = duration.as_secs() as u128 * 1_000_000_000 + duration.subsec_nanos() as u128;
+    crate::decimal::to_c(crate::decimal::Decimal::new(false, nanoseconds, -9).unwrap_or(crate::decimal::Decimal::from_int(0)))
 }
 
 #[no_mangle]
-pub extern "C" fn koji_std_time_monotonic() -> f64 {
-    STARTED.get_or_init(Instant::now).elapsed().as_secs_f64()
+pub extern "C" fn koji_std_time_now() -> crate::decimal::KojiDecimal {
+    seconds(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default())
+}
+
+#[no_mangle]
+pub extern "C" fn koji_std_time_monotonic() -> crate::decimal::KojiDecimal {
+    seconds(STARTED.get_or_init(Instant::now).elapsed())
 }
 
 // path

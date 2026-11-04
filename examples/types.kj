@@ -1,7 +1,7 @@
 type Product = {
     id: int
     name: string
-    price: float
+    price: decimal
 }
 
 type Dictionary = Map[string, string]

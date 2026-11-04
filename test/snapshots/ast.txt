@@ -40,16 +40,16 @@
 (at 4 (call (name print) (call (name add) (int 2) (int 3))))
 (at 6 (match (call (member (name math) sqrt) (int 16)) (arm (variant Ok (bind root)) _ (call (name print) (name root))) (arm (variant Err (bind error)) _ (call (name print) (name error)))))
 ==== examples/shapes.kj
-(at 1 (type Shape () (sum (variant Circle (field radius float)) (variant Rectangle (field width float) (field height float)))))
-(at 6 (function area () ((param shape Shape)) float (block (at 7 (match (name shape) (arm (variant Circle (bind radius)) _ (binary * (binary * (float 3.14) (name radius)) (name radius))) (arm (variant Rectangle (bind width) (bind height)) _ (binary * (name width) (name height))))))))
-(at 13 (immut shapes Shape[] (list (call (name Circle) (float 1.0)) (call (name Rectangle) (float 2.0) (float 3.0)))))
+(at 1 (type Shape () (sum (variant Circle (field radius decimal)) (variant Rectangle (field width decimal) (field height decimal)))))
+(at 6 (function area () ((param shape Shape)) decimal (block (at 7 (match (name shape) (arm (variant Circle (bind radius)) _ (binary * (binary * (decimal 3.14) (name radius)) (name radius))) (arm (variant Rectangle (bind width) (bind height)) _ (binary * (name width) (name height))))))))
+(at 13 (immut shapes Shape[] (list (call (name Circle) (decimal 1.0)) (call (name Rectangle) (decimal 2.0) (decimal 3.0)))))
 (at 15 (for shape (name shapes) (block (at 16 (call (name print) (template (expr (name shape)) (text ': ') (expr (call (name area) (name shape)))))))))
 ==== examples/types.kj
-(at 1 (type Product () (shape (field id int) (field name string) (field price float))))
+(at 1 (type Product () (shape (field id int) (field name string) (field price decimal))))
 (at 7 (type Dictionary () (alias Map[string, string])))
 (at 9 (function describe () ((param product Product)) string (block (at 10 (return (template (expr (member (name product) name)) (text ' (') (expr (member (name product) id)) (text ') - ') (expr (member (name product) price))))))))
 (at 13 (immut translations Dictionary (map (entry (string 'hello') (string 'olá')) (entry (string 'world') (string 'mundo')))))
-(at 19 (call (name print) (call (name describe) (object (field 'id' (int 1)) (field 'name' (string 'Pen')) (field 'price' (float 2.5))))))
+(at 19 (call (name print) (call (name describe) (object (field 'id' (int 1)) (field 'name' (string 'Pen')) (field 'price' (decimal 2.5))))))
 (at 20 (call (name print) (index (name translations) (string 'hello'))))
 (at 22 (immut label string (match (call (member (name translations) length)) (arm (literal (int 0)) _ (string 'empty')) (arm (bind n) (binary < (name n) (int 3)) (string 'small')) (arm (wildcard) _ (string 'large')))))
 (at 28 (call (name print) (name label)))
@@ -61,7 +61,7 @@ error: syntax error: line 2: unexpected character '$'
 (at 1 (assign = (name s) (string 'unterminated')))
 ==== test/lexer/edge4.kj
 ==== test/lexer/edge5.kj
-(at 1 (assign = (name x) (binary + (binary + (binary + (binary + (float 1e400) (float 1.5e308)) (float 0.0)) (float 2.5E999)) (float 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497792.0))))
+(at 1 (assign = (name x) (binary + (binary + (binary + (binary + (decimal 1e400) (decimal 1.5e308)) (decimal 1e-400)) (decimal 2.5E999)) (decimal 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497792.0))))
 ==== test/lexer/edge6.kj
 error: syntax error: line 1: unexpected expression: '|='
 ==== parser cases #0
@@ -93,8 +93,8 @@ error: syntax error: line 1: unexpected character '#'
 ==== parser cases #13
 (at 1 (for mut x (list (int 1)) (block (at 1 (assign += (name x) (int 1))))))
 ==== parser cases #14
-(at 1 (immut x _ (float 9.223372036854776e18)))
+(at 1 (immut x _ (decimal 9223372036854775808)))
 ==== parser cases #15
-(at 1 (immut x _ (match (name y) (arm (literal (float -9.223372036854776e18)) _ (int 1)))))
+(at 1 (immut x _ (match (name y) (arm (literal (decimal -9223372036854775808)) _ (int 1)))))
 ==== parser cases #16
-(at 1 (immut x _ (match (name y) (arm (literal (float -1e400)) _ (int 2)))))
+(at 1 (immut x _ (match (name y) (arm (literal (decimal -1e400)) _ (int 2)))))

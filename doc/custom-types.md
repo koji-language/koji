@@ -51,9 +51,9 @@ All fields are required, and an object literal cannot have extra fields. Fields 
 Shape types are **nominal**: two types with the same fields are still different types. An object literal is a value of the type expected where it is written: the type of the variable, of the parameter, of the return value or of the list.
 
 ```koji
-type Celsius = { value: float }
+type Celsius = { value: decimal }
 
-type Fahrenheit = { value: float }
+type Fahrenheit = { value: decimal }
 
 immut celsius: Celsius = { value: 20.0 }
 mut fahrenheit: Fahrenheit = { value: 68.0 } // Ok
@@ -199,18 +199,18 @@ Sum types can have methods too:
 
 ```koji
 type Shape = {
-    Circle(radius: float)
-    Square(side: float)
+    Circle(radius: decimal)
+    Square(side: decimal)
 }
 
-function Shape.area(self): float {
+function Shape.area(self): decimal {
     return match (self) {
         Circle(r) => 3.14 * r * r
         Square(s) => s * s
     }
 }
 
-print(Square(2.0).area()) // 4.0
+print(Square(2.0).area()) // 4
 ```
 
 ### Methods That Change the Value

@@ -236,8 +236,9 @@ pub extern "C" fn koji_std_datetime_today() -> *mut KojiString {
 }
 
 #[no_mangle]
-pub extern "C" fn koji_std_datetime_format(timestamp: f64, pattern: *const KojiString) -> *mut KojiString {
-    let datetime = datetime_from_timestamp(timestamp.floor() as i64);
+pub extern "C" fn koji_std_datetime_format(timestamp: crate::decimal::KojiDecimal, pattern: *const KojiString) -> *mut KojiString {
+    let seconds = crate::decimal::from_c(timestamp).to_int(0).unwrap_or(0);
+    let datetime = datetime_from_timestamp(seconds);
     new_string(format_datetime(&datetime, string_text(pattern)))
 }
 

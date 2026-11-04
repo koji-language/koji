@@ -87,7 +87,7 @@ fn temp_dir(name: &str) -> PathBuf {
 fn primitive_types() {
     let source = r#"
         immut age: int = 23
-        immut pi: float = 3.14
+        immut pi: decimal = 3.14
         immut name: string = 'Mary'
         immut isStudent: boolean = true
 
@@ -244,7 +244,7 @@ fn lists() {
 fn arithmetic_operators() {
     assert_eq!(
         run("print(1 + 2, 5 - 7, 3 * 4, 2 ** 10, 7 % 3, 2.5 * 2)"),
-        "3 -2 12 1024 1 5.0\n"
+        "3 -2 12 1024 1 5\n"
     );
 }
 
@@ -256,7 +256,7 @@ fn division_follows_the_operand_types() {
         "3 -3 3.5 3.5 -1 1.5\n"
     );
     assert_eq!(run("mut x: int = 17\nx /= 5\nprint(x)"), "3\n");
-    assert_error("immut x: int = 7 / 2.0", "cannot assign a value of type float");
+    assert_error("immut x: int = 7 / 2.0", "cannot assign a value of type decimal");
     assert_error("print(1 / 0)", "division by zero");
 }
 
@@ -368,7 +368,7 @@ fn string_interpolation() {
 fn conversion_methods() {
     assert_eq!(
         run("print(int('0'), int('abc'), float('0'), string(0), int(3.9), float(2))"),
-        "Ok(0) Err(InvalidNumber('abc')) Ok(0.0) 0 3 2.0\n"
+        "Ok(0) Err(InvalidNumber('abc')) Ok(0x0p0) 0 3 0x1p1\n"
     );
     assert_eq!(
         run("print(int('99999999999999999999'), float('1e400'), float('nan'), float('inf'))"),
@@ -579,8 +579,8 @@ fn match_arms_on_separate_lines() {
 fn match_literals_and_nested_patterns() {
     let source = r#"
         type Shape = {
-            Circle(radius: float)
-            Rectangle(width: float, height: float)
+            Circle(radius: decimal)
+            Rectangle(width: decimal, height: decimal)
         }
 
         immut shapes: Option[Shape][] = [Some(Circle(2.0)), None, Some(Rectangle(1.0, 2.0))]
@@ -599,7 +599,7 @@ fn match_literals_and_nested_patterns() {
             _ => print('?')
         }
     "#;
-    assert_eq!(run(source), "circle 2.0\nnothing\nrect 1.0x2.0\nB\n");
+    assert_eq!(run(source), "circle 2\nnothing\nrect 1x2\nB\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -631,11 +631,11 @@ fn sum_types() {
 fn sum_type_destructuring() {
     let source = r#"
         type Shape = {
-            Circle(radius: float)
-            Rectangle(width: float, height: float)
+            Circle(radius: decimal)
+            Rectangle(width: decimal, height: decimal)
         }
 
-        function area(shape: Shape): float {
+        function area(shape: Shape): decimal {
             match (shape) {
                 Circle(radius) => 3.14 * radius * radius
                 Rectangle(width, height) => width * height
@@ -644,7 +644,7 @@ fn sum_type_destructuring() {
 
         print(area(Circle(1.0)), area(Rectangle(2.0, 3.0)))
     "#;
-    assert_eq!(run(source), "3.14 6.0\n");
+    assert_eq!(run(source), "3.14 6\n");
 }
 
 #[test]
@@ -850,7 +850,7 @@ fn nested_shapes() {
         type Product = {
             id: int
             name: string
-            price: float
+            price: decimal
         }
 
         function printProduct(product: Product) {
@@ -869,9 +869,9 @@ fn nested_shapes() {
 fn shapes_are_nominal() {
     // Two types with the same fields are still different types.
     let source = r#"
-        type Celsius = { value: float }
+        type Celsius = { value: decimal }
 
-        type Fahrenheit = { value: float }
+        type Fahrenheit = { value: decimal }
 
         immut c: Celsius = { value: 20.0 }
         immut f: Fahrenheit = c
@@ -1152,13 +1152,13 @@ fn imports_are_hoisted() {
 
         print(root(16.0))
 
-        function root(x: float): Result[float, Failure] {
+        function root(x: decimal): Result[decimal, Failure] {
             return Ok(math.sqrt(x)?)
         }
 
         import math
     "#;
-    assert_eq!(run(source), "Ok(4.0)\n");
+    assert_eq!(run(source), "Ok(4)\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1180,7 +1180,7 @@ fn panics_name_modules_as_imports_write_them() {
 fn compound_bitwise_assignments() {
     assert_eq!(run("mut x = 12\nx &= 10\nx |= 5\nx ^= 3\nx <<= 2\nx >>= 1\nprint(x)"), "28\n");
     assert_error("mut s = 'a'\ns &= 1", "operator '&' cannot be applied to string and int");
-    assert_error("mut f = 1.5\nf <<= 1", "operator '<<' cannot be applied to float and int");
+    assert_error("mut f = 1.5\nf <<= 1", "operator '<<' cannot be applied to decimal and int");
     assert_error("immut x = 1\nx |= 2", "cannot modify 'x': it is immut");
 }
 
@@ -1217,8 +1217,8 @@ fn modules_and_imports() {
         }
 
         export type Shape = {
-            Circle(radius: float)
-            Square(side: float)
+            Circle(radius: decimal)
+            Square(side: decimal)
         }
 
         export mut count = 0
@@ -1255,7 +1255,7 @@ fn modules_and_imports() {
     "#;
     let (output, result) = execute(source, "", &dir.join("main.kj"));
     result.unwrap();
-    assert_eq!(output, "15\n15 -5\nCircle(1.0) Square(2.0)\n2 2\n");
+    assert_eq!(output, "15\n15 -5\nCircle(1) Square(2)\n2 2\n");
 
     let fails = |source: &str, fragment: &str| {
         let (_, result) = execute(source, "", &dir.join("main.kj"));
@@ -1423,26 +1423,29 @@ fn stdlib_math() {
     "#;
     assert_eq!(
         run(source),
-        "78.53981633974483\nno real square root\nOk(4.0) Err(Complex) Ok(1.0) Err(Infinite) Ok(-8.0)\n3 2.5 2 3 3\ntrue\n"
+        "78.53981633974483096156608458198758\nno real square root\nOk(4) Err(Complex) Ok(1) Err(Infinite) Ok(-8)\n3 2.5 2 3 3\ntrue\n"
     );
     // Representation limits panic: a larger type would fit the result, unlike Infinite.
-    assert_error("import math\nprint(math.pow(10, 400))", "float overflow");
+    assert_error("import math\nprint(math.pow(10, 7000))", "decimal overflow");
+    assert_error("import math\nprint(math.pow(float(10), 400))", "float overflow");
     assert_error("import math\nprint(math.round(1e300))", "integer overflow");
 }
 
 #[test]
 fn floats_have_no_nan_or_infinity() {
-    assert_error("immut x = 1e308 * 10.0", "float overflow");
-    assert_error("immut x = 1.5 / 0.0", "division by zero");
-    assert_error("immut x = (-8.0) ** 0.5", "not a real number");
+    assert_error("immut x = float(1e308) * float(10)", "float overflow");
+    assert_error("immut x = float(1.5) / float(0)", "division by zero");
+    assert_error("immut x = float(-8) ** float(0.5)", "not a real number");
+    assert_error("immut x = (-8.0) ** 0.5", "-8 ** 0.5 is not a real number");
     assert_error("immut x = 0.0 ** -1.0", "division by zero");
     // `1e400` is a finite number too large for a `float` (not an infinity).
-    assert_error("immut x = 1e400", "test.kj:1: float literal 1e400 is too large for a float");
-    assert_error("match (1.5) {\n    -1e400 => print(0)\n    _ => print(1)\n}", "test.kj:2: float literal -1e400 is too large for a float");
-    assert_eq!(run("print(2.0 ** 0.5 > 1.41, 2 ** 3, (-8.0) ** 2.0)"), "true 8 64.0\n");
+    assert_error("immut x = float(1e400)", "test.kj:1: 1e400 is too large for a float");
+    assert_error("immut x = 0x1p1024", "test.kj:1: 0x1p1024 is too large for a float");
+    assert_error("match (float(1.5)) {\n    -0x1p2000 => print(0)\n    _ => print(1)\n}", "test.kj:2: 0x1p2000 is too large for a float");
+    assert_eq!(run("print(2.0 ** 0.5 > 1.41, 2 ** 3, (-8.0) ** 2.0, float(2) ** float(0.5) > float(1.41))"), "true 8 64 true\n");
     // 0 ** 0 is 1: the value of the expression (the indeterminate form only concerns limits).
-    assert_eq!(run("print(0 ** 0, 0.0 ** 0.0)"), "1 1.0\n");
-    assert_eq!(run("print(6.022e23, 1e15, 2.5e-3)"), "6.022e23 1000000000000000.0 0.0025\n");
+    assert_eq!(run("print(0 ** 0, 0.0 ** 0.0, float(0) ** float(0))"), "1 1 0x1p0\n");
+    assert_eq!(run("print(6.022e23, 1e15, 2.5e-3)"), "602200000000000000000000 1000000000000000 0.0025\n");
 }
 
 #[test]
@@ -1465,7 +1468,7 @@ print(decimal(2) / 3, -decimal(7.5), 7.5 * price)
 print(decimal(1.5) ** 2, decimal(2) ** -2, decimal(10) ** 20)
 print(decimal(7.5) % 2, math.abs(decimal(-2.5)), math.sqrt(decimal(2)))
 print(math.floor(decimal(-2.5)), math.ceil(decimal(2.1)), math.round(decimal(2.5)), int(decimal(-2.7)))
-print(float(decimal(0.1)), decimal(0.1 + 0.2), decimal('12.50'), decimal('x'))
+print(float(decimal(0.1)), decimal(float(0.1) + float(0.2)), decimal('12.50'), decimal('x'))
 immut values: decimal[] = [1.5, 0.25, 3]
 print(values, values.length())
 mut sorted = values
@@ -1482,28 +1485,68 @@ match (price) {
 "#;
     assert_eq!(
         run(source),
-        "0.3 true\n0.30000000000000004\n1.0 true\n0.3333333333333333333333333333333333 0.9999999999999999999999999999999999\n\
-         0.6666666666666666666666666666666667 -7.5 0.75\n2.25 0.25 100000000000000000000.0\n1.5 2.5 Ok(1.414213562373095048801688724209698)\n\
-         -3 3 3 -2\n0.1 0.30000000000000004 Ok(12.5) Err(InvalidNumber('x'))\n[1.5, 0.25, 3.0] 3\n[0.25, 1.5, 3.0] true true 1e301\n\
-         1e384 interpolated 0.1 0.2\n[1.5: 2]\na tenth\n"
+        "0.3 true\n0.3\n1 true\n0.3333333333333333333333333333333333 0.9999999999999999999999999999999999\n0.6666666666666666666666666666666667 -7.5 0.75\n2.25 0.25 100000000000000000000\n1.5 2.5 Ok(1.414213562373095048801688724209698)\n-3 3 3 -2\n0x1.999999999999ap-4 0.30000000000000004 Ok(12.5) Err(InvalidNumber('x'))\n[1.5, 0.25, 3] 3\n[0.25, 1.5, 3] true true 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\n1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 interpolated 0.1 0.2\n[1.5: 2]\na tenth\n"
     );
     let errors = [
         ("immut x: decimal = 0.12345678901234567890123456789012345", "decimal literal 0.12345678901234567890123456789012345 has more than 34 significant digits"),
         ("immut x: decimal = 1e6145", "decimal literal 1e6145 is too large for a decimal"),
         ("immut x: decimal = 1e-6177", "decimal literal 1e-6177 is too small for a decimal"),
-        ("immut f = 1.5\nimmut d: decimal = f", "cannot assign a value of type float to 'd' of type decimal"),
-        ("immut d: decimal = 1\nimmut f = 2.5\nprint(d + f)", "operator '+' cannot be applied to decimal and float"),
-        ("immut d: decimal = 2\nprint(d ** d)", "the exponent of a decimal must be an int"),
-        ("import time\ntime.sleep(decimal(1))", "must be int or float, found decimal (convert it with float(x))"),
+        ("immut f = float(1.5)\nimmut d: decimal = f", "cannot assign a value of type float to 'd' of type decimal"),
+        ("immut d: decimal = 1\nimmut f = float(2.5)\nprint(d + f)", "operator '+' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)"),
+        ("immut f: float = 2.5", "2.5 is a decimal: write float(2.5) for the nearest float, or the float in hexadecimal"),
+        ("immut f = 0x1.fffffffffffff8p0", "0x1.fffffffffffff8p0 has more digits than a float holds (53 bits): it would be rounded"),
+        ("immut d: decimal = -8\nprint(d ** 0.5)", "panic: test.kj:2: -8 ** 0.5 is not a real number (use math.pow to handle it)"),
+        ("import math\nprint(math.pow(float(2), 1.5))", "the arguments of 'math.pow' are a float and a decimal"),
         ("print(decimal(true))", "cannot convert boolean to decimal"),
         ("immut d: decimal = 9e6144\nprint(d * 10)", "panic: test.kj:2: decimal overflow"),
         ("immut d: decimal = 1\nprint(d / 0)", "panic: test.kj:2: division by zero"),
         ("immut d: decimal = 1e-6176\nprint(d / 3)", "panic: test.kj:2: decimal underflow"),
-        ("print(int(decimal(1e300)))", "integer overflow: 1e300 does not fit in an int"),
+        ("print(int(decimal(1e20)))", "integer overflow: 100000000000000000000 does not fit in an int"),
     ];
     for (code, fragment) in errors {
         assert_error(code, fragment);
     }
+}
+
+#[test]
+fn decimals_by_default_and_floats_as_stored() {
+    // A decimal as in everyday arithmetic; a float written (and shown) in base 16, as it is stored.
+    let source = r#"
+import math
+import time
+import json
+
+function main(): Result[void, math.MathError] {
+
+mut a: decimal = 10
+print(a)
+a = 0.1
+immut b: decimal = 0.2
+immut c = a + b
+print(c, float(c))
+immut x: float = 0x1.999999999999ap-4
+immut y = float(0.2)
+immut z = x + y
+print(z, decimal(z), float(c) == z, c == decimal(z))
+print(0xff, 0x10, 0x1.8p1, -0x1p-2, 0x0.0000000000001p-1022, float(3), float(1) / float(3))
+print(decimal(10) ** 20, 2 ** 0.5, 2 ** 0.5 == math.sqrt(2)?, math.pow(2, 0.5), math.pow(float(2), float(0.5)), math.pow(1.5, 2))
+print(math.pi, math.e, math.sqrt(16), math.sqrt(float(16)))
+immut started = time.monotonic()
+immut now: decimal = time.now()
+print(now > 1700000000, time.monotonic() >= started)
+print(json.parse('[0.1, 2, 1e3]'), json.stringify(json.Decimal(0.30)))
+    return Ok()
+}
+print(main())
+"#;
+    assert_eq!(
+        run(source),
+        "10\n0.3 0x1.3333333333333p-2\n0x1.3333333333334p-2 0.30000000000000004 false false\n\
+         255 16 0x1.8p1 -0x1p-2 0x0.0000000000001p-1022 0x1.8p1 0x1.5555555555555p-2\n\
+         100000000000000000000 1.414213562373095048801688724209698 true Ok(1.414213562373095048801688724209698) Ok(0x1.6a09e667f3bcdp0) Ok(2.25)\n\
+         3.141592653589793238462643383279503 2.718281828459045235360287471352662 Ok(4) Ok(0x1p2)\ntrue true\n\
+         Ok(Array([Decimal(0.1), Int(2), Decimal(1000)])) 0.3\nOk(void)\n"
+    );
 }
 
 #[test]
@@ -1549,7 +1592,7 @@ fn stdlib_json() {
                 print(json.get(data, 'year'), json.get(data, 'nope'))
 
                 match (json.get(data, 'year')) {
-                    Some(year) => print(json.asInt(year), json.asFloat(year), json.asString(year))
+                    Some(year) => print(json.asInt(year), json.asDecimal(year), json.asString(year))
                     None => print('no year')
                 }
 
@@ -1558,7 +1601,7 @@ fn stdlib_json() {
             Err(error) => print(error)
         }
 
-        print(json.stringify(json.Array([json.Float(2.0), json.Int(2), json.String('a'), json.Null, json.Bool(false), json.Float(6.022e23)])))
+        print(json.stringify(json.Array([json.Decimal(2.0), json.Int(2), json.String('a'), json.Null, json.Bool(false), json.Decimal(6.022e23)])))
 
         // parse and stringify give back the same text; floats keep their decimal point
         for text in ['{"name":"koji","year":2025,"tags":[1,2.5,null]}', '[2.0, 1e3]'] {
@@ -1573,7 +1616,7 @@ fn stdlib_json() {
     "#;
     assert_eq!(
         run(source),
-        "koji\nnull\nInt(2025) Array([String('a')]) Float(3.14)\nSome(Int(2025)) None\nSome(2025) Some(2025.0) None\n{\"year\":2025}\n[2.0,2,\"a\",null,false,6.022e23]\n\
+        "koji\nnull\nInt(2025) Array([String('a')]) Decimal(3.14)\nSome(Int(2025)) None\nSome(2025) Some(2025) None\n{\"year\":2025}\n[2.0,2,\"a\",null,false,602200000000000000000000.0]\n\
          {\"name\":\"koji\",\"year\":2025,\"tags\":[1,2.5,null]}\n[2.0,1000.0]\nErr(Syntax('unexpected character \\'}\\'', 1, 7))\nErr(NumberOutOfRange('99999999999999999999', 2, 2))\n"
     );
     assert_error("import json\nprint(json.stringify(1))", "must be Json");
@@ -1750,11 +1793,11 @@ fn methods_and_associated_functions() {
         }
 
         type Shape = {
-            Circle(radius: float)
-            Square(side: float)
+            Circle(radius: decimal)
+            Square(side: decimal)
         }
 
-        function Shape.area(self): float {
+        function Shape.area(self): decimal {
             return match (self) {
                 Circle(r) => 3.0 * r * r
                 Square(s) => s * s
@@ -1771,7 +1814,7 @@ fn methods_and_associated_functions() {
 
         print(person.olderThan(baby), Square(2.0).area())
     "#;
-    assert_eq!(run(source), "Hello, I'm John!\nHello, I'm Ana!\ntrue 4.0\n");
+    assert_eq!(run(source), "Hello, I'm John!\nHello, I'm Ana!\ntrue 4\n");
 
     let p = "type P = { name: string }\n";
     assert_error(&format!("{}function P.hi(self) {{ self.name = 'a' }}", p), "parameters can only be modified when declared 'mut'");
@@ -1979,8 +2022,8 @@ fn display_and_debug() {
         }
 
         type Shape = {
-            Circle(radius: float)
-            Square(side: float)
+            Circle(radius: decimal)
+            Square(side: decimal)
         }
 
         function Shape.display(self): string {
@@ -2002,7 +2045,7 @@ fn display_and_debug() {
     assert_eq!(
         run(source),
         "Ana (30)\nHi, Ana (30)!\nAna (30) Ana (30) { name: 'Ana', age: 30 }\n\
-         circle of radius 1.0 Circle(1.0)\n[{ name: 'Ana', age: 30 }]\n'text' text [1, 2]\n"
+         circle of radius 1 Circle(1)\n[{ name: 'Ana', age: 30 }]\n'text' text [1, 2]\n"
     );
 }
 
@@ -2067,7 +2110,7 @@ fn object_literals_need_a_type() {
     assert_error("print({ a: 1 })", "this object literal needs a type");
     assert_error("immut x: int = { a: 1 }", "an object literal cannot be a value of type int");
     assert_error(
-        "type S = { Circle(r: float) }\nimmut s: S = { r: 1.0 }",
+        "type S = { Circle(r: decimal) }\nimmut s: S = { r: 1.0 }",
         "an object literal cannot be a value of type S",
     );
 }
@@ -2839,18 +2882,18 @@ fn stdlib_path_and_directories() {
 #[test]
 fn int_to_float_conversions() {
     assert_eq!(
-        run("immut a: float[] = [1, 2.5]\nimmut b: Option[float] = Some(1)\nimmut c: Result[float, string] = Ok(3)\nprint(a, a[0] / 2, b, c, [1, 2.5])"),
-        "[1.0, 2.5] 0.5 Some(1.0) Ok(3.0) [1.0, 2.5]\n"
+        run("immut a: float[] = [1, 0x1.4p1]\nimmut b: Option[float] = Some(1)\nimmut c: Result[float, string] = Ok(3)\nprint(a, a[0] / 2, b, c, [1, 2.5])"),
+        "[0x1p0, 0x1.4p1] 0x1p-1 Some(0x1p0) Ok(0x1.8p1) [1, 2.5]\n"
     );
     assert_error("immut counts = [1, 2]\nimmut values: float[] = counts", "cannot assign a value of type int[] to 'values' of type float[]");
-    assert_error("print([[1], [2.5]])", "list elements must have the same type: found int[] and float[]");
+    assert_error("print([[1], [2.5]])", "list elements must have the same type: found int[] and decimal[]");
 }
 
 #[test]
 fn object_fields_follow_the_declaration() {
     assert_eq!(
-        run("type Point = {\n    x: float\n    y: int\n}\n\nimmut p: Point = { y: 1, x: 2 }\nprint(p, p.x / 4)"),
-        "{ x: 2.0, y: 1 } 0.5\n"
+        run("type Point = {\n    x: decimal\n    y: int\n}\n\nimmut p: Point = { y: 1, x: 2 }\nprint(p, p.x / 4)"),
+        "{ x: 2, y: 1 } 0.5\n"
     );
 }
 

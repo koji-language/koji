@@ -164,10 +164,12 @@ KojiDecimal koji_std_math_abs_decimal(KojiDecimal value);
 KojiRecord *koji_std_math_sqrt_decimal(KojiDecimal value, const KojiRecordType *result);
 KojiRecord *koji_std_math_sqrt(double value, const KojiRecordType *result);
 KojiRecord *koji_std_math_pow(double base, double exponent, const KojiRecordType *result, const char *location);
+KojiRecord *koji_std_math_pow_decimal(KojiDecimal base, KojiDecimal exponent, const KojiRecordType *result,
+                                      const char *location);
 int64_t koji_std_math_round(double value, int32_t mode, const char *location);
-void koji_std_time_sleep(double seconds);
-double koji_std_time_now(void);
-double koji_std_time_monotonic(void);
+void koji_std_time_sleep(KojiDecimal seconds);
+KojiDecimal koji_std_time_now(void);
+KojiDecimal koji_std_time_monotonic(void);
 KojiString *koji_std_path_join(const KojiString *base, const KojiString *part);
 KojiRecord *koji_std_path_part(const KojiString *path, int32_t part, const KojiRecordType *option);
 bool koji_std_path_is_absolute(const KojiString *path);
@@ -201,7 +203,7 @@ KojiRecord *koji_std_file_remove(const KojiString *path, const KojiRecordType *r
 
 KojiRecord *koji_std_datetime_now(const KojiRecordType *type);
 KojiString *koji_std_datetime_today(void);
-KojiString *koji_std_datetime_format(double timestamp, const KojiString *pattern);
+KojiString *koji_std_datetime_format(KojiDecimal timestamp, const KojiString *pattern);
 KojiRecord *koji_std_datetime_parse(const KojiString *text, const KojiString *pattern, const KojiRecordType *result);
 
 typedef struct KojiRegex KojiRegex;
@@ -241,6 +243,7 @@ KojiDecimal koji_decimal_mul(KojiDecimal a, KojiDecimal b, const char *location)
 KojiDecimal koji_decimal_div(KojiDecimal a, KojiDecimal b, const char *location);
 KojiDecimal koji_decimal_rem(KojiDecimal a, KojiDecimal b, const char *location);
 KojiDecimal koji_decimal_pow(KojiDecimal base, int64_t exponent, const char *location);
+KojiDecimal koji_decimal_power(KojiDecimal base, KojiDecimal exponent, const char *location);
 KojiDecimal koji_decimal_neg(KojiDecimal value);
 int32_t koji_decimal_compare(KojiDecimal a, KojiDecimal b);
 uint64_t koji_decimal_hash(KojiDecimal value);

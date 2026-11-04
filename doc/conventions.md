@@ -46,3 +46,9 @@
     ```
 
 -   A file ends with exactly one line break: the last line is terminated, and no blank lines follow it.
+
+## Numbers
+
+-   `decimal` is for basic calculations: the numbers people write and read, such as money, measures, percentages, quantities and data read from text or JSON. It is the type of a literal like `1.5`, and the one the standard library uses (time in seconds, the numbers of JSON, `math.pi`).
+-   `float` is for complex calculations, where speed matters more than base 10: simulations, science, statistics on large data, graphics and geometry. It is created explicitly, with `float(x)` or a literal in hexadecimal (`0x1.8p1`), and its values are shown as they are stored.
+-   `int` is for counts, positions and amounts in a smallest unit (cents, milliseconds).

@@ -102,7 +102,7 @@ A type parameter can require that its type supports comparisons, with `[T: const
 | Constraint | The type supports | Types |
 | --- | --- | --- |
 | `equatable` | `==`, `!=` and `in` | numbers, strings, booleans, and any type whose contents are equatable |
-| `orderable` | also `<`, `<=`, `>` and `>=` | `int`, `float` and `string` |
+| `orderable` | also `<`, `<=`, `>` and `>=` | `int`, `decimal`, `float` and `string` |
 
 ```koji
 function max[T: orderable](items: T[]): T {

@@ -334,18 +334,18 @@
 2:11 Symbol (
 2:12 Identifier radius
 2:18 Symbol :
-2:20 Identifier float
-2:25 Symbol )
+2:20 Identifier decimal
+2:27 Symbol )
 3:5 Identifier Rectangle
 3:14 Symbol (
 3:15 Identifier width
 3:20 Symbol :
-3:22 Identifier float
-3:27 Symbol ,
-3:29 Identifier height
-3:35 Symbol :
-3:37 Identifier float
-3:42 Symbol )
+3:22 Identifier decimal
+3:29 Symbol ,
+3:31 Identifier height
+3:37 Symbol :
+3:39 Identifier decimal
+3:46 Symbol )
 4:1 Symbol }
 6:1 Keyword function
 6:10 Identifier area
@@ -355,8 +355,8 @@
 6:22 Identifier Shape
 6:27 Symbol )
 6:28 Symbol :
-6:30 Identifier float
-6:36 Symbol {
+6:30 Identifier decimal
+6:38 Symbol {
 7:5 Keyword match
 7:11 Symbol (
 7:12 Identifier shape
@@ -367,7 +367,7 @@
 8:16 Identifier radius
 8:22 Symbol )
 8:24 Symbol =>
-8:27 Float 3.14
+8:27 Decimal 3.14
 8:32 Symbol *
 8:34 Identifier radius
 8:41 Symbol *
@@ -394,14 +394,14 @@
 13:25 Symbol [
 13:26 Identifier Circle
 13:32 Symbol (
-13:33 Float 1.0
+13:33 Decimal 1.0
 13:36 Symbol )
 13:37 Symbol ,
 13:39 Identifier Rectangle
 13:48 Symbol (
-13:49 Float 2.0
+13:49 Decimal 2.0
 13:52 Symbol ,
-13:54 Float 3.0
+13:54 Decimal 3.0
 13:57 Symbol )
 13:58 Symbol ]
 15:1 Keyword for
@@ -428,7 +428,7 @@
 3:11 Identifier string
 4:5 Identifier price
 4:10 Symbol :
-4:12 Identifier float
+4:12 Identifier decimal
 5:1 Symbol }
 7:1 Keyword type
 7:6 Identifier Dictionary
@@ -481,7 +481,7 @@
 19:36 Symbol ,
 19:38 Identifier price
 19:43 Symbol :
-19:45 Float 2.5
+19:45 Decimal 2.5
 19:49 Symbol }
 19:50 Symbol )
 19:51 Symbol )
@@ -530,9 +530,9 @@
 ==== test/lexer/edge.kj
 1:1 Identifier x
 1:3 Symbol =
-1:5 Float 1500.0
+1:5 Decimal 1.5e3
 1:11 Symbol +
-1:13 Float 0.02
+1:13 Decimal 2E-2
 1:18 Symbol +
 1:20 Int 3
 1:21 Identifier e
@@ -541,13 +541,13 @@
 1:26 Symbol .
 1:27 Identifier x
 1:29 Symbol +
-1:31 Float 1e20
+1:31 Decimal 99999999999999999999
 1:52 Symbol +
-1:54 Float 1.2
+1:54 Decimal 1.2
 1:57 Symbol .
 1:58 Int 3
 1:60 Symbol +
-1:62 Float 0.5
+1:62 Decimal 0.5
 2:1 Identifier s
 2:3 Symbol =
 2:5 String 'it\'s'
@@ -617,15 +617,15 @@
 ==== test/lexer/edge5.kj
 1:1 Identifier x
 1:3 Symbol =
-1:5 LargeFloat 1e400
+1:5 Decimal 1e400
 1:11 Symbol +
-1:13 Float 1.5e308
+1:13 Decimal 1.5e308
 1:21 Symbol +
-1:23 Float 0.0
+1:23 Decimal 1e-400
 1:30 Symbol +
-1:32 LargeFloat 2.5E999
+1:32 Decimal 2.5E999
 1:40 Symbol +
-1:42 LargeFloat 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497792.0
+1:42 Decimal 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497792.0
 2:1 End
 ==== test/lexer/edge6.kj
 1:1 Identifier a

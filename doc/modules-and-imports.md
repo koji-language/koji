@@ -23,7 +23,7 @@ Everything in a module is private by default. Only declarations marked with `exp
 
 function clamp(x: int): int { ... } // private: only usable inside math.kj
 
-export immut pi: float = 3.14159
+export immut pi: decimal = 3.14159
 ```
 
 ```koji
