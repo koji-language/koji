@@ -19,6 +19,8 @@ use std::ffi::c_char;
 use crate::output::panic_at;
 
 const DIGITS: u32 = 34;
+/// The zeros that only hold places from which a number is shown in scientific notation.
+const PLACE_HOLDERS: i64 = 6;
 const MIN_EXPONENT: i64 = -6176;
 const MAX_EXPONENT: i64 = 6111;
 
@@ -859,10 +861,11 @@ pub fn parse_parts(text: &str) -> Result<Parts, ParseFailure> {
 }
 
 impl std::fmt::Display for Decimal {
-    /// In full, as in everyday writing: `10`, `1.5`, `0.001`, `100000000000000000000`, without
-    /// trailing zeros. A number whose integer part has more digits than a decimal holds (34) is
-    /// written in scientific notation, `1e300` or `1.5e40`: its other digits would be zeros that
-    /// say nothing.
+    /// In full, as in everyday writing (`10`, `1.5`, `0.001`, `2500000`), without trailing zeros,
+    /// unless the number needs many zeros that only hold places, where science writes it in
+    /// scientific notation: six or more zeros after its last significant digit (`3e6`, `1e20`), six
+    /// or more after the point before its first one (`1e-7`), or an integer part longer than the
+    /// 34 digits a decimal holds.
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         let value = self.normalized();
         if value.is_zero() {
@@ -871,7 +874,7 @@ impl std::fmt::Display for Decimal {
         let sign = if value.negative { "-" } else { "" };
         let digits = value.coefficient.to_string();
         let position = digits.len() as i64 + value.exponent;
-        if position > DIGITS as i64 {
+        if value.exponent >= PLACE_HOLDERS || -position >= PLACE_HOLDERS || position > DIGITS as i64 {
             let mantissa = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits };
             return write!(formatter, "{}{}e{}", sign, mantissa, position - 1);
         }
@@ -1404,7 +1407,7 @@ mod tests {
         assert_eq!(show(d("1").divide(d("3")).unwrap()), "0.3333333333333333333333333333333333");
         assert_eq!(show(d("2").divide(d("3")).unwrap()), "0.6666666666666666666666666666666667");
         assert_eq!(show(d("1").divide(d("4")).unwrap()), "0.25");
-        assert_eq!(show(d("1").divide(d("98765432109876543210")).unwrap()), "0.00000000000000000001012499999886093750011548828123843");
+        assert_eq!(show(d("1").divide(d("98765432109876543210")).unwrap()), "1.012499999886093750011548828123843e-20");
         assert_eq!(show(d("1").add(d("1e-40"))), "1");
         assert_eq!(show(d("1").subtract(d("1e-40"))), "1");
         assert_eq!(show(d("1e34").subtract(d("0.5"))), "1e34");
@@ -1422,7 +1425,23 @@ mod tests {
         assert_eq!(show(d("1e-6176").divide(d("10")).unwrap()), "decimal underflow");
         assert_eq!(d("3e-6176").divide(d("2")).unwrap().unwrap().compare(d("2e-6176")), Ordering::Equal);
         assert_eq!(d("1e6144").to_string(), "1e6144");
-        assert_eq!(d("1e33").to_string(), format!("1{}", "0".repeat(33)));
+        assert_eq!(d("1e33").to_string(), "1e33");
+        // Scientific notation where science uses it: many zeros that only hold places.
+        for (text, shown) in [
+            ("2500000", "2500000"),
+            ("3000000", "3e6"),
+            ("299792458", "299792458"),
+            ("300000000", "3e8"),
+            ("6.02214076e23", "6.02214076e23"),
+            ("12000000000.5", "12000000000.5"),
+            ("0.000001", "0.000001"),
+            ("0.0000001", "1e-7"),
+            ("0.00000015", "1.5e-7"),
+            ("-1.602176634e-19", "-1.602176634e-19"),
+            ("1234.5", "1234.5"),
+        ] {
+            assert_eq!(d(text).to_string(), shown, "{}", text);
+        }
         assert_eq!(d("-1.5e34").to_string(), "-1.5e34");
         assert!(parse("1e6145").is_err());
     }

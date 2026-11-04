@@ -29,7 +29,7 @@ type Json = {
     Converts a JSON string into a `Json` value.
 
 -   `stringify(value: Json) -> string`  
-    Converts a `Json` value to a JSON string. A `Decimal` is written in full and always with a decimal point (`Decimal(3)` is written `3.0`, `Decimal(1e20)` is written `100000000000000000000.0`), so that parsing the text back gives a `Decimal` again.
+    Converts a `Json` value to a JSON string. A `Decimal` is written in full and always with a decimal point (`Decimal(3)` is written `3.0`, `Decimal(1e20)` is written `1e20`), so that parsing the text back gives a `Decimal` again.
 
 -   `get(value: Json, key: string) -> Option[Json]`  
     The field `key` of an `Object`, or `None` if `value` is not an object or has no such field.

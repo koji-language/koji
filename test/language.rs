@@ -1445,7 +1445,7 @@ fn floats_have_no_nan_or_infinity() {
     assert_eq!(run("print(2.0 ** 0.5 > 1.41, 2 ** 3, (-8.0) ** 2.0, float(2) ** float(0.5) > float(1.41))"), "true 8 64 true\n");
     // 0 ** 0 is 1: the value of the expression (the indeterminate form only concerns limits).
     assert_eq!(run("print(0 ** 0, 0.0 ** 0.0, float(0) ** float(0))"), "1 1 0x1p0\n");
-    assert_eq!(run("print(6.022e23, 1e15, 2.5e-3)"), "602200000000000000000000 1000000000000000 0.0025\n");
+    assert_eq!(run("print(6.022e23, 1e15, 2.5e-3)"), "6.022e23 1e15 0.0025\n");
 }
 
 #[test]
@@ -1490,7 +1490,7 @@ match (price) {
 1 true\n\
 0.3333333333333333333333333333333333 0.9999999999999999999999999999999999\n\
 0.6666666666666666666666666666666667 -7.5 0.75\n\
-2.25 0.25 100000000000000000000\n\
+2.25 0.25 1e20\n\
 1.5 2.5 Ok(1.414213562373095048801688724209698)\n\
 -3 3 3 -2\n\
 0x1.999999999999ap-4 0.30000000000000004 Ok(12.5) Err(InvalidNumber('x'))\n\
@@ -1515,7 +1515,7 @@ a tenth\n\
         ("immut d: decimal = 9e6144\nprint(d * 10)", "panic: test.kj:2: decimal overflow"),
         ("immut d: decimal = 1\nprint(d / 0)", "panic: test.kj:2: division by zero"),
         ("immut d: decimal = 1e-6176\nprint(d / 3)", "panic: test.kj:2: decimal underflow"),
-        ("print(int(decimal(1e20)))", "integer overflow: 100000000000000000000 does not fit in an int"),
+        ("print(int(decimal(1e20)))", "integer overflow: 1e20 does not fit in an int"),
     ];
     for (code, fragment) in errors {
         assert_error(code, fragment);
@@ -1555,11 +1555,16 @@ print(main())
 "#;
     assert_eq!(
         run(source),
-        "10\n0.3 0x1.3333333333333p-2\n0x1.3333333333334p-2 0.30000000000000004 false false\n\
-         255 16 0x1.8p1 -0x1p-2 0x0.0000000000001p-1022 0x1.8p1 0x1.5555555555555p-2\n\
-         100000000000000000000 1.414213562373095048801688724209698 true Ok(1.414213562373095048801688724209698) Ok(0x1.6a09e667f3bcdp0) Ok(2.25)\n\
-         3.141592653589793238462643383279503 2.718281828459045235360287471352662 Ok(4) Ok(0x1p2)\ntrue true\n\
-         Ok(Array([Decimal(0.1), Int(2), Decimal(1000)])) 0.3\nOk(void)\n"
+        "10\n\
+0.3 0x1.3333333333333p-2\n\
+0x1.3333333333334p-2 0.30000000000000004 false false\n\
+255 16 0x1.8p1 -0x1p-2 0x0.0000000000001p-1022 0x1.8p1 0x1.5555555555555p-2\n\
+1e20 1.414213562373095048801688724209698 true Ok(1.414213562373095048801688724209698) Ok(0x1.6a09e667f3bcdp0) Ok(2.25)\n\
+3.141592653589793238462643383279503 2.718281828459045235360287471352662 Ok(4) Ok(0x1p2)\n\
+true true\n\
+Ok(Array([Decimal(0.1), Int(2), Decimal(1000)])) 0.3\n\
+Ok(void)\n\
+"
     );
 }
 
@@ -1630,8 +1635,18 @@ fn stdlib_json() {
     "#;
     assert_eq!(
         run(source),
-        "koji\nnull\nInt(2025) Array([String('a')]) Decimal(3.14)\nSome(Int(2025)) None\nSome(2025) Some(2025) None\n{\"year\":2025}\n[2.0,2,\"a\",null,false,602200000000000000000000.0]\n\
-         {\"name\":\"koji\",\"year\":2025,\"tags\":[1,2.5,null]}\n[2.0,1000.0]\nErr(Syntax('unexpected character \\'}\\'', 1, 7))\nErr(NumberOutOfRange('99999999999999999999', 2, 2))\n"
+        "koji\n\
+null\n\
+Int(2025) Array([String('a')]) Decimal(3.14)\n\
+Some(Int(2025)) None\n\
+Some(2025) Some(2025) None\n\
+{\"year\":2025}\n\
+[2.0,2,\"a\",null,false,6.022e23]\n\
+{\"name\":\"koji\",\"year\":2025,\"tags\":[1,2.5,null]}\n\
+[2.0,1000.0]\n\
+Err(Syntax('unexpected character \\'}\\'', 1, 7))\n\
+Err(NumberOutOfRange('99999999999999999999', 2, 2))\n\
+"
     );
     assert_error("import json\nprint(json.stringify(1))", "must be Json");
 }

@@ -18,10 +18,11 @@ immut tax: decimal = 0.07
 print(price * tax) // 1.3993
 print(0.1 + 0.2) // 0.3
 print(decimal(1) / 3) // 0.3333333333333333333333333333333333
-print(6.022e23) // 602200000000000000000000
+print(6.022e23) // 6.022e23
+print(1500000.25) // 1500000.25
 ```
 
-A decimal literal must hold exactly: one with more than 34 significant digits, or out of the range of a decimal (about 1e-6176 to 1e6145), is a compile-time error. An operation rounds its exact result to 34 significant digits, to the nearest (half to even): `decimal(2) / 3` is `0.6666666666666666666666666666666667`. A decimal is shown in full, without trailing zeros: `1.50` and `1.5` are equal and both are shown as `1.5`, and `decimal(10) ** 20` is `100000000000000000000`. A number whose integer part has more digits than a decimal holds (34) is shown in scientific notation, which is also how it is written: `decimal(10) ** 300` is `1e300`.
+A decimal literal must hold exactly: one with more than 34 significant digits, or out of the range of a decimal (about 1e-6176 to 1e6145), is a compile-time error. An operation rounds its exact result to 34 significant digits, to the nearest (half to even): `decimal(2) / 3` is `0.6666666666666666666666666666666667`. A decimal is shown in full, without trailing zeros: `1.50` and `1.5` are equal and both are shown as `1.5`. It is shown in scientific notation, which is also how it is written, where mathematics, physics and chemistry use it: when writing it in full would need many zeros that only hold places. That is six or more zeros after its last significant digit (`3000000` is `3e6`, but `2500000` stays), six or more after the point before its first one (`0.000001` stays, `0.0000001` is `1e-7`), or an integer part longer than the 34 digits a decimal holds. An `int` is always shown in full.
 
 -   `float`: 64-bit binary floating-point numbers, computed by the processor: fast, but most fractions written in base 10 have no exact value in base 2. A `float` is written and shown as it is stored, in base 16: a mantissa after `0x` and a power of 2 after `p`. `0x1.8p1` is 1.5 × 2 = 3.
 
@@ -46,7 +47,7 @@ print(amount * decimal(rate)) // 2.5
 print(amount * rate) // Error! operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ```
 
-A `decimal` is for the numbers people write and read, the `float` for heavy computations (simulations, science, graphics); see [Conventions](conventions.md#numbers).
+Simple calculations use a `decimal`; complex ones, which need speed (graph algorithms, simulations, science, graphics), use a `float`; see [Conventions](conventions.md#numbers).
 
 An `int` can be used where a `decimal` or a `float` is expected, and it is converted. This applies to a single value, and to the items of a list literal; a list that already exists is not converted, since that would copy it:
 
