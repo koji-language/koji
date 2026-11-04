@@ -1,5 +1,5 @@
-// kojic, the Koji compiler written in Koji: the same commands as the kojic written in Rust. It has
-// no interpreter: `run` compiles the program and runs it. It compiles itself (test/bootstrap.rs).
+// kojic, the Koji compiler, written in Koji. It has no interpreter: `run` compiles the program and
+// runs it. It compiles itself: bootstrap/build.sh builds it from the C it generated for itself.
 
 import file
 import path
@@ -33,7 +33,7 @@ immut usage = [
     '(libkoji_runtime.a) and KOJI_CC the C compiler (default: cc).'
 ].join('\n')
 
-// The text of a system error, as the kojic written in Rust shows it.
+// The text of a system error (the one of the runtime).
 function ioMessage(error: file.FileError): string {
     return match (error) {
         NotFound(_) => 'No such file or directory (os error 2)'

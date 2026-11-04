@@ -242,11 +242,19 @@ Most decisions follow from a few ideas:
 
 ### `kojic run` and `kojic build`
 
-**Decision**: `kojic run` checks and interprets a program; `kojic build` compiles it to an executable, through C, linked with a runtime library written in Rust. Both give the same results: every test runs in both modes.
+**Decision**: `kojic build` compiles a program to an executable, through C, linked with a runtime library written in Rust; `kojic run` compiles it to a temporary executable and runs it. There is no interpreter.
 
-**Why**: the interpreter is fast to start for development; compiled programs are fast to run. Generating C needs no code generator library, works wherever there is a C compiler, gets the optimizations of gcc and clang, and the generated code is readable. The runtime shares its code with the interpreter (number formatting, the standard library), so both give the same output.
+**Why**: one implementation of the language, so a program behaves the same in development and in production. Generating C needs no code generator library, works wherever there is a C compiler, gets the optimizations of gcc and clang, and the generated code is readable.
 
-**Alternatives**: a native backend (LLVM, Cranelift, or machine code directly), which can come later from the same intermediate representation.
+**Alternatives**: an interpreter for `kojic run`, which starts faster but is a second implementation of every feature that must give the same results (Koji had one, in Rust, until the compiler written in Koji replaced it); a native backend (LLVM, Cranelift, or machine code directly), which can come later from the same intermediate representation.
+
+### The compiler is written in Koji, from a seed in C
+
+**Decision**: `kojic` is written in Koji (`compiler/`). It is built from the seed, the C it generated for itself (`bootstrap/kojic.c.gz`): a C compiler builds stage 1 from the seed, and stage 1 builds the compiler of `compiler/` (`bootstrap/build.sh`). The seed is written again when the compiler needs a feature the seed does not compile.
+
+**Why**: the compiler is the largest Koji program, and writing it in Koji tests the language and shows what it lacks. A seed in C needs only a C compiler to build Koji, on any system, and the compiler can use any feature of the language once the seed is written again with it.
+
+**Alternatives**: keeping the compiler in Rust, a second implementation to maintain along with the one in Koji; a chain of earlier compilers to build from (like Go, which needs an earlier Go), which needs an executable for each system; a seed in the intermediate representation, which would need an interpreter of it.
 
 ### Messages name files as they were written
 

@@ -1,6 +1,5 @@
-// The C code generator of the Koji compiler written in Koji: turns the IR into one C file, which a
-// C compiler links with the runtime library (runtime/). It follows src/backend/c/: `generate`
-// gives the same text as `kojic dump c`.
+// The C code generator of the Koji compiler: turns the IR into one C file, which a C compiler
+// links with the runtime library (runtime/). `generate` gives the text of `kojic dump c`.
 
 import { Ty, Operand, Place, Step, Target, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
 import { preludeLines } from 'prelude.kj'

@@ -15,8 +15,7 @@ fn slot(string: *mut KojiString) -> u64 {
     string as usize as u64
 }
 
-/// The last line of the `regex` crate's message, without its `error: ` prefix (shared with
-/// the interpreter).
+/// The last line of the `regex` crate's message, without its `error: ` prefix.
 pub fn regex_error_message(error: &regex::Error) -> String {
     let text = error.to_string();
     let last = text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");

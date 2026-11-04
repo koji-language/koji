@@ -1,6 +1,5 @@
-// The intermediate representation of the Koji compiler written in Koji, between the checked
-// syntax tree and the code generator. It follows src/ir/: `text` gives the same text as
-// `kojic dump ir`.
+// The intermediate representation of the Koji compiler, between the checked syntax tree and the
+// code generator. `programText` gives the text of `kojic dump ir`.
 
 export type Ty = {
     IntTy

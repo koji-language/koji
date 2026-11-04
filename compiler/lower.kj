@@ -1,5 +1,5 @@
-// Lowering, in the Koji compiler written in Koji: from the checked syntax tree to the IR. It
-// follows src/ir/lower.rs, with the same messages for what `kojic build` does not support yet.
+// Lowering, in the Koji compiler: from the checked syntax tree to the IR, with a message for what
+// `kojic build` does not support yet.
 
 import { Node, NodeKind, Pattern, TypeExpr, Param, TypeParam, Arm, Part, Entry, ObjectEntry } from 'parser.kj'
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, substitute, display } from 'types.kj'
@@ -1136,7 +1136,7 @@ function Lowerer.lowerModuleBody(mut self): Result[void, string] {
 
     if (module.init == 0) {
         // At the end of the program, the values owned by each module are dropped (the main file
-        // first, then the others, last loaded first, like the interpreter).
+        // first, then the others, last loaded first).
         mut order: int[] = []
         self.loadOrder(0, mut order)
         mut i = order.length() - 1
@@ -1718,7 +1718,7 @@ function Lowerer.statement(mut self, mut builder: Builder, node: Node): Result[v
             if (self.atTopLevel(builder)) { return Ok() }
 
             // A function declared inside another one: a closure, created where it is declared,
-            // with a copy of the variables around it (like the interpreter).
+            // with a copy of the variables around it.
             mut simple = owner is None and typeParams.length() == 0
 
             for param in params {

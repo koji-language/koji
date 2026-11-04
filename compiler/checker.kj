@@ -1,7 +1,5 @@
-// The type checker of the Koji compiler written in Koji. It follows the checker in Rust
-// (src/semantic/type_checker/), with the same messages, and records what it finds about each
-// node (its type, moves, drops...) by the node's id; `kojic dump types` prints the same text as
-// `dump`.
+// The type checker of the Koji compiler. It records what it finds about each node (its type,
+// moves, drops...) by the node's id; `kojic dump types` prints the text of `dumpTypes`.
 
 import file
 import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Part, Entry, ObjectEntry, ParsedFile, parseFrom, annotated } from 'parser.kj'
@@ -741,7 +739,7 @@ export function resolvePath(dir: string, path: string): string {
     return parts.join('/')
 }
 
-// The text of a system error, as the checker in Rust shows it.
+// The text of a system error (the one of the runtime).
 function ioMessage(error: file.FileError): string {
     return match (error) {
         NotFound(_) => 'No such file or directory (os error 2)'

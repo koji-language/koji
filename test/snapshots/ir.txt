@@ -1,0 +1,2135 @@
+==== examples/booleans.kj
+string s0 = "ready"
+string s1 = "empty"
+string s2 = "not empty"
+global g0: Int // count
+global g1: Bool // ready
+global g2: Bool // empty
+global g3: Int // attempts
+
+function f0 main(): Void
+    local l0: Str
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+    local l8: Bool
+    local l9: Int
+    local l10: Str
+  b0:
+    g0 = 0
+    branch true, b1, b2
+  b1:
+    g0 = 1
+    goto b2
+  b2:
+    l0 = IntToStr g0
+    print l0
+    l1 = IntCompare(Greater) g0, 0
+    g1 = l1
+    l2 = IntCompare(Equal) g0, 0
+    g2 = l2
+    l3 = g1
+    branch l3, b3, b4
+  b3:
+    l4 = Not g2
+    l3 = l4
+    goto b4
+  b4:
+    branch l3, b5, b6
+  b5:
+    print s0
+    goto b6
+  b6:
+    l5 = g2
+    branch l5, b8, b7
+  b7:
+    l5 = false
+    goto b8
+  b8:
+    branch l5, b9, b10
+  b9:
+    print s1
+    goto b11
+  b10:
+    print s2
+    goto b11
+  b11:
+    g3 = 0
+    goto b12
+  b12:
+    l7 = IntCompare(Less) g3, 3
+    l6 = l7
+    branch l6, b15, b16
+  b13:
+    l9 = IntAdd g3, 1
+    g3 = l9
+    goto b12
+  b14:
+    l10 = IntToStr g3
+    print l10
+    return
+  b15:
+    l8 = Not g2
+    l6 = l8
+    goto b16
+  b16:
+    branch l6, b13, b14
+==== examples/comments.kj
+
+function f0 main(): Void
+  b0:
+    return
+==== examples/condition.kj
+string s0 = "x is greater than 5."
+string s1 = "x isn't greater than 5."
+global g0: Int // x
+
+function f0 main(): Void
+    local l0: Bool
+  b0:
+    g0 = 10
+    l0 = IntCompare(GreaterEqual) g0, 5
+    branch l0, b1, b2
+  b1:
+    print s0
+    goto b3
+  b2:
+    print s1
+    goto b3
+  b3:
+    return
+==== examples/functions.kj
+record r0 environment
+    {} ()
+global g0: Function([Int], Int) // double
+
+function f0 main(): Void
+    local l0: Function([Int], Int)
+    local l1: Int
+    local l2: Str
+    local l3: Int
+    local l4: Str
+  b0:
+    l0 = closure f2
+    g0 = l0
+    l1 = call f1(5)
+    l2 = IntToStr l1
+    print l2
+    l3 = call g0(21)
+    l4 = IntToStr l3
+    print l4
+    return
+
+function f1 factorial(l0: Int): Int
+    local l1: Bool
+    local l2: Int
+    local l3: Int
+    local l4: Int
+  b0:
+    l1 = IntCompare(LessEqual) l0, 1
+    branch l1, b1, b2
+  b1:
+    return 1
+  b2:
+    l2 = IntSub l0, 1
+    l3 = call f1(l2)
+    l4 = IntMul l0, l3
+    return l4
+
+function f2 anonymous function(l0: Record(0), l1: Int): Int
+    local l2: Int
+  b0:
+    l2 = IntMul l1, 2
+    return l2
+==== examples/hello.kj
+string s0 = "Hello, World!"
+global g0: Str // text
+
+function f0 main(): Void
+  b0:
+    g0 = s0
+    print g0
+    return
+==== examples/input.kj
+string s0 = "What's your name?"
+string s1 = "Hello, "
+string s2 = "!"
+string s3 = "No input"
+record r0 Option[string]
+    Some (value: Str)
+    None ()
+global g0: Record(0) // name
+
+function f0 main(): Void
+    local l0: Record(0)
+    local l1: Record(0)
+    local l2: Int
+    local l3: Bool
+    local l4: Str
+    local l5: Str // line
+    local l6: Str
+    local l7: Str
+    local l8: Int
+    local l9: Bool
+  b0:
+    l0 = koji_std_input([Value(Str(0)), Record(0), Location(1)])
+    g0 = l0
+    l1 = g0
+    l2 = RecordTag l1
+    l3 = IntCompare(Equal) l2, 0
+    branch l3, b3, b2
+  b1:
+    return
+  b2:
+    l8 = RecordTag l1
+    l9 = IntCompare(Equal) l8, 1
+    branch l9, b5, b4
+  b3:
+    l4 = l1.0
+    l5 = l4
+    l6 = StrConcat s1, l5
+    l7 = StrConcat l6, s2
+    print l7
+    goto b1
+  b4:
+    unreachable
+  b5:
+    print s3
+    goto b1
+==== examples/interpolation.kj
+string s0 = "Result: "
+global g0: Int // result
+
+function f0 main(): Void
+    local l0: Str
+    local l1: Str
+  b0:
+    g0 = 4
+    l0 = IntToStr g0
+    l1 = StrConcat s0, l0
+    print l1
+    return
+==== examples/length.kj
+string s0 = "Hello, World!"
+global g0: Str // text
+global g1: List(Int) // list
+
+function f0 main(): Void
+    local l0: Int
+    local l1: Str
+    local l2: List(Int)
+    local l3: Str
+    local l4: Int
+    local l5: Str
+  b0:
+    g0 = s0
+    print g0
+    l0 = StrLength g0
+    l1 = IntToStr l0
+    print l1
+    l2 = list [1, 2, 3, 4]
+    g1 = l2
+    l3 = ListToStr g1
+    print l3
+    l4 = ListLength g1
+    l5 = IntToStr l4
+    print l5
+    return
+==== examples/modules.kj
+record r0 MathError
+    Complex ()
+    Indeterminate ()
+    Infinite ()
+record r1 Result[float, MathError]
+    Ok (value: Float)
+    Err (error: Record(0))
+global g0: Bool // lib/calc.kj initialized
+
+function f0 main(): Void
+    local l0: Int
+    local l1: Str
+    local l2: Float
+    local l3: Record(1)
+    local l4: Record(1)
+    local l5: Int
+    local l6: Bool
+    local l7: Float
+    local l8: Float // root
+    local l9: Str
+    local l10: Int
+    local l11: Bool
+    local l12: Record(0)
+    local l13: Record(0) // error
+    local l14: Str
+  b0:
+    call f1()
+    l0 = call f2(2, 3)
+    l1 = IntToStr l0
+    print l1
+    l2 = IntToFloat 16
+    l3 = koji_std_math_sqrt([Value(Local(2)), Record(1)])
+    l4 = l3
+    l5 = RecordTag l4
+    l6 = IntCompare(Equal) l5, 0
+    branch l6, b3, b2
+  b1:
+    return
+  b2:
+    l10 = RecordTag l4
+    l11 = IntCompare(Equal) l10, 1
+    branch l11, b5, b4
+  b3:
+    l7 = l4.0
+    l8 = l7
+    l9 = FloatToStr l8
+    print l9
+    goto b1
+  b4:
+    unreachable
+  b5:
+    l12 = l4.0
+    l13 = l12
+    l14 = RecordToStr l13
+    print l14
+    goto b1
+
+function f1 lib/calc.kj (module)(): Void
+  b0:
+    branch g0, b1, b2
+  b1:
+    return
+  b2:
+    g0 = true
+    return
+
+function f2 add(l0: Int, l1: Int): Int
+    local l2: Int
+  b0:
+    l2 = IntAdd l0, l1
+    return l2
+==== examples/shapes.kj
+string s0 = ": "
+record r0 Shape
+    Circle (radius: Float)
+    Rectangle (width: Float, height: Float)
+global g0: List(Record(0)) // shapes
+
+function f0 main(): Void
+    local l0: Record(0)
+    local l1: Record(0)
+    local l2: List(Record(0))
+    local l3: List(Record(0))
+    local l4: Int
+    local l5: Int
+    local l6: Bool
+    local l7: Int
+    local l8: Record(0) // shape
+    local l9: Str
+    local l10: Str
+    local l11: Float
+    local l12: Str
+    local l13: Str
+  b0:
+    l0 = record variant 0 (1.0)
+    l1 = record variant 1 (2.0, 3.0)
+    l2 = list [l0, l1]
+    g0 = l2
+    l3 = g0
+    l4 = ListLength l3
+    l5 = 0
+    goto b1
+  b1:
+    l6 = IntCompare(Less) l5, l4
+    branch l6, b2, b4
+  b2:
+    l8 = l3[l5]
+    l9 = RecordToStr l8
+    l10 = StrConcat l9, s0
+    l11 = call f1(l8)
+    l12 = FloatToStr l11
+    l13 = StrConcat l10, l12
+    print l13
+    goto b3
+  b3:
+    l7 = IntAdd l5, 1
+    l5 = l7
+    goto b1
+  b4:
+    return
+
+function f1 area(l0: Record(0)): Float
+    local l1: Float
+    local l2: Record(0)
+    local l3: Int
+    local l4: Bool
+    local l5: Float
+    local l6: Float // radius
+    local l7: Float
+    local l8: Float
+    local l9: Int
+    local l10: Bool
+    local l11: Float
+    local l12: Float // width
+    local l13: Float
+    local l14: Float // height
+    local l15: Float
+  b0:
+    l2 = l0
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 0
+    branch l4, b3, b2
+  b1:
+    return l1
+  b2:
+    l9 = RecordTag l2
+    l10 = IntCompare(Equal) l9, 1
+    branch l10, b5, b4
+  b3:
+    l5 = l2.0
+    l6 = l5
+    l7 = FloatMul 3.14, l6
+    l8 = FloatMul l7, l6
+    l1 = l8
+    goto b1
+  b4:
+    unreachable
+  b5:
+    l11 = l2.0
+    l12 = l11
+    l13 = l2.1
+    l14 = l13
+    l15 = FloatMul l12, l14
+    l1 = l15
+    goto b1
+==== examples/types.kj
+string s0 = "hello"
+string s1 = "olá"
+string s2 = "world"
+string s3 = "mundo"
+string s4 = "Pen"
+string s5 = "empty"
+string s6 = "small"
+string s7 = "large"
+string s8 = " ("
+string s9 = ") - "
+record r0 Product
+    {} (id: Int, name: Str, price: Float)
+global g0: Map(Str, Str) // translations
+global g1: Str // label
+
+function f0 main(): Void
+    local l0: Map(Str, Str)
+    local l1: Int
+    local l2: Str
+    local l3: Float
+    local l4: Record(0)
+    local l5: Str
+    local l6: Str
+    local l7: Str
+    local l8: Int
+    local l9: Int
+    local l10: Bool
+    local l11: Int // n
+    local l12: Bool
+  b0:
+    l0 = map [s0: s1, s2: s3]
+    g0 = l0
+    l1 = 1
+    l2 = s4
+    l3 = 2.5
+    l4 = record variant 0 (l1, l2, l3)
+    l5 = call f1(l4)
+    print l5
+    l6 = g0{s0}
+    print l6
+    l8 = MapLength g0
+    l9 = l8
+    l10 = IntCompare(Equal) l9, 0
+    branch l10, b3, b2
+  b1:
+    g1 = l7
+    print g1
+    return
+  b2:
+    l11 = l9
+    l12 = IntCompare(Less) l11, 3
+    branch l12, b5, b4
+  b3:
+    l7 = s5
+    goto b1
+  b4:
+    l7 = s7
+    goto b1
+  b5:
+    l7 = s6
+    goto b1
+  b6:
+    unreachable
+
+function f1 describe(l0: Record(0)): Str
+    local l1: Str
+    local l2: Str
+    local l3: Int
+    local l4: Str
+    local l5: Str
+    local l6: Str
+    local l7: Float
+    local l8: Str
+    local l9: Str
+  b0:
+    l1 = l0.1
+    l2 = StrConcat l1, s8
+    l3 = l0.0
+    l4 = IntToStr l3
+    l5 = StrConcat l2, l4
+    l6 = StrConcat l5, s9
+    l7 = l0.2
+    l8 = FloatToStr l7
+    l9 = StrConcat l6, l8
+    return l9
+==== test/checker/cycle.kj
+error: type error: cycle_b.kj:1: circular import of 'cycle_a.kj'
+==== test/checker/generic_value.kj
+error: type error: test/checker/generic_value.kj:2: 'first' is generic and can only be called (its type arguments come from the call)
+==== test/checker/missing.kj
+error: type error: test/checker/missing.kj:1: module 'lib/shapes.kj' has no member 'nothing'
+==== test/checker/modules.kj
+error: compile error: test/checker/modules.kj:17: '?' that wraps an error of another module is not supported by 'kojic build' yet (use 'kojic run')
+==== test/checker/mut_value.kj
+error: type error: test/checker/mut_value.kj:2: 'grow' has 'mut' or 'take' parameters and can only be called, not used as a value
+==== test/checker/nofile.kj
+error: type error: test/checker/nofile.kj:1: cannot import 'lib/none.kj': No such file or directory (os error 2)
+==== test/checker/private.kj
+error: type error: test/checker/private.kj:1: 'secret' is not exported by 'lib/shapes.kj'
+==== test/checker/private_type.kj
+error: type error: test/checker/private_type.kj:2: module 'shapes' has no type 'Hidden'
+==== test/checker/readonly.kj
+error: type error: test/checker/readonly.kj:2: 'count' is read-only outside 'lib/shapes.kj'
+==== test/checker/readonly_member.kj
+error: type error: test/checker/readonly_member.kj:2: 'origin' is read-only outside 'lib/shapes.kj'
+==== test/checker/syntax.kj
+error: syntax error: lib/broken.kj:1: expected parameter name, found '{'
+==== test/checker/wrap.kj
+error: compile error: test/checker/wrap.kj:4: '?' that wraps an error of another module is not supported by 'kojic build' yet (use 'kojic run')
+==== test/ir/cases.txt #0
+record r0 environment
+    {} ()
+
+function f0 main(): Void
+    local l0: Int
+    local l1: Str
+  b0:
+    l0 = call f1()
+    l1 = IntToStr l0
+    print l1
+    return
+
+function f1 outer(): Int
+    local l0: Function([], Int)
+    local l1: Function([], Int) // inner
+    local l2: Int
+  b0:
+    l0 = closure f2
+    l1 = l0
+    l2 = call l1()
+    return l2
+
+function f2 inner(l0: Record(0)): Int
+  b0:
+    return 1
+==== test/ir/cases.txt #1
+error: compile error: case1.kj:2: a type declared inside a block is not supported by 'kojic build' yet (use 'kojic run')
+==== test/ir/cases.txt #2
+error: type error: case2.kj:4: 'apply' has 'mut' or 'take' parameters and can only be called, not used as a value
+==== test/ir/cases.txt #3
+global g0: Int // x
+
+function f0 main(): Void
+    local l0: Int
+    local l1: Str
+  b0:
+    branch true, b1, b2
+  b1:
+    l0 = 1
+    goto b3
+  b2:
+    l0 = 2
+    goto b3
+  b3:
+    g0 = l0
+    l1 = IntToStr g0
+    print l1
+    return
+==== test/ir/cases.txt #4
+global g0: Int // total
+
+function f0 main(): Void
+    local l0: List(Int)
+    local l1: List(Int)
+    local l2: Int
+    local l3: Int
+    local l4: Bool
+    local l5: Int
+    local l6: Int // x
+    local l7: Int
+    local l8: Str
+  b0:
+    g0 = 0
+    l0 = list [1, 2]
+    l1 = l0
+    l2 = ListLength l1
+    l3 = 0
+    goto b1
+  b1:
+    l4 = IntCompare(Less) l3, l2
+    branch l4, b2, b4
+  b2:
+    l6 = l1[l3]
+    l7 = IntAdd g0, l6
+    g0 = l7
+    goto b3
+  b3:
+    l5 = IntAdd l3, 1
+    l3 = l5
+    goto b1
+  b4:
+    l8 = IntToStr g0
+    print l8
+    return
+==== test/ir/cases.txt #5
+string s0 = " "
+string s1 = "a"
+string s2 = "b"
+record r0 P
+    {} (x: Int)
+global g0: Record(0) // p
+
+function f0 main(): Void
+    local l0: Int
+    local l1: Record(0)
+    local l2: Int
+    local l3: Str
+    local l4: Str
+    local l5: Str
+    local l6: Str
+    local l7: Str
+    local l8: Str
+    local l9: Str
+    local l10: Str
+    local l11: Str
+    local l12: Str
+    local l13: List(Char)
+    local l14: Char
+    local l15: Int
+    local l16: Str
+    local l17: Str
+    local l18: Str
+  b0:
+    l0 = 1
+    l1 = record variant 0 (l0)
+    g0 = l1
+    l2 = g0.0
+    l3 = IntToStr l2
+    l4 = RecordRepr g0
+    l5 = StrConcat l3, s0
+    l6 = StrConcat l5, l4
+    l7 = RecordToStr g0
+    l8 = StrConcat l6, s0
+    l9 = StrConcat l8, l7
+    l10 = StrRepr s1
+    l11 = StrConcat l9, s0
+    l12 = StrConcat l11, l10
+    l13 = koji_std_string_chars([Value(Str(2)), Element(Char)])
+    l14 = l13[0]
+    l15 = CharCode l14
+    l16 = IntToStr l15
+    l17 = StrConcat l12, s0
+    l18 = StrConcat l17, l16
+    print l18
+    return
+==== test/ir/cases.txt #6
+string s0 = "a"
+string s1 = " "
+string s2 = "b"
+record r0 Option[int]
+    Some (value: Int)
+    None ()
+global g0: Map(Str, Int) // m
+
+function f0 main(): Void
+    local l0: Map(Str, Int)
+    local l1: List(Str)
+    local l2: Str
+    local l3: List(Int)
+    local l4: Str
+    local l5: Str
+    local l6: Str
+    local l7: Record(0)
+    local l8: Str
+    local l9: Str
+    local l10: Str
+    local l11: Bool
+    local l12: Str
+    local l13: Str
+    local l14: Str
+    local l15: Int
+    local l16: Str
+    local l17: Str
+    local l18: Str
+  b0:
+    l0 = map [s0: 1]
+    g0 = l0
+    l1 = MapKeys g0
+    l2 = ListToStr l1
+    l3 = MapValues g0
+    l4 = ListToStr l3
+    l5 = StrConcat l2, s1
+    l6 = StrConcat l5, l4
+    l7 = lookup g0, s0
+    l8 = RecordToStr l7
+    l9 = StrConcat l6, s1
+    l10 = StrConcat l9, l8
+    l11 = MapContains s2, g0
+    l12 = BoolToStr l11
+    l13 = StrConcat l10, s1
+    l14 = StrConcat l13, l12
+    l15 = MapLength g0
+    l16 = IntToStr l15
+    l17 = StrConcat l14, s1
+    l18 = StrConcat l17, l16
+    print l18
+    return
+==== test/ir/cases.txt #7
+string s0 = " "
+global g0: Set(Int) // s
+
+function f0 main(): Void
+    local l0: List(Int)
+    local l1: Set(Int)
+    local l2: Bool
+    local l3: Str
+    local l4: List(Int)
+    local l5: Str
+    local l6: Str
+    local l7: Str
+    local l8: Bool
+    local l9: Str
+    local l10: Str
+    local l11: Str
+  b0:
+    l0 = list [1, 2]
+    l1 = SetFromList l0
+    g0 = l1
+    add g0, 3
+    l2 = remove g0, 1
+    l3 = BoolToStr l2
+    l4 = MapKeys g0
+    l5 = ListToStr l4
+    l6 = StrConcat l3, s0
+    l7 = StrConcat l6, l5
+    l8 = MapContains 2, g0
+    l9 = BoolToStr l8
+    l10 = StrConcat l7, s0
+    l11 = StrConcat l10, l9
+    print l11
+    return
+==== test/ir/cases.txt #8
+string s0 = " "
+string s1 = "abc"
+record r0 environment
+    {} ()
+record r1 Option[int]
+    Some (value: Int)
+    None ()
+global g0: List(Int) // items
+
+function f0 main(): Void
+    local l0: List(Int)
+    local l1: Function([Int, Int], Bool)
+    local l2: Record(1)
+    local l3: Str
+    local l4: Record(1)
+    local l5: Str
+    local l6: Str
+    local l7: Str
+    local l8: Int
+    local l9: Bool
+    local l10: Record(1)
+    local l11: Str
+    local l12: Str
+    local l13: Str
+    local l14: List(Int)
+    local l15: Str
+    local l16: Str
+    local l17: Str
+    local l18: Str
+    local l19: Str
+    local l20: Str
+  b0:
+    l0 = list [3, 1, 2]
+    g0 = l0
+    sort g0
+    l1 = closure f1
+    sort g0 by l1
+    l2 = pop g0
+    l3 = RecordToStr l2
+    l4 = remove g0, 0
+    l5 = RecordToStr l4
+    l6 = StrConcat l3, s0
+    l7 = StrConcat l6, l5
+    l8 = ListIndexOf g0, 2
+    l9 = IntCompare(GreaterEqual) l8, 0
+    branch l9, b1, b2
+  b1:
+    l10 = record variant 0 (l8)
+    goto b3
+  b2:
+    l10 = record variant 1 ()
+    goto b3
+  b3:
+    l11 = RecordToStr l10
+    l12 = StrConcat l7, s0
+    l13 = StrConcat l12, l11
+    l14 = g0[0..1]
+    l15 = ListToStr l14
+    l16 = StrConcat l13, s0
+    l17 = StrConcat l16, l15
+    l18 = koji_std_string_slice([Value(Str(1)), Mode(1), Value(Int(1)), Mode(0), Value(Int(0)), Location(4)])
+    l19 = StrConcat l17, s0
+    l20 = StrConcat l19, l18
+    print l20
+    return
+
+function f1 anonymous function(l0: Record(0), l1: Int, l2: Int): Bool
+    local l3: Bool
+  b0:
+    l3 = IntCompare(Greater) l1, l2
+    return l3
+==== test/ir/cases.txt #9
+record r0 environment
+    {} ()
+global g0: Function([Int], Int) // f
+global g1: Function([Int], Int) // g
+
+function f0 main(): Void
+    local l0: Function([Int], Int)
+    local l1: Int
+    local l2: Str
+  b0:
+    l0 = closure f1
+    g0 = l0
+    g1 = g0
+    l1 = call g1(2)
+    l2 = IntToStr l1
+    print l2
+    return
+
+function f1 anonymous function(l0: Record(0), l1: Int): Int
+    local l2: Int
+  b0:
+    l2 = IntMul l1, 2
+    return l2
+==== test/ir/cases.txt #10
+record r0 environment
+    {} (n: Int)
+
+function f0 main(): Void
+    local l0: Function([Int], Int)
+    local l1: Int
+    local l2: Str
+  b0:
+    l0 = call f1(1)
+    l1 = call l0(2)
+    l2 = IntToStr l1
+    print l2
+    return
+
+function f1 makeAdder(l0: Int): Function([Int], Int)
+    local l1: Record(0)
+    local l2: Function([Int], Int)
+  b0:
+    l1 = record variant 0 (l0)
+    l2 = closure f2 with l1
+    return l2
+
+function f2 anonymous function(l0: Record(0), l1: Int): Int
+    local l2: Int // n
+    local l3: Int
+  b0:
+    l2 = l0.0
+    l3 = IntAdd l1, l2
+    return l3
+==== test/ir/cases.txt #11
+string s0 = "x"
+record r0 Result[int, string]
+    Ok (value: Int)
+    Err (error: Str)
+record r1 Result[int, int]
+    Ok (value: Int)
+    Err (error: Int)
+record r2 environment
+    {} ()
+global g0: Record(0) // r
+
+function f0 main(): Void
+    local l0: Record(0)
+    local l1: Function([Str], Int)
+    local l2: Record(0)
+    local l3: Int
+    local l4: Bool
+    local l5: Record(1)
+    local l6: Int
+    local l7: Str
+    local l8: Int
+    local l9: Str
+  b0:
+    l0 = record variant 1 (s0)
+    g0 = l0
+    l1 = closure f1
+    l2 = g0
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 0
+    branch l4, b1, b2
+  b1:
+    l6 = l2.0
+    l5 = record variant 0 (l6)
+    goto b3
+  b2:
+    l7 = l2.0
+    l8 = call l1(l7)
+    l5 = record variant 1 (l8)
+    goto b3
+  b3:
+    l9 = RecordToStr l5
+    print l9
+    return
+
+function f1 anonymous function(l0: Record(2), l1: Str): Int
+    local l2: Int
+  b0:
+    l2 = StrLength l1
+    return l2
+==== test/ir/cases.txt #12
+string s0 = "x"
+record r0 ParseError
+    InvalidNumber (text: Str)
+    OutOfRange (text: Str)
+record r1 Result[int, ParseError]
+    Ok (value: Int)
+    Err (error: Record(0))
+record r2 E
+    Parse (error: Record(0))
+record r3 Result[int, E]
+    Ok (value: Int)
+    Err (error: Record(2))
+global g0: Record(1) // r
+
+function f0 main(): Void
+    local l0: Record(1)
+    local l1: Record(1)
+    local l2: Int
+    local l3: Bool
+    local l4: Record(3)
+    local l5: Int
+    local l6: Record(0)
+    local l7: Record(2)
+    local l8: Str
+  b0:
+    l0 = koji_std_int_from_string([Value(Str(0)), Record(1)])
+    g0 = l0
+    l1 = g0
+    l2 = RecordTag l1
+    l3 = IntCompare(Equal) l2, 0
+    branch l3, b1, b2
+  b1:
+    l5 = l1.0
+    l4 = record variant 0 (l5)
+    goto b3
+  b2:
+    l6 = l1.0
+    l7 = record variant 0 (l6)
+    l4 = record variant 1 (l7)
+    goto b3
+  b3:
+    l8 = RecordToStr l4
+    print l8
+    return
+==== test/ir/cases.txt #13
+string s0 = "1"
+string s1 = "x"
+string s2 = " "
+record r0 E
+    Parse (error: Record(1))
+record r1 ParseError
+    InvalidNumber (text: Str)
+    OutOfRange (text: Str)
+record r2 Result[int, E]
+    Ok (value: Int)
+    Err (error: Record(0))
+record r3 Result[int, ParseError]
+    Ok (value: Int)
+    Err (error: Record(1))
+
+function f0 main(): Void
+    local l0: Record(2)
+    local l1: Str
+    local l2: Record(2)
+    local l3: Str
+    local l4: Str
+    local l5: Str
+  b0:
+    l0 = call f1(s0)
+    l1 = RecordToStr l0
+    l2 = call f1(s1)
+    l3 = RecordToStr l2
+    l4 = StrConcat l1, s2
+    l5 = StrConcat l4, l3
+    print l5
+    return
+
+function f1 f(l0: Str): Record(2)
+    local l1: Record(3)
+    local l2: Record(3)
+    local l3: Int
+    local l4: Bool
+    local l5: Record(1)
+    local l6: Record(0)
+    local l7: Record(2)
+    local l8: Int
+    local l9: Record(2)
+  b0:
+    l1 = koji_std_int_from_string([Value(Local(0)), Record(3)])
+    l2 = l1
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 0
+    branch l4, b2, b1
+  b1:
+    l5 = l2.0
+    l6 = record variant 0 (l5)
+    l7 = record variant 1 (l6)
+    return l7
+  b2:
+    l8 = l2.0
+    l9 = record variant 0 (l8)
+    return l9
+==== test/ir/cases.txt #14
+string s0 = "a"
+string s1 = " "
+record r0 Option[int]
+    Some (value: Int)
+    None ()
+record r1 Option[string]
+    Some (value: Str)
+    None ()
+record r2 Option[float]
+    Some (value: Float)
+    None ()
+
+function f0 main(): Void
+    local l0: List(Int)
+    local l1: Record(0)
+    local l2: Str
+    local l3: List(Str)
+    local l4: Record(1)
+    local l5: Str
+    local l6: Str
+    local l7: Str
+    local l8: List(Float)
+    local l9: Record(2)
+    local l10: Str
+    local l11: Str
+    local l12: Str
+  b0:
+    l0 = list [1]
+    l1 = call f1(l0)
+    l2 = RecordToStr l1
+    l3 = list [s0]
+    l4 = call f2(l3)
+    l5 = RecordToStr l4
+    l6 = StrConcat l2, s1
+    l7 = StrConcat l6, l5
+    l8 = list [1.5]
+    l9 = call f3(l8)
+    l10 = RecordToStr l9
+    l11 = StrConcat l7, s1
+    l12 = StrConcat l11, l10
+    print l12
+    return
+
+function f1 first[Int](l0: List(Int)): Record(0)
+    local l1: Int
+    local l2: Bool
+    local l3: Record(0)
+    local l4: Int
+    local l5: Record(0)
+  b0:
+    l1 = ListLength l0
+    l2 = IntCompare(Equal) l1, 0
+    branch l2, b1, b2
+  b1:
+    l3 = record variant 1 ()
+    return l3
+  b2:
+    l4 = l0[0]
+    l5 = record variant 0 (l4)
+    return l5
+
+function f2 first[Str](l0: List(Str)): Record(1)
+    local l1: Int
+    local l2: Bool
+    local l3: Record(1)
+    local l4: Str
+    local l5: Record(1)
+  b0:
+    l1 = ListLength l0
+    l2 = IntCompare(Equal) l1, 0
+    branch l2, b1, b2
+  b1:
+    l3 = record variant 1 ()
+    return l3
+  b2:
+    l4 = l0[0]
+    l5 = record variant 0 (l4)
+    return l5
+
+function f3 first[Float](l0: List(Float)): Record(2)
+    local l1: Int
+    local l2: Bool
+    local l3: Record(2)
+    local l4: Float
+    local l5: Record(2)
+  b0:
+    l1 = ListLength l0
+    l2 = IntCompare(Equal) l1, 0
+    branch l2, b1, b2
+  b1:
+    l3 = record variant 1 ()
+    return l3
+  b2:
+    l4 = l0[0]
+    l5 = record variant 0 (l4)
+    return l5
+==== test/ir/cases.txt #15
+string s0 = "x"
+record r0 Pair[int, string]
+    {} (a: Int, b: Str)
+record r1 Pair[string, int]
+    {} (a: Str, b: Int)
+global g0: Record(0) // p
+
+function f0 main(): Void
+    local l0: Int
+    local l1: Str
+    local l2: Record(0)
+    local l3: Record(1)
+    local l4: Str
+  b0:
+    l0 = 1
+    l1 = s0
+    l2 = record variant 0 (l0, l1)
+    g0 = l2
+    l3 = call f1(g0)
+    l4 = RecordToStr l3
+    print l4
+    return
+
+function f1 Pair.swap[Int, Str](l0: Record(0)): Record(1)
+    local l1: Str
+    local l2: Str
+    local l3: Int
+    local l4: Int
+    local l5: Record(1)
+  b0:
+    l1 = l0.1
+    l2 = l1
+    l3 = l0.0
+    l4 = l3
+    l5 = record variant 0 (l2, l4)
+    return l5
+==== test/ir/cases.txt #16
+string s0 = " "
+string s1 = "closed"
+record r0 Conn
+    {} (id: Int)
+global g0: Record(0) // a
+global g1: Record(0) // b
+global g2: List(Record(0)) // cs
+
+function f0 main(): Void
+    local l0: Record(0)
+    local l1: Record(0)
+    local l2: Record(0)
+    local l3: Record(0)
+    local l4: List(Record(0))
+    local l5: Int
+    local l6: Str
+    local l7: Int
+    local l8: Str
+    local l9: Str
+    local l10: Str
+  b0:
+    l0 = call f2(1)
+    g0 = l0
+    l1 = call f2(2)
+    g1 = l1
+    l2 = call f2(3)
+    drop g1 with f3
+    g1 = l2
+    l3 = call f2(4)
+    l4 = list [l3]
+    g2 = l4
+    l5 = g0.0
+    l6 = IntToStr l5
+    l7 = ListLength g2
+    l8 = IntToStr l7
+    l9 = StrConcat l6, s0
+    l10 = StrConcat l9, l8
+    print l10
+    drop g2 with f4
+    drop g1 with f3
+    drop g0 with f3
+    return
+
+function f1 Conn.drop(l0: Record(0)): Void
+    local l1: Int
+    local l2: Str
+    local l3: Str
+    local l4: Str
+  b0:
+    l1 = l0.0
+    l2 = IntToStr l1
+    l3 = StrConcat s1, s0
+    l4 = StrConcat l3, l2
+    print l4
+    return
+
+function f2 open(l0: Int): Record(0)
+    local l1: Int
+    local l2: Record(0)
+  b0:
+    l1 = l0
+    l2 = record variant 0 (l1)
+    return l2
+
+function f3 drop Record(0)(l0: Record(0)): Void
+    local l1: Record(0)
+  b0:
+    l1 = l0
+    call f1(l1) writeback 0 -> l1
+    return
+
+function f4 drop List(Record(0))(l0: List(Record(0))): Void
+    local l1: Int
+    local l2: Int
+    local l3: Bool
+    local l4: Record(0)
+    local l5: Int
+  b0:
+    l1 = ListLength l0
+    l2 = 0
+    goto b1
+  b1:
+    l3 = IntCompare(Less) l2, l1
+    branch l3, b2, b3
+  b2:
+    l4 = l0[l2]
+    call f3(l4)
+    l5 = IntAdd l2, 1
+    l2 = l5
+    goto b1
+  b3:
+    return
+==== test/ir/cases.txt #17
+string s0 = " "
+string s1 = "a"
+string s2 = "b"
+string s3 = "a/b"
+record r0 MathError
+    Complex ()
+    Indeterminate ()
+    Infinite ()
+record r1 Result[float, MathError]
+    Ok (value: Float)
+    Err (error: Record(0))
+record r2 Option[string]
+    Some (value: Str)
+    None ()
+
+function f0 main(): Void
+    local l0: Float
+    local l1: Record(1)
+    local l2: Str
+    local l3: Float
+    local l4: Float
+    local l5: Record(1)
+    local l6: Str
+    local l7: Str
+    local l8: Str
+    local l9: Int
+    local l10: Str
+    local l11: Str
+    local l12: Str
+    local l13: Int
+    local l14: Int
+    local l15: Str
+    local l16: Str
+    local l17: Str
+    local l18: Str
+    local l19: Str
+    local l20: Str
+    local l21: Float
+    local l22: Bool
+    local l23: Str
+    local l24: Str
+    local l25: Str
+    local l26: Str
+    local l27: Str
+    local l28: Str
+    local l29: Record(2)
+    local l30: Str
+    local l31: Str
+    local l32: Str
+  b0:
+    l0 = IntToFloat 2
+    l1 = koji_std_math_sqrt([Value(Local(0)), Record(1)])
+    l2 = RecordToStr l1
+    l3 = IntToFloat 2
+    l4 = IntToFloat 3
+    l5 = koji_std_math_pow([Value(Local(3)), Value(Local(4)), Record(1), Location(4)])
+    l6 = RecordToStr l5
+    l7 = StrConcat l2, s0
+    l8 = StrConcat l7, l6
+    l9 = koji_std_math_round([Value(Float(1.5)), Mode(0), Location(4)])
+    l10 = IntToStr l9
+    l11 = StrConcat l8, s0
+    l12 = StrConcat l11, l10
+    l13 = IntNeg 1
+    l14 = koji_std_math_abs_int([Value(Local(13)), Location(4)])
+    l15 = IntToStr l14
+    l16 = StrConcat l12, s0
+    l17 = StrConcat l16, l15
+    l18 = FloatToStr 3.141592653589793
+    l19 = StrConcat l17, s0
+    l20 = StrConcat l19, l18
+    l21 = koji_std_time_now([])
+    l22 = FloatCompare(Greater) l21, 0.0
+    l23 = BoolToStr l22
+    l24 = StrConcat l20, s0
+    l25 = StrConcat l24, l23
+    l26 = koji_std_path_join([Value(Str(1)), Value(Str(2))])
+    l27 = StrConcat l25, s0
+    l28 = StrConcat l27, l26
+    l29 = koji_std_path_part([Value(Str(3)), Mode(0), Record(2)])
+    l30 = RecordToStr l29
+    l31 = StrConcat l28, s0
+    l32 = StrConcat l31, l30
+    print l32
+    return
+==== test/ir/cases.txt #18
+string s0 = "[1]"
+string s1 = " "
+string s2 = "a+"
+record r0 Json
+    Null ()
+    Bool (value: Bool)
+    Int (value: Int)
+    Float (value: Float)
+    String (value: Str)
+    Array (items: List(Record(0)))
+    Object (fields: Map(Str, Record(0)))
+record r1 JsonError
+    Syntax (message: Str, line: Int, column: Int)
+    NumberOutOfRange (text: Str, line: Int, column: Int)
+record r2 Result[Json, JsonError]
+    Ok (value: Record(0))
+    Err (error: Record(1))
+record r3 RegexError
+    InvalidPattern (pattern: Str, message: Str)
+    Unsupported (pattern: Str, message: Str)
+    TooLarge (pattern: Str)
+record r4 Result[Regex, RegexError]
+    Ok (value: Regex)
+    Err (error: Record(3))
+
+function f0 main(): Void
+    local l0: Record(2)
+    local l1: Str
+    local l2: Record(0)
+    local l3: Str
+    local l4: Str
+    local l5: Str
+    local l6: Record(4)
+    local l7: Str
+    local l8: Str
+    local l9: Str
+  b0:
+    l0 = koji_std_json_parse([Value(Str(0)), Record(2), Element(Str), Element(Record(0))])
+    l1 = RecordToStr l0
+    l2 = record variant 2 (1)
+    l3 = koji_std_json_stringify([Value(Local(2))])
+    l4 = StrConcat l1, s1
+    l5 = StrConcat l4, l3
+    l6 = koji_std_regex_compile([Value(Str(2)), Record(4)])
+    l7 = RecordToStr l6
+    l8 = StrConcat l5, s1
+    l9 = StrConcat l8, l7
+    print l9
+    return
+==== test/ir/cases.txt #19
+string s0 = "x"
+string s1 = " "
+string s2 = "HOME"
+record r0 Option[string]
+    Some (value: Str)
+    None ()
+
+function f0 main(): Void
+    local l0: Bool
+    local l1: Str
+    local l2: List(Str)
+    local l3: Str
+    local l4: Str
+    local l5: Str
+    local l6: Record(0)
+    local l7: Int
+    local l8: Bool
+    local l9: Str
+    local l10: Str
+    local l11: Str
+  b0:
+    l0 = koji_std_file_exists([Value(Str(0))])
+    l1 = BoolToStr l0
+    l2 = koji_std_system_args([Element(Str)])
+    l3 = ListToStr l2
+    l4 = StrConcat l1, s1
+    l5 = StrConcat l4, l3
+    l6 = koji_std_system_env([Value(Str(2)), Record(0)])
+    l7 = RecordTag l6
+    l8 = IntCompare(Equal) l7, 0
+    l9 = BoolToStr l8
+    l10 = StrConcat l5, s1
+    l11 = StrConcat l10, l9
+    print l11
+    return
+==== test/ir/cases.txt #20
+
+function f0 main(): Void
+    local l0: Str
+    local l1: Int
+    local l2: Bool
+    local l3: Str
+  b0:
+    l0 = koji_std_datetime_today([])
+    l1 = StrLength l0
+    l2 = IntCompare(Greater) l1, 0
+    l3 = BoolToStr l2
+    print l3
+    return
+==== test/ir/cases.txt #21
+string s0 = "abc"
+string s1 = " "
+string s2 = "ab"
+string s3 = "3"
+string s4 = "2.5"
+record r0 ParseError
+    InvalidNumber (text: Str)
+    OutOfRange (text: Str)
+record r1 Result[int, ParseError]
+    Ok (value: Int)
+    Err (error: Record(0))
+record r2 Result[float, ParseError]
+    Ok (value: Float)
+    Err (error: Record(0))
+record r3 Option[char]
+    Some (value: Char)
+    None ()
+global g0: Char // c
+
+function f0 main(): Void
+    local l0: Bool
+    local l1: Str
+    local l2: Bool
+    local l3: Str
+    local l4: Str
+    local l5: Str
+    local l6: Bool
+    local l7: Str
+    local l8: Str
+    local l9: Str
+    local l10: Str
+    local l11: Str
+    local l12: Str
+    local l13: Record(1)
+    local l14: Str
+    local l15: Str
+    local l16: Str
+    local l17: Record(2)
+    local l18: Str
+    local l19: Str
+    local l20: Str
+    local l21: Int
+    local l22: Str
+    local l23: Str
+    local l24: Str
+    local l25: Float
+    local l26: Str
+    local l27: Str
+    local l28: Str
+    local l29: Int
+    local l30: Str
+    local l31: Str
+    local l32: Str
+    local l33: Record(3)
+    local l34: Str
+    local l35: Str
+    local l36: Str
+  b0:
+    g0 = 'a'
+    l0 = CharCompare(Equal) g0, 'a'
+    l1 = BoolToStr l0
+    l2 = StrContainsChar g0, s0
+    l3 = BoolToStr l2
+    l4 = StrConcat l1, s1
+    l5 = StrConcat l4, l3
+    l6 = StrContains s2, s0
+    l7 = BoolToStr l6
+    l8 = StrConcat l5, s1
+    l9 = StrConcat l8, l7
+    l10 = CharToStr g0
+    l11 = StrConcat l9, s1
+    l12 = StrConcat l11, l10
+    l13 = koji_std_int_from_string([Value(Str(3)), Record(1)])
+    l14 = RecordToStr l13
+    l15 = StrConcat l12, s1
+    l16 = StrConcat l15, l14
+    l17 = koji_std_float_from_string([Value(Str(4)), Record(2)])
+    l18 = RecordToStr l17
+    l19 = StrConcat l16, s1
+    l20 = StrConcat l19, l18
+    branch true, b1, b2
+  b1:
+    l21 = 1
+    goto b3
+  b2:
+    l21 = 0
+    goto b3
+  b3:
+    l22 = IntToStr l21
+    l23 = StrConcat l20, s1
+    l24 = StrConcat l23, l22
+    branch false, b4, b5
+  b4:
+    l25 = 1.0
+    goto b6
+  b5:
+    l25 = 0.0
+    goto b6
+  b6:
+    l26 = FloatToStr l25
+    l27 = StrConcat l24, s1
+    l28 = StrConcat l27, l26
+    l29 = koji_std_float_to_int([Value(Float(2.7)), Location(2)])
+    l30 = IntToStr l29
+    l31 = StrConcat l28, s1
+    l32 = StrConcat l31, l30
+    l33 = koji_std_char([Value(Int(65)), Record(3)])
+    l34 = RecordToStr l33
+    l35 = StrConcat l32, s1
+    l36 = StrConcat l35, l34
+    print l36
+    return
+==== test/ir/cases.txt #22
+string s0 = ""
+string s1 = "hi"
+string s2 = "a"
+string s3 = "a,b"
+string s4 = ","
+string s5 = " "
+string s6 = " x "
+string s7 = "Ab"
+string s8 = "abc"
+string s9 = "b"
+string s10 = "ab"
+string s11 = "c"
+record r0 Option[int]
+    Some (value: Int)
+    None ()
+global g0: Str // text
+
+function f0 main(): Void
+    local l0: List(Char)
+    local l1: List(Char)
+    local l2: Int
+    local l3: Int
+    local l4: Bool
+    local l5: Int
+    local l6: Char // c
+    local l7: Str
+    local l8: Str
+    local l9: Map(Str, Int)
+    local l10: List(Str)
+    local l11: List(Str)
+    local l12: Int
+    local l13: Int
+    local l14: Bool
+    local l15: Int
+    local l16: Str // k
+    local l17: List(Str)
+    local l18: Str
+    local l19: Str
+    local l20: Str
+    local l21: Str
+    local l22: Str
+    local l23: Str
+    local l24: Str
+    local l25: Str
+    local l26: Str
+    local l27: Bool
+    local l28: Str
+    local l29: Str
+    local l30: Str
+    local l31: Record(0)
+    local l32: Str
+    local l33: Str
+    local l34: Str
+    local l35: Str
+    local l36: Str
+    local l37: Str
+    local l38: Bool
+    local l39: Str
+    local l40: Str
+    local l41: Str
+  b0:
+    g0 = s0
+    l0 = koji_std_string_chars([Value(Str(1)), Element(Char)])
+    l1 = l0
+    l2 = ListLength l1
+    l3 = 0
+    goto b1
+  b1:
+    l4 = IntCompare(Less) l3, l2
+    branch l4, b2, b4
+  b2:
+    l6 = l1[l3]
+    l7 = CharToStr l6
+    l8 = StrConcat g0, l7
+    g0 = l8
+    goto b3
+  b3:
+    l5 = IntAdd l3, 1
+    l3 = l5
+    goto b1
+  b4:
+    l9 = map [s2: 1]
+    l10 = MapKeys l9
+    l11 = l10
+    l12 = ListLength l11
+    l13 = 0
+    goto b5
+  b5:
+    l14 = IntCompare(Less) l13, l12
+    branch l14, b6, b8
+  b6:
+    l16 = l11[l13]
+    print l16
+    goto b7
+  b7:
+    l15 = IntAdd l13, 1
+    l13 = l15
+    goto b5
+  b8:
+    l17 = koji_std_string_split([Value(Str(3)), Value(Str(4)), Element(Str), Location(8)])
+    l18 = ListToStr l17
+    l19 = StrConcat g0, s5
+    l20 = StrConcat l19, l18
+    l21 = koji_std_string_trim([Value(Str(6))])
+    l22 = StrConcat l20, s5
+    l23 = StrConcat l22, l21
+    l24 = koji_std_string_upper([Value(Str(2))])
+    l25 = StrConcat l23, s5
+    l26 = StrConcat l25, l24
+    l27 = koji_std_string_is([Value(Str(7)), Mode(4)])
+    l28 = BoolToStr l27
+    l29 = StrConcat l26, s5
+    l30 = StrConcat l29, l28
+    l31 = koji_std_string_index_of([Value(Str(8)), Value(Str(9)), Record(0)])
+    l32 = RecordToStr l31
+    l33 = StrConcat l30, s5
+    l34 = StrConcat l33, l32
+    l35 = koji_std_string_replace([Value(Str(10)), Value(Str(2)), Value(Str(11)), Location(8)])
+    l36 = StrConcat l34, s5
+    l37 = StrConcat l36, l35
+    l38 = koji_std_string_starts_with([Value(Str(10)), Value(Str(2))])
+    l39 = BoolToStr l38
+    l40 = StrConcat l37, s5
+    l41 = StrConcat l40, l39
+    print l41
+    return
+==== test/ir/cases.txt #23
+string s0 = "one"
+string s1 = "big"
+string s2 = "other"
+string s3 = " "
+string s4 = "tab\tquote\""
+string s5 = "u{1}"
+global g0: Int // x
+global g1: Str // y
+
+function f0 main(): Void
+    local l0: Str
+    local l1: Int
+    local l2: Bool
+    local l3: Int // n
+    local l4: Bool
+    local l5: Str
+    local l6: Str
+    local l7: Str
+    local l8: Float
+    local l9: Str
+    local l10: Str
+    local l11: Str
+    local l12: Str
+    local l13: Str
+    local l14: Str
+    local l15: Str
+    local l16: Str
+    local l17: Str
+    local l18: Str
+  b0:
+    g0 = 3
+    l1 = g0
+    l2 = IntCompare(Equal) l1, 1
+    branch l2, b3, b2
+  b1:
+    g1 = l0
+    l5 = FloatToStr 1e-7
+    l6 = StrConcat g1, s3
+    l7 = StrConcat l6, l5
+    l8 = FloatNeg 1e-5
+    l9 = FloatToStr l8
+    l10 = StrConcat l7, s3
+    l11 = StrConcat l10, l9
+    l12 = FloatToStr 1e300
+    l13 = StrConcat l11, s3
+    l14 = StrConcat l13, l12
+    l15 = StrConcat l14, s3
+    l16 = StrConcat l15, s4
+    l17 = StrConcat l16, s3
+    l18 = StrConcat l17, s5
+    print l18
+    return
+  b2:
+    l3 = l1
+    l4 = IntCompare(Greater) l3, 2
+    branch l4, b5, b4
+  b3:
+    l0 = s0
+    goto b1
+  b4:
+    l0 = s2
+    goto b1
+  b5:
+    l0 = s1
+    goto b1
+  b6:
+    unreachable
+==== test/ir/cases.txt #24
+string s0 = "name? "
+record r0 Option[string]
+    Some (value: Str)
+    None ()
+
+function f0 main(): Void
+    local l0: Record(0)
+    local l1: Str
+  b0:
+    l0 = koji_std_input([Value(Str(0)), Record(0), Location(1)])
+    l1 = RecordToStr l0
+    print l1
+    return
+==== test/ir/cases.txt #25
+string s0 = "stop"
+
+function f0 main(): Void
+  b0:
+    koji_std_panic([Value(Str(0)), Location(1)])
+    unreachable
+==== test/ir/cases.txt #26
+string s0 = " "
+global g0: Int // g
+
+function f0 main(): Void
+    local l0: Int
+    local l1: Str
+    local l2: Int
+    local l3: Str
+    local l4: Str
+    local l5: Str
+    local l6: Int
+    local l7: Str
+    local l8: Str
+    local l9: Str
+    local l10: Int
+    local l11: Str
+    local l12: Str
+    local l13: Str
+    local l14: Int
+    local l15: Str
+    local l16: Str
+    local l17: Str
+    local l18: Int
+    local l19: Str
+    local l20: Str
+    local l21: Str
+    local l22: Int
+    local l23: Str
+    local l24: Str
+    local l25: Str
+    local l26: Int
+    local l27: Str
+    local l28: Str
+    local l29: Str
+    local l30: Int
+    local l31: Str
+    local l32: Str
+    local l33: Str
+    local l34: Bool
+    local l35: Str
+    local l36: Str
+    local l37: Str
+  b0:
+    g0 = 2
+    l0 = call f1()
+    l1 = IntToStr l0
+    l2 = IntPow 2, 3
+    l3 = IntToStr l2
+    l4 = StrConcat l1, s0
+    l5 = StrConcat l4, l3
+    l6 = IntRem 7, 3
+    l7 = IntToStr l6
+    l8 = StrConcat l5, s0
+    l9 = StrConcat l8, l7
+    l10 = ShiftLeft 1, 3
+    l11 = IntToStr l10
+    l12 = StrConcat l9, s0
+    l13 = StrConcat l12, l11
+    l14 = BitAnd 5, 3
+    l15 = IntToStr l14
+    l16 = StrConcat l13, s0
+    l17 = StrConcat l16, l15
+    l18 = BitOr 5, 3
+    l19 = IntToStr l18
+    l20 = StrConcat l17, s0
+    l21 = StrConcat l20, l19
+    l22 = BitXor 5, 3
+    l23 = IntToStr l22
+    l24 = StrConcat l21, s0
+    l25 = StrConcat l24, l23
+    l26 = BitNot 5
+    l27 = IntToStr l26
+    l28 = StrConcat l25, s0
+    l29 = StrConcat l28, l27
+    l30 = IntNeg 2
+    l31 = IntToStr l30
+    l32 = StrConcat l29, s0
+    l33 = StrConcat l32, l31
+    l34 = Not true
+    l35 = BoolToStr l34
+    l36 = StrConcat l33, s0
+    l37 = StrConcat l36, l35
+    print l37
+    return
+
+function f1 twice(): Int
+    local l0: Int
+  b0:
+    l0 = IntMul g0, 2
+    return l0
+==== test/ir/cases.txt #27
+string s0 = "a"
+string s1 = " "
+string s2 = ""
+string s3 = "missing.txt"
+string s4 = "linux"
+string s5 = "macos"
+string s6 = "windows"
+record r0 FileError
+    NotFound (path: Str)
+    PermissionDenied (path: Str)
+    IsDirectory (path: Str)
+    InvalidUtf8 (path: Str)
+    Io (path: Str, message: Str)
+record r1 Result[void, FileError]
+    Ok (value: Void)
+    Err (error: Record(0))
+record r2 OperatingSystem
+    Linux ()
+    MacOS ()
+    Windows ()
+    Other (name: Str)
+global g0: Str // name
+
+function f0 main(): Void
+    local l0: Str
+    local l1: Str
+    local l2: Str
+    local l3: Str
+    local l4: Str
+    local l5: Str
+    local l6: Record(1)
+    local l7: Int
+    local l8: Bool
+    local l9: Str
+    local l10: Str
+    local l11: Record(2)
+    local l12: Record(2)
+    local l13: Int
+    local l14: Bool
+    local l15: Int
+    local l16: Bool
+    local l17: Int
+    local l18: Bool
+    local l19: Int
+    local l20: Bool
+    local l21: Str
+    local l22: Str // other
+    local l23: Record(2)
+    local l24: Str
+    local l25: Str
+    local l26: Str
+  b0:
+    l0 = IntToStr 1
+    l1 = StrConcat s0, s1
+    l2 = StrConcat l1, l0
+    l3 = BoolToStr true
+    l4 = StrConcat l2, s1
+    l5 = StrConcat l4, l3
+    koji_print_error([Value(Local(5)), Location(4)])
+    koji_print_error([Value(Str(2)), Location(5)])
+    l6 = koji_std_file_remove([Value(Str(3)), Record(1)])
+    l7 = RecordTag l6
+    l8 = IntCompare(Equal) l7, 1
+    l9 = BoolToStr l8
+    print l9
+    l11 = koji_std_system_os([Record(2)])
+    l12 = l11
+    l13 = RecordTag l12
+    l14 = IntCompare(Equal) l13, 0
+    branch l14, b3, b2
+  b1:
+    g0 = l10
+    l23 = koji_std_system_os([Record(2)])
+    l24 = RecordToStr l23
+    l25 = StrConcat g0, s1
+    l26 = StrConcat l25, l24
+    print l26
+    return
+  b2:
+    l15 = RecordTag l12
+    l16 = IntCompare(Equal) l15, 1
+    branch l16, b5, b4
+  b3:
+    l10 = s4
+    goto b1
+  b4:
+    l17 = RecordTag l12
+    l18 = IntCompare(Equal) l17, 2
+    branch l18, b7, b6
+  b5:
+    l10 = s5
+    goto b1
+  b6:
+    l19 = RecordTag l12
+    l20 = IntCompare(Equal) l19, 3
+    branch l20, b9, b8
+  b7:
+    l10 = s6
+    goto b1
+  b8:
+    unreachable
+  b9:
+    l21 = l12.0
+    l22 = l21
+    l10 = l22
+    goto b1
+==== test/ir/cases.txt #28
+string s0 = " "
+global g0: Int // x
+global g1: List(Int) // flags
+
+function f0 main(): Void
+    local l0: Int
+    local l1: Int
+    local l2: Int
+    local l3: Int
+    local l4: Int
+    local l5: List(Int)
+    local l6: Int
+    local l7: Int
+    local l8: Str
+    local l9: Str
+    local l10: Str
+    local l11: Str
+  b0:
+    g0 = 12
+    l0 = BitAnd g0, 10
+    g0 = l0
+    l1 = BitOr g0, 5
+    g0 = l1
+    l2 = BitXor g0, 3
+    g0 = l2
+    l3 = ShiftLeft g0, 2
+    g0 = l3
+    l4 = ShiftRight g0, 1
+    g0 = l4
+    l5 = list [1, 2]
+    g1 = l5
+    l6 = g1[1]
+    l7 = ShiftLeft l6, 3
+    g1[1] = l7
+    l8 = IntToStr g0
+    l9 = ListToStr g1
+    l10 = StrConcat l8, s0
+    l11 = StrConcat l10, l9
+    print l11
+    return
+==== test/ir/cases.txt #29
+string s0 = "x"
+string s1 = " "
+record r0 Json
+    Null ()
+    Bool (value: Bool)
+    Int (value: Int)
+    Float (value: Float)
+    String (value: Str)
+    Array (items: List(Record(0)))
+    Object (fields: Map(Str, Record(0)))
+record r1 environment
+    {} (x: Int)
+global g0: Set(Str) // seen
+
+function f0 main(): Void
+    local l0: List(Str)
+    local l1: Set(Str)
+    local l2: List(Int)
+    local l3: Str
+    local l4: List(Int)
+    local l5: Int
+    local l6: Int
+    local l7: Bool
+    local l8: Bool
+    local l9: Int
+    local l10: Str
+    local l11: Str
+    local l12: Str
+    local l13: List(Int)
+    local l14: Int
+    local l15: Int
+    local l16: Int
+    local l17: Int
+    local l18: Int
+    local l19: Bool
+    local l20: Bool
+    local l21: Int
+    local l22: Str
+    local l23: Str
+    local l24: Str
+    local l25: Str
+    local l26: Str
+    local l27: Str
+    local l28: Record(0)
+    local l29: Record(0)
+    local l30: List(Record(0))
+    local l31: Record(0)
+    local l32: Str
+    local l33: Str
+    local l34: Str
+  b0:
+    l0 = list []
+    l1 = SetFromList l0
+    g0 = l1
+    add g0, s0
+    l2 = call f1()
+    l3 = ListToStr l2
+    l4 = list []
+    l5 = 3
+    range_check 1
+    l6 = 0
+    l7 = false
+    goto b1
+  b1:
+    l8, l9 = range_next l6, l5, 1, l7
+    branch l8, b2, b3
+  b2:
+    push l4, l9
+    goto b1
+  b3:
+    l10 = ListToStr l4
+    l11 = StrConcat l3, s1
+    l12 = StrConcat l11, l10
+    l13 = list []
+    l14 = 5
+    l15 = 0
+    l16 = IntNeg 2
+    l17 = l16
+    range_check l17
+    l18 = l14
+    l19 = false
+    goto b4
+  b4:
+    l20, l21 = range_next l18, l15, l17, l19
+    branch l20, b5, b6
+  b5:
+    push l13, l21
+    goto b4
+  b6:
+    l22 = ListToStr l13
+    l23 = StrConcat l12, s1
+    l24 = StrConcat l23, l22
+    l25 = MapToStr g0
+    l26 = StrConcat l24, s1
+    l27 = StrConcat l26, l25
+    l28 = record variant 2 (1)
+    l29 = record variant 0 ()
+    l30 = list [l28, l29]
+    l31 = record variant 5 (l30)
+    l32 = koji_std_json_stringify([Value(Local(31))])
+    l33 = StrConcat l27, s1
+    l34 = StrConcat l33, l32
+    print l34
+    return
+
+function f1 make(): List(Int)
+    local l0: Int // x
+    local l1: Record(1)
+    local l2: Function([Int], Int)
+    local l3: Function([Int], Int) // twice
+    local l4: Int
+    local l5: Int
+    local l6: List(Int)
+  b0:
+    l0 = 1
+    l1 = record variant 0 (l0)
+    l2 = closure f2 with l1
+    l3 = l2
+    l0 = 5
+    l4 = call l3(1)
+    l5 = call l3(l0)
+    l6 = list [l4, l5]
+    return l6
+
+function f2 twice(l0: Record(1), l1: Int): Int
+    local l2: Int // x
+    local l3: Int
+    local l4: Int
+  b0:
+    l2 = l0.0
+    l3 = IntMul l1, 2
+    l4 = IntAdd l3, l2
+    return l4
+==== test/ir/cases.txt #30
+error: compile error: case30.kj:5: 'again' is not supported by 'kojic build' yet (use 'kojic run')

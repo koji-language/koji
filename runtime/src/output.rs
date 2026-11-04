@@ -5,8 +5,7 @@ use std::io::Write;
 
 use crate::string::KojiString;
 
-/// Ends the program with `panic: <location>: <message>` on the standard error, like the
-/// interpreter, and exit code 1.
+/// Ends the program with `panic: <location>: <message>` on the standard error, and exit code 1.
 pub(crate) fn panic_at(location: *const c_char, message: &str) -> ! {
     let location = unsafe { CStr::from_ptr(location) }.to_string_lossy();
     let _ = std::io::stdout().flush();

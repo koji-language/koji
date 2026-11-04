@@ -1,0 +1,100 @@
+==== examples/booleans.kj
+(at 1 (mut count _ (int 0)))
+(at 3 (if (bool true) (block (at 4 (assign = (name count) (int 1)))) _))
+(at 7 (call (name print) (name count)))
+(at 9 (immut ready _ (binary > (name count) (int 0))))
+(at 10 (immut empty _ (binary == (name count) (int 0))))
+(at 12 (if (binary and (name ready) (unary not (name empty))) (block (at 13 (call (name print) (string 'ready')))) _))
+(at 16 (if (binary or (name empty) (bool false)) (block (at 17 (call (name print) (string 'empty')))) (block (at 19 (call (name print) (string 'not empty'))))))
+(at 22 (mut attempts _ (int 0)))
+(at 24 (while (binary and (binary < (name attempts) (int 3)) (unary not (name empty))) (block (at 25 (assign += (name attempts) (int 1))))))
+(at 28 (call (name print) (name attempts)))
+==== examples/comments.kj
+==== examples/condition.kj
+(at 1 (mut x int (int 10)))
+(at 3 (if (binary >= (name x) (int 5)) (block (at 4 (call (name print) (string 'x is greater than 5.')))) (block (at 6 (call (name print) (string 'x isn\'t greater than 5.'))))))
+==== examples/functions.kj
+(at 1 (function factorial () ((param x int)) int (block (at 2 (if (binary <= (name x) (int 1)) (block (at 2 (return (int 1)))) _)) (at 4 (return (binary * (name x) (call (name factorial) (binary - (name x) (int 1)))))))))
+(at 7 (immut double _ (lambda ((param x int)) _ (binary * (name x) (int 2)))))
+(at 9 (call (name print) (call (name factorial) (int 5))))
+(at 10 (call (name print) (call (name double) (int 21))))
+==== examples/hello.kj
+(at 1 (mut text string (string 'Hello, World!')))
+(at 3 (call (name print) (name text)))
+==== examples/input.kj
+(at 1 (immut name Option[string] (call (name input) (string 'What\'s your name?'))))
+(at 3 (match (name name) (arm (variant Some (bind line)) _ (call (name print) (template (text 'Hello, ') (expr (name line)) (text '!')))) (arm (bind None) _ (call (name print) (string 'No input')))))
+==== examples/interpolation.kj
+(at 1 (mut result int (int 4)))
+(at 3 (call (name print) (template (text 'Result: ') (expr (name result)))))
+==== examples/length.kj
+(at 1 (mut text string (string 'Hello, World!')))
+(at 3 (call (name print) (name text)))
+(at 4 (call (name print) (call (member (name text) length))))
+(at 6 (mut list int[] (list (int 1) (int 2) (int 3) (int 4))))
+(at 8 (call (name print) (name list)))
+(at 9 (call (name print) (call (member (name list) length))))
+==== examples/modules.kj
+(at 1 (import math 'math'))
+(at 2 (import (add) 'lib/calc.kj'))
+(at 4 (call (name print) (call (name add) (int 2) (int 3))))
+(at 6 (match (call (member (name math) sqrt) (int 16)) (arm (variant Ok (bind root)) _ (call (name print) (name root))) (arm (variant Err (bind error)) _ (call (name print) (name error)))))
+==== examples/shapes.kj
+(at 1 (type Shape () (sum (variant Circle (field radius float)) (variant Rectangle (field width float) (field height float)))))
+(at 6 (function area () ((param shape Shape)) float (block (at 7 (match (name shape) (arm (variant Circle (bind radius)) _ (binary * (binary * (float 3.14) (name radius)) (name radius))) (arm (variant Rectangle (bind width) (bind height)) _ (binary * (name width) (name height))))))))
+(at 13 (immut shapes Shape[] (list (call (name Circle) (float 1.0)) (call (name Rectangle) (float 2.0) (float 3.0)))))
+(at 15 (for shape (name shapes) (block (at 16 (call (name print) (template (expr (name shape)) (text ': ') (expr (call (name area) (name shape)))))))))
+==== examples/types.kj
+(at 1 (type Product () (shape (field id int) (field name string) (field price float))))
+(at 7 (type Dictionary () (alias Map[string, string])))
+(at 9 (function describe () ((param product Product)) string (block (at 10 (return (template (expr (member (name product) name)) (text ' (') (expr (member (name product) id)) (text ') - ') (expr (member (name product) price))))))))
+(at 13 (immut translations Dictionary (map (entry (string 'hello') (string 'olá')) (entry (string 'world') (string 'mundo')))))
+(at 19 (call (name print) (call (name describe) (object (field 'id' (int 1)) (field 'name' (string 'Pen')) (field 'price' (float 2.5))))))
+(at 20 (call (name print) (index (name translations) (string 'hello'))))
+(at 22 (immut label string (match (call (member (name translations) length)) (arm (literal (int 0)) _ (string 'empty')) (arm (bind n) (binary < (name n) (int 3)) (string 'small')) (arm (wildcard) _ (string 'large')))))
+(at 28 (call (name print) (name label)))
+==== test/lexer/edge.kj
+error: syntax error: line 1: expected member name after '.', found 3
+==== test/lexer/edge2.kj
+error: syntax error: line 2: unexpected character '$'
+==== test/lexer/edge3.kj
+(at 1 (assign = (name s) (string 'unterminated')))
+==== test/lexer/edge4.kj
+==== test/lexer/edge5.kj
+error: syntax error: line 1: float literal 1e400 is too large for a float
+==== test/lexer/edge6.kj
+error: syntax error: line 1: unexpected expression: '|='
+==== parser cases #0
+error: syntax error: line 1: unexpected character '@'
+==== parser cases #1
+error: syntax error: line 1: 'break' can only be used inside a loop
+==== parser cases #2
+error: syntax error: line 2: 'continue' can only be used inside a loop
+==== parser cases #3
+error: syntax error: line 1: 'return' can only be used inside a function
+==== parser cases #4
+error: syntax error: line 1: 'interface' is a reserved word; to describe the shape of a value, use 'type'
+==== parser cases #5
+error: syntax error: line 1: 'export' is only allowed at the top level of a file
+==== parser cases #6
+error: syntax error: line 1: Koji has no 'var': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
+==== parser cases #7
+error: syntax error: line 1: Koji has no 'const': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
+==== parser cases #8
+error: syntax error: line 1: Koji has no 'let': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
+==== parser cases #9
+error: syntax error: line 1: declare 'x' with 'mut' or 'immut': 'mut x: ... = ...'
+==== parser cases #10
+(at 1 (immut x _ (match (name y) (arm (literal (int 0)) _ (int 1)) (arm (literal (int -1)) _ (int 2)))))
+==== parser cases #11
+(at 1 (string 'unterminated\n'))
+==== parser cases #12
+error: syntax error: line 1: unexpected character '#'
+==== parser cases #13
+(at 1 (for mut x (list (int 1)) (block (at 1 (assign += (name x) (int 1))))))
+==== parser cases #14
+(at 1 (immut x _ (float 9.223372036854776e18)))
+==== parser cases #15
+(at 1 (immut x _ (match (name y) (arm (literal (float -9.223372036854776e18)) _ (int 1)))))
+==== parser cases #16
+error: syntax error: line 1: float literal 1e400 is too large for a float

@@ -1,4 +1,4 @@
-//! The `http` module: requests (shared with the interpreter) and its functions for compiled
+//! The `http` module: requests and its functions for compiled
 //! programs.
 
 use crate::record::{field_record, make, KojiRecord, KojiRecordType};

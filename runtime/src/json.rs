@@ -1,4 +1,4 @@
-//! JSON: the parser and the writing of text (shared with the interpreter), and the `json`
+//! JSON: the parser and the writing of text, and the `json`
 //! module for compiled programs.
 
 use std::fmt::Write as _;

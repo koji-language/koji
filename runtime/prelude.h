@@ -330,7 +330,7 @@ static const KojiElementType koji_element_float = {
 
 static KojiString *koji_repr_bool(const void *slot) { return koji_string_from_bool(*(const bool *)slot); }
 static bool koji_equal_bool(const void *a, const void *b) { return *(const bool *)a == *(const bool *)b; }
-/* Like the interpreter, booleans keep their order when sorted. */
+/* Booleans compare as equal: a sort keeps their order. */
 static int32_t koji_compare_bool(const void *a, const void *b) { (void)a; (void)b; return 0; }
 static uint64_t koji_hash_bool(const void *slot) { return *(const bool *)slot; }
 static const KojiElementType koji_element_bool = {

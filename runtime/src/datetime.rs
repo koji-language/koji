@@ -1,4 +1,4 @@
-//! Dates: the calendar computations, `format` and `parse` (shared with the interpreter), and
+//! Dates: the calendar computations, `format` and `parse`, and
 //! the `datetime` module for compiled programs.
 
 use crate::record::{field_record, make, KojiRecord, KojiRecordType};

@@ -1,5 +1,4 @@
-// The types of the checker of the Koji compiler written in Koji. It follows src/semantic/types.rs
-// and the compatibility rules of src/semantic/type_checker/typing.rs.
+// The types of the checker of the Koji compiler, and their compatibility rules.
 
 // The static type of an expression.
 export type Type = {

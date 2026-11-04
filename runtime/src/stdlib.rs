@@ -3,7 +3,7 @@
 //!
 //! A function that gives a value of a declared type (`Option`, `Result`, an error) receives
 //! its description from the generated code and builds it with `record::make`. The messages
-//! of errors and the conversions of text are shared with the interpreter.
+//! of errors and the conversions of text come first.
 
 use std::ffi::{c_char, CStr};
 use std::io::{BufRead, Write};
@@ -30,7 +30,7 @@ pub extern "C" fn koji_init(argc: i32, argv: *const *const c_char) {
     let _ = STARTED.set(Instant::now());
 }
 
-// Shared with the interpreter.
+// The messages of errors and the conversions of text.
 
 /// The readable message of an error of the standard library (`'x' is not a valid number`),
 /// from the texts of its fields; `None` for any other type.
@@ -428,7 +428,7 @@ pub extern "C" fn koji_std_system_env(name: *const KojiString, option: *const Ko
 }
 
 /// The variant of `OperatingSystem` for the system the program runs on (`Linux`, `MacOS` or
-/// `Windows`), or, for another one, its name for `Other(name)`. Shared with the interpreter.
+/// `Windows`), or, for another one, its name for `Other(name)`.
 pub fn operating_system() -> Result<&'static str, &'static str> {
     match std::env::consts::OS {
         "linux" => Ok("Linux"),

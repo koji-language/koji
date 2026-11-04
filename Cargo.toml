@@ -1,16 +1,10 @@
 [package]
-name = "kojic"
+name = "koji"
 version = "0.1.0"
 edition = "2021"
-
-[dependencies]
-koji_runtime = { path = "runtime" }
-regex = "1"
-ureq = { version = "2", default-features = false, features = ["tls"] }
-
-[[test]]
-name = "lexer"
-path = "test/lexer.rs"
+description = "The tests of Koji: they build the compiler written in Koji (compiler/) from the seed (bootstrap/) and run it. build.rs builds the runtime (runtime/)."
+autobins = false
+autolib = false
 
 [[test]]
 name = "language"
@@ -19,6 +13,10 @@ path = "test/language.rs"
 [[test]]
 name = "compiler"
 path = "test/compiler.rs"
+
+[[test]]
+name = "stages"
+path = "test/stages.rs"
 
 [[test]]
 name = "bootstrap"

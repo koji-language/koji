@@ -91,7 +91,7 @@ pub extern "C" fn koji_list_sort_by(
     });
 }
 
-/// Like the interpreter: an item from the right half goes first only when it goes strictly
+/// A stable sort: an item from the right half goes first only when it goes strictly
 /// before, so equal items keep their order.
 fn merge_sort(items: Vec<u64>, before: &dyn Fn(&u64, &u64) -> bool) -> Vec<u64> {
     if items.len() <= 1 {

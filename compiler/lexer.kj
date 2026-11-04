@@ -1,5 +1,5 @@
-// The lexer of the Koji compiler written in Koji: source text to tokens. It follows the
-// lexer in Rust (src/lexer/), and `kojic dump tokens` prints the same text as `dump`.
+// The lexer of the Koji compiler: source text to tokens. `kojic dump tokens` prints the text of
+// `dump`.
 
 export type Token = {
     Identifier(name: string)
@@ -77,7 +77,7 @@ function Lexer.advance(mut self) {
     self.position += 1
 }
 
-// The character classes follow Unicode, like the lexer in Rust; ASCII characters, the most
+// The character classes follow Unicode; ASCII characters, the most
 // common ones, are classified without building a string.
 function isSpace(c: char): boolean {
     if (c.code() < 128) { return c == ' ' or (c.code() >= 9 and c.code() <= 13) }

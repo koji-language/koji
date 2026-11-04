@@ -1,6 +1,5 @@
-// The parser of the Koji compiler written in Koji: tokens to a syntax tree. It follows the
-// parser in Rust (src/parser/), with the same error messages, and `kojic dump ast` prints the
-// same text as `dump`.
+// The parser of the Koji compiler: tokens to a syntax tree. `kojic dump ast` prints the text of
+// `dump`.
 
 import { Token, Spanned, tokenize, nul } from 'lexer.kj'
 
