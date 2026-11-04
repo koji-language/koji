@@ -1,0 +1,228 @@
+# Design Decisions
+
+Why Koji is the way it is. Each decision says what Koji does, why, and what was considered instead. The other documents describe how to use the language; this one keeps the reasons, so that later decisions stay consistent with them.
+
+## Principles
+
+Most decisions follow from a few ideas:
+
+-   **Explicit over implicit**: what can change, what can fail and what a function takes over are visible where they happen (`mut`, `Result`, `?`, `take`).
+-   **Errors at compile time**: a mistake the compiler can see (a typo, a missing case, a moved value) is a compile error, not a surprise when the program runs.
+-   **Errors are values**: expected failures are `Result` values that the code handles; bugs stop the program.
+-   **Sum types over strings and flags**: a closed set of cases is a sum type, so `match` checks that every case is handled.
+-   **Values, not references**: assigning or passing a value gives an independent copy; nothing changes "behind the back" of a variable.
+-   **One way to do each thing**: fewer constructs, each with a clear purpose.
+
+## Variables
+
+### `mut` and `immut`
+
+**Decision**: every declaration starts with `mut` (the variable can change) or `immut` (neither the variable nor its contents can change). `x = 1` only changes an existing `mut` variable.
+
+**Why**: the keyword makes the intent visible, and a typo (`cuont = 1`) is an error instead of a new variable. With value semantics, two levels are enough: changing a field and replacing the whole value are both ways of changing the variable.
+
+**Alternatives**: `var`, `let` and `const`, as in TypeScript, have a third level (a variable that cannot be replaced but whose contents can change), which means little with value semantics. Declaring by assignment, as in Python, hides typos. `var`, `const` and `let` stay reserved words, so the error points to `mut` and `immut`.
+
+### `for` and `match` variables are `immut`
+
+**Decision**: `for x in items` and the variables of a `match` pattern are `immut`; `for mut x in items` allows changing `x` (a copy: the list does not change).
+
+**Why**: changing them is rarely intended, and changing a copy can be mistaken for changing the list.
+
+## Types
+
+### No `any`
+
+**Decision**: there is no `any` type. Dynamic data is a sum type (`json.Json`).
+
+**Why**: every value has a known type at compile time, so no value needs to carry its type when the program runs, and every use of dynamic data is checked.
+
+**Alternatives**: `any` with runtime checks, as in TypeScript, moves type errors to runtime.
+
+### Nominal types, no `interface`, no anonymous objects
+
+**Decision**: `type` declares every type. Shape types are nominal: two types with the same fields are different types. An object literal is a value of the type expected where it is written, and there is no subtyping.
+
+**Why**: `Celsius` and `Fahrenheit` do not mix, and a value always has one known type. Generic constraints are deduced from the structure of each type (`equatable`, `orderable`), and other behavior is passed as a function, so interfaces are not needed.
+
+**Alternatives**: structural types and interfaces, as in TypeScript and Go. `interface` stays a reserved word, as a precaution.
+
+### `int` and `float`
+
+**Decision**: an `int` becomes a `float` only as a single value (a variable, an argument, a field, the items of a list literal), never inside an existing value: an `int[]` is not a `float[]`. `int / int` is an `int` truncated toward zero, and `%` has the sign of the dividend.
+
+**Why**: converting a single value is free; converting a list would copy it without the code saying so. Integer division follows Go and Rust.
+
+### A `float` is always finite
+
+**Decision**: there is no NaN and no infinity. A result that does not fit (`1e308 * 10`, `9223372036854775807 + 1`) panics, like a literal that does not fit (`1e400`) is a compile error. In `math`, a result that does not exist in the real numbers is an `Err(MathError)`: `sqrt(-1)` is `Complex`, `pow(0, -1)` is `Infinite`.
+
+**Why**: NaN spreads silently through computations and breaks equality (`NaN != NaN`). The rule separates two kinds of problems: a **representation limit** (the result exists but does not fit: a larger type would hold it) panics, and a **domain problem** (the result does not exist in the reals) is an error the code can handle. Operators cannot return a `Result`, so they always panic, including on division by zero. `0 ** 0` is `1`, the value of the expression in algebra (only the limit form 0⁰ is indeterminate). `MathError.Indeterminate` is kept for future functions.
+
+**Alternatives**: IEEE 754 infinities and NaN, as in most languages.
+
+### `char`
+
+**Decision**: `char` is a primitive type, a Unicode code point. A one-character literal is a `char` where a `char` is expected.
+
+**Why**: text processing (a lexer, a parser) works on characters, and a `char` cannot be confused with a string of any length.
+
+### Maps and sets
+
+**Decision**: `Map[K: equatable, V]`, written `['Ana': 30]` (`[:]` when empty), and `Set[T: equatable]`, from `Set.from(list)`. There are no index signatures.
+
+**Why**: a dictionary with keys of any equatable type, checked like any other generic type.
+
+### Generics
+
+**Decision**: type parameters in brackets after the name (`function first[T]`, `type Pair[A, B]`), with the constraints `equatable` and `orderable`, which the compiler deduces from the structure of each type. Type arguments are never written at a call: they come from the arguments and the expected type. A generic function used as a value needs an expected function type, which gives its type arguments.
+
+**Why**: the same bracket syntax as `Option[T]`, and no declarations to keep in sync with what a type can do.
+
+**Alternatives**: angle brackets, which are ambiguous with comparisons; constraints that types must declare (interfaces, traits).
+
+### `Ok()`
+
+**Decision**: a `Result[void, E]` succeeds with `Ok()`, without an argument; it is shown as `Ok(void)`.
+
+**Why**: there is no `void` value to write.
+
+## Control flow
+
+### No `else if`
+
+**Decision**: `if` has an optional `else` with a block; there is no `else if`. More than two branches are a `match` with guards, or early returns.
+
+**Why**: a long `else if` chain hides the shape of the cases; a `match` with guards puts them side by side, and the special cases with an early `return` leave the main code unnested (see [Conventions](conventions.md)). One construct for several branches instead of two.
+
+**Alternatives**: `else if`, as in most languages. A `match` without a value (`match { x > 18 => ... }`) could make guard chains shorter later.
+
+### Conditions in parentheses
+
+**Decision**: conditions are written in parentheses: `if (x > 0)`, `while (running)`, `match (value)`.
+
+**Why**: the condition is clearly delimited from the block, like the arguments of a call, and `not (a and b)` reads without doubt about what `not` applies to.
+
+## Errors
+
+### No `try` / `catch`
+
+**Decision**: expected failures (a missing file, invalid JSON, `int('abc')`) are `Result` values; bugs (an index out of range, a division by zero, an overflow) **panic**: the program stops, and a panic cannot be caught. `panic(message)` reports impossible states.
+
+**Why**: the signature of a function says whether it can fail, and the compiler checks that the error is handled. Exceptions are invisible in signatures, and catching them makes bugs look like expected failures.
+
+### `?`
+
+**Decision**: `x?` gives the `Ok` (or `Some`) value, or returns the `Err` (or `None`) from the function; at the top level of the main file, it stops the program with the message. When the error type differs from the function's, `?` wraps it in the one variant of the function's error type that holds exactly that type; if there is no such variant, or several, it is a compile error, and `mapErr` converts explicitly.
+
+**Why**: propagating errors stays short without hiding them, and the conversion is automatic only when there is a single possible meaning.
+
+### Typed errors in the standard library
+
+**Decision**: every fallible function of the standard library returns a `Result` with an error type of its module (`FileError`, `HttpError`, `JsonError`...), and `print` shows them as readable messages (`file 'notes.txt' not found`).
+
+**Why**: the code can `match` on what went wrong, and the message is ready for the user.
+
+## Functions and methods
+
+### Methods and `self`
+
+**Decision**: a method is a function prefixed with its type, with an explicit `self`: `function Person.greet(self)`. Without `self`, it is an associated function, called on the type (`Person.create('Ana')`). A method that changes its value declares `mut self`; the call needs no marker. There are no special constructors.
+
+**Why**: methods are ordinary functions, declared next to the type, and what a method may change is in its signature.
+
+**Alternatives**: classes, `this`, constructors: more concepts for the same result.
+
+### `mut` and `take` parameters
+
+**Decision**: a parameter the function may change is `mut`, both in the declaration and at the call (`addItem(mut items, 2)`). A `take` parameter takes ownership of a move-only argument. Other parameters are read-only.
+
+**Why**: with value semantics, a function cannot change the caller's variable unless the call says so, visibly. A `mut` argument is the variable itself: the function gets its value when the call happens, after the other arguments.
+
+### Closures capture a copy
+
+**Decision**: a closure captures a read-only copy of the variables it uses, from the moment it is created. Top-level variables are not captured.
+
+**Why**: no hidden shared state between a closure and the code around it.
+
+## Memory
+
+### Ownership and value semantics
+
+**Decision**: memory is managed with ownership, without a garbage collector. Assigning or passing a value gives an independent copy, which shares the memory until one of the copies changes (copy-on-write, as in Swift). When its owner goes out of scope, a value is dropped. `is` only tests variants; `==` compares values.
+
+**Why**: no aliasing bugs, deterministic memory use, and cheap copies.
+
+**Alternatives**: a garbage collector with shared references (Java, Go); explicit borrowing with lifetimes (Rust), which is precise but harder to learn. Intentionally shared structures (graphs, caches) keep their values in a list and store indices.
+
+### Move-only types and `drop`
+
+**Decision**: a type that declares `function Type.drop(mut self)` is move-only, and so is a type that holds a move-only value (a `File`). Assigning one moves it; using the previous variable is a compile error.
+
+**Why**: a resource must be released exactly once; two copies of a file would close it twice. The property follows from the type's contents, so there is no separate marker to keep in sync.
+
+### No `defer`
+
+**Decision**: there is no `defer`.
+
+**Why**: dropping a value releases its resources, at the end of its scope, deterministically. It would be reconsidered only for cleanup that does not belong to any value.
+
+## Modules
+
+### Mandatory `export`
+
+**Decision**: everything in a module is private unless marked with `export`. An exported `mut` variable is read-only outside its module, and importers see its current value. A public signature cannot use a private type. Exporting a sum type exports its variants.
+
+**Why**: a module decides what it offers, and only its own code changes its state.
+
+### Imports belong to their block
+
+**Decision**: an `import` applies to its whole block, before the other statements (like ES modules); an `import` inside a block is visible only there, and its module runs the first time the block runs.
+
+**Why**: declarations can use an import written below them, and a module used only in one place is loaded only if that place runs.
+
+## Standard library
+
+### File modes
+
+**Decision**: `file.open(path, mode)` takes a sum type, `Read`, `Write` or `Append`.
+
+**Why**: an invalid mode does not compile, unlike a string such as `'rw'`.
+
+### Proposed: printing errors, removing files and the operating system
+
+Not decided yet. A program for the command line (the compiler written in Koji, for instance) needs to:
+
+-   **print to the standard error output**: proposed, a built-in `printError(...)` with the same arguments as `print`. Alternatives: `system.printError(...)`, which needs an import for something as basic as `print`; files for the standard outputs (`file.stderr.write(...)`), which would be shared move-only values, and whose `write` returns a `Result` that `print` does not;
+-   **remove a file**: proposed, `file.remove(path): Result[void, FileError]`, for files only, like `createDir` for directories (a `removeDir` can come later). Alternative: one `remove` for files and directories, which can remove a directory by mistake;
+-   **know the operating system**: proposed, a constant `system.os` of a sum type, `{ Linux, MacOS, Windows, Other(name: string) }`, so that a `match` on it is checked. Alternative: a string (`'linux'`), which a typo (`'macOS'`) gets past the compiler.
+
+## Conventions
+
+### Special cases first
+
+**Decision**: the convention is to handle special cases first, with an early `return` (or `break` and `continue`), so the main code is not nested inside `if` and `else`.
+
+**Why**: the main path reads from top to bottom at one level, and each special case is visible where it ends.
+
+### One line break at the end of a file
+
+**Decision**: a file ends with exactly one line break.
+
+**Why**: a text file is a sequence of terminated lines, as Unix tools expect: without the final line break, `cat` joins the last line with the next output and `git diff` reports it; extra blank lines are noise.
+
+## Tooling
+
+### `kojic run` and `kojic build`
+
+**Decision**: `kojic run` checks and interprets a program; `kojic build` compiles it to an executable, through C, linked with a runtime library written in Rust. Both give the same results: every test runs in both modes.
+
+**Why**: the interpreter is fast to start for development; compiled programs are fast to run. Generating C needs no code generator library, works wherever there is a C compiler, gets the optimizations of gcc and clang, and the generated code is readable. The runtime shares its code with the interpreter (number formatting, the standard library), so both give the same output.
+
+**Alternatives**: a native backend (LLVM, Cranelift, or machine code directly), which can come later from the same intermediate representation.
+
+### Messages name files as they were written
+
+**Decision**: type errors and panics name the main file as it was given on the command line, and a module as its `import` wrote it (`lib/math.kj:3: division by zero`).
+
+**Why**: the same names everywhere, which the reader recognizes from the code.

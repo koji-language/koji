@@ -1,6 +1,6 @@
 # Koji Language Documentation
 
-Welcome to the **Koji documentation**. Here you will find the syntax, the types, functions, error handling, modules and the standard library.
+Welcome to the **Koji documentation**. Here you will find the syntax, the types, functions, error handling, modules and the standard library, and the reasons behind the design.
 
 ## Contents
 
@@ -34,3 +34,7 @@ Welcome to the **Koji documentation**. Here you will find the syntax, the types,
 -   [Built-in Functions](builtin-functions.md)
 -   [Built-in Methods](builtin-methods.md)
 -   [Standard Library](stdlib.md)
+
+### About
+
+-   [Design Decisions](design.md)
