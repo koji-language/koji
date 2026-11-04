@@ -426,6 +426,19 @@ pub enum ParseFailure {
 
 /// A decimal from text like `-12.5e3` (surrounding spaces allowed), rounded to 16 digits.
 pub fn parse(text: &str) -> Result<Decimal, ParseFailure> {
+    let parts = parse_parts(text)?;
+    round(parts.negative, parts.magnitude, parts.exponent, parts.sticky).map_err(|_| ParseFailure::OutOfRange)
+}
+
+/// A number read from text: its first 38 significant digits, and whether more nonzero ones follow.
+pub struct Parts {
+    pub negative: bool,
+    pub magnitude: u128,
+    pub exponent: i64,
+    pub sticky: bool,
+}
+
+pub fn parse_parts(text: &str) -> Result<Parts, ParseFailure> {
     let text = text.trim();
     let (negative, rest) = match text.as_bytes().first() {
         Some(b'-') => (true, &text[1..]),
@@ -488,7 +501,7 @@ pub fn parse(text: &str) -> Result<Decimal, ParseFailure> {
             }
         }
     }
-    round(negative && (magnitude != 0 || sticky), magnitude, exponent + dropped, sticky).map_err(|_| ParseFailure::OutOfRange)
+    Ok(Parts { negative: negative && (magnitude != 0 || sticky), magnitude, exponent: exponent + dropped, sticky })
 }
 
 impl std::fmt::Display for Decimal {

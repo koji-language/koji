@@ -197,7 +197,7 @@ Before them, measured: a `mut` parameter changing a local variable's value in pl
 ## Open decisions
 
 1.  **FFI** (`extern function`), so the compiled standard library can call C functions. With the runtime in Rust, the standard library itself does not need it; it is for calling C libraries from Koji code.
-2.  **`decimal` as the default and `binary`**: `decimal` is implemented ([Design Decisions](design.md#decimal)); still to decide is making a literal like `1.5` a `decimal` everywhere, with `float` renamed `binary`, created with `binary(x)` or written in base 2 (`0b101.11`, exact), and printed in base 2. In the compiler, `float` would then become `binary` in this order: add `binary` (with `float` still accepted), write the seed again, change `compiler/`, remove `float`.
+2.  **`decimal` as the default and `binary`**: `decimal` is implemented ([Design Decisions](design.md#decimal)); still to decide is making a literal like `1.5` a `decimal` everywhere, with `float` renamed `binary`, created with `binary(x)` or written in base 2 (`0b101.11`, exact), and printed in base 2. A `decimal` of 34 digits (decimal128) is being measured first: `runtime/src/decimal128.rs` (not used by the compiler yet) and `runtime/bench/decimal.c`. In the compiler, `float` would then become `binary` in this order: add `binary` (with `float` still accepted), write the seed again, change `compiler/`, remove `float`.
 
 Decided:
 
