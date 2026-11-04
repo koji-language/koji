@@ -176,23 +176,14 @@ impl JsonParser {
         let text: String = self.chars[start..self.position].iter().collect();
         let out_of_range = || Failure::NumberOutOfRange(text.clone(), start);
         let invalid = || Failure::Syntax(format!("invalid number '{}'", text), start);
+        if !json_number(&text) {
+            return Err(invalid());
+        }
         if !text.contains(['.', 'e', 'E']) {
-            let digits = text.strip_prefix('-').unwrap_or(&text);
-            if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-                return Err(invalid());
-            }
             return match text.parse::<i64>() {
                 Ok(n) => Ok(JsonTree::Int(n)),
                 Err(_) => Err(out_of_range()),
             };
-        }
-        let well_formed = text.chars().filter(|c| c.is_ascii_digit()).count() > 0
-            && !text.ends_with(['.', 'e', 'E', '-', '+'])
-            && !text.contains(".e")
-            && !text.starts_with('.')
-            && !text.starts_with("-.");
-        if !well_formed {
-            return Err(invalid());
         }
         match crate::decimal::parse(&text) {
             Ok(n) => Ok(JsonTree::Decimal(n)),
@@ -280,11 +271,49 @@ pub fn write_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// A decimal in JSON: always with a decimal point, so that it is read back as a decimal.
+/// Whether `text` is a number by the grammar of JSON: `-? (0 | [1-9][0-9]*) (. [0-9]+)?
+/// ([eE] [+-]? [0-9]+)?`.
+fn json_number(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while *i < bytes.len() && bytes[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        *i > start
+    };
+    if bytes.first() == Some(&b'-') {
+        i += 1;
+    }
+    let first = i;
+    if !digits(&mut i) || (bytes[first] == b'0' && i - first > 1) {
+        return false;
+    }
+    if bytes.get(i) == Some(&b'.') {
+        i += 1;
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    if matches!(bytes.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(bytes.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    i == bytes.len()
+}
+
+/// A decimal in JSON: always with a decimal point or an exponent, so that it is read back as a
+/// decimal.
 pub fn write_decimal(value: crate::decimal::Decimal, out: &mut String) {
     let text = value.to_string();
     out.push_str(&text);
-    if !text.contains('.') {
+    if !text.contains(['.', 'e']) {
         out.push_str(".0");
     }
 }
@@ -441,5 +470,20 @@ pub extern "C" fn koji_std_json_as(value: *const KojiRecord, kind: i32, option: 
     match found {
         Some(words) => make(option, "Some", &words),
         None => make(option, "None", &[]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_number;
+
+    #[test]
+    fn numbers_follow_the_grammar_of_json() {
+        for good in ["0", "-0", "12", "1.5", "-0.25", "1e3", "1E+3", "2.5e-7"] {
+            assert!(json_number(good), "{}", good);
+        }
+        for bad in ["", "-", "01", "1.", ".5", "-.5", "1e", "1e+", "1.e3", "+1", "1-2", "0x1", "1.5.2"] {
+            assert!(!json_number(bad), "{}", bad);
+        }
     }
 }

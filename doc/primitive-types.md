@@ -21,7 +21,7 @@ print(decimal(1) / 3) // 0.3333333333333333333333333333333333
 print(6.022e23) // 602200000000000000000000
 ```
 
-A decimal literal must hold exactly: one with more than 34 significant digits, or out of the range of a decimal (about 1e-6176 to 1e6145), is a compile-time error. An operation rounds its exact result to 34 significant digits, to the nearest (half to even): `decimal(2) / 3` is `0.6666666666666666666666666666666667`. A decimal is shown in full, without an exponent or trailing zeros: `1.50` and `1.5` are equal and both are shown as `1.5`, and `decimal(10) ** 20` is `100000000000000000000`.
+A decimal literal must hold exactly: one with more than 34 significant digits, or out of the range of a decimal (about 1e-6176 to 1e6145), is a compile-time error. An operation rounds its exact result to 34 significant digits, to the nearest (half to even): `decimal(2) / 3` is `0.6666666666666666666666666666666667`. A decimal is shown in full, without trailing zeros: `1.50` and `1.5` are equal and both are shown as `1.5`, and `decimal(10) ** 20` is `100000000000000000000`. A number whose integer part has more digits than a decimal holds (34) is shown in scientific notation, which is also how it is written: `decimal(10) ** 300` is `1e300`.
 
 -   `float`: 64-bit binary floating-point numbers, computed by the processor: fast, but most fractions written in base 10 have no exact value in base 2. A `float` is written and shown as it is stored, in base 16: a mantissa after `0x` and a power of 2 after `p`. `0x1.8p1` is 1.5 × 2 = 3.
 

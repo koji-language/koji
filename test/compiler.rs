@@ -1556,8 +1556,8 @@ match (json.parse('{\"a\": }')) {\n\
     Ok(value) => print(value)\n\
     Err(error) => print('error:', error)\n\
 }\n\
-", "Object(['name': String('Koji 2'), 'version': Int(1), 'ratio': Decimal(2.5), 'tags': Array([String('fast'), String('safe')]), 'nested': Object(['ok': Bool(true), 'none': Null]), 'big': Decimal(1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000), 'escaped': String('a\"b\\ncé')])\n\
-{\"name\":\"Koji 2\",\"version\":1,\"ratio\":2.5,\"tags\":[\"fast\",\"safe\"],\"nested\":{\"ok\":true,\"none\":null},\"big\":1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0,\"escaped\":\"a\\\"b\\ncé\"}\n\
+", "Object(['name': String('Koji 2'), 'version': Int(1), 'ratio': Decimal(2.5), 'tags': Array([String('fast'), String('safe')]), 'nested': Object(['ok': Bool(true), 'none': Null]), 'big': Decimal(1e300), 'escaped': String('a\"b\\ncé')])\n\
+{\"name\":\"Koji 2\",\"version\":1,\"ratio\":2.5,\"tags\":[\"fast\",\"safe\"],\"nested\":{\"ok\":true,\"none\":null},\"big\":1e300,\"escaped\":\"a\\\"b\\ncé\"}\n\
 Some(String('Koji 2')) None\n\
 Some(1) Some(1) None\n\
 Some('fast')\n\

@@ -663,27 +663,37 @@ impl Decimal {
     /// The integer part by `mode`: 0 floor, 1 ceiling, 2 nearest (half away from zero), 3 toward
     /// zero. `None` when it does not fit in an int.
     pub fn to_int(self, mode: i32) -> Option<i64> {
-        let (whole, rest, unit) = if self.exponent >= 0 {
+        // The integer part, and what is left: none, below one half, or one half or more.
+        let (whole, fraction) = if self.exponent >= 0 {
             if self.is_zero() {
                 return Some(0);
             }
             if self.exponent > 19 {
                 return None;
             }
-            (self.coefficient.checked_mul(POW10[self.exponent as usize])?, 0, 1)
+            (self.coefficient.checked_mul(POW10[self.exponent as usize])?, Fraction::None)
         } else if self.exponent < -38 {
-            (0, self.coefficient, u128::MAX)
+            // Below 10^34 * 10^-39: less than one half.
+            (0, Fraction::BelowHalf)
         } else {
             let unit = POW10[(-self.exponent) as usize];
-            (self.coefficient / unit, self.coefficient % unit, unit)
-        };
-        let away = rest != 0
-            && match mode {
-                0 => self.negative,
-                1 => !self.negative,
-                2 => unit != u128::MAX && rest >= unit - unit / 2,
-                _ => false,
+            let rest = self.coefficient % unit;
+            let fraction = if rest == 0 {
+                Fraction::None
+            } else if rest < unit - unit / 2 {
+                Fraction::BelowHalf
+            } else {
+                Fraction::HalfOrMore
             };
+            (self.coefficient / unit, fraction)
+        };
+        let away = match (mode, fraction) {
+            (_, Fraction::None) => false,
+            (0, _) => self.negative,
+            (1, _) => !self.negative,
+            (2, Fraction::HalfOrMore) => true,
+            _ => false,
+        };
         let magnitude = whole + away as u128;
         if self.negative {
             if magnitude > i64::MAX as u128 + 1 {
@@ -735,6 +745,12 @@ fn scaled(coefficient: u128, scale: u32) -> Wide {
 
 fn wide_to_float(n: &Wide) -> f64 {
     n.iter().rev().fold(0.0, |total, &word| total * 18446744073709551616.0 + word as f64)
+}
+
+enum Fraction {
+    None,
+    BelowHalf,
+    HalfOrMore,
 }
 
 /// A product kept with 38 digits, for `power`.
@@ -843,8 +859,10 @@ pub fn parse_parts(text: &str) -> Result<Parts, ParseFailure> {
 }
 
 impl std::fmt::Display for Decimal {
-    /// In full, as in everyday writing: `10`, `1.5`, `0.001`, `100000000000000000000`, never
-    /// with an exponent or trailing zeros.
+    /// In full, as in everyday writing: `10`, `1.5`, `0.001`, `100000000000000000000`, without
+    /// trailing zeros. A number whose integer part has more digits than a decimal holds (34) is
+    /// written in scientific notation, `1e300` or `1.5e40`: its other digits would be zeros that
+    /// say nothing.
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         let value = self.normalized();
         if value.is_zero() {
@@ -853,6 +871,10 @@ impl std::fmt::Display for Decimal {
         let sign = if value.negative { "-" } else { "" };
         let digits = value.coefficient.to_string();
         let position = digits.len() as i64 + value.exponent;
+        if position > DIGITS as i64 {
+            let mantissa = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits };
+            return write!(formatter, "{}{}e{}", sign, mantissa, position - 1);
+        }
         if value.exponent >= 0 {
             return write!(formatter, "{}{}{}", sign, digits, "0".repeat(value.exponent as usize));
         }
@@ -1083,9 +1105,15 @@ mod real {
     /// ln(m) for m from 1 to 10, from a first estimate.
     fn newton_ln(m: &Fixed, estimate: f64) -> Fixed {
         let mut y = Fixed::from_float(estimate);
-        // 16 correct digits, then 32, then 64: three steps, and one more for the last digits.
-        for _ in 0..4 {
-            y = y.add(&m.multiply(&exp_series(&y.negate()))).subtract(&Fixed::one());
+        // Each step doubles the correct digits (16, 32, 64): it ends when a step changes nothing
+        // but the last digit, which rounding may move back and forth.
+        for _ in 0..8 {
+            let next = y.add(&m.multiply(&exp_series(&y.negate()))).subtract(&Fixed::one());
+            let change = next.subtract(&y).magnitude;
+            y = next;
+            if change.compare(&Big::from(1)) != Ordering::Greater {
+                break;
+            }
         }
         y
     }
@@ -1379,10 +1407,10 @@ mod tests {
         assert_eq!(show(d("1").divide(d("98765432109876543210")).unwrap()), "0.00000000000000000001012499999886093750011548828123843");
         assert_eq!(show(d("1").add(d("1e-40"))), "1");
         assert_eq!(show(d("1").subtract(d("1e-40"))), "1");
-        assert_eq!(show(d("1e34").subtract(d("0.5"))), "10000000000000000000000000000000000");
+        assert_eq!(show(d("1e34").subtract(d("0.5"))), "1e34");
         assert_eq!(show(d("1e34").subtract(d("1.5"))), "9999999999999999999999999999999998");
         assert_eq!(show(d("1.50").multiply(d("2"))), "3");
-        assert_eq!(show(d("12345678901234567890").multiply(d("98765432109876543210"))), "1219326311370217952237463801111264000000");
+        assert_eq!(show(d("12345678901234567890").multiply(d("98765432109876543210"))), "1.219326311370217952237463801111264e39");
         assert!(d("1.50").compare(d("1.5")).is_eq());
         assert_eq!(d("1.50").hash(), d("1.5").hash());
         assert_eq!(Decimal::from_bits(0, 0), ZERO);
@@ -1393,7 +1421,9 @@ mod tests {
         assert_eq!(show(d("9999999999999999999999999999999999e6111").add(d("1e6111"))), "decimal overflow");
         assert_eq!(show(d("1e-6176").divide(d("10")).unwrap()), "decimal underflow");
         assert_eq!(d("3e-6176").divide(d("2")).unwrap().unwrap().compare(d("2e-6176")), Ordering::Equal);
-        assert_eq!(d("1e6144").to_string(), format!("1{}", "0".repeat(6144)));
+        assert_eq!(d("1e6144").to_string(), "1e6144");
+        assert_eq!(d("1e33").to_string(), format!("1{}", "0".repeat(33)));
+        assert_eq!(d("-1.5e34").to_string(), "-1.5e34");
         assert!(parse("1e6145").is_err());
     }
 
@@ -1412,7 +1442,7 @@ mod tests {
     fn powers_and_roots() {
         assert_eq!(show(d("1.1").power(2).unwrap()), "1.21");
         assert_eq!(show(d("2").power(-2).unwrap()), "0.25");
-        assert_eq!(show(d("2").power(128).unwrap()), "340282366920938463463374607431768200000");
+        assert_eq!(show(d("2").power(128).unwrap()), "3.402823669209384634633746074317682e38");
         assert_eq!(d("0.0625").sqrt().unwrap().to_string(), "0.25");
         assert_eq!(d("2").sqrt().unwrap().to_string(), "1.414213562373095048801688724209698");
     }
@@ -1443,7 +1473,7 @@ mod tests {
         assert_eq!(d("1e300").remainder(d("7")).unwrap().to_string(), "1");
         assert_eq!(show(d("1.1").power(2).unwrap()), "1.21");
         assert_eq!(show(d("2").power(-2).unwrap()), "0.25");
-        assert_eq!(show(d("2").power(128).unwrap()), "340282366920938463463374607431768200000");
+        assert_eq!(show(d("2").power(128).unwrap()), "3.402823669209384634633746074317682e38");
         assert_eq!(d("2").sqrt().unwrap().to_string(), "1.414213562373095048801688724209698");
         assert_eq!(d("0.0625").sqrt().unwrap().to_string(), "0.25");
         assert_eq!(d("2.5").to_int(2), Some(3));

@@ -421,7 +421,8 @@ pub extern "C" fn koji_std_time_sleep(seconds: crate::decimal::KojiDecimal) {
     let seconds = crate::decimal::from_c(seconds).to_float().unwrap_or(f64::MAX);
     if seconds > 0.0 {
         let _ = std::io::stdout().flush();
-        std::thread::sleep(std::time::Duration::from_secs_f64(seconds.min(1e9)));
+        // Longer than a Duration holds: as long as it can.
+        std::thread::sleep(std::time::Duration::try_from_secs_f64(seconds).unwrap_or(std::time::Duration::MAX));
     }
 }
 

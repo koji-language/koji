@@ -203,10 +203,11 @@ export function hexFloat(text: string): Result[float, string] {
 
     if (exponent < -1074) { return Err(`${text} is too small for a float: it would be rounded`) }
 
-    // value * 2^exponent, in two halves of the power so that each one is a float.
-    immut half = exponent / 2
-    immut result = float(value) * float(2) ** half * float(2) ** (exponent - half)
-    return Ok(if (negative) { -result } else { result })
+    // Exact: the runtime reads the text without rounding anything.
+    return match (float(text)) {
+        Ok(result) => Ok(result)
+        Err(_) => Err(`${text} is not a float`)
+    }
 }
 
 function hexValue(c: char): int {
