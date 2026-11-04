@@ -246,3 +246,12 @@ pub fn dump_ir(path: &Path) -> String {
         Err(error) => format!("error: {}\n", error),
     }
 }
+
+/// The C of the file at `path` and the modules it imports, as `kojic dump c` prints it (the
+/// text of `kojic build --emit c`); an error is a single line, `error: ...`.
+pub fn dump_c(path: &Path) -> String {
+    match check_file(path).and_then(|program| ir::lower_program(&program)) {
+        Ok(ir) => backend::c::generate(&ir),
+        Err(error) => format!("error: {}\n", error),
+    }
+}

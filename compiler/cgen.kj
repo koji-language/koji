@@ -1,0 +1,928 @@
+// The C code generator of the Koji compiler written in Koji: turns the IR into one C file, which a
+// C compiler links with the runtime library (runtime/). It follows src/backend/c/: `generate`
+// gives the same text as `kojic dump c`.
+
+import { Ty, Operand, Place, Step, Target, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
+import { preludeLines } from 'prelude.kj'
+
+type Generator = {
+    program: IrProgram
+    // The lines of the C file.
+    out: string[]
+    // The file of the function being generated.
+    file: string
+}
+
+function cType(ty: Ty): string {
+    return match (ty) {
+        IntTy => 'int64_t'
+        FloatTy => 'double'
+        BoolTy => 'bool'
+        CharTy => 'uint32_t'
+        StrTy => 'KojiString *'
+        ListTy(_) => 'KojiList *'
+        RecordTy(_) => 'KojiRecord *'
+        MapTy(_, _) => 'KojiMap *'
+        SetTy(_) => 'KojiMap *'
+        FunctionTy(_, _) => 'KojiClosure *'
+        FileTy => 'KojiFile *'
+        RegexTy => 'KojiRegex *'
+        VoidTy => 'void'
+    }
+}
+
+// The runtime's name for the values of a managed type (`string` in `koji_string_retain`).
+function kind(ty: Ty): Option[string] {
+    return match (ty) {
+        StrTy => Some('string')
+        ListTy(_) => Some('list')
+        RecordTy(_) => Some('record')
+        MapTy(_, _) => Some('map')
+        SetTy(_) => Some('map')
+        FunctionTy(_, _) => Some('closure')
+        FileTy => Some('file')
+        RegexTy => Some('regex')
+        _ => None
+    }
+}
+
+// `expression` (borrowed) with a new reference, for a managed type.
+function share(ty: Ty, expression: string): string {
+    return match (kind(ty)) {
+        Some(name) => `koji_${name}_share(${expression})`
+        None => expression
+    }
+}
+
+// The function that adds a reference to a value of a managed type.
+function retain(ty: Ty): Option[string] {
+    return match (kind(ty)) {
+        Some(name) => Some(`koji_${name}_retain`)
+        None => None
+    }
+}
+
+function release(ty: Ty): Option[string] {
+    return match (kind(ty)) {
+        Some(name) => Some(`koji_${name}_release`)
+        None => None
+    }
+}
+
+// The description of the items of a list (`koji_element_int`, ...).
+function elementType(ty: Ty): string {
+    return match (ty) {
+        IntTy => '&koji_element_int'
+        FloatTy => '&koji_element_float'
+        BoolTy => '&koji_element_bool'
+        CharTy => '&koji_element_char'
+        StrTy => '&koji_element_string'
+        ListTy(_) => '&koji_element_list'
+        RecordTy(_) => '&koji_element_record'
+        MapTy(_, _) => '&koji_element_map'
+        SetTy(_) => '&koji_element_map'
+        FunctionTy(_, _) => '&koji_element_closure'
+        FileTy => '&koji_element_file'
+        RegexTy => '&koji_element_regex'
+        VoidTy => '&koji_element_void'
+    }
+}
+
+// The UTF-8 bytes of a character.
+function utf8(c: char): int[] {
+    immut code = c.code()
+
+    if (code < 128) { return [code] }
+
+    if (code < 2048) { return [192 + code / 64, 128 + code % 64] }
+
+    if (code < 65536) { return [224 + code / 4096, 128 + code / 64 % 64, 128 + code % 64] }
+
+    return [240 + code / 262144, 128 + code / 4096 % 64, 128 + code / 64 % 64, 128 + code % 64]
+}
+
+function byteLength(text: string): int {
+    mut length = 0
+
+    for c in text.chars() {
+        length += utf8(c).length()
+    }
+
+    return length
+}
+
+// A byte as three octal digits (`\042`).
+function octal(byte: int): string {
+    return `\\${byte / 64}${byte / 8 % 8}${byte % 8}`
+}
+
+// A C string literal with the bytes of `text`.
+function cString(text: string): string {
+    mut literal = '"'
+
+    for c in text.chars() {
+        for byte in utf8(c) {
+            if (byte == 34 or byte == 92 or byte == 63 or byte < 32 or byte > 126) {
+                literal += octal(byte)
+            } else {
+                literal += string(c)
+            }
+        }
+    }
+
+    return `${literal}"`
+}
+
+function functionName(id: int): string {
+    return `koji_f${id}`
+}
+
+function Generator.line(mut self, text: string) {
+    self.out.push(text)
+}
+
+// The C source of `program`, line by line.
+export function generate(program: IrProgram): string[] {
+    mut generator: Generator = { program: program, out: [], file: '' }
+    generator.generateProgram()
+    return generator.out
+}
+
+function Generator.generateProgram(mut self) {
+    for text in preludeLines {
+        self.line(text)
+    }
+
+    self.line('')
+    immut strings = self.program.strings
+
+    for id in range(strings.length()) {
+        self.line(`static KojiString *koji_s${id}; // ${stringDebug(strings[id])}`)
+    }
+
+    self.records()
+    immut globals = self.program.globals
+
+    for id in range(globals.length()) {
+        self.line(`static ${cType(globals[id].ty)} koji_g${id}; // ${globals[id].name}`)
+    }
+
+    self.line('')
+    immut functions = self.program.functions
+
+    for id in range(functions.length()) {
+        self.line(`${signature(id, functions[id])};`)
+    }
+
+    for id in range(functions.length()) {
+        self.line('')
+        self.emitFunction(id, functions[id])
+    }
+
+    self.line('')
+    self.line('int main(int argc, char **argv) {')
+    self.line('    koji_init(argc, (const char *const *)argv);')
+
+    for id in range(strings.length()) {
+        self.line(`    koji_s${id} = koji_string_new(${cString(strings[id])}, ${byteLength(strings[id])});`)
+    }
+
+    self.line(`    ${functionName(self.program.main)}();`)
+    self.line('    return 0;')
+    self.line('}')
+}
+
+// The descriptions of the declared types, for the runtime.
+function Generator.records(mut self) {
+    immut records = self.program.records
+
+    // Declared first: a field can be of a record declared later.
+    for id in range(records.length()) {
+        self.line(`static const KojiRecordType koji_record_${id};`)
+    }
+
+    for id in range(records.length()) {
+        immut record = records[id]
+        self.line(`// ${record.name}`)
+
+        for index in range(record.variants.length()) {
+            immut fields = record.variants[index].fields
+
+            if (fields.length() == 0) { continue }
+
+            mut names: string[] = []
+            mut types: string[] = []
+            mut nested: string[] = []
+
+            for field in fields {
+                names.push(cString(field.name))
+                types.push(elementType(field.ty))
+                nested.push(match (field.ty) {
+                    RecordTy(inner) => `&koji_record_${inner}`
+                    _ => 'NULL'
+                })
+            }
+
+            self.line(`static const char *const koji_record_${id}_${index}_names[] = { ${names.join(', ')} };`)
+            self.line(`static const KojiElementType *const koji_record_${id}_${index}_types[] = { ${types.join(', ')} };`)
+            self.line(`static const KojiRecordType *const koji_record_${id}_${index}_records[] = { ${nested.join(', ')} };`)
+        }
+
+        mut variants: string[] = []
+
+        for index in range(record.variants.length()) {
+            immut variant = record.variants[index]
+            immut name = match (variant.name) {
+                Some(text) => cString(text)
+                None => 'NULL'
+            }
+
+            if (variant.fields.length() == 0) {
+                variants.push(`{ ${name}, 0, NULL, NULL, NULL }`)
+            } else {
+                immut prefix = `koji_record_${id}_${index}`
+                variants.push(`{ ${name}, ${variant.fields.length()}, ${prefix}_names, ${prefix}_types, ${prefix}_records }`)
+            }
+        }
+
+        self.line(`static const KojiVariantType koji_record_${id}_variants[] = { ${variants.join(', ')} };`)
+        // The name without type arguments (`Result`, `MathError`).
+        immut base = record.name.split('[')[0]
+        self.line(`static const KojiRecordType koji_record_${id} = { ${cString(base)}, ${record.variants.length()}, koji_record_${id}_variants };`)
+    }
+}
+
+function signature(id: int, routine: IrFunction): string {
+    mut params: string[] = []
+
+    for param in range(routine.params) {
+        params.push(`${cType(routine.locals[param].ty)} l${param}`)
+    }
+
+    // A `mut` parameter gives its final value back through `out<n>`.
+    for param in range(routine.writeback.length()) {
+        if (routine.writeback[param]) { params.push(`${cType(routine.locals[param].ty)} *out${param}`) }
+    }
+
+    immut list = if (params.length() == 0) { 'void' } else { params.join(', ') }
+    return `static ${cType(routine.returns)} ${functionName(id)}(${list}) /* ${routine.name} */`
+}
+
+function Generator.location(self, line: int): string {
+    if (line == 0) { return cString(self.file) }
+
+    return cString(`${self.file}:${line}`)
+}
+
+function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
+    self.file = routine.file
+    self.line(`${signature(id, routine)} {`)
+
+    // Parameters are borrowed from the caller; a reference of their own keeps them alive even if
+    // the caller's variable changes during the call. A `mut` parameter is given its own reference
+    // by the caller (see `CallIns`).
+    for param in range(routine.params) {
+        if (param < routine.writeback.length() and routine.writeback[param]) { continue }
+
+        match (retain(routine.locals[param].ty)) {
+            Some(name) => self.line(`    ${name}(l${param});`)
+            None => {}
+        }
+    }
+
+    for local in range(routine.params, routine.locals.length()) {
+        immut info = routine.locals[local]
+        immut initial = match (info.ty) {
+            StrTy => 'NULL'
+            ListTy(_) => 'NULL'
+            RecordTy(_) => 'NULL'
+            BoolTy => 'false'
+            FloatTy => '0.0'
+            _ => '0'
+        }
+        immut comment = match (info.name) {
+            Some(name) => ` // ${name}`
+            None => ''
+        }
+        self.line(`    ${cType(info.ty)} l${local} = ${initial};${comment}`)
+    }
+
+    for block in range(routine.blocks.length()) {
+        self.line(`b${block}:;`)
+
+        for instruction in routine.blocks[block].instructions {
+            self.instruction(routine, instruction)
+        }
+
+        self.terminator(routine, routine.blocks[block].terminator)
+    }
+
+    self.line('}')
+}
+
+function operand(value: Operand): string {
+    return match (value) {
+        LocalOp(id) => `l${id}`
+        GlobalOp(id) => `koji_g${id}`
+        IntOp(value) => if (value == -9223372036854775807 - 1) { 'INT64_MIN' } else { `INT64_C(${value})` }
+        FloatOp(value) => floatDebug(value)
+        BoolOp(value) => string(value)
+        CharOp(value) => `UINT32_C(${value.code()})`
+        StrOp(id) => `koji_s${id}`
+    }
+}
+
+function place(where: Place): string {
+    return match (where) {
+        LocalPlace(id) => `l${id}`
+        GlobalPlace(id) => `koji_g${id}`
+    }
+}
+
+function Generator.placeType(self, routine: IrFunction, where: Place): Ty {
+    return match (where) {
+        LocalPlace(id) => routine.locals[id].ty
+        GlobalPlace(id) => self.program.globals[id].ty
+    }
+}
+
+// `dest = expression`, where `expression` gives a new reference for a managed type.
+function Generator.set(mut self, dest: string, ty: Ty, expression: string) {
+    match (ty) {
+        StrTy => self.line(`    koji_string_set(&${dest}, ${expression});`)
+        VoidTy => self.line(`    ${dest} = ${expression};`)
+        _ => {
+            match (kind(ty)) {
+                Some(name) => self.line(`    koji_${name}_set_variable(&${dest}, ${expression});`)
+                None => self.line(`    ${dest} = ${expression};`)
+            }
+        }
+    }
+}
+
+// The variable that holds the value of `target`, as a `void **` (each step copies a shared list
+// or record before giving the slot inside it).
+function Generator.path(self, target: Target, line: int): string {
+    mut variable = `(void **)&${place(target.root)}`
+
+    for step in target.path {
+        variable = match (step) {
+            IndexStep(index) => `(void **)koji_list_slot((KojiList **)${variable}, ${operand(index)}, ${self.location(line)})`
+            FieldStep(field) => `(void **)koji_record_slot((KojiRecord **)${variable}, ${field})`
+            KeyStep(key) => `(void **)koji_map_slot((KojiMap **)${variable}, ${address(key)}, ${self.location(line)})`
+        }
+    }
+
+    return variable
+}
+
+// Writes `value` (a C variable that owns its value) to `target`, giving up its reference.
+function Generator.store(mut self, target: Target, ty: Ty, value: string, line: int) {
+    if (target.path.length() == 0) {
+        self.set(place(target.root), ty, value)
+        return
+    }
+
+    immut container: Target = { root: target.root, path: target.path[..target.path.length() - 1] }
+    immut call = match (target.path[target.path.length() - 1]) {
+        IndexStep(index) => `koji_list_set((KojiList **)${self.path(container, line)}, ${operand(index)}, &${value}, ${self.location(line)})`
+        FieldStep(field) => `koji_record_set((KojiRecord **)${self.path(container, line)}, ${field}, &${value})`
+        KeyStep(key) => `koji_map_set((KojiMap **)${self.path(container, line)}, ${address(key)}, &${value})`
+    }
+    self.line(`    ${call};`)
+
+    match (release(ty)) {
+        Some(name) => self.line(`    ${name}(${value});`)
+        None => {}
+    }
+}
+
+// The variable that holds the list of `target`, as a `KojiList **`.
+function Generator.target(self, target: Target, line: int): string {
+    return `(KojiList **)${self.path(target, line)}`
+}
+
+// The address of an operand that is a local or a global (a key kept in a local), or of a compound
+// literal for a constant.
+function address(value: Operand): string {
+    return match (value) {
+        LocalOp(_) => `&${operand(value)}`
+        GlobalOp(_) => `&${operand(value)}`
+        IntOp(_) => `&(int64_t){ ${operand(value)} }`
+        FloatOp(_) => `&(double){ ${operand(value)} }`
+        BoolOp(_) => `&(bool){ ${operand(value)} }`
+        CharOp(_) => `&(uint32_t){ ${operand(value)} }`
+        StrOp(_) => `&(KojiString *){ ${operand(value)} }`
+    }
+}
+
+// Calls `call`, where `VALUE` is the address of `value` (the callee makes its own copy).
+function Generator.withAddress(mut self, ty: Ty, value: Operand, call: string) {
+    self.line(`    { ${cType(ty)} value = ${operand(value)}; ${call.replace('VALUE', '&value')}; }`)
+}
+
+function Generator.operandType(self, routine: IrFunction, value: Operand): Ty {
+    return match (value) {
+        LocalOp(id) => routine.locals[id].ty
+        GlobalOp(id) => self.program.globals[id].ty
+        IntOp(_) => IntTy
+        FloatOp(_) => FloatTy
+        BoolOp(_) => BoolTy
+        CharOp(_) => CharTy
+        StrOp(_) => StrTy
+    }
+}
+
+function unaryExpression(op: string, value: string, location: string): string {
+    return match (op) {
+        'IntNeg' => `koji_int_neg(${value}, ${location})`
+        'FloatNeg' => `-(${value})`
+        'Not' => `!(${value})`
+        'BitNot' => `~(${value})`
+        'IntToFloat' => `(double)${value}`
+        'IntToStr' => `koji_string_from_int(${value})`
+        'FloatToStr' => `koji_string_from_float(${value})`
+        'BoolToStr' => `koji_string_from_bool(${value})`
+        'CharToStr' => `koji_string_from_char(${value})`
+        'FileToStr' => `koji_file_repr(${value})`
+        'RegexToStr' => `koji_regex_repr(${value})`
+        'CharRepr' => `koji_char_repr(${value})`
+        'CharCode' => `(int64_t)${value}`
+        'ListToStr' => `koji_list_repr(${value})`
+        'StrLength' => `koji_string_length(${value})`
+        'StrRepr' => `koji_string_repr(${value})`
+        'ListLength' => `koji_list_length(${value})`
+        'RecordToStr' => `koji_record_display(${value})`
+        'RecordRepr' => `koji_record_repr(${value})`
+        'RecordTag' => `koji_record_tag(${value})`
+        'MapLength' => `koji_map_length(${value})`
+        'MapToStr' => `koji_map_repr(${value})`
+        'MapKeys' => `koji_map_keys(${value})`
+        'MapValues' => `koji_map_values(${value})`
+        'SetFromList' => `koji_set_from_list(${value})`
+        _ => `koji_closure_repr(${value})`
+    }
+}
+
+// The C operator of a comparison (`Less` is `<`).
+function symbol(comparison: string): string {
+    return match (comparison) {
+        'Equal' => '=='
+        'NotEqual' => '!='
+        'Less' => '<'
+        'LessEqual' => '<='
+        'Greater' => '>'
+        _ => '>='
+    }
+}
+
+// `IntCompare(Less)`: the operation and its comparison.
+type Operation = {
+    name: string
+    comparison: string
+}
+
+function operation(op: string): Operation {
+    mut found: Operation = { name: op, comparison: '' }
+
+    match (op.indexOf('(')) {
+        Some(open) => found = { name: op[..open], comparison: op[open + 1..op.length() - 1] }
+        None => {}
+    }
+
+    return found
+}
+
+function Generator.binary(self, op: string, left: string, right: string, line: int): string {
+    immut location = self.location(line)
+    immut parts = operation(op)
+
+    return match (parts.name) {
+        'IntAdd' => `koji_int_add(${left}, ${right}, ${location})`
+        'IntSub' => `koji_int_sub(${left}, ${right}, ${location})`
+        'IntMul' => `koji_int_mul(${left}, ${right}, ${location})`
+        'IntDiv' => `koji_int_div(${left}, ${right}, ${location})`
+        'IntRem' => `koji_int_rem(${left}, ${right}, ${location})`
+        'IntPow' => `koji_int_pow(${left}, ${right}, ${location})`
+        'BitAnd' => `(${left} & ${right})`
+        'BitOr' => `(${left} | ${right})`
+        'BitXor' => `(${left} ^ ${right})`
+        'ShiftLeft' => `koji_shift_left(${left}, ${right}, ${location})`
+        'ShiftRight' => `koji_shift_right(${left}, ${right}, ${location})`
+        'FloatAdd' => `koji_float_check(${left} + ${right}, ${location})`
+        'FloatSub' => `koji_float_check(${left} - ${right}, ${location})`
+        'FloatMul' => `koji_float_check(${left} * ${right}, ${location})`
+        'FloatDiv' => `koji_float_div(${left}, ${right}, ${location})`
+        'FloatRem' => `koji_float_rem(${left}, ${right}, ${location})`
+        'FloatPow' => `koji_float_pow(${left}, ${right}, ${location})`
+        name if (name in ['IntCompare', 'FloatCompare', 'BoolCompare', 'CharCompare']) => `(${left} ${symbol(parts.comparison)} ${right})`
+        'StrCompare' => {
+            match (parts.comparison) {
+                'Equal' => `koji_string_equal(${left}, ${right})`
+                'NotEqual' => `!koji_string_equal(${left}, ${right})`
+                comparison => `(koji_string_compare(${left}, ${right}) ${symbol(comparison)} 0)`
+            }
+        }
+        'StrConcat' => `koji_string_concat(${left}, ${right})`
+        'StrRepeat' => `koji_string_repeat(${left}, ${right})`
+        'StrContains' => `koji_string_contains(${right}, ${left})`
+        'StrContainsChar' => `koji_string_contains_char(${right}, ${left})`
+        'ListConcat' => `koji_list_concat(${left}, ${right})`
+        'ListCompare' => if (parts.comparison == 'NotEqual') { `!koji_list_equal(${left}, ${right})` } else { `koji_list_equal(${left}, ${right})` }
+        'MapCompare' => if (parts.comparison == 'NotEqual') { `!koji_map_equal(${left}, ${right})` } else { `koji_map_equal(${left}, ${right})` }
+        'RecordCompare' => if (parts.comparison == 'NotEqual') { `!koji_record_equal(${left}, ${right})` } else { `koji_record_equal(${left}, ${right})` }
+        _ => `koji_list_join(${left}, ${right})`
+    }
+}
+
+// The positions of `Some` and `None` in an `Option` record.
+type OptionVariants = {
+    some: int
+    none: int
+}
+
+function Generator.optionVariants(self, option: int): OptionVariants {
+    mut some = 0
+    mut none = 0
+    immut variants = self.program.records[option].variants
+
+    for i in range(variants.length()) {
+        if (variants[i].name == Some('Some')) { some = i }
+
+        if (variants[i].name == Some('None')) { none = i }
+    }
+
+    return { some: some, none: none }
+}
+
+function recordId(ty: Ty): int {
+    return match (ty) {
+        RecordTy(id) => id
+        _ => 0
+    }
+}
+
+function Generator.setLocal(mut self, routine: IrFunction, dest: int, expression: string) {
+    self.set(`l${dest}`, routine.locals[dest].ty, expression)
+}
+
+// `dest = expression`, or the expression as a statement without a destination.
+function Generator.result(mut self, routine: IrFunction, dest: Option[int], expression: string) {
+    match (dest) {
+        Some(local) => self.setLocal(routine, local, expression)
+        None => self.line(`    ${expression};`)
+    }
+}
+
+function Generator.instruction(mut self, routine: IrFunction, instruction: Instruction) {
+    match (instruction) {
+        CopyIns(dest, value) => {
+            immut ty = self.placeType(routine, dest)
+            self.set(place(dest), ty, share(ty, operand(value)))
+        }
+        UnaryIns(dest, op, value, line) => self.setLocal(routine, dest, unaryExpression(op, operand(value), self.location(line)))
+        BinaryIns(dest, op, left, right, line) => {
+            mut expression = ''
+
+            match (op) {
+                'MapContains' => expression = `koji_map_contains(${operand(right)}, ${address(left)})`
+                'ListIndexOf' => {
+                    immut item = itemOf(self.operandType(routine, left))
+                    expression = `({ ${cType(item)} item = ${operand(right)}; koji_list_index_of(${operand(left)}, &item); })`
+                }
+                // The item needs an address.
+                'ListContains' => {
+                    immut item = itemOf(self.operandType(routine, right))
+                    expression = `({ ${cType(item)} item = ${operand(left)}; koji_list_contains(${operand(right)}, &item); })`
+                }
+                _ => expression = self.binary(op, operand(left), operand(right), line)
+            }
+
+            self.setLocal(routine, dest, expression)
+        }
+        CallIns(dest, callee, args, writebacks, line) => {
+            mut values: string[] = []
+
+            for arg in args {
+                values.push(operand(arg))
+            }
+
+            // The final values of the `mut` parameters, owned by the caller after the call (in a C
+            // block: the names are reused by the next call).
+            if (writebacks.length() > 0) { self.line('    {') }
+
+            for writeback in writebacks {
+                immut param = writeback.param
+                immut ty = self.operandType(routine, args[param])
+
+                // The function owns the value of a `mut` parameter. When the argument is a local
+                // variable (not used by another argument), the variable gives it its reference for
+                // the call, so that the function changes the value in place instead of copying it;
+                // otherwise the function gets a reference of its own.
+                if (isManaged(ty)) {
+                    mut given = false
+
+                    match (args[param]) {
+                        LocalOp(local) => {
+                            immut sameRoot = writeback.target.root == LocalPlace(local) and writeback.target.path.length() == 0
+                            mut alone = true
+
+                            for i in range(args.length()) {
+                                if (i != param and args[i] == LocalOp(local)) { alone = false }
+                            }
+
+                            if (sameRoot and alone) {
+                                self.line(`    ${cType(ty)} given${param} = l${local};`)
+                                self.line(`    l${local} = NULL;`)
+                                values[param] = `given${param}`
+                                given = true
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    if (not given) { values[param] = share(ty, values[param]) }
+                }
+
+                immut initial = if (isManaged(ty)) { 'NULL' } else { '0' }
+                self.line(`    ${cType(ty)} back${param} = ${initial};`)
+                values.push(`&back${param}`)
+            }
+
+            self.result(routine, dest, `${functionName(callee)}(${values.join(', ')})`)
+
+            for writeback in writebacks {
+                immut ty = self.operandType(routine, args[writeback.param])
+                self.store(writeback.target, ty, `back${writeback.param}`, line)
+            }
+
+            if (writebacks.length() > 0) { self.line('    }') }
+        }
+        ListNewIns(dest, items) => {
+            immut ty = routine.locals[dest].ty
+            immut element = itemOf(ty)
+            self.set(`l${dest}`, ty, `koji_list_new(${elementType(element)}, ${items.length()})`)
+
+            for item in items {
+                self.withAddress(element, item, `koji_list_push(&l${dest}, VALUE)`)
+            }
+        }
+        ListGetIns(dest, list, index, line) => {
+            immut ty = routine.locals[dest].ty
+            immut item = `*(${cType(ty)} const *)koji_list_get(${operand(list)}, ${operand(index)}, ${self.location(line)})`
+            self.set(`l${dest}`, ty, share(ty, item))
+        }
+        ListSetIns(list, index, value, line) => {
+            immut ty = self.operandType(routine, value)
+            self.withAddress(ty, value, `koji_list_set(${self.target(list, line)}, ${operand(index)}, VALUE, ${self.location(line)})`)
+        }
+        ListPushIns(list, value, line) => {
+            immut ty = self.operandType(routine, value)
+            self.withAddress(ty, value, `koji_list_push(${self.target(list, line)}, VALUE)`)
+        }
+        ListInsertIns(list, index, value, line) => {
+            immut ty = self.operandType(routine, value)
+            self.withAddress(ty, value, `koji_list_insert(${self.target(list, line)}, ${operand(index)}, VALUE, ${self.location(line)})`)
+        }
+        ListSortIns(list, line) => self.line(`    koji_list_sort(${self.target(list, line)});`)
+        ListSliceIns(dest, list, start, end, line) => {
+            immut first = match (start) {
+                Some(bound) => `true, ${operand(bound)}`
+                None => 'false, 0'
+            }
+            immut last = match (end) {
+                Some(bound) => `true, ${operand(bound)}`
+                None => 'false, 0'
+            }
+            self.setLocal(routine, dest, `koji_list_slice(${operand(list)}, ${first}, ${last}, ${self.location(line)})`)
+        }
+        RecordNewIns(dest, variant, fields) => {
+            immut ty = routine.locals[dest].ty
+            immut record = recordId(ty)
+            self.set(`l${dest}`, ty, `koji_record_new(&koji_record_${record}, ${variant})`)
+            immut fieldTypes = self.program.records[record].variants[variant].fields
+
+            for index in range(fields.length()) {
+                if (index >= fieldTypes.length()) { break }
+
+                immut fieldType = fieldTypes[index].ty
+
+                if (fieldType == VoidTy) { continue }
+
+                self.withAddress(fieldType, fields[index], `koji_record_init(l${dest}, ${index}, VALUE)`)
+            }
+        }
+        FieldGetIns(dest, record, field) => {
+            immut ty = routine.locals[dest].ty
+            immut value = `*(${cType(ty)} const *)koji_record_get(${operand(record)}, ${field})`
+            self.set(`l${dest}`, ty, share(ty, value))
+        }
+        FieldSetIns(record, field, value, line) => {
+            immut ty = self.operandType(routine, value)
+            self.withAddress(ty, value, `koji_record_set((KojiRecord **)${self.path(record, line)}, ${field}, VALUE)`)
+        }
+        ListRemoveIns(dest, list, index, line) => {
+            immut option = recordId(routine.locals[dest].ty)
+            immut positions = self.optionVariants(option)
+            immut itemType = self.program.records[option].variants[positions.some].fields[0].ty
+            immut remove = match (index) {
+                Some(position) => `koji_list_remove(${self.target(list, line)}, ${operand(position)}, &item)`
+                None => `koji_list_pop(${self.target(list, line)}, &item)`
+            }
+            // The list gives its reference to the item; the record takes its own.
+            immut releaseItem = match (release(itemType)) {
+                Some(name) => ` ${name}(item);`
+                None => ''
+            }
+            self.line(`    { ${cType(itemType)} item; KojiRecord *option; if (${remove}) { option = koji_record_new(&koji_record_${option}, ${positions.some}); koji_record_init(option, 0, &item);${releaseItem} } else { option = koji_record_new(&koji_record_${option}, ${positions.none}); } koji_record_set_variable(&l${dest}, option); }`)
+        }
+        StdCallIns(dest, name, args) => {
+            mut values: string[] = []
+
+            for arg in args {
+                values.push(match (arg) {
+                    ValueArg(value) => operand(value)
+                    ModeArg(mode) => string(mode)
+                    RecordArg(record) => `&koji_record_${record}`
+                    ElementArg(ty) => elementType(ty)
+                    LocationArg(line) => self.location(line)
+                    NullArg => 'NULL'
+                })
+            }
+
+            self.result(routine, dest, `${name}(${values.join(', ')})`)
+        }
+        TakeIns(dest, source) => {
+            self.set(`l${dest}`, routine.locals[dest].ty, place(source))
+            self.line(`    ${place(source)} = NULL;`)
+        }
+        DropIns(value, dropper) => {
+            immut name = match (release(self.placeType(routine, value))) {
+                Some(found) => found
+                None => ''
+            }
+            immut variable = place(value)
+            self.line(`    if (${variable}) { ${functionName(dropper)}(${variable}); ${name}(${variable}); ${variable} = NULL; }`)
+        }
+        MakeClosureIns(dest, code, environment) => {
+            immut captured = match (environment) {
+                Some(value) => `koji_record_share(${operand(value)})`
+                None => 'NULL'
+            }
+            immut name = cString(self.program.functions[code].name)
+            self.setLocal(routine, dest, `koji_closure_new((const void *)${functionName(code)}, ${captured}, ${name})`)
+        }
+        CallClosureIns(dest, closure, args, _) => {
+            mut params: Ty[] = []
+            mut returns = VoidTy
+
+            match (self.operandType(routine, closure)) {
+                FunctionTy(types, returned) => {
+                    params = types
+                    returns = returned
+                }
+                _ => {}
+            }
+
+            mut types = ['KojiRecord *']
+
+            for param in params {
+                types.push(cType(param))
+            }
+
+            immut callee = operand(closure)
+            mut values = [`koji_closure_environment(${callee})`]
+
+            for arg in args {
+                values.push(operand(arg))
+            }
+
+            self.result(routine, dest, `((${cType(returns)} (*)(${types.join(', ')}))koji_closure_code(${callee}))(${values.join(', ')})`)
+        }
+        ListSortByIns(list, comparison, line) => {
+            mut before = 'int'
+
+            match (self.operandType(routine, comparison)) {
+                FunctionTy(params, _) => {
+                    before = match (params[0]) {
+                        IntTy => 'int'
+                        FloatTy => 'float'
+                        BoolTy => 'bool'
+                        CharTy => 'char'
+                        StrTy => 'string'
+                        ListTy(_) => 'list'
+                        RecordTy(_) => 'record'
+                        _ => 'map'
+                    }
+                }
+                _ => {}
+            }
+
+            self.line(`    koji_list_sort_by(${self.target(list, line)}, ${operand(comparison)}, koji_before_${before});`)
+        }
+        MapNewIns(dest, entries) => {
+            immut ty = routine.locals[dest].ty
+            mut keyType = VoidTy
+            mut valueType = VoidTy
+
+            match (ty) {
+                MapTy(key, value) => {
+                    keyType = key
+                    valueType = value
+                }
+                _ => {}
+            }
+
+            self.set(`l${dest}`, ty, `koji_map_new(${elementType(keyType)}, ${elementType(valueType)})`)
+
+            for entry in entries {
+                self.line(`    { ${cType(keyType)} key = ${operand(entry.key)}; ${cType(valueType)} value = ${operand(entry.value)}; koji_map_set(&l${dest}, &key, &value); }`)
+            }
+        }
+        MapGetIns(dest, map, key, line) => {
+            immut ty = routine.locals[dest].ty
+            immut value = `*(${cType(ty)} const *)koji_map_get(${operand(map)}, ${address(key)}, ${self.location(line)})`
+            self.set(`l${dest}`, ty, share(ty, value))
+        }
+        MapLookupIns(dest, map, key) => {
+            immut option = recordId(routine.locals[dest].ty)
+            immut positions = self.optionVariants(option)
+            self.line(`    { const void *found = koji_map_find(${operand(map)}, ${address(key)}); KojiRecord *option = koji_record_new(&koji_record_${option}, found ? ${positions.some} : ${positions.none}); if (found) koji_record_init(option, 0, found); koji_record_set_variable(&l${dest}, option); }`)
+        }
+        MapSetIns(target, key, value, line) => {
+            immut map = `(KojiMap **)${self.path(target, line)}`
+
+            match (value) {
+                Some(stored) => {
+                    immut ty = self.operandType(routine, stored)
+                    self.withAddress(ty, stored, `koji_map_set(${map}, ${address(key)}, VALUE)`)
+                }
+                None => self.line(`    koji_map_set(${map}, ${address(key)}, NULL);`)
+            }
+        }
+        MapRemoveIns(dest, target, key, line) => {
+            immut map = `(KojiMap **)${self.path(target, line)}`
+
+            match (routine.locals[dest].ty) {
+                RecordTy(option) => {
+                    immut positions = self.optionVariants(option)
+                    immut valueType = self.program.records[option].variants[positions.some].fields[0].ty
+                    immut releaseValue = match (release(valueType)) {
+                        Some(name) => ` ${name}(value);`
+                        None => ''
+                    }
+                    self.line(`    { ${cType(valueType)} value; KojiRecord *option; if (koji_map_remove(${map}, ${address(key)}, &value)) { option = koji_record_new(&koji_record_${option}, ${positions.some}); koji_record_init(option, 0, &value);${releaseValue} } else { option = koji_record_new(&koji_record_${option}, ${positions.none}); } koji_record_set_variable(&l${dest}, option); }`)
+                }
+                _ => self.line(`    l${dest} = koji_map_remove(${map}, ${address(key)}, NULL);`)
+            }
+        }
+        FailIns(message, line) => self.line(`    koji_fail(${self.location(line)}, ${operand(message)});`)
+        PrintIns(value, line) => self.line(`    koji_print(${operand(value)}, ${self.location(line)});`)
+        RangeCheckIns(step, line) => {
+            self.line(`    if (${operand(step)} == 0) koji_panic(${self.location(line)}, "range() step cannot be 0");`)
+        }
+        RangeNextIns(hasValue, value, next, end, step, done) => {
+            self.line(`    l${hasValue} = koji_range_next(&l${next}, ${operand(end)}, ${operand(step)}, &l${done}, &l${value});`)
+        }
+    }
+}
+
+// Releases the values the function owns (before it returns).
+function Generator.releaseLocals(mut self, routine: IrFunction) {
+    for id in range(routine.locals.length()) {
+        match (release(routine.locals[id].ty)) {
+            Some(name) => self.line(`    ${name}(l${id});`)
+            None => {}
+        }
+    }
+}
+
+function Generator.terminator(mut self, routine: IrFunction, terminator: Terminator) {
+    match (terminator) {
+        GotoT(block) => self.line(`    goto b${block};`)
+        BranchT(condition, thenBlock, elseBlock) => self.line(`    if (${operand(condition)}) goto b${thenBlock}; else goto b${elseBlock};`)
+        ReturnT(value) => {
+            // The `mut` parameters give their final values back.
+            for param in range(routine.writeback.length()) {
+                if (not routine.writeback[param]) { continue }
+
+                immut local = `l${param}`
+                self.line(`    *out${param} = ${share(routine.locals[param].ty, local)};`)
+            }
+
+            match (value) {
+                // The result is computed before the locals are released: it may be one of them.
+                Some(returned) => {
+                    self.line(`    { ${cType(routine.returns)} result = ${share(routine.returns, operand(returned))};`)
+                    self.releaseLocals(routine)
+                    self.line('    return result; }')
+                }
+                None => {
+                    self.releaseLocals(routine)
+                    self.line('    return;')
+                }
+            }
+        }
+        UnreachableT => self.line(`    koji_panic(${cString(self.file)}, "the function ended without returning a value");`)
+    }
+}

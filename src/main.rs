@@ -15,6 +15,7 @@ Usage:
     kojic dump ast <file.kj>          show the syntax tree of a file
     kojic dump types <file.kj>        show what the checker finds (types, moves...)
     kojic dump ir <file.kj>           show the intermediate representation
+    kojic dump c <file.kj>            show the generated C
     kojic help                        show this message";
 
 fn main() -> ExitCode {
@@ -24,9 +25,13 @@ fn main() -> ExitCode {
     }
     // `kojic dump tokens <file.kj>`: for comparing with the compiler written in Koji.
     if let [dump, stage, file] = args.as_slice() {
-        if dump == "dump" && (stage == "types" || stage == "ir") {
+        if dump == "dump" && (stage == "types" || stage == "ir" || stage == "c") {
             let path = std::path::Path::new(file);
-            let text = if stage == "types" { kojic::dump_types(path) } else { kojic::dump_ir(path) };
+            let text = match stage.as_str() {
+                "types" => kojic::dump_types(path),
+                "ir" => kojic::dump_ir(path),
+                _ => kojic::dump_c(path),
+            };
             print!("{}", text);
             return ExitCode::SUCCESS;
         }

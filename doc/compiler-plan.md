@@ -23,6 +23,8 @@ Everything is written in Rust. `kojic run <file>` runs four stages:
 
 The **runtime** (`runtime/`) is a Rust library with a C interface: strings, output, panics and the operators that need more than a C expression. It is compiled once as a static library and linked into every program.
 
+The same compiler is also written in Koji (`compiler/`, [phase 3](#the-compiler-in-koji-phase-3)), and it compiles itself: the C it generates for its own source, compiled and run, generates that same C again ([phase 4](#phases)).
+
 ---
 
 ## Bootstrap strategy
@@ -447,7 +449,7 @@ Each stage prints the same text as a `kojic dump <stage>` command of the compile
 | Parser | `compiler/parser.kj` | `kojic dump ast` (`(at 1 (immut x _ (int 1)))`; an error is `error: syntax error: ...`) | done |
 | Checker | `compiler/types.kj`, `compiler/checker.kj` | `kojic dump types` (the syntax tree with the type of each node and what the compiler needs to know about it: `(int 1):int`, `!move`, `!method=Person.greet`...) | done |
 | IR | `compiler/ir.kj`, `compiler/lower.kj` | `kojic dump ir` (the text of `kojic build --emit ir`; what `kojic build` does not support yet is the same `compile error`) | done |
-| C generator | | | next |
+| C generator | `compiler/cgen.kj` (and `compiler/prelude.kj`, the lines of `src/backend/c/prelude.h`) | `kojic dump c` (the text of `kojic build --emit c`) | done |
 
 Notes for writing the compiler in Koji:
 
@@ -470,7 +472,7 @@ Notes for writing the compiler in Koji:
 | **1. Language** | The decisions above and the features in [What the language needs](#what-the-language-needs-to-support-the-compiler), implemented in the Rust checker and interpreter | Tests like the current ones |
 | **2. Compiler in Rust** | A typed IR in `src/ir/` (monomorphization, closure conversion, `match` compiled to decision trees), a C code generator, a runtime in Rust (strings, lists, maps, memory management) and a `kojic build` command | Every test runs both interpreted and compiled, with identical output |
 | **3. `kojic` in Koji** | Lexer → parser → checker → IR → C generator, in this order | At each step, compare with the Rust implementation: same tokens, same AST, same errors, same generated C |
-| **4. Bootstrap** | Stages 1 → 2 → 3 | Stage 2 output identical to stage 3 |
+| **4. Bootstrap** | Stages 1 → 2 → 3 | Stage 2 output identical to stage 3: reached, checked by `cargo test --test bootstrap -- --ignored` (stage 1 is the compiler in Koji built by `kojic build`, stage 2 the C it generates for itself compiled by `cc`) |
 | **5. Maintenance** | A bootstrap policy: freeze the Rust implementation as stage 0, or commit the generated C of `kojic` so that only a C compiler is needed to build everything | CI rebuilds every stage |
 | **6. Optimization** | The optimizations below, in the compiler written in Koji only (the Rust implementation stays as stage 0) | A benchmark (the compiler checking and lowering its own files) measures each one; every test still gives the same output |
 

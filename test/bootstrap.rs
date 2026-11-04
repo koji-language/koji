@@ -301,3 +301,81 @@ fn the_interpreted_lowering_agrees() {
         assert_eq!(found, expected, "the IR of {} differs", file);
     }
 }
+
+/// `compiler/prelude.kj` as it must be: the lines of `src/backend/c/prelude.h`, which the C
+/// generator in Rust includes with `include_str!`.
+fn prelude_in_koji() -> String {
+    let prelude = std::fs::read_to_string("src/backend/c/prelude.h").unwrap();
+    let mut text = String::from(
+        "// The start of every C file the compiler generates: the lines of src/backend/c/prelude.h,\n\
+         // which the C generator in Rust includes. Generated: test/bootstrap.rs checks that it is up\n\
+         // to date, and rewrites it when run with KOJI_UPDATE_PRELUDE=1.\n\nexport immut preludeLines = [\n",
+    );
+    for line in prelude.lines() {
+        text.push_str(&format!("    '{}',\n", line.replace('\\', "\\\\").replace('\'', "\\'")));
+    }
+    text.push_str("]\n");
+    text
+}
+
+#[test]
+fn the_c_prelude_in_koji_is_up_to_date() {
+    let expected = prelude_in_koji();
+    if std::env::var("KOJI_UPDATE_PRELUDE").is_ok() {
+        std::fs::write("compiler/prelude.kj", &expected).unwrap();
+    }
+    let found = std::fs::read_to_string("compiler/prelude.kj").unwrap_or_default();
+    assert!(found == expected, "compiler/prelude.kj is out of date: run the tests with KOJI_UPDATE_PRELUDE=1");
+}
+
+#[test]
+fn the_c_generator_in_koji_gives_the_same_c() {
+    let compiler = koji_compiler();
+    let files = corpus()
+        .into_iter()
+        .chain(parser_cases())
+        .chain(checker_cases())
+        .chain(checker_modules())
+        .chain(cases("test/ir/cases.txt", "bootstrap-c-cases"));
+    for file in files {
+        let expected = kojic::dump_c(&file);
+        let found = output(Command::new(compiler).arg("c").arg(&file));
+        assert!(found == expected, "the C of {} differs", file.display());
+    }
+}
+
+#[test]
+fn the_interpreted_c_generator_agrees() {
+    let expected = kojic::dump_c(Path::new("examples/shapes.kj"));
+    let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "c", "examples/shapes.kj"]));
+    assert!(found == expected, "the C of examples/shapes.kj differs");
+}
+
+/// Phase 4: the compiler written in Koji compiles itself. Stage 1 is the compiler in Koji built by
+/// `kojic build`; stage 2 is built from the C that stage 1 generates for the compiler; the C that
+/// stage 2 generates must be the same. Slow (the C compiler builds the compiler twice): run it
+/// with `cargo test --test bootstrap -- --ignored`.
+#[test]
+#[ignore]
+fn the_compiler_in_koji_compiles_itself() {
+    let stage1 = koji_compiler();
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-stages");
+    std::fs::create_dir_all(&directory).unwrap();
+    let c_of = |compiler: &Path| output(Command::new(compiler).args(["c", "compiler/main.kj"]));
+    let stage2_c = c_of(stage1);
+    assert!(stage2_c == kojic::dump_c(Path::new("compiler/main.kj")), "stage 1 generates another C than kojic");
+    let source = directory.join("stage2.c");
+    std::fs::write(&source, &stage2_c).unwrap();
+    let stage2 = directory.join("stage2");
+    let compiler = std::env::var("KOJI_CC").unwrap_or_else(|_| "cc".to_string());
+    let mut command = Command::new(compiler);
+    command.arg("-O2").arg("-o").arg(&stage2).arg(&source).arg(env!("KOJI_RUNTIME_LIB"));
+    if cfg!(target_os = "macos") {
+        command.args(["-lSystem", "-lc", "-lm"]);
+    } else {
+        command.args(["-lpthread", "-ldl", "-lm", "-lrt", "-lutil"]);
+    }
+    let built = command.output().unwrap();
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    assert!(c_of(&stage2) == stage2_c, "stage 2 generates another C than stage 1");
+}
