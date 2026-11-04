@@ -96,12 +96,22 @@ if (age >= 18 and not hasTicket) {
 | Operator | Description                                |
 | -------- | ------------------------------------------ |
 | `=`      | Assignment (assigns a value to a variable) |
-| `+=`     | Add and assign                             |
-| `-=`     | Subtract and assign                        |
-| `*=`     | Multiply and assign                        |
-| `/=`     | Divide and assign                          |
-| `**=`    | Exponentiate and assign                    |
-| `%=`     | Modulus and assign                         |
+
+## Compound Operators
+
+| Operator | Description             | Equivalent |
+| -------- | ----------------------- | ---------- |
+| `+=`     | Add and assign          | x = x + y  |
+| `-=`     | Subtract and assign     | x = x - y  |
+| `*=`     | Multiply and assign     | x = x * y  |
+| `/=`     | Divide and assign       | x = x / y  |
+| `**=`    | Exponentiate and assign | x = x ** y |
+| `%=`     | Modulus and assign      | x = x % y  |
+| `&=`     | AND and assign          | x = x & y  |
+| `\|=`    | OR and assign           | x = x \| y |
+| `^=`     | XOR and assign          | x = x ^ y  |
+| `<<=`    | Shift left and assign   | x = x << y |
+| `>>=`    | Shift right and assign  | x = x >> y |
 
 ## String Operators
 
