@@ -1166,6 +1166,14 @@ fn panics_name_modules_as_imports_write_them() {
 }
 
 #[test]
+fn compound_bitwise_assignments() {
+    assert_eq!(run("mut x = 12\nx &= 10\nx |= 5\nx ^= 3\nx <<= 2\nx >>= 1\nprint(x)"), "28\n");
+    assert_error("mut s = 'a'\ns &= 1", "operator '&' cannot be applied to string and int");
+    assert_error("mut f = 1.5\nf <<= 1", "operator '<<' cannot be applied to float and int");
+    assert_error("immut x = 1\nx |= 2", "cannot modify 'x': it is immut");
+}
+
+#[test]
 fn errors_files_and_the_operating_system_are_checked() {
     assert_error("printError(print)", "'print' is a built-in function and must be called");
     assert_error("import file\nimmut x: int = file.remove('a')", "of type Result[void, FileError] to 'x' of type int");

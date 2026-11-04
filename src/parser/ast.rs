@@ -71,6 +71,11 @@ pub enum AssignOperator {
     Divide,
     Power,
     Modulo,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 impl AssignOperator {
@@ -84,6 +89,11 @@ impl AssignOperator {
             AssignOperator::Divide => Some(BinaryOperator::Divide),
             AssignOperator::Power => Some(BinaryOperator::Power),
             AssignOperator::Modulo => Some(BinaryOperator::Modulo),
+            AssignOperator::BitAnd => Some(BinaryOperator::BitAnd),
+            AssignOperator::BitOr => Some(BinaryOperator::BitOr),
+            AssignOperator::BitXor => Some(BinaryOperator::BitXor),
+            AssignOperator::ShiftLeft => Some(BinaryOperator::ShiftLeft),
+            AssignOperator::ShiftRight => Some(BinaryOperator::ShiftRight),
         }
     }
 }

@@ -153,7 +153,7 @@ impl Lexer {
                 self.advance();
                 match self.current() {
                     Some('=') => self.single(Token::GreaterEqual),
-                    Some('>') => self.single(Token::ShiftRight),
+                    Some('>') => self.one_or_two('=', Token::ShiftRightEqual, Token::ShiftRight),
                     _ => Token::Greater,
                 }
             }
@@ -161,16 +161,16 @@ impl Lexer {
                 self.advance();
                 match self.current() {
                     Some('=') => self.single(Token::LessEqual),
-                    Some('<') => self.single(Token::ShiftLeft),
+                    Some('<') => self.one_or_two('=', Token::ShiftLeftEqual, Token::ShiftLeft),
                     _ => Token::Less,
                 }
             }
             Some('!') => self.one_or_two('=', Token::BangEqual, Token::Bang),
             Some('+') => self.one_or_two('=', Token::PlusEqual, Token::Plus),
             Some('%') => self.one_or_two('=', Token::PercentEqual, Token::Percent),
-            Some('&') => self.single(Token::Ampersand),
-            Some('|') => self.single(Token::Pipe),
-            Some('^') => self.single(Token::Caret),
+            Some('&') => self.one_or_two('=', Token::AmpersandEqual, Token::Ampersand),
+            Some('|') => self.one_or_two('=', Token::PipeEqual, Token::Pipe),
+            Some('^') => self.one_or_two('=', Token::CaretEqual, Token::Caret),
             Some('~') => self.single(Token::Tilde),
             Some('(') => self.single(Token::LParen),
             Some(')') => self.single(Token::RParen),
@@ -422,6 +422,24 @@ mod tests {
                 Token::Caret,
                 Token::Tilde,
                 Token::PercentEqual,
+                Token::EOF
+            ]
+        );
+    }
+
+    #[test]
+    fn compound_bitwise_assignments() {
+        assert_eq!(
+            lex("&= |= ^= <<= >>= <<>>= >="),
+            vec![
+                Token::AmpersandEqual,
+                Token::PipeEqual,
+                Token::CaretEqual,
+                Token::ShiftLeftEqual,
+                Token::ShiftRightEqual,
+                Token::ShiftLeft,
+                Token::ShiftRightEqual,
+                Token::GreaterEqual,
                 Token::EOF
             ]
         );

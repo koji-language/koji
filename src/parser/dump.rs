@@ -102,6 +102,11 @@ fn assign(op: &AssignOperator) -> &'static str {
         AssignOperator::Divide => "/=",
         AssignOperator::Power => "**=",
         AssignOperator::Modulo => "%=",
+        AssignOperator::BitAnd => "&=",
+        AssignOperator::BitOr => "|=",
+        AssignOperator::BitXor => "^=",
+        AssignOperator::ShiftLeft => "<<=",
+        AssignOperator::ShiftRight => ">>=",
     }
 }
 

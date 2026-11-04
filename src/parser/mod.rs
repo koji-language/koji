@@ -307,6 +307,11 @@ impl Parser {
             Token::SlashEqual => AssignOperator::Divide,
             Token::StarStarEqual => AssignOperator::Power,
             Token::PercentEqual => AssignOperator::Modulo,
+            Token::AmpersandEqual => AssignOperator::BitAnd,
+            Token::PipeEqual => AssignOperator::BitOr,
+            Token::CaretEqual => AssignOperator::BitXor,
+            Token::ShiftLeftEqual => AssignOperator::ShiftLeft,
+            Token::ShiftRightEqual => AssignOperator::ShiftRight,
             _ => return Ok(expression),
         };
 

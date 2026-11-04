@@ -392,6 +392,32 @@ print(known)
 }
 
 #[test]
+fn compound_assignments() {
+    assert_same(
+        "compound",
+        "\
+mut x = 12
+x &= 10
+x |= 5
+x ^= 3
+x <<= 2
+x >>= 1
+mut items = [1, 2]
+items[0] |= 6
+mut total = 7.5
+total -= 1
+total *= 2
+total /= 4
+total **= 2
+total %= 3
+print(x, items, total)
+",
+        "28 [7, 2] 1.5625\n",
+    );
+    assert_same_panic("shift_assign", "mut x = 1\nx <<= 64\n", "invalid shift amount 64");
+}
+
+#[test]
 fn panics() {
     assert_same_panic("division", "print(1)\nprint(10 / (5 - 5))\n", "division by zero");
     assert_same_panic("overflow", "immut big = 9223372036854775807\nprint(big + 1)\n", "integer overflow");

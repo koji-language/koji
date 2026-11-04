@@ -377,7 +377,7 @@ function Parser.returnStatement(mut self): Result[Node, string] {
 
 function assignOperator(token: Token): Option[string] {
     return match (token) {
-        Symbol(text) if (text == '=' or text == '+=' or text == '-=' or text == '*=' or text == '/=' or text == '**=' or text == '%=') => Some(text)
+        Symbol(text) if (text in ['=', '+=', '-=', '*=', '/=', '**=', '%=', '&=', '|=', '^=', '<<=', '>>=']) => Some(text)
         _ => None
     }
 }

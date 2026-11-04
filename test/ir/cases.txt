@@ -152,3 +152,13 @@ immut name = match (system.os) {
     Other(other) => other
 }
 print(name, system.os)
+----
+mut x = 12
+x &= 10
+x |= 5
+x ^= 3
+x <<= 2
+x >>= 1
+mut flags = [1, 2]
+flags[1] <<= 3
+print(x, flags)
