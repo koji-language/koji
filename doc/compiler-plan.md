@@ -472,11 +472,24 @@ Notes for writing the compiler in Koji:
 | **3. `kojic` in Koji** | Lexer → parser → checker → IR → C generator, in this order | At each step, compare with the Rust implementation: same tokens, same AST, same errors, same generated C |
 | **4. Bootstrap** | Stages 1 → 2 → 3 | Stage 2 output identical to stage 3 |
 | **5. Maintenance** | A bootstrap policy: freeze the Rust implementation as stage 0, or commit the generated C of `kojic` so that only a C compiler is needed to build everything | CI rebuilds every stage |
+| **6. Optimization** | The optimizations below, in the compiler written in Koji only (the Rust implementation stays as stage 0) | A benchmark (the compiler checking and lowering its own files) measures each one; every test still gives the same output |
 
 Notes:
 
 -   **Compiled standard library**: `json` and `regex` can be rewritten in Koji. `http` with TLS is heavy: it can go through FFI (e.g. libcurl) or stay outside the core.
 -   **Rule for `kojic`**: it may only use features supported by the previous compiler version, otherwise the bootstrap breaks.
+
+### Optimizations
+
+Profiles of the compiled checker (callgrind) show most of the time in reference counting (`retain` and `release`), `malloc`/`free` and tiny calls: `Lexer.at`, which only reads `self.chars[i]`, costs about 100 instructions (it retains and releases `self`, calls `koji_record_get` and `koji_list_get` in the Rust library, which C cannot inline, and retains then releases the item it read). Koji has value semantics and explicit `mut`, so the compiler knows who can see each value: the same model as Koka, whose Perceus reference counting is the reference for most of these. In order of benefit for their cost:
+
+1.  **Inline runtime accessors**: `koji_record_get`, `koji_list_get`, `retain` and `release` as `static inline` C (or link-time optimization across C and Rust). A change of the runtime only, possible at any time.
+2.  **Borrowed parameters**: the caller keeps the value alive during the call, so the function does not retain and release its parameters (except values read from a global, which the call may change).
+3.  **Reference counting elision and reuse** (the rest of Perceus): read a field without retaining it when it is only inspected; move instead of copying at the last use of a variable; reuse the memory of a value that dies to build the next one (`substitute`, `namedParts`).
+4.  **Inlining of small functions** in the IR (`Lexer.at`, `Parser.isSymbol`): the call and the reference counting of its parameters disappear. A panic location is the function's file and the instruction's line, so an instruction inlined from another module must carry its own file.
+5.  **Escape analysis** to put records that never leave their function on the stack, without `malloc` or reference counting. Less useful than the others, and storing such a value elsewhere must copy it to the heap.
+
+Before them, measured: a `mut` parameter changing a local variable's value in place (it copied the whole value at each call), and caches in the checker written in Koji (`isMoveOnly`).
 
 ---
 
