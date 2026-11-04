@@ -6,8 +6,8 @@
 #     bootstrap/build.sh          builds build/kojic and build/libkoji_runtime.a
 #     bootstrap/build.sh --seed   then writes the seed again, from the compiler just built
 #
-# KOJI_CC chooses the C compiler (default: cc). kojic needs KOJI_RUNTIME, the path of the
-# runtime library, to build programs.
+# KOJI_CC chooses the C compiler (default: cc). kojic finds the runtime library next to itself
+# (or where KOJI_RUNTIME says).
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -40,4 +40,4 @@ if [ "${1:-}" = "--seed" ]; then
     build/kojic dump c compiler/main.kj | gzip -n -9 > bootstrap/kojic.c.gz
 fi
 
-echo "done: build/kojic (with KOJI_RUNTIME=$KOJI_RUNTIME)"
+echo "done: build/kojic, with build/libkoji_runtime.a next to it"

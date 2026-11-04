@@ -1680,6 +1680,28 @@ fn examples_that_compile() {
 }
 
 #[test]
+fn kojic_finds_the_runtime_next_to_it() {
+    // As `bootstrap/build.sh` leaves them: kojic and libkoji_runtime.a in the same directory, and
+    // no KOJI_RUNTIME.
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("next-to-kojic");
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::copy(koji::compiler(), directory.join("kojic")).unwrap();
+    let path = source_file("next_to_kojic", "print('found it')\n");
+    let executable = path.with_extension("");
+    let build = |kojic: &Path| {
+        koji::finish(Command::new(kojic).env_remove("KOJI_RUNTIME").arg("build").arg(&path).arg("-o").arg(&executable), "")
+    };
+    let missing = build(&directory.join("kojic"));
+    assert_eq!(missing.code, Some(1));
+    assert!(missing.stderr.contains("the runtime library (libkoji_runtime.a) is not next to kojic"), "{}", missing.stderr);
+    std::fs::copy(koji::RUNTIME, directory.join("libkoji_runtime.a")).unwrap();
+    let built = build(&directory.join("kojic"));
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    assert_eq!(String::from_utf8(Command::new(&executable).output().unwrap().stdout).unwrap(), "found it\n");
+}
+
+#[test]
 fn errors_are_reported_before_compiling() {
     let path = source_file("type_error", "immut n: int = 'text'\n");
     let built = koji::finish(koji::kojic().arg("build").arg(&path).arg("-o").arg(path.with_extension("")), "");

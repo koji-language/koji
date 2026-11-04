@@ -382,7 +382,7 @@ function stdlibFunctions(module: string): string[] {
         'http' => ['get', 'post', 'put', 'delete']
         'json' => ['parse', 'stringify', 'get', 'asString', 'asInt', 'asDecimal', 'asBool']
         'regex' => ['compile']
-        'system' => ['args', 'env', 'exit', 'run', 'capture']
+        'system' => ['args', 'env', 'executable', 'exit', 'run', 'capture']
         _ => []
     }
 }
@@ -4718,6 +4718,11 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
         }
         'system.env' => {
             self.checkExactly(name, types, [s])?
+            return Ok(self.optionOf(StringType))
+        }
+        // The path of the executable of this program.
+        'system.executable' => {
+            self.checkExactly(name, types, [])?
             return Ok(self.optionOf(StringType))
         }
         // Ends the program: the code after it does not run.

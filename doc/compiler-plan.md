@@ -127,7 +127,7 @@ The standard library is in the runtime: the generated code calls a Rust function
 
 ## The compiler in Koji (phase 3)
 
-The compiler written in Koji is in `compiler/`, one file per stage; `compiler/main.kj` is its entry point, with the commands of `kojic` (`run`, `check`, `build`, `dump`, `help`); there is no interpreter in Koji, so `run` compiles the program to a temporary executable and runs it. It runs with `kojic run compiler/main.kj ...`, and `kojic build` compiles it to an executable (the first step of the bootstrap). To build an executable, it needs the runtime library in `KOJI_RUNTIME` (the kojic written in Rust knows where it built it) and a C compiler (`KOJI_CC`, by default `cc`).
+The compiler written in Koji is in `compiler/`, one file per stage; `compiler/main.kj` is its entry point, with the commands of `kojic` (`run`, `check`, `build`, `dump`, `help`); there is no interpreter in Koji, so `run` compiles the program to a temporary executable and runs it. It runs with `kojic run compiler/main.kj ...`, and `kojic build` compiles it to an executable (the first step of the bootstrap). To build an executable, it needs the runtime library, next to `kojic` or in `KOJI_RUNTIME`, and a C compiler (`KOJI_CC`, by default `cc`).
 
 Each stage prints the same text as a `kojic dump <stage>` command of the compiler in Rust, and `test/bootstrap.rs` compares them on the examples, the compiler's own files, every code block of the documentation and edge cases (`test/lexer/`, the syntax errors listed in `test/bootstrap.rs`, the programs and modules of `test/checker/`, and the programs of `test/ir/cases.txt`). The compiled Koji compiler is checked on all of them, and the interpreted one on a few.
 

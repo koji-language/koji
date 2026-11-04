@@ -2817,6 +2817,7 @@ fn stdlib_system() {
         import system
 
         print(system.args(), system.env('KOJI_NOT_SET'))
+        print(system.executable() is Some)
 
         match (system.capture('echo', ['hello', 'koji'])) {
             Ok(output) => print(output.status, output.stdout.trim())
@@ -2846,7 +2847,7 @@ fn stdlib_system() {
     assert_eq!(result, Err(Failure::Exit(3)));
     assert_eq!(
         output,
-        "[] None\n0 hello koji\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nOk(0) Ok(1)\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nbefore exit\n"
+        "[] None\ntrue\n0 hello koji\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nOk(0) Ok(1)\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nbefore exit\n"
     );
 }
 

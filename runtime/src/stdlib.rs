@@ -487,6 +487,14 @@ pub extern "C" fn koji_std_system_env(name: *const KojiString, option: *const Ko
     some_string(option, std::env::var(text(name)).ok())
 }
 
+/// `system.executable()`: the path of the executable of this program, or `None` where the system
+/// cannot tell it.
+#[no_mangle]
+pub extern "C" fn koji_std_system_executable(option: *const KojiRecordType) -> *mut KojiRecord {
+    let path = std::env::current_exe().ok().map(|path| path.to_string_lossy().into_owned());
+    some_string(option, path)
+}
+
 /// The variant of `OperatingSystem` for the system the program runs on (`Linux`, `MacOS` or
 /// `Windows`), or, for another one, its name for `Other(name)`.
 pub fn operating_system() -> Result<&'static str, &'static str> {

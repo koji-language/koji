@@ -249,6 +249,14 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 
 **Alternatives**: `system.output(...)` for capturing (the name of the type it gives, and of Rust's `Command::output`), a noun that would hide that it runs a program; keeping `run` for capturing with a new `execute` or `call` for the terminal, names whose difference from `run` is not visible; a mode argument (`run(command, args, Terminal)`), which would make the result type depend on the mode.
 
+### `system.executable`
+
+**Decision**: `system.executable()` gives the path of the executable of the running program, as an `Option[string]` (`None` where the system cannot tell it). `kojic` uses it to find the runtime library next to itself.
+
+**Why**: the name says what it gives, a file, like `path.parent` and `path.name`. It is a noun, like `args` and `env`, since it only reads the state of the process; a function, not a constant like `system.os`, since finding it asks the system.
+
+**Alternatives**: `system.current()`, which reads as the current directory, as `current_dir` in Rust and `getcwd` in Python; `system.programPath()`, longer; `system.self()`, vague.
+
 ## Conventions
 
 ### Special cases first

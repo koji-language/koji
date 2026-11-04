@@ -175,6 +175,7 @@ KojiRecord *koji_std_path_part(const KojiString *path, int32_t part, const KojiR
 bool koji_std_path_is_absolute(const KojiString *path);
 KojiList *koji_std_system_args(const KojiElementType *element);
 KojiRecord *koji_std_system_env(const KojiString *name, const KojiRecordType *option);
+KojiRecord *koji_std_system_executable(const KojiRecordType *option);
 _Noreturn void koji_std_system_exit(int64_t code);
 KojiRecord *koji_std_system_os(const KojiRecordType *os);
 KojiRecord *koji_std_system_run(const KojiString *command, const KojiList *arguments, const KojiRecordType *result);

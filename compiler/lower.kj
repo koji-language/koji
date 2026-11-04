@@ -3776,6 +3776,10 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             runner = 'koji_std_system_env'
             arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
         }
+        'system.executable' => {
+            runner = 'koji_std_system_executable'
+            arguments = [self.stdResult(builder, call)?]
+        }
         'system.exit' => {
             immut code = self.stdValue(mut builder, args, 0, IntTy)?
             builder.emit(StdCallIns(None, 'koji_std_system_exit', [code]))

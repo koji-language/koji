@@ -29,8 +29,8 @@ immut usage = [
     '    kojic dump c <file.kj>            show the generated C',
     '    kojic help                        show this message',
     '',
-    'To build an executable, the environment variable KOJI_RUNTIME names the runtime library',
-    '(libkoji_runtime.a) and KOJI_CC the C compiler (default: cc).'
+    'To build an executable, kojic needs the runtime library (libkoji_runtime.a): next to kojic,',
+    'or where the environment variable KOJI_RUNTIME says. KOJI_CC names the C compiler (default: cc).'
 ].join('\n')
 
 // The text of a system error (the one of the runtime).
@@ -226,11 +226,33 @@ function temporary(extension: string): string {
     return name
 }
 
+// The runtime library: where KOJI_RUNTIME says, or next to kojic (`bootstrap/build.sh` puts them
+// together).
+function runtimeLibrary(): Option[string] {
+    match (system.env('KOJI_RUNTIME')) {
+        Some(runtime) => return Some(runtime)
+        None => {}
+    }
+
+    immut directory = match (system.executable()) {
+        Some(executable) => path.parent(executable)
+        None => None
+    }
+
+    return match (directory) {
+        Some(folder) => {
+            immut library = path.join(folder, 'libkoji_runtime.a')
+            if (file.exists(library)) { Some(library) } else { None }
+        }
+        None => None
+    }
+}
+
 // Compiles the C of a program to `output` with the system's C compiler, linked with the runtime.
 function compileC(source: string, output: string): Result[void, string] {
-    immut runtime = match (system.env('KOJI_RUNTIME')) {
+    immut runtime = match (runtimeLibrary()) {
         Some(runtime) => runtime
-        None => return Err('compile error: set KOJI_RUNTIME to the runtime library (libkoji_runtime.a) to build an executable')
+        None => return Err('compile error: the runtime library (libkoji_runtime.a) is not next to kojic: set KOJI_RUNTIME to its path')
     }
     // A file of its own in the temporary directory, removed after.
     immut c = temporary('.c')

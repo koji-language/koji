@@ -22,10 +22,9 @@ bootstrap/build.sh
 
 The compiler is written in Koji, so it needs a compiler to be built: the script starts from the C that the compiler generated for itself (`bootstrap/kojic.c.gz`, the seed), compiles it with the C compiler, and with it builds the compiler of `compiler/`.
 
-The compiler is created at `build/kojic`, and the runtime library at `build/libkoji_runtime.a`. `kojic` needs the path of the runtime library in the environment variable `KOJI_RUNTIME`; `KOJI_CC` chooses the C compiler (default: `cc`). To call it as `kojic` from anywhere, add `build` to your `PATH`:
+The compiler is created at `build/kojic`, and the runtime library at `build/libkoji_runtime.a`. `kojic` finds the runtime library next to itself; another one can be given in the environment variable `KOJI_RUNTIME`. `KOJI_CC` chooses the C compiler (default: `cc`). To call it as `kojic` from anywhere, add `build` to your `PATH`:
 
 ```sh
-export KOJI_RUNTIME=$PWD/build/libkoji_runtime.a
 export PATH=$PWD/build:$PATH
 ```
 

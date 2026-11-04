@@ -10,6 +10,9 @@ The `system` module gives access to the command line, the environment, the exit 
 -   `env(name: string) -> Option[string]`  
     The value of the environment variable `name`, or `None` if it is not set.
 
+-   `executable() -> Option[string]`  
+    The path of the executable of the running program (with `kojic run`, the temporary executable it built), or `None` where the system cannot tell it.
+
 -   `exit(code: int) -> never`  
     Ends the program with the exit code `code` (`0` means success). The code after it does not run, and values are not dropped.
 
