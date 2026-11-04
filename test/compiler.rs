@@ -370,6 +370,50 @@ print(system.run('sh', ['-c', 'echo to errors >&2; exit 4']))
 }
 
 #[test]
+fn decimals_in_records_lists_and_maps() {
+    // A decimal takes 16 bytes: two words in a record, a list or a map.
+    assert_same(
+        "decimals",
+        "\
+type Item = { name: string, price: decimal, count: int, tax: decimal }
+type Shape = { Circle(r: decimal) Square(side: decimal, label: string) }
+immut a: Item = { name: 'pen', price: 1.25, count: 3, tax: 0.07 }
+mut items: Item[] = [a, { name: 'ink', price: 10.5, count: 1, tax: 0.2 }]
+items[0].price += 0.75
+items.push({ name: 'cap', price: 0.05, count: 9, tax: 0 })
+mut total: decimal = 0
+for item in items {
+    total += item.price * item.count * (1 + item.tax)
+}
+print(items, total)
+immut shapes = [Circle(1.5), Square(2, 's')]
+print(shapes, shapes[1] == Square(2.00, 's'))
+mut ds: decimal[] = [3, 1.5, 2.25]
+ds.sort()
+ds.insert(1, 9.75)
+print(ds, ds.pop(), ds.removeAt(0), ds, 2.25 in ds, ds.indexOf(9.75))
+immut m: Map[decimal, decimal] = [1.5: 2.5, 3: 4]
+print(m, m[1.50], m.keys(), m.values())
+mut s = Set.from(ds)
+s.add(1.5)
+print(s, ds[0..1], ds + ds)
+immut f = (x: decimal) => x * 2
+print(f(1.25), [decimal(1), 2].length())
+mut w = ds
+w.sortBy((x: decimal, y: decimal) => x > y)
+print(w)
+",
+        "[{ name: 'pen', price: 2.0, count: 3, tax: 0.07 }, { name: 'ink', price: 10.5, count: 1, tax: 0.2 }, { name: 'cap', price: 0.05, count: 9, tax: 0.0 }] 19.47\n\
+[Circle(1.5), Square(2.0, 's')] true\n\
+[1.5, 9.75, 2.25, 3.0] Some(3.0) Some(1.5) [9.75, 2.25] true Some(0)\n\
+[1.5: 2.5, 3.0: 4.0] 2.5 [1.5, 3.0] [2.5, 4.0]\n\
+Set([9.75, 2.25, 1.5]) [9.75] [9.75, 2.25, 9.75, 2.25]\n\
+2.5 2\n\
+[9.75, 2.25]\n",
+    );
+}
+
+#[test]
 fn compound_assignments() {
     assert_same(
         "compound",

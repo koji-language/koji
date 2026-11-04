@@ -2610,7 +2610,7 @@ function Checker.checkAssign(mut self, node: Node, target: Node, op: string, val
         IndexNode(inner, index) => {
             self.ensureContentsMutable(inner)?
             immut container = self.checkValue(inner, None)?
-            immut indexType = self.checkValue(index, None)?
+            immut indexType = self.checkValue(index, self.decimalKey(container))?
             mut element = UnknownType
 
             match (container) {
@@ -3208,7 +3208,7 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
         MutArg(_) => return Err(self.failure("'mut' is only used before a call argument: 'f(mut x)'"))
         IndexNode(target, index) => {
             immut targetType = self.checkValue(target, None)?
-            immut indexType = self.checkValue(index, None)?
+            immut indexType = self.checkValue(index, self.decimalKey(targetType))?
 
             match (targetType) {
                 ListType(item) => {
@@ -3296,6 +3296,9 @@ function Checker.checkBinary(mut self, op: string, left: Node, right: Node): Res
         immut wanted = match (rightType) {
             CharType => Some(CharType)
             DecimalType => Some(DecimalType)
+            // `1.5 in prices`: the items (or the keys) are decimals.
+            ListType(DecimalType) if (op == 'in') => Some(DecimalType)
+            NamedType(_, args) if (op == 'in' and args.length() > 0 and args[0] == DecimalType) => Some(DecimalType)
             _ => None
         }
         leftType = self.checkValue(left, wanted)?
@@ -4579,6 +4582,14 @@ function Checker.checkExactly(self, name: string, types: Type[], expected: Type[
 
 function Checker.resultWith(self, ok: Type, error: int): Type {
     return NamedType(self.builtins.result, [ok, named(error)])
+}
+
+// `Some(decimal)` for a map with decimal keys: in `prices[1.5]`, the literal is a decimal.
+function Checker.decimalKey(self, container: Type): Option[Type] {
+    return match (self.mapParts(container)) {
+        Some(parts) if (parts.key == DecimalType) => Some(DecimalType)
+        _ => None
+    }
 }
 
 // A literal where a decimal is expected: it must hold exactly in a decimal.

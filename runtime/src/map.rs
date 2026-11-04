@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
 
-use crate::list::{new_list, KojiElementType, KojiList};
+use crate::list::{new_list, read_slot, words, KojiElementType, KojiList, Slot};
 use crate::output::panic_at;
 use crate::string::{new_string, string_text, KojiString};
 
@@ -15,19 +15,24 @@ pub struct KojiMap {
     key: *const KojiElementType,
     /// `NULL` for a set.
     value: *const KojiElementType,
-    entries: Vec<(u64, u64)>,
+    /// Keys and values, in two words each (a decimal takes both).
+    entries: Vec<(Slot, Slot)>,
     index: HashMap<u64, Vec<usize>>,
 }
 
-fn slot_of(slot: &u64) -> *const c_void {
-    slot as *const u64 as *const c_void
+fn slot_of(slot: &Slot) -> *const c_void {
+    slot.as_ptr() as *const c_void
 }
 
 /// The slot for a value given by the generated code.
-fn read(element: &KojiElementType, value: *const c_void) -> u64 {
-    let mut slot = 0u64;
-    unsafe { std::ptr::copy_nonoverlapping(value as *const u8, &mut slot as *mut u64 as *mut u8, element.size) };
-    slot
+fn read(element: &KojiElementType, value: *const c_void) -> Slot {
+    read_slot(element, value)
+}
+
+/// The words of slots for a list of `element`.
+fn list_words<'a>(element: &KojiElementType, slots: impl Iterator<Item = &'a Slot>) -> Vec<u64> {
+    let count = words(element);
+    slots.flat_map(|slot| slot[..count].iter().copied()).collect()
 }
 
 impl KojiMap {
@@ -182,7 +187,7 @@ pub extern "C" fn koji_map_contains(map: *const KojiMap, key: *const c_void) -> 
 pub extern "C" fn koji_map_slot(variable: *mut *mut KojiMap, key: *const c_void, location: *const c_char) -> *mut c_void {
     let map = unshare(variable);
     match map.position(key) {
-        Some(index) => &mut map.entries[index].1 as *mut u64 as *mut c_void,
+        Some(index) => map.entries[index].1.as_mut_ptr() as *mut c_void,
         None => map.missing(key, location),
     }
 }
@@ -193,7 +198,7 @@ pub extern "C" fn koji_map_set(variable: *mut *mut KojiMap, key: *const c_void, 
     let map = unshare(variable);
     let value_slot = match map.value_type() {
         Some(value_type) => read(value_type, value),
-        None => 0,
+        None => [0, 0],
     };
     match map.position(key) {
         Some(index) => {
@@ -232,7 +237,7 @@ pub extern "C" fn koji_map_remove(variable: *mut *mut KojiMap, key: *const c_voi
         unsafe { release(slot_of(&key_slot)) }
     }
     if let Some(value_type) = map.value_type() {
-        unsafe { std::ptr::copy_nonoverlapping(&value_slot as *const u64 as *const u8, out as *mut u8, value_type.size) };
+        unsafe { std::ptr::copy_nonoverlapping(value_slot.as_ptr() as *const u8, out as *mut u8, value_type.size) };
     }
     map.rebuild_index();
     true
@@ -242,7 +247,7 @@ pub extern "C" fn koji_map_remove(variable: *mut *mut KojiMap, key: *const c_voi
 #[no_mangle]
 pub extern "C" fn koji_map_keys(map: *const KojiMap) -> *mut KojiList {
     let map = self::map(map);
-    let list = new_list(map.key, map.entries.iter().map(|(key, _)| *key).collect());
+    let list = new_list(map.key, list_words(map.key_type(), map.entries.iter().map(|(key, _)| key)));
     if let Some(retain) = map.key_type().retain {
         for (key, _) in &map.entries {
             unsafe { retain(slot_of(key)) }
@@ -255,7 +260,8 @@ pub extern "C" fn koji_map_keys(map: *const KojiMap) -> *mut KojiList {
 #[no_mangle]
 pub extern "C" fn koji_map_values(map: *const KojiMap) -> *mut KojiList {
     let map = self::map(map);
-    let list = new_list(map.value, map.entries.iter().map(|(_, value)| *value).collect());
+    let value_type = map.value_type().expect("the values of a map");
+    let list = new_list(map.value, list_words(value_type, map.entries.iter().map(|(_, value)| value)));
     if let Some(retain) = map.value_type().and_then(|t| t.retain) {
         for (_, value) in &map.entries {
             unsafe { retain(slot_of(value)) }
@@ -269,7 +275,7 @@ pub extern "C" fn koji_map_values(map: *const KojiMap) -> *mut KojiList {
 pub extern "C" fn koji_set_from_list(list: *const KojiList) -> *mut KojiMap {
     let list = unsafe { &*list };
     let mut set = Box::into_raw(Box::new(new_map(list.element() as *const KojiElementType, std::ptr::null())));
-    for index in 0..list.items.len() {
+    for index in 0..list.len() {
         koji_map_set(&mut set, list.slot(index), std::ptr::null());
     }
     set
@@ -309,7 +315,7 @@ pub extern "C" fn koji_map_hash(map: *const KojiMap) -> u64 {
 #[no_mangle]
 pub extern "C" fn koji_map_repr(map: *const KojiMap) -> *mut KojiString {
     let map = self::map(map);
-    let repr = |element: &KojiElementType, slot: &u64| -> String {
+    let repr = |element: &KojiElementType, slot: &Slot| -> String {
         let text = unsafe { (element.repr)(slot_of(slot)) };
         let result = string_text(text).to_string();
         crate::string::koji_string_release(text);
@@ -345,6 +351,6 @@ pub extern "C" fn koji_map_repr(map: *const KojiMap) -> *mut KojiString {
 }
 
 /// The entries (key and value slots), in the order their keys were added.
-pub(crate) fn map_entries(map: *const KojiMap) -> Vec<(u64, u64)> {
+pub(crate) fn map_entries(map: *const KojiMap) -> Vec<(Slot, Slot)> {
     self::map(map).entries.clone()
 }

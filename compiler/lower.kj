@@ -2450,7 +2450,7 @@ function Lowerer.listLiteral(mut self, mut builder: Builder, items: Node[], ty: 
 // The constant of a literal where a decimal is expected (the checker made sure it fits).
 function Lowerer.decimalConstant(self, text: string): Result[Option[Operand], string] {
     return match (decimalLiteral(text)) {
-        Ok(parts) => Ok(Some(DecimalOp(parts.negative, parts.coefficient, parts.exponent)))
+        Ok(parts) => Ok(Some(DecimalOp(parts.negative, parts.high, parts.low, parts.exponent)))
         Err(message) => Err(message)
     }
 }

@@ -1,6 +1,7 @@
 //! Records: the values of declared types (objects and the variants of sum types, including
 //! `Option` and `Result`). Like lists, they are reference-counted and copied when a shared one
-//! is changed. Each field takes one 8-byte slot, described by a `KojiElementType`.
+//! is changed. Each field takes one 8-byte word, or two for a decimal, described by a
+//! `KojiElementType`.
 
 use std::cell::Cell;
 use std::ffi::{c_char, c_void, CStr};
@@ -19,6 +20,23 @@ pub struct KojiVariantType {
     /// For each field of a declared type, its description (`NULL` for the others), so the
     /// runtime can build the values of the standard library (`Err(InvalidNumber('x'))`).
     pub field_records: *const *const KojiRecordType,
+    /// Where each field starts, in words, then the number of words (`NULL` when every field
+    /// takes one word: field `i` is at word `i`).
+    pub field_offsets: *const usize,
+}
+
+impl KojiVariantType {
+    fn offset(&self, index: usize) -> usize {
+        if self.field_offsets.is_null() {
+            index
+        } else {
+            unsafe { *self.field_offsets.add(index) }
+        }
+    }
+
+    fn word_count(&self) -> usize {
+        self.offset(self.field_count)
+    }
 }
 
 /// A declared type, as described by the generated code.
@@ -34,6 +52,7 @@ pub struct KojiRecord {
     references: Cell<usize>,
     ty: *const KojiRecordType,
     tag: usize,
+    /// The words of the fields (see `KojiVariantType::field_offsets`).
     fields: Vec<u64>,
 }
 
@@ -53,7 +72,18 @@ impl KojiRecord {
     }
 
     fn slot(&self, index: usize) -> *const c_void {
-        &self.fields[index] as *const u64 as *const c_void
+        &self.fields[self.variant().offset(index)] as *const u64 as *const c_void
+    }
+
+    fn field_count(&self) -> usize {
+        self.variant().field_count
+    }
+
+    /// Copies a value given by the generated code into field `index`.
+    fn store(&mut self, index: usize, value: *const c_void) {
+        let size = self.field_type(index).size;
+        let offset = self.variant().offset(index);
+        unsafe { std::ptr::copy_nonoverlapping(value as *const u8, self.fields.as_mut_ptr().add(offset) as *mut u8, size) };
     }
 
     fn retain_field(&self, index: usize) {
@@ -67,18 +97,6 @@ impl KojiRecord {
             unsafe { release(self.slot(index)) }
         }
     }
-
-    fn read(&self, index: usize, value: *const c_void) -> u64 {
-        let mut slot = 0u64;
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                value as *const u8,
-                &mut slot as *mut u64 as *mut u8,
-                self.field_type(index).size,
-            )
-        };
-        slot
-    }
 }
 
 fn record<'a>(record: *const KojiRecord) -> &'a KojiRecord {
@@ -89,7 +107,7 @@ fn record<'a>(record: *const KojiRecord) -> &'a KojiRecord {
 /// each one with `koji_record_init`.
 #[no_mangle]
 pub extern "C" fn koji_record_new(ty: *const KojiRecordType, tag: usize) -> *mut KojiRecord {
-    let count = unsafe { (*(*ty).variants.add(tag)).field_count };
+    let count = unsafe { (*(*ty).variants.add(tag)).word_count() };
     Box::into_raw(Box::new(KojiRecord {
         references: Cell::new(1),
         ty,
@@ -102,7 +120,7 @@ pub extern "C" fn koji_record_new(ty: *const KojiRecordType, tag: usize) -> *mut
 #[no_mangle]
 pub extern "C" fn koji_record_init(record: *mut KojiRecord, index: usize, value: *const c_void) {
     let record = unsafe { &mut *record };
-    record.fields[index] = record.read(index, value);
+    record.store(index, value);
     record.retain_field(index);
 }
 
@@ -124,7 +142,7 @@ pub extern "C" fn koji_record_release(record: *mut KojiRecord) {
         reference.references.set(references);
         return;
     }
-    for index in 0..reference.fields.len() {
+    for index in 0..reference.field_count() {
         reference.release_field(index);
     }
     drop(unsafe { Box::from_raw(record) });
@@ -153,7 +171,7 @@ fn unshare<'a>(variable: *mut *mut KojiRecord) -> &'a mut KojiRecord {
                 tag: current.tag,
                 fields: current.fields.clone(),
             };
-            for index in 0..copy.fields.len() {
+            for index in 0..copy.field_count() {
                 copy.retain_field(index);
             }
             current.references.set(current.references.get() - 1);
@@ -167,16 +185,17 @@ fn unshare<'a>(variable: *mut *mut KojiRecord) -> &'a mut KojiRecord {
 #[no_mangle]
 pub extern "C" fn koji_record_slot(variable: *mut *mut KojiRecord, index: usize) -> *mut c_void {
     let record = unshare(variable);
-    &mut record.fields[index] as *mut u64 as *mut c_void
+    record.slot(index) as *mut c_void
 }
 
 /// `record.field = value`.
 #[no_mangle]
 pub extern "C" fn koji_record_set(variable: *mut *mut KojiRecord, index: usize, value: *const c_void) {
     let record = unshare(variable);
-    let slot = record.read(index, value);
+    // Read first: `value` may be inside the old value of the field.
+    let slot = crate::list::read_slot(record.field_type(index), value);
     record.release_field(index);
-    record.fields[index] = slot;
+    record.store(index, slot.as_ptr() as *const c_void);
     record.retain_field(index);
 }
 
@@ -185,7 +204,7 @@ pub extern "C" fn koji_record_equal(a: *const KojiRecord, b: *const KojiRecord) 
     let (a, b) = (record(a), record(b));
     std::ptr::eq(a, b)
         || (a.tag == b.tag
-            && (0..a.fields.len()).all(|index| unsafe { (a.field_type(index).equal)(a.slot(index), b.slot(index)) }))
+            && (0..a.field_count()).all(|index| unsafe { (a.field_type(index).equal)(a.slot(index), b.slot(index)) }))
 }
 
 fn is_identifier(name: &str) -> bool {
@@ -199,7 +218,7 @@ fn is_identifier(name: &str) -> bool {
 pub extern "C" fn koji_record_repr(record: *const KojiRecord) -> *mut KojiString {
     let record = self::record(record);
     // A `DateTime` is shown as a date: `2026-01-31 12:00:00`.
-    if type_name(record) == "DateTime" && record.fields.len() == 6 {
+    if type_name(record) == "DateTime" && record.field_count() == 6 {
         let f = |index: usize| record.fields[index] as i64;
         let date = crate::datetime::DateTime { year: f(0), month: f(1), day: f(2), hour: f(3), minute: f(4), second: f(5) };
         return new_string(date.to_string());
@@ -213,11 +232,11 @@ pub extern "C" fn koji_record_repr(record: *const KojiRecord) -> *mut KojiString
     let mut text = String::new();
     let name = record.variant().name;
     if name.is_null() {
-        if record.fields.is_empty() {
+        if record.field_count() == 0 {
             return new_string("{}".to_string());
         }
         text.push_str("{ ");
-        for index in 0..record.fields.len() {
+        for index in 0..record.field_count() {
             if index > 0 {
                 text.push_str(", ");
             }
@@ -233,9 +252,9 @@ pub extern "C" fn koji_record_repr(record: *const KojiRecord) -> *mut KojiString
         text.push_str(" }");
     } else {
         text.push_str(&unsafe { CStr::from_ptr(name) }.to_string_lossy());
-        if !record.fields.is_empty() {
+        if record.field_count() > 0 {
             text.push('(');
-            for index in 0..record.fields.len() {
+            for index in 0..record.field_count() {
                 if index > 0 {
                     text.push_str(", ");
                 }
@@ -254,7 +273,7 @@ pub extern "C" fn koji_record_hash(record: *const KojiRecord) -> u64 {
     let record = self::record(record);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     record.tag.hash(&mut hasher);
-    for index in 0..record.fields.len() {
+    for index in 0..record.field_count() {
         unsafe { (record.field_type(index).hash)(record.slot(index)) }.hash(&mut hasher);
     }
     hasher.finish()
@@ -277,7 +296,8 @@ pub(crate) fn field_record(ty: *const KojiRecordType, variant: &str, field: usiz
     unsafe { *(*(*ty).variants.add(index)).field_records.add(field) }
 }
 
-/// A new value of variant `name` of `ty`, which takes the references of `fields`.
+/// A new value of variant `name` of `ty`, which takes the references of `fields` (their words, two
+/// for a decimal).
 pub(crate) fn make(ty: *const KojiRecordType, name: &str, fields: &[u64]) -> *mut KojiRecord {
     let record = koji_record_new(ty, variant_index(ty, name));
     unsafe { (*record).fields.copy_from_slice(fields) };
@@ -299,7 +319,7 @@ pub extern "C" fn koji_record_display(record: *const KojiRecord) -> *mut KojiStr
     let value = self::record(record);
     if let Some(variant) = unsafe { value.variant().name.as_ref() } {
         let variant = unsafe { CStr::from_ptr(variant) }.to_string_lossy();
-        let texts: Vec<String> = (0..value.fields.len())
+        let texts: Vec<String> = (0..value.field_count())
             .map(|index| {
                 let field = value.field_type(index);
                 let text = match field.display {

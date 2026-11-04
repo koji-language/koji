@@ -1,18 +1,22 @@
-// Decimal literals: `1.5` where a `decimal` is expected is exactly 15e-1. A decimal has 16
-// significant digits and is normalized like the runtime keeps it (runtime/src/decimal.rs): the
-// coefficient has no trailing zeros, and zero is 0e-398.
+// Decimal literals: `1.5` where a `decimal` is expected is exactly 15e-1. A decimal has 34
+// significant digits (runtime/src/decimal.rs); a literal is kept without trailing zeros, and zero
+// is 0e-6176.
 
-// A decimal as coefficient * 10^exponent.
+// A decimal as coefficient * 10^exponent, the coefficient (up to 34 digits, more than an int
+// holds) as high * 10^17 + low.
 export type DecimalParts = {
     negative: boolean
-    coefficient: int
+    high: int
+    low: int
     exponent: int
 }
 
-immut smallestExponent = -398
+immut precision = 34
+immut smallestExponent = -6176
+immut largestExponent = 6111
 
 // A value is below 10^limit (digits of the coefficient plus the exponent).
-immut limit = 385
+immut limit = 6145
 
 // The decimal that the literal `text` writes (like `-12.5e3`), or why it is not one.
 export function decimalLiteral(text: string): Result[DecimalParts, string] {
@@ -65,25 +69,41 @@ export function decimalLiteral(text: string): Result[DecimalParts, string] {
         exponent += 1
     }
 
-    if (digits == '') { return Ok({ negative: false, coefficient: 0, exponent: smallestExponent }) }
+    if (digits == '') { return Ok({ negative: false, high: 0, low: 0, exponent: smallestExponent }) }
 
-    if (digits.length() > 16) {
-        return Err(`decimal literal ${text} has more than 16 significant digits, the precision of a decimal`)
+    if (digits.length() > precision) {
+        return Err(`decimal literal ${text} has more than ${precision} significant digits, the precision of a decimal`)
     }
 
     if (digits.length() + exponent > limit) { return Err(`decimal literal ${text} is too large for a decimal`) }
 
     if (exponent < smallestExponent) { return Err(`decimal literal ${text} is too small for a decimal`) }
 
-    immut coefficient = match (int(digits)) {
+    // A large exponent takes zeros in the coefficient instead (1e6144 is 10^33 * 10^6111).
+    while (exponent > largestExponent) {
+        digits += '0'
+        exponent -= 1
+    }
+
+    immut split = if (digits.length() > 17) { digits.length() - 17 } else { 0 }
+    return Ok({ negative: negative, high: valueOf(digits[..split]), low: valueOf(digits[split..]), exponent: exponent })
+}
+
+// The int that digits write (at most 17 of them), 0 for none.
+function valueOf(digits: string): int {
+    return match (int(digits)) {
         Ok(value) => value
         Err(_) => 0
     }
-    return Ok({ negative: negative, coefficient: coefficient, exponent: exponent })
 }
 
 // The decimal as the IR shows it: `15e-1`.
 export function decimalText(parts: DecimalParts): string {
     immut sign = if (parts.negative) { '-' } else { '' }
-    return `${sign}${parts.coefficient}e${parts.exponent}`
+
+    if (parts.high == 0) { return `${sign}${parts.low}e${parts.exponent}` }
+
+    immut low = string(parts.low)
+    immut zeros = '0' * (17 - low.length())
+    return `${sign}${parts.high}${zeros}${low}e${parts.exponent}`
 }

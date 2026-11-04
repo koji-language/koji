@@ -938,7 +938,7 @@ immut a: decimal = 0.1
 immut f = 0.2
 print(a + f)
 ----
-immut a: decimal = 12345678901234567.0
+immut a: decimal = 1234567890123456789012345678901234567.0
 ----
 match (decimal(1)) {
     1.5 => print(1)

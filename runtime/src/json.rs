@@ -380,9 +380,9 @@ fn stringify(value: *const KojiRecord, out: &mut String) {
                 if index > 0 {
                     out.push(',');
                 }
-                write_string(string_text(*key as usize as *const KojiString), out);
+                write_string(string_text(key[0] as usize as *const KojiString), out);
                 out.push(':');
-                stringify(*value as usize as *const KojiRecord, out);
+                stringify(value[0] as usize as *const KojiRecord, out);
             }
             out.push('}');
         }

@@ -673,7 +673,7 @@ module case238.kj
 ==== test/checker/cases.txt #239
 error: type error: case239.kj:3: operator '+' cannot be applied to decimal and float
 ==== test/checker/cases.txt #240
-error: type error: case240.kj:1: decimal literal 12345678901234567.0 has more than 16 significant digits, the precision of a decimal
+error: type error: case240.kj:1: decimal literal 1234567890123456789012345678901234567.0 has more than 34 significant digits, the precision of a decimal
 ==== test/checker/cases.txt #241
 module case241.kj
 (at 1 (match (call (name decimal) (int 1):int):decimal (arm (literal (float 1.5):decimal) _ (call (name print) (int 1):int):void) (arm (wildcard) _ (call (name print) (int 2):int):void)):void)

@@ -1482,23 +1482,23 @@ match (price) {
 "#;
     assert_eq!(
         run(source),
-        "0.3 true\n0.30000000000000004\n1.0 true\n0.3333333333333333 0.9999999999999999\n\
-         0.6666666666666667 -7.5 0.75\n2.25 0.25 1e20\n1.5 2.5 Ok(1.414213562373095)\n-3 3 3 -2\n\
-         0.1 0.3 Ok(12.5) Err(InvalidNumber('x'))\n[1.5, 0.25, 3.0] 3\n[0.25, 1.5, 3.0] true true 1e301\n\
+        "0.3 true\n0.30000000000000004\n1.0 true\n0.3333333333333333333333333333333333 0.9999999999999999999999999999999999\n\
+         0.6666666666666666666666666666666667 -7.5 0.75\n2.25 0.25 100000000000000000000.0\n1.5 2.5 Ok(1.414213562373095048801688724209698)\n\
+         -3 3 3 -2\n0.1 0.30000000000000004 Ok(12.5) Err(InvalidNumber('x'))\n[1.5, 0.25, 3.0] 3\n[0.25, 1.5, 3.0] true true 1e301\n\
          1e384 interpolated 0.1 0.2\n[1.5: 2]\na tenth\n"
     );
     let errors = [
-        ("immut x: decimal = 0.12345678901234567", "decimal literal 0.12345678901234567 has more than 16 significant digits"),
-        ("immut x: decimal = 1e385", "decimal literal 1e385 is too large for a decimal"),
-        ("immut x: decimal = 1e-399", "decimal literal 1e-399 is too small for a decimal"),
+        ("immut x: decimal = 0.12345678901234567890123456789012345", "decimal literal 0.12345678901234567890123456789012345 has more than 34 significant digits"),
+        ("immut x: decimal = 1e6145", "decimal literal 1e6145 is too large for a decimal"),
+        ("immut x: decimal = 1e-6177", "decimal literal 1e-6177 is too small for a decimal"),
         ("immut f = 1.5\nimmut d: decimal = f", "cannot assign a value of type float to 'd' of type decimal"),
         ("immut d: decimal = 1\nimmut f = 2.5\nprint(d + f)", "operator '+' cannot be applied to decimal and float"),
         ("immut d: decimal = 2\nprint(d ** d)", "the exponent of a decimal must be an int"),
         ("import time\ntime.sleep(decimal(1))", "must be int or float, found decimal (convert it with float(x))"),
         ("print(decimal(true))", "cannot convert boolean to decimal"),
-        ("immut d: decimal = 1e384\nprint(d * 10)", "panic: test.kj:2: decimal overflow"),
+        ("immut d: decimal = 9e6144\nprint(d * 10)", "panic: test.kj:2: decimal overflow"),
         ("immut d: decimal = 1\nprint(d / 0)", "panic: test.kj:2: division by zero"),
-        ("immut d: decimal = 1e-398\nprint(d / 3)", "panic: test.kj:2: decimal underflow"),
+        ("immut d: decimal = 1e-6176\nprint(d / 3)", "panic: test.kj:2: decimal underflow"),
         ("print(int(decimal(1e300)))", "integer overflow: 1e300 does not fit in an int"),
     ];
     for (code, fragment) in errors {

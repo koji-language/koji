@@ -1,7 +1,7 @@
 // The C code generator of the Koji compiler: turns the IR into one C file, which a C compiler
 // links with the runtime library (runtime/). `generate` gives the text of `kojic dump c`.
 
-import { Ty, Operand, Place, Step, Target, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
+import { Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
 import { preludeLines } from 'prelude.kj'
 
 type Generator = {
@@ -16,7 +16,7 @@ function cType(ty: Ty): string {
     return match (ty) {
         IntTy => 'int64_t'
         FloatTy => 'double'
-        DecimalTy => 'uint64_t'
+        DecimalTy => 'KojiDecimal'
         BoolTy => 'bool'
         CharTy => 'uint32_t'
         StrTy => 'KojiString *'
@@ -67,6 +67,22 @@ function release(ty: Ty): Option[string] {
         Some(name) => Some(`koji_${name}_release`)
         None => None
     }
+}
+
+// The 8-byte words a value takes in a record, a list or a map: two for a decimal.
+function words(ty: Ty): int {
+    return match (ty) {
+        DecimalTy => 2
+        _ => 1
+    }
+}
+
+function hasWideField(fields: IrField[]): boolean {
+    for field in fields {
+        if (words(field.ty) > 1) { return true }
+    }
+
+    return false
 }
 
 // The description of the items of a list (`koji_element_int`, ...).
@@ -227,6 +243,20 @@ function Generator.records(mut self) {
             self.line(`static const char *const koji_record_${id}_${index}_names[] = { ${names.join(', ')} };`)
             self.line(`static const KojiElementType *const koji_record_${id}_${index}_types[] = { ${types.join(', ')} };`)
             self.line(`static const KojiRecordType *const koji_record_${id}_${index}_records[] = { ${nested.join(', ')} };`)
+
+            // A field of two words (a decimal) moves the ones after it.
+            if (hasWideField(fields)) {
+                mut offsets: string[] = []
+                mut word = 0
+
+                for field in fields {
+                    offsets.push(string(word))
+                    word += words(field.ty)
+                }
+
+                offsets.push(string(word))
+                self.line(`static const size_t koji_record_${id}_${index}_offsets[] = { ${offsets.join(', ')} };`)
+            }
         }
 
         mut variants: string[] = []
@@ -239,10 +269,11 @@ function Generator.records(mut self) {
             }
 
             if (variant.fields.length() == 0) {
-                variants.push(`{ ${name}, 0, NULL, NULL, NULL }`)
+                variants.push(`{ ${name}, 0, NULL, NULL, NULL, NULL }`)
             } else {
                 immut prefix = `koji_record_${id}_${index}`
-                variants.push(`{ ${name}, ${variant.fields.length()}, ${prefix}_names, ${prefix}_types, ${prefix}_records }`)
+                immut offsets = if (hasWideField(variant.fields)) { `${prefix}_offsets` } else { 'NULL' }
+                variants.push(`{ ${name}, ${variant.fields.length()}, ${prefix}_names, ${prefix}_types, ${prefix}_records, ${offsets} }`)
             }
         }
 
@@ -299,6 +330,7 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
             RecordTy(_) => 'NULL'
             BoolTy => 'false'
             FloatTy => '0.0'
+            DecimalTy => '{0}'
             _ => '0'
         }
         immut comment = match (info.name) {
@@ -327,7 +359,7 @@ function operand(value: Operand): string {
         GlobalOp(id) => `koji_g${id}`
         IntOp(value) => if (value == -9223372036854775807 - 1) { 'INT64_MIN' } else { `INT64_C(${value})` }
         FloatOp(value) => floatDebug(value)
-        DecimalOp(negative, coefficient, exponent) => decimalConstant(negative, coefficient, exponent)
+        DecimalOp(negative, high, low, exponent) => decimalConstant(negative, high, low, exponent)
         BoolOp(value) => string(value)
         CharOp(value) => `UINT32_C(${value.code()})`
         StrOp(id) => `koji_s${id}`
@@ -335,9 +367,8 @@ function operand(value: Operand): string {
 }
 
 // A decimal constant: its bits, computed by the C compiler.
-function decimalConstant(negative: boolean, coefficient: int, exponent: int): string {
-    immut sign = if (negative) { 1 } else { 0 }
-    return `KOJI_DECIMAL(${sign}, INT64_C(${coefficient}), ${exponent})`
+function decimalConstant(negative: boolean, high: int, low: int, exponent: int): string {
+    return `koji_decimal_literal(${negative}, INT64_C(${high}), INT64_C(${low}), ${exponent})`
 }
 
 function place(where: Place): string {
@@ -418,7 +449,7 @@ function address(value: Operand): string {
         GlobalOp(_) => `&${operand(value)}`
         IntOp(_) => `&(int64_t){ ${operand(value)} }`
         FloatOp(_) => `&(double){ ${operand(value)} }`
-        DecimalOp(_, _, _) => `&(uint64_t){ ${operand(value)} }`
+        DecimalOp(_, _, _, _) => `(KojiDecimal[]){ ${operand(value)} }`
         BoolOp(_) => `&(bool){ ${operand(value)} }`
         CharOp(_) => `&(uint32_t){ ${operand(value)} }`
         StrOp(_) => `&(KojiString *){ ${operand(value)} }`
@@ -436,7 +467,7 @@ function Generator.operandType(self, routine: IrFunction, value: Operand): Ty {
         GlobalOp(id) => self.program.globals[id].ty
         IntOp(_) => IntTy
         FloatOp(_) => FloatTy
-        DecimalOp(_, _, _) => DecimalTy
+        DecimalOp(_, _, _, _) => DecimalTy
         BoolOp(_) => BoolTy
         CharOp(_) => CharTy
         StrOp(_) => StrTy
@@ -531,7 +562,7 @@ function Generator.binary(self, op: string, left: string, right: string, line: i
         'FloatDiv' => `koji_float_div(${left}, ${right}, ${location})`
         'FloatRem' => `koji_float_rem(${left}, ${right}, ${location})`
         'FloatPow' => `koji_float_pow(${left}, ${right}, ${location})`
-        'DecimalAdd' => `koji_decimal_add(${left}, ${right}, ${location})`
+        'DecimalAdd' => `koji_decimal_plus(${left}, ${right}, ${location})`
         'DecimalSub' => `koji_decimal_sub(${left}, ${right}, ${location})`
         'DecimalMul' => `koji_decimal_mul(${left}, ${right}, ${location})`
         'DecimalDiv' => `koji_decimal_div(${left}, ${right}, ${location})`
@@ -667,7 +698,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                     if (not given) { values[param] = share(ty, values[param]) }
                 }
 
-                immut initial = if (isManaged(ty)) { 'NULL' } else { '0' }
+                immut initial = if (isManaged(ty)) { 'NULL' } else { if (ty == DecimalTy) { '{0}' } else { '0' } }
                 self.line(`    ${cType(ty)} back${param} = ${initial};`)
                 values.push(`&back${param}`)
             }

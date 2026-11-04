@@ -69,9 +69,9 @@ In a `for` loop, the numbers are produced one at a time: `for i in range(1000000
 
 `int` truncates toward zero. A float or a decimal too large for an `int` panics (see [Primitive Types](primitive-types.md)).
 
-`decimal(x)` of a literal is the literal as written (`decimal(0.1)` is exactly one tenth); of a `float`, it is the decimal with 16 digits nearest to it (`decimal(0.1 + 0.2)` is `0.3`). `float(x)` of a decimal is the nearest float.
+`decimal(x)` of a literal is the literal as written (`decimal(0.1)` is exactly one tenth); of a `float`, it is the shortest decimal that is the same float again, so nothing is lost either way: `decimal(0.1 + 0.2)` is `0.30000000000000004`, and `float(decimal(x)) == x`. `float(x)` of a decimal is the nearest float.
 
-Converting a `string` can fail, so `int(x)`, `float(x)` and `decimal(x)` return a `Result[int, ParseError]` (or `Result[float, ParseError]`, `Result[decimal, ParseError]`) when `x` is a string. `decimal('0.1')` is exact; a text with more than 16 significant digits is rounded:
+Converting a `string` can fail, so `int(x)`, `float(x)` and `decimal(x)` return a `Result[int, ParseError]` (or `Result[float, ParseError]`, `Result[decimal, ParseError]`) when `x` is a string. `decimal('0.1')` is exact; a text with more than 34 significant digits is rounded:
 
 ```koji
 type ParseError = {

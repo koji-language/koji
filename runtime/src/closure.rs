@@ -85,15 +85,13 @@ pub extern "C" fn koji_list_sort_by(
     call: unsafe extern "C" fn(*const KojiClosure, *const c_void, *const c_void) -> bool,
 ) {
     let list = crate::list::unshare(variable);
-    let items = std::mem::take(&mut list.items);
-    list.items = merge_sort(items, &|a: &u64, b: &u64| unsafe {
-        call(comparison, a as *const u64 as *const c_void, b as *const u64 as *const c_void)
-    });
+    let order = merge_sort((0..list.len()).collect(), &|&a: &usize, &b: &usize| unsafe { call(comparison, list.slot(a), list.slot(b)) });
+    list.reorder(&order);
 }
 
 /// A stable sort: an item from the right half goes first only when it goes strictly
 /// before, so equal items keep their order.
-fn merge_sort(items: Vec<u64>, before: &dyn Fn(&u64, &u64) -> bool) -> Vec<u64> {
+fn merge_sort(items: Vec<usize>, before: &dyn Fn(&usize, &usize) -> bool) -> Vec<usize> {
     if items.len() <= 1 {
         return items;
     }

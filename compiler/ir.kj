@@ -6,7 +6,7 @@ import { decimalText } from 'decimal.kj'
 export type Ty = {
     IntTy
     FloatTy
-    // A decimal: 64 bits that the runtime computes with (runtime/src/decimal.rs).
+    // A decimal: 16 bytes that the runtime computes with (runtime/src/decimal.rs).
     DecimalTy
     BoolTy
     // A Unicode character (its code point).
@@ -54,8 +54,8 @@ export type Operand = {
     GlobalOp(id: int)
     IntOp(value: int)
     FloatOp(value: float)
-    // A decimal constant, normalized: coefficient * 10^exponent.
-    DecimalOp(negative: boolean, coefficient: int, exponent: int)
+    // A decimal constant: (high * 10^17 + low) * 10^exponent.
+    DecimalOp(negative: boolean, high: int, low: int, exponent: int)
     BoolOp(value: boolean)
     CharOp(value: char)
     // A string literal of the program (`IrProgram.strings`).
@@ -312,7 +312,7 @@ export function operandText(operand: Operand): string {
         GlobalOp(id) => `g${id}`
         IntOp(value) => string(value)
         FloatOp(value) => floatDebug(value)
-        DecimalOp(negative, coefficient, exponent) => decimalText({ negative: negative, coefficient: coefficient, exponent: exponent })
+        DecimalOp(negative, high, low, exponent) => decimalText({ negative: negative, high: high, low: low, exponent: exponent })
         BoolOp(value) => string(value)
         CharOp(value) => charDebug(value)
         StrOp(id) => `s${id}`
@@ -326,7 +326,7 @@ function operandDebug(operand: Operand): string {
         GlobalOp(id) => `Global(${id})`
         IntOp(value) => `Int(${value})`
         FloatOp(value) => `Float(${floatDebug(value)})`
-        DecimalOp(negative, coefficient, exponent) => `Decimal(${decimalText({ negative: negative, coefficient: coefficient, exponent: exponent })})`
+        DecimalOp(negative, high, low, exponent) => `Decimal(${decimalText({ negative: negative, high: high, low: low, exponent: exponent })})`
         BoolOp(value) => `Bool(${value})`
         CharOp(value) => `Char(${charDebug(value)})`
         StrOp(id) => `Str(${id})`
