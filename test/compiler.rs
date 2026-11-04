@@ -418,6 +418,34 @@ print(x, items, total)
 }
 
 #[test]
+fn nested_functions_ranges_sets_and_module_variants() {
+    assert_same(
+        "nested_functions",
+        "\
+import json
+
+function make(): int[] {
+    mut x = 1
+
+    function twice(n: int): int {
+        return n * 2 + x
+    }
+
+    x = 5
+    return [twice(1), twice(x)]
+}
+
+mut seen = Set.from([])
+seen.add('x')
+print(make(), range(3), range(5, 0, -2), seen)
+print(json.stringify(json.Array([json.Int(1), json.Null, json.Bool(true)])))
+",
+        "[3, 11] [0, 1, 2] [5, 3, 1] Set(['x'])\n[1,null,true]\n",
+    );
+    assert_same_panic("range_value", "print(range(0, 5, 0))\n", "range() step cannot be 0");
+}
+
+#[test]
 fn panics() {
     assert_same_panic("division", "print(1)\nprint(10 / (5 - 5))\n", "division by zero");
     assert_same_panic("overflow", "immut big = 9223372036854775807\nprint(big + 1)\n", "integer overflow");

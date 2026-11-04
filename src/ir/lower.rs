@@ -1219,7 +1219,21 @@ impl<'a> Lowerer<'a> {
         params: &[crate::parser::ast::Param],
         body: &AstNode,
     ) -> Lower<Operand> {
-        let Ty::Function(param_types, ret) = self.type_in(builder, node)? else {
+        let closure_type = self.type_in(builder, node)?;
+        self.closure(builder, closure_type, params, body, "anonymous function")
+    }
+
+    /// The closure of a function of type `closure_type` (named `name`), which captures a copy of
+    /// the local variables it uses.
+    fn closure(
+        &mut self,
+        builder: &mut Builder,
+        closure_type: Ty,
+        params: &[crate::parser::ast::Param],
+        body: &AstNode,
+        name: &str,
+    ) -> Lower<Operand> {
+        let Ty::Function(param_types, ret) = closure_type.clone() else {
             return self.unsupported("this function");
         };
         let ret = *ret;
@@ -1257,7 +1271,7 @@ impl<'a> Lowerer<'a> {
         inner.scopes.push(HashMap::new());
         self.function_body(&mut inner, body, &ret)?;
         let count = params.len() + 1;
-        self.functions[id] = Some(inner.finish("anonymous function".to_string(), self.file.clone(), count, vec![false; count]));
+        self.functions[id] = Some(inner.finish(name.to_string(), self.file.clone(), count, vec![false; count]));
         self.line = line;
 
         let environment_value = if captures.is_empty() {
@@ -1268,7 +1282,6 @@ impl<'a> Lowerer<'a> {
             builder.emit(Instruction::RecordNew { dest, variant: 0, fields: values });
             Some(Operand::Local(dest))
         };
-        let closure_type = self.type_in(builder, node)?;
         let dest = builder.local(closure_type, None);
         builder.emit(Instruction::MakeClosure { dest, function: id, environment: environment_value });
         Ok(Operand::Local(dest))
@@ -1354,6 +1367,21 @@ impl<'a> Lowerer<'a> {
             }
             AstNode::Export(node) => self.statement(builder, node),
             AstNode::FunctionDecl { .. } if builder.is_main && builder.scopes.len() == 1 => Ok(()),
+            // A function declared inside another one: a closure, created where it is declared,
+            // with a copy of the variables around it (like the interpreter).
+            AstNode::FunctionDecl { name, owner: None, type_params, params, body, .. }
+                if type_params.is_empty() && params.iter().all(|param| !param.is_mut && !param.is_take) =>
+            {
+                let Some(ty) = self.function_types.get(&node_id(node)) else {
+                    return self.unsupported("a nested function");
+                };
+                let closure_type = self.ty(ty)?;
+                let closure = self.closure(builder, closure_type.clone(), params, body, name)?;
+                let local = builder.local(closure_type, Some(name));
+                builder.emit(Instruction::Copy { dest: Place::Local(local), value: closure });
+                builder.declare(name, Variable::Local(local));
+                Ok(())
+            }
             AstNode::FunctionDecl { .. } => self.unsupported("a nested function"),
             AstNode::TypeDecl { .. } if builder.is_main && builder.scopes.len() == 1 => Ok(()),
             AstNode::TypeDecl { .. } => self.unsupported("a type declared inside a block"),
@@ -1519,6 +1547,15 @@ impl<'a> Lowerer<'a> {
         let AstNode::Call { args, .. } = iterable.unlocated() else {
             unreachable!("checked by is_range_call");
         };
+        let (head, value, exit) = self.range_loop(builder, args, variable)?;
+        let Some(value) = value else { return self.unsupported("this call of 'range'") };
+        self.loop_body(builder, variable, value, head, exit, body)
+    }
+
+    /// The loop over the numbers of `range(args)`: gives its head (where the next number is
+    /// taken), the local with the number (named `variable`, if not empty) and the block after
+    /// the loop; the builder continues in the body.
+    fn range_loop(&mut self, builder: &mut Builder, args: &[AstNode], variable: &str) -> Lower<(BlockId, Option<LocalId>, BlockId)> {
         let mut values = Vec::new();
         for arg in args {
             let value = self.value_as(builder, arg, &Ty::Int)?.expect("an int");
@@ -1557,7 +1594,8 @@ impl<'a> Lowerer<'a> {
         let exit = builder.new_block();
         builder.terminate(Terminator::Goto(head));
         builder.switch_to(head);
-        let value = builder.local(Ty::Int, Some(variable));
+        let name = (!variable.is_empty()).then_some(variable);
+        let value = builder.local(Ty::Int, name);
         builder.emit(Instruction::RangeNext {
             has_value,
             value,
@@ -1572,7 +1610,7 @@ impl<'a> Lowerer<'a> {
             else_block: exit,
         });
         builder.switch_to(body_block);
-        self.loop_body(builder, variable, value, head, exit, body)
+        Ok((head, Some(value), exit))
     }
 
     /// The body of a `for` loop, with `variable` in scope; then back to `next`.
@@ -1959,6 +1997,14 @@ impl<'a> Lowerer<'a> {
             AstNode::ObjectLiteral(entries) if matches!(target, Ty::Record(_)) => {
                 let Ty::Record(record) = target else { unreachable!() };
                 self.object_literal(builder, entries, *record).map(Some)
+            }
+            // `Set.from([])` with the item type a later use gave the variable (`seen.add('x')`).
+            AstNode::Call { method, args, .. }
+                if matches!(target, Ty::Set(_)) && method.borrow().as_ref().is_some_and(|method| method.key == "Set.from") =>
+            {
+                let Ty::Set(item) = target else { unreachable!() };
+                let list = self.value_as(builder, &args[0], &Ty::List(item.clone()))?.expect("a list");
+                Ok(Some(self.unary(builder, UnaryOp::SetFromList, list, target.clone())))
             }
             _ if matches!(target, Ty::Record(record) if self.constructor(builder, node, *record).is_some()) => {
                 let Ty::Record(record) = target else { unreachable!() };
@@ -3329,6 +3375,18 @@ impl<'a> Lowerer<'a> {
                     _ => self.unsupported(&format!("'{}' of this value", name)),
                 }
             }
+            // `range(...)` as a value: the list of its numbers.
+            "range" => {
+                let list_type = Ty::List(Box::new(Ty::Int));
+                let list = builder.local(list_type, None);
+                builder.emit(Instruction::ListNew { dest: list, items: Vec::new() });
+                let (head, next, exit) = self.range_loop(builder, args, "")?;
+                let Some(value) = next else { return self.unsupported("this call of 'range'") };
+                builder.emit(Instruction::ListPush { list: Target { root: Place::Local(list), path: Vec::new() }, value: Operand::Local(value), line: self.line });
+                builder.terminate(Terminator::Goto(head));
+                builder.switch_to(exit);
+                Ok(Some(Operand::Local(list)))
+            }
             "char" if args.len() == 1 => {
                 let code = self.value_as(builder, &args[0], &Ty::Int)?.expect("an int");
                 let Ty::Record(option) = self.type_in(builder, call)? else { unreachable!("an Option") };
@@ -3499,7 +3557,15 @@ impl<'a> Lowerer<'a> {
                     result(self, builder)?,
                 ],
             ),
-            _ => return self.unsupported(&format!("'{}.{}'", module, name)),
+            // `json.Array([...])`: a variant of a type of the module.
+            _ => {
+                if let Ty::Record(record) = self.type_in(builder, call)? {
+                    if self.records[record].variants.iter().any(|variant| variant.name.as_deref() == Some(name)) {
+                        return self.construct(builder, record, name, args).map(Some);
+                    }
+                }
+                return self.unsupported(&format!("'{}.{}'", module, name));
+            }
         };
         self.std(builder, call, function, arguments)
     }

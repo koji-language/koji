@@ -1499,7 +1499,14 @@ type Capture = {
 // variables it uses (a copy, from the moment the lambda is created). Top-level variables are not
 // captured: the function reads them directly.
 function Lowerer.lambda(mut self, mut builder: Builder, node: Node, params: Param[], body: Node): Result[Operand, string] {
-    immut parts = match (functionParts(self.typeIn(builder, node)?)) {
+    immut closureType = self.typeIn(builder, node)?
+    return self.closure(mut builder, closureType, params, body, 'anonymous function')
+}
+
+// The closure of a function of type `closureType` (named `name`), which captures a copy of the
+// local variables it uses.
+function Lowerer.closure(mut self, mut builder: Builder, closureType: Ty, params: Param[], body: Node, name: string): Result[Operand, string] {
+    immut parts = match (functionParts(closureType)) {
         Some(parts) => parts
         None => return Err(self.unsupported('this function'))
     }
@@ -1562,7 +1569,7 @@ function Lowerer.lambda(mut self, mut builder: Builder, node: Node, params: Para
         writeback.push(false)
     }
 
-    self.functions[id] = Some(inner.finish('anonymous function', self.file, count, writeback))
+    self.functions[id] = Some(inner.finish(name, self.file, count, writeback))
     self.line = line
     mut environmentValue: Option[Operand] = None
 
@@ -1578,7 +1585,6 @@ function Lowerer.lambda(mut self, mut builder: Builder, node: Node, params: Para
         environmentValue = Some(LocalOp(dest))
     }
 
-    immut closureType = self.typeIn(builder, node)?
     immut dest = builder.local(closureType, None)
     builder.emit(MakeClosureIns(dest, id, environmentValue))
     return Ok(LocalOp(dest))
@@ -1708,10 +1714,29 @@ function Lowerer.statement(mut self, mut builder: Builder, node: Node): Result[v
             return self.statement(mut builder, statement)
         }
         Export(declaration) => return self.statement(mut builder, declaration)
-        FunctionDecl(_, _, _, _, _, _) => {
+        FunctionDecl(name, owner, typeParams, params, _, body) => {
             if (self.atTopLevel(builder)) { return Ok() }
 
-            return Err(self.unsupported('a nested function'))
+            // A function declared inside another one: a closure, created where it is declared,
+            // with a copy of the variables around it (like the interpreter).
+            mut simple = owner is None and typeParams.length() == 0
+
+            for param in params {
+                if (param.isMut or param.isTake) { simple = false }
+            }
+
+            if (not simple) { return Err(self.unsupported('a nested function')) }
+
+            immut ty = match (self.tables.functionTypes.get(nodeId(node))) {
+                Some(ty) => ty
+                None => return Err(self.unsupported('a nested function'))
+            }
+            immut closureType = self.ty(ty)?
+            immut closure = self.closure(mut builder, closureType, params, body, name)?
+            immut local = builder.local(closureType, Some(name))
+            builder.emit(CopyIns(LocalPlace(local), closure))
+            builder.declare(name, LocalVar(local))
+            return Ok()
         }
         TypeDecl(_, _, _) => {
             if (self.atTopLevel(builder)) { return Ok() }
@@ -1872,6 +1897,21 @@ function Lowerer.forRange(mut self, mut builder: Builder, variable: string, iter
         Call(_, args) => args
         _ => []
     }
+    immut loop = self.rangeLoop(mut builder, args, variable)?
+    return self.loopBody(mut builder, variable, loop.value, loop.head, loop.exit, body)
+}
+
+// A loop over the numbers of `range(...)`: where the next number is taken, the local with the
+// number, and the block after the loop.
+type RangeLoop = {
+    head: int
+    value: int
+    exit: int
+}
+
+// The loop over the numbers of `range(args)`, with the number in a local named `variable` (if not
+// empty); the builder continues in its body.
+function Lowerer.rangeLoop(mut self, mut builder: Builder, args: Node[], variable: string): Result[RangeLoop, string] {
     mut values: Operand[] = []
 
     for arg in args {
@@ -1911,11 +1951,12 @@ function Lowerer.forRange(mut self, mut builder: Builder, variable: string, iter
     immut exit = builder.newBlock()
     builder.terminate(GotoT(head))
     builder.switchTo(head)
-    immut value = builder.local(IntTy, Some(variable))
+    immut name = if (variable == '') { None } else { Some(variable) }
+    immut value = builder.local(IntTy, name)
     builder.emit(RangeNextIns(hasValue, value, next, end, step, done))
     builder.terminate(BranchT(LocalOp(hasValue), bodyBlock, exit))
     builder.switchTo(bodyBlock)
-    return self.loopBody(mut builder, variable, value, head, exit, body)
+    return Ok({ head: head, value: value, exit: exit })
 }
 
 // The body of a `for` loop, with `variable` in scope; then back to `next`.
@@ -2324,6 +2365,25 @@ function Lowerer.valueAs(mut self, mut builder: Builder, node: Node, target: Ty)
         ObjectLiteral(entries) => {
             match (target) {
                 RecordTy(record) => return Ok(Some(self.objectLiteral(mut builder, entries, record)?))
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    // `Set.from([])` with the item type a later use gave the variable (`seen.add('x')`).
+    match (node.kind) {
+        Call(_, args) => {
+            match (target) {
+                SetTy(item) => {
+                    match (self.tables.methods.get(node.id)) {
+                        Some(method) if (method.key == 'Set.from') => {
+                            immut list = self.valueOf(mut builder, args[0], ListTy(item))?
+                            return Ok(Some(self.unary(mut builder, 'SetFromList', list, target)))
+                        }
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
@@ -3385,6 +3445,16 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
 
             return Err(self.unsupported(`'${name}' of this value`))
         }
+        // `range(...)` as a value: the list of its numbers.
+        'range' => {
+            immut list = builder.local(ListTy(IntTy), None)
+            builder.emit(ListNewIns(list, []))
+            immut loop = self.rangeLoop(mut builder, args, '')?
+            builder.emit(ListPushIns({ root: LocalPlace(list), path: [] }, LocalOp(loop.value), self.line))
+            builder.terminate(GotoT(loop.head))
+            builder.switchTo(loop.exit)
+            return Ok(Some(LocalOp(list)))
+        }
         'char' if (args.length() == 1) => {
             immut code = self.valueOf(mut builder, args[0], IntTy)?
             immut option = self.recordOf(builder, call)?
@@ -3607,7 +3677,19 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             immut arguments2 = self.stdValue(mut builder, args, 1, ListTy(StrTy))?
             arguments = [command, arguments2, self.stdResult(builder, call)?]
         }
-        _ => return Err(self.unsupported(`'${module}.${name}'`))
+        // `json.Array([...])`: a variant of a type of the module.
+        _ => {
+            match (self.typeIn(builder, call)?) {
+                RecordTy(record) => {
+                    for variant in self.records[record].variants {
+                        if (variant.name == Some(name)) { return Ok(Some(self.construct(mut builder, record, name, args)?)) }
+                    }
+                }
+                _ => {}
+            }
+
+            return Err(self.unsupported(`'${module}.${name}'`))
+        }
     }
 
     return self.std(mut builder, call, runner, arguments)

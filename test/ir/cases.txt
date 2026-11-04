@@ -162,3 +162,31 @@ x >>= 1
 mut flags = [1, 2]
 flags[1] <<= 3
 print(x, flags)
+----
+import json
+
+function make(): int[] {
+    mut x = 1
+    function twice(n: int): int {
+        return n * 2 + x
+    }
+
+    x = 5
+    return [twice(1), twice(x)]
+}
+
+mut seen = Set.from([])
+seen.add('x')
+print(make(), range(3), range(5, 0, -2), seen, json.stringify(json.Array([json.Int(1), json.Null])))
+----
+function outer(): int {
+    function again(n: int): int {
+        if (n == 0) { return 0 }
+
+        return again(n - 1)
+    }
+
+    return again(3)
+}
+
+print(outer())
