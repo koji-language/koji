@@ -104,6 +104,6 @@ If you want to contribute, run the test suite with:
 cargo test
 ```
 
-The tests build the compiler from the seed, like `bootstrap/build.sh`, and run it on their programs. `cargo test --test bootstrap -- --ignored` also checks that the compiler compiles itself to the same C (the fixed point). The stages of the compiler are compared with snapshots (`test/snapshots/`): after a change of a stage, `KOJI_UPDATE_SNAPSHOTS=1 cargo test --test stages` writes them again.
+The tests build the compiler from the seed, like `bootstrap/build.sh`, and run it on their programs. The runtime has tests of its own: `cargo test --manifest-path runtime/Cargo.toml`. `cargo test --test bootstrap -- --ignored` also checks that the compiler compiles itself to the same C (the fixed point). The stages of the compiler are compared with snapshots (`test/snapshots/`): after a change of a stage, `KOJI_UPDATE_SNAPSHOTS=1 cargo test --test stages` writes them again.
 
 See the [contributing guide](../CONTRIBUTING.md) for details.

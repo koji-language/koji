@@ -61,7 +61,7 @@ error: syntax error: line 2: unexpected character '$'
 (at 1 (assign = (name s) (string 'unterminated')))
 ==== test/lexer/edge4.kj
 ==== test/lexer/edge5.kj
-error: syntax error: line 1: float literal 1e400 is too large for a float
+(at 1 (assign = (name x) (binary + (binary + (binary + (binary + (float 1e400) (float 1.5e308)) (float 0.0)) (float 2.5E999)) (float 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497792.0))))
 ==== test/lexer/edge6.kj
 error: syntax error: line 1: unexpected expression: '|='
 ==== parser cases #0
@@ -97,4 +97,4 @@ error: syntax error: line 1: unexpected character '#'
 ==== parser cases #15
 (at 1 (immut x _ (match (name y) (arm (literal (float -9.223372036854776e18)) _ (int 1)))))
 ==== parser cases #16
-error: syntax error: line 1: float literal 1e400 is too large for a float
+(at 1 (immut x _ (match (name y) (arm (literal (float -1e400)) _ (int 2)))))

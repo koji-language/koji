@@ -102,7 +102,7 @@ module case14.kj
 ==== parser cases #15
 error: type error: case15.kj:1: undefined variable 'y'
 ==== parser cases #16
-error: syntax error: case16.kj:1: float literal 1e400 is too large for a float
+error: type error: case16.kj:1: undefined variable 'y'
 ==== test/checker/cases.txt #0
 error: type error: case0.kj:4: undefined variable 'localVar'
 ==== test/checker/cases.txt #1
@@ -180,7 +180,7 @@ error: type error: case36.kj:2: 'make' is exported, but its type uses the privat
 ==== test/checker/cases.txt #37
 error: type error: case37.kj:2: argument 2 of 'file.open' must be Mode, found string
 ==== test/checker/cases.txt #38
-error: syntax error: case38.kj:1: float literal 1e400 is too large for a float
+error: type error: case38.kj:1: float literal 1e400 is too large for a float
 ==== test/checker/cases.txt #39
 error: type error: case39.kj:2: argument 1 of 'json.stringify' must be Json, found int
 ==== test/checker/cases.txt #40
@@ -576,17 +576,17 @@ module case211.kj
 ==== test/checker/cases.txt #212
 error: type error: case212.kj:4: cannot modify 'n' here: functions capture a read-only copy of the variables around them
 ==== test/checker/cases.txt #213
-error: type error: case213.kj:3: variant 'A' has fields; use 'A(...)' in the pattern
+error: type error: case213.kj:4: variant 'A' has fields; use 'A(...)' in the pattern
 ==== test/checker/cases.txt #214
-error: type error: case214.kj:3: variant 'A' has 1 field(s), but the pattern has 2
+error: type error: case214.kj:4: variant 'A' has 1 field(s), but the pattern has 2
 ==== test/checker/cases.txt #215
-error: type error: case215.kj:3: 'B' is not a variant of T
+error: type error: case215.kj:4: 'B' is not a variant of T
 ==== test/checker/cases.txt #216
-error: type error: case216.kj:3: 'Some' is not a variant of T
+error: type error: case216.kj:4: 'Some' is not a variant of T
 ==== test/checker/cases.txt #217
-error: type error: case217.kj:3: pattern of type string does not match a value of type T
+error: type error: case217.kj:4: pattern of type string does not match a value of type T
 ==== test/checker/cases.txt #218
-error: type error: case218.kj:1: pattern 'None' does not match a value of type int
+error: type error: case218.kj:2: pattern 'None' does not match a value of type int
 ==== test/checker/cases.txt #219
 error: type error: case219.kj:1: '?' can only be used on a Result or an Option, found int
 ==== test/checker/cases.txt #220
@@ -663,6 +663,20 @@ module case237.kj
 (at 1 (type Tree () (sum (variant Leaf) (variant Branch (field left Tree) (field right Tree)))))
 (at 2 (function count () ((param t Tree)) int (block (at 3 (return (match (name t):Tree (arm (bind Leaf) _ (int 1):int) (arm (variant Branch (bind l) (bind r)) _ (binary + (call (name count):(Tree) => int (name l):Tree):int (call (name count):(Tree) => int (name r):Tree):int):int)):int))))!function=(Tree) => int)
 (at 8 (call (name print) (call (name count):(Tree) => int (call (name Branch) (name Leaf):Tree (name Leaf):Tree):Tree):int):void)
+==== test/checker/cases.txt #238
+module case238.kj
+(at 1 (immut a decimal (float 1.5):decimal)!variable=decimal)
+(at 2 (immut b decimal[] (list (int 1):int!decimal (float 2.25):decimal):decimal[])!variable=decimal[])
+(at 3 (mut c _ (binary + (binary * (name a):decimal (int 2):int):decimal (index (name b):decimal[] (int 0):int):decimal):decimal)!variable=decimal)
+(at 4 (assign += (name c) (float 0.5):decimal))
+(at 5 (call (name print) (unary - (name a):decimal):decimal (name c):decimal (binary is (call (name decimal) (string '3'):string):Result[decimal, ParseError] (name Ok)):boolean (binary ** (name a):decimal (int 2):int):decimal):void)
+==== test/checker/cases.txt #239
+error: type error: case239.kj:3: operator '+' cannot be applied to decimal and float
+==== test/checker/cases.txt #240
+error: type error: case240.kj:1: decimal literal 12345678901234567.0 has more than 16 significant digits, the precision of a decimal
+==== test/checker/cases.txt #241
+module case241.kj
+(at 1 (match (call (name decimal) (int 1):int):decimal (arm (literal (float 1.5):decimal) _ (call (name print) (int 1):int):void) (arm (wildcard) _ (call (name print) (int 2):int):void)):void)
 ==== test/checker/cycle.kj
 error: type error: cycle_b.kj:1: circular import of 'cycle_a.kj'
 ==== test/checker/generic_value.kj

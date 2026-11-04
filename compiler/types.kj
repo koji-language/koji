@@ -4,6 +4,8 @@
 export type Type = {
     IntType
     FloatType
+    // 16 significant digits in base 10 (runtime/src/decimal.rs).
+    DecimalType
     StringType
     // A Unicode character (a code point).
     CharType
@@ -78,7 +80,12 @@ export type TypeInfo = {
 }
 
 export function isNumeric(ty: Type): boolean {
-    return ty == IntType or ty == FloatType
+    return ty == IntType or ty == FloatType or ty == DecimalType
+}
+
+// Whether a float and a decimal meet (they never mix: converting is explicit).
+export function mixesFloatAndDecimal(a: Type, b: Type): boolean {
+    return (a == FloatType and b == DecimalType) or (a == DecimalType and b == FloatType)
 }
 
 export function containsUnknown(ty: Type): boolean {
@@ -156,16 +163,16 @@ export function signatureParams(count: int): Type[] {
 }
 
 // Whether a value of type `actual` can be used where `expected` is required. An `int` becomes a
-// `float` only as a whole value: an `int[]` is not a `float[]`.
+// `float` or a `decimal` only as a whole value: an `int[]` is not a `float[]`.
 export function assignable(expected: Type, actual: Type): boolean {
     return compatible(expected, actual, true)
 }
 
-// `assignable`, where `convert` allows an `int` for a `float` (only at the top).
+// `assignable`, where `convert` allows an `int` for a `float` or a `decimal` (only at the top).
 function compatible(expected: Type, actual: Type, convert: boolean): boolean {
     if (actual == NeverType or actual == UnknownType or expected == UnknownType) { return true }
 
-    if (expected == FloatType and actual == IntType) { return convert }
+    if ((expected == FloatType or expected == DecimalType) and actual == IntType) { return convert }
 
     match (expected) {
         ListType(e) => {
@@ -227,7 +234,8 @@ export function join(a: Type, b: Type): Option[Type] {
     return joinTypes(a, b, true)
 }
 
-// `join`, where `convert` lets `int` and `float` join as `float` (only at the top).
+// `join`, where `convert` lets `int` and `float` join as `float`, and `int` and `decimal` as
+// `decimal` (only at the top).
 function joinTypes(a: Type, b: Type, convert: boolean): Option[Type] {
     if (a == b) { return Some(a) }
 
@@ -242,6 +250,8 @@ function joinTypes(a: Type, b: Type, convert: boolean): Option[Type] {
     immut mixed = (a == IntType and b == FloatType) or (a == FloatType and b == IntType)
 
     if (mixed and convert) { return Some(FloatType) }
+
+    if (convert and ((a == IntType and b == DecimalType) or (a == DecimalType and b == IntType))) { return Some(DecimalType) }
 
     match (a) {
         ListType(x) => {
@@ -308,6 +318,7 @@ export function display(table: TypeInfo[], ty: Type): string {
     return match (ty) {
         IntType => 'int'
         FloatType => 'float'
+        DecimalType => 'decimal'
         StringType => 'string'
         BooleanType => 'boolean'
         CharType => 'char'

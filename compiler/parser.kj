@@ -52,6 +52,8 @@ export type Arm = {
     pattern: Pattern
     guard: Option[Node]
     body: Node
+    // The line of the pattern.
+    line: int
 }
 
 export type Part = {
@@ -78,7 +80,10 @@ export type Node = {
 
 export type NodeKind = {
     IntLiteral(value: int)
-    FloatLiteral(value: float)
+    // A literal with a point or an exponent: a float, or a decimal where a decimal is expected.
+    FloatLiteral(value: float, text: string)
+    // Such a literal too large for a float (`1e400`): only a decimal can hold it.
+    LargeFloatLiteral(text: string)
     StringNode(value: string)
     Template(parts: Part[])
     BooleanLiteral(value: boolean)
@@ -145,7 +150,7 @@ export function describe(token: Token): string {
     return match (token) {
         Identifier(name) => `'${name}'`
         Int(value) => string(value)
-        Float(value) => string(value)
+        Float(value, _) => string(value)
         LargeFloat(text) => text
         StringLiteral(value) => value.debug()
         TemplateString(_) => 'a template string'
@@ -155,11 +160,6 @@ export function describe(token: Token): string {
         Illegal(c) => `'${c}'`
         End => 'the end of the file'
     }
-}
-
-// The error for a literal like `1e400`: a finite number, but too large for a `float`.
-function largeFloat(text: string): string {
-    return `float literal ${text} is too large for a float`
 }
 
 function Parser.create(tokens: Spanned[]): Parser {
@@ -975,8 +975,8 @@ function Parser.prefix(mut self): Result[Node, string] {
 
     return match (self.advance()) {
         Int(value) => Ok(self.node(IntLiteral(value)))
-        Float(value) => Ok(self.node(FloatLiteral(value)))
-        LargeFloat(text) => Err(atLine(line, largeFloat(text)))
+        Float(value, text) => Ok(self.node(FloatLiteral(value, text)))
+        LargeFloat(text) => Ok(self.node(LargeFloatLiteral(text)))
         StringLiteral(value) => Ok(self.node(StringNode(value)))
         TemplateString(raw) => self.template(raw, line)
         Boolean(value) => Ok(self.node(BooleanLiteral(value)))
@@ -1211,6 +1211,7 @@ function Parser.matchExpression(mut self): Result[Node, string] {
 }
 
 function Parser.matchArm(mut self): Result[Arm, string] {
+    immut line = self.currentLine()
     immut pattern = self.pattern()?
     mut guard: Option[Node] = None
 
@@ -1223,7 +1224,7 @@ function Parser.matchArm(mut self): Result[Arm, string] {
 
     self.expectSymbol('=>', "'=>'")?
     immut body = if (self.isSymbol('{')) { self.block()? } else { self.armExpression()? }
-    return Ok({ pattern: pattern, guard: guard, body: body })
+    return Ok({ pattern: pattern, guard: guard, body: body, line: line })
 }
 
 // Arm bodies may be statements such as `x += 1` or `break`, as well as expressions.
@@ -1263,18 +1264,21 @@ function Parser.pattern(mut self): Result[Pattern, string] {
             self.advance()
             return Ok(Literal(self.node(IntLiteral(value))))
         }
-        Float(value) => {
+        Float(value, text) => {
             self.advance()
-            return Ok(Literal(self.node(FloatLiteral(value))))
+            return Ok(Literal(self.node(FloatLiteral(value, text))))
         }
-        LargeFloat(text) => return Err(self.failure(largeFloat(text)))
+        LargeFloat(text) => {
+            self.advance()
+            return Ok(Literal(self.node(LargeFloatLiteral(text))))
+        }
         Symbol('-') => {
             self.advance()
 
             return match (self.advance()) {
                 Int(value) => Ok(Literal(self.node(IntLiteral(-value))))
-                Float(value) => Ok(Literal(self.node(FloatLiteral(-value))))
-                LargeFloat(text) => Err(self.failure(largeFloat(text)))
+                Float(value, text) => Ok(Literal(self.node(FloatLiteral(-value, `-${text}`))))
+                LargeFloat(text) => Ok(Literal(self.node(LargeFloatLiteral(`-${text}`))))
                 other => Err(self.failure(`unexpected pattern: -${describe(other)}`))
             }
         }
@@ -1593,7 +1597,8 @@ export function annotated(node: Node, a: (Node) => string): string {
 function plain(node: Node, a: (Node) => string): string {
     match (node.kind) {
         IntLiteral(value) => return `(int ${value})`
-        FloatLiteral(value) => return `(float ${value})`
+        FloatLiteral(value, _) => return `(float ${value})`
+        LargeFloatLiteral(text) => return `(float ${text})`
         StringNode(value) => return `(string ${value.debug()})`
         Template(parts) => return `(template${partsText(parts, a)})`
         BooleanLiteral(value) => return `(bool ${value})`

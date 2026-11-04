@@ -3,7 +3,8 @@
 
 import file
 import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Part, Entry, ObjectEntry, ParsedFile, parseFrom, annotated } from 'parser.kj'
-import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, MethodSignature, NamedParts, unconstrained, equatable, orderable, constraintName, isNumeric, containsUnknown, anyUnknown, fillUnknown, substitute, substituteAll, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, substituteFields, variantsOf, findField } from 'types.kj'
+import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, MethodSignature, NamedParts, unconstrained, equatable, orderable, constraintName, isNumeric, mixesFloatAndDecimal, containsUnknown, anyUnknown, fillUnknown, substitute, substituteAll, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, substituteFields, variantsOf, findField } from 'types.kj'
+import { decimalLiteral } from 'decimal.kj'
 
 // Names of the standard library modules (`import math`).
 immut stdlibModules = ['time', 'file', 'path', 'datetime', 'math', 'http', 'json', 'regex', 'system']
@@ -215,6 +216,8 @@ export type Tables = {
     fieldOrders: Map[int, string[]]
     // `int` expressions stored as `float`.
     toFloat: Set[int]
+    // `int` expressions stored as `decimal`.
+    toDecimal: Set[int]
     // The type of each declared variable, after the later uses that refine it.
     variableTypes: Map[int, Type]
     // The method or associated function each call resolves to.
@@ -231,7 +234,7 @@ function emptyTables(): Tables {
     return {
         types: [:], moves: Set.from([]), declares: Set.from([]), replaces: Set.from([]), temporaries: Set.from([]),
         owningMatches: Set.from([]), drops: [:], charLiterals: Set.from([]), mutatingCalls: Set.from([]),
-        dropMethods: [:], functionTypes: [:], typeArgs: [:], fieldOrders: [:], toFloat: Set.from([]),
+        dropMethods: [:], functionTypes: [:], typeArgs: [:], fieldOrders: [:], toFloat: Set.from([]), toDecimal: Set.from([]),
         variableTypes: [:], methods: [:], displays: [:], templateDisplays: [:], wraps: [:]
     }
 }
@@ -431,6 +434,7 @@ function Checker.create(): Checker {
                     'string' => StringType
                     'int' => IntType
                     'float' => FloatType
+                    'decimal' => DecimalType
                     'boolean' => BooleanType
                     'Json[]' => ListType(named(json))
                     _ => jsonObject
@@ -513,12 +517,13 @@ function Checker.builtinSumId(self, name: string): int {
 function Checker.prelude(self): Scope {
     mut scope = emptyScope()
 
-    for name in ['print', 'printError', 'input', 'range', 'int', 'float', 'string', 'char', 'panic'] {
+    for name in ['print', 'printError', 'input', 'range', 'int', 'float', 'decimal', 'string', 'char', 'panic'] {
         scope.vars[name] = builtinSymbol(name)
     }
 
     scope.types['int'] = KnownType(IntType)
     scope.types['float'] = KnownType(FloatType)
+    scope.types['decimal'] = KnownType(DecimalType)
     scope.types['string'] = KnownType(StringType)
     scope.types['char'] = KnownType(CharType)
     scope.types['boolean'] = KnownType(BooleanType)
@@ -653,6 +658,17 @@ function unlocated(node: Node): Node {
         Located(_, statement) => unlocated(statement)
         Export(declaration) => unlocated(declaration)
         _ => node
+    }
+}
+
+// Whether the node is a literal with a point or an exponent (`1.5`, `-2e3`), which is a decimal
+// where a decimal is expected.
+function isFractionLiteral(node: Node): boolean {
+    return match (unlocated(node).kind) {
+        FloatLiteral(_, _) => true
+        LargeFloatLiteral(_) => true
+        Unary(op, operand) => op == '-' and isFractionLiteral(operand)
+        _ => false
     }
 }
 
@@ -1851,6 +1867,7 @@ function Checker.satisfies(mut self, ty: Type, constraint: int): boolean {
     return match (ty) {
         IntType => true
         FloatType => true
+        DecimalType => true
         StringType => true
         CharType => true
         UnknownType => true
@@ -2010,7 +2027,7 @@ function Checker.checkGenericCall(mut self, signature: Type, initial: Type[], co
         unify(param, actual, mut generic)
         immut target = substitute(param, generic)
 
-        if (target == FloatType and actual == IntType) { self.tables.toFloat.add(nodeId(arg)) }
+        self.noteConversion(arg, target, actual)
 
         if (not assignable(target, actual)) {
             return Err(self.failure(`argument ${i + 1} must be ${self.show(target)}, found ${self.show(actual)}`))
@@ -2815,7 +2832,7 @@ function Checker.checkAssignedValue(mut self, targetType: Type, op: string, valu
     if (op == '=') {
         valueType = self.checkValue(value, Some(targetType))?
     } else {
-        immut right = self.checkValue(value, None)?
+        immut right = self.checkValue(value, if (targetType == DecimalType) { Some(DecimalType) } else { None })?
         valueType = self.binaryType(op[..op.length() - 1], targetType, right)?
     }
 
@@ -2981,7 +2998,17 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
             return self.checkExpression(statement, expected)
         }
         IntLiteral(_) => return Ok(IntType)
-        FloatLiteral(_) => return Ok(FloatType)
+        // `1.5` is a decimal where a decimal is expected, exactly as written.
+        FloatLiteral(_, text) => {
+            if (expected != Some(DecimalType)) { return Ok(FloatType) }
+
+            return self.decimalLiteralType(text)
+        }
+        LargeFloatLiteral(text) => {
+            if (expected != Some(DecimalType)) { return Err(self.failure(`float literal ${text} is too large for a float`)) }
+
+            return self.decimalLiteralType(text)
+        }
         // `'a'` is a char where a char is expected.
         StringNode(text) => {
             if (expected != Some(CharType)) { return Ok(StringType) }
@@ -3044,6 +3071,12 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
                 }
             }
 
+            if (itemType == DecimalType) {
+                for id in ints {
+                    self.tables.toDecimal.add(id)
+                }
+            }
+
             return Ok(ListType(itemType))
         }
         MapLiteral(entries) => return self.checkMapLiteral(entries, expected)
@@ -3093,7 +3126,9 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
             return Ok(ty)
         }
         Unary(op, operand) => {
-            immut ty = self.checkValue(operand, None)?
+            // `-1.5` is a decimal where a decimal is expected.
+            immut wanted = if (op == '-' and expected == Some(DecimalType)) { expected } else { None }
+            immut ty = self.checkValue(operand, wanted)?
 
             if (ty == UnknownType) { return Ok(UnknownType) }
 
@@ -3249,15 +3284,20 @@ function Checker.checkBinary(mut self, op: string, left: Node, right: Node): Res
     mut leftType = UnknownType
     mut rightType = UnknownType
 
-    // In `c == 'a'`, the literal takes the type of the other side (a char).
-    immut leftIsString = match (unlocated(left).kind) {
+    // In `c == 'a'` and `1.5 * price`, the literal takes the type of the other side (a char, a
+    // decimal).
+    immut leftIsLiteral = match (unlocated(left).kind) {
         StringNode(_) => true
-        _ => false
+        _ => isFractionLiteral(left)
     }
 
-    if (leftIsString) {
+    if (leftIsLiteral) {
         rightType = self.checkValue(right, None)?
-        immut wanted = if (rightType == CharType) { Some(CharType) } else { None }
+        immut wanted = match (rightType) {
+            CharType => Some(CharType)
+            DecimalType => Some(DecimalType)
+            _ => None
+        }
         leftType = self.checkValue(left, wanted)?
     } else {
         leftType = self.checkValue(left, None)?
@@ -3269,6 +3309,7 @@ function Checker.checkBinary(mut self, op: string, left: Node, right: Node): Res
         // string is not a char. In `result == Ok()`, the other side tells the type arguments.
         immut wanted = match (leftType) {
             CharType => if (op != 'in') { Some(CharType) } else { None }
+            DecimalType => Some(DecimalType)
             ListType(_) => if (rightIsList) { Some(leftType) } else { None }
             NamedType(_, _) => Some(leftType)
             _ => None
@@ -3519,15 +3560,18 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
         return Ok(UnknownType)
     }
 
-    immut numeric = isNumeric(left) and isNumeric(right)
+    // A float and a decimal never mix: one is converted explicitly.
+    immut numeric = isNumeric(left) and isNumeric(right) and not mixesFloatAndDecimal(left, right)
     immut bothInt = left == IntType and right == IntType
+    // The type of `int`, `float` and `decimal` operands together.
+    immut fraction = if (left == DecimalType or right == DecimalType) { DecimalType } else { FloatType }
     immut cannot: Result[Type, string] = Err(self.failure(`operator '${op}' cannot be applied to ${self.show(left)} and ${self.show(right)}`))
 
     match (op) {
         '+' => {
             if (bothInt) { return Ok(IntType) }
 
-            if (numeric) { return Ok(FloatType) }
+            if (numeric) { return Ok(fraction) }
 
             if (left == StringType and right == StringType) { return Ok(StringType) }
 
@@ -3552,7 +3596,14 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
         op if (op in ['-', '*', '/', '%', '**']) => {
             if (bothInt) { return Ok(IntType) }
 
-            if (numeric) { return Ok(FloatType) }
+            // The power of a decimal is exact for an int exponent; others need math.pow.
+            if (op == '**' and fraction == DecimalType and numeric) {
+                if (left == DecimalType and right == IntType) { return Ok(DecimalType) }
+
+                return Err(self.failure(`operator '**' cannot be applied to ${self.show(left)} and ${self.show(right)}: the exponent of a decimal must be an int`))
+            }
+
+            if (numeric) { return Ok(fraction) }
 
             if (op == '*' and ((left == StringType and right == IntType) or (left == IntType and right == StringType))) {
                 return Ok(StringType)
@@ -3703,7 +3754,7 @@ function Checker.checkObject(mut self, entries: ObjectEntry[], expected: Option[
                                 immut valueType = self.checkValue(entry.value, Some(wanted))?
                                 self.consume(entry.value, valueType)?
 
-                                if (wanted == FloatType and valueType == IntType) { self.tables.toFloat.add(nodeId(entry.value)) }
+                                self.noteConversion(entry.value, wanted, valueType)
 
                                 unify(fieldType, valueType, mut generic)
                                 immut target = substitute(fieldType, generic)
@@ -4100,7 +4151,7 @@ function Checker.checkArgsMut(mut self, params: Type[], modes: string[], args: N
         immut ty = self.checkValue(arg, Some(param))?
 
         // An `int` passed for a `float` is converted (`Some(1)` for an `Option[float]`).
-        if (param == FloatType and ty == IntType) { self.tables.toFloat.add(nodeId(arg)) }
+        self.noteConversion(arg, param, ty)
 
         if (mode == 'take') {
             // The argument moves into the function, which owns it from now on.
@@ -4184,7 +4235,7 @@ function Checker.checkConstructor(mut self, id: int, variantName: string, args: 
         immut actual = self.checkValue(arg, Some(wanted))?
         self.consume(arg, actual)?
 
-        if (wanted == FloatType and actual == IntType) { self.tables.toFloat.add(nodeId(arg)) }
+        self.noteConversion(arg, wanted, actual)
 
         match (fieldType) {
             ParamType(index) if (containsUnknown(generic[index])) => {
@@ -4499,7 +4550,17 @@ function Checker.expectArg(self, name: string, index: int, expected: Type, actua
     return Err(self.failure(`argument ${index + 1} of '${name}' must be ${self.show(expected)}, found ${self.show(actual)}`))
 }
 
+// An `int` or a `float` (a `decimal` is converted explicitly, with `float(x)`).
 function Checker.expectNumericArg(self, name: string, index: int, actual: Type): Result[void, string] {
+    if (actual == DecimalType) {
+        return Err(self.failure(`argument ${index + 1} of '${name}' must be int or float, found decimal (convert it with float(x))`))
+    }
+
+    return self.expectNumberArg(name, index, actual)
+}
+
+// An `int`, a `float` or a `decimal`.
+function Checker.expectNumberArg(self, name: string, index: int, actual: Type): Result[void, string] {
     if (isNumeric(actual) or actual == UnknownType) { return Ok() }
 
     return Err(self.failure(`argument ${index + 1} of '${name}' must be a number, found ${self.show(actual)}`))
@@ -4520,9 +4581,27 @@ function Checker.resultWith(self, ok: Type, error: int): Type {
     return NamedType(self.builtins.result, [ok, named(error)])
 }
 
+// A literal where a decimal is expected: it must hold exactly in a decimal.
+function Checker.decimalLiteralType(self, text: string): Result[Type, string] {
+    return match (decimalLiteral(text)) {
+        Ok(_) => Ok(DecimalType)
+        Err(message) => Err(self.failure(message))
+    }
+}
+
+// Records an `int` given where a `float` or a `decimal` is wanted: it is converted.
+function Checker.noteConversion(mut self, node: Node, wanted: Type, actual: Type) {
+    if (actual != IntType) { return }
+
+    if (wanted == FloatType) { self.tables.toFloat.add(nodeId(node)) }
+
+    if (wanted == DecimalType) { self.tables.toDecimal.add(nodeId(node)) }
+}
+
 // Checks a call of a built-in function and returns its result type.
 function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[Type, string] {
-    immut types = self.argTypes(args)?
+    // `decimal(0.1)`: the literal is a decimal, exactly as written.
+    immut types = if (name == 'decimal' and args.length() == 1) { [self.checkValue(args[0], Some(DecimalType))?] } else { self.argTypes(args)? }
 
     for i in range(args.length()) {
         self.noteTemporary(args[i], types[i])
@@ -4558,6 +4637,7 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
         }
         'int' => return self.conversion(name, types, IntType)
         'float' => return self.conversion(name, types, FloatType)
+        'decimal' => return self.conversion(name, types, DecimalType)
         'string' => {
             self.arity(name, types, 1, 1)?
             return Ok(StringType)
@@ -4628,13 +4708,15 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
         }
         'math.abs' => {
             self.arity(name, types, 1, 1)?
-            self.expectNumericArg(name, 0, types[0])?
+            self.expectNumberArg(name, 0, types[0])?
             return Ok(types[0])
         }
+        // The root of a decimal is a decimal (correctly rounded).
         'math.sqrt' => {
             self.arity(name, types, 1, 1)?
-            self.expectNumericArg(name, 0, types[0])?
-            return Ok(self.resultWith(FloatType, b.mathError))
+            self.expectNumberArg(name, 0, types[0])?
+            immut root = if (types[0] == DecimalType) { DecimalType } else { FloatType }
+            return Ok(self.resultWith(root, b.mathError))
         }
         'math.pow' => {
             self.arity(name, types, 2, 2)?
@@ -4644,7 +4726,7 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
         }
         other if (other in ['math.floor', 'math.ceil', 'math.round']) => {
             self.arity(name, types, 1, 1)?
-            self.expectNumericArg(name, 0, types[0])?
+            self.expectNumberArg(name, 0, types[0])?
             return Ok(IntType)
         }
         'system.args' => {
@@ -4708,14 +4790,15 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
     }
 }
 
-// `int(x)` and `float(x)`.
+// `int(x)`, `float(x)` and `decimal(x)`.
 function Checker.conversion(self, name: string, types: Type[], target: Type): Result[Type, string] {
     self.arity(name, types, 1, 1)?
 
     return match (types[0]) {
         IntType => Ok(target)
         FloatType => Ok(target)
-        BooleanType => Ok(target)
+        DecimalType => Ok(target)
+        BooleanType => if (target == DecimalType) { Err(self.failure('cannot convert boolean to decimal')) } else { Ok(target) }
         StringType => Ok(self.resultWith(target, self.builtins.parseError))
         UnknownType => Ok(UnknownType)
         other => Err(self.failure(`cannot convert ${self.show(other)} to ${name}`))
@@ -4872,7 +4955,12 @@ function Checker.checkMatch(mut self, scrutinee: Node, arms: Arm[], expected: Op
     for arm in arms {
         self.pushScope()
         self.state.borrowingMatch = borrowing
+
+        // The errors of a pattern name its line.
+        immut matchLine = self.state.line
+        self.state.line = arm.line
         self.checkPattern(arm.pattern, scrutineeType)?
+        self.state.line = matchLine
         self.state.borrowingMatch = false
 
         match (arm.guard) {
@@ -5287,6 +5375,8 @@ function annotation(program: Program, node: Node): string {
     if (tables.mutatingCalls.has(id)) { text += '!mutating' }
 
     if (tables.toFloat.has(id)) { text += '!float' }
+
+    if (tables.toDecimal.has(id)) { text += '!decimal' }
 
     match (tables.drops.get(id)) {
         Some(method) => text += `!drop=${method.key}`

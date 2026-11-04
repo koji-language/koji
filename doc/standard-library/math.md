@@ -4,13 +4,13 @@ The `math` module provides mathematical functions and constants.
 
 ## Functions
 
-The parameters written `float` also accept an `int`.
+The parameters written `float` also accept an `int`. `abs`, `sqrt`, `floor`, `ceil` and `round` also accept a `decimal`; `pow` does not (`d ** n` raises a decimal to an `int` power).
 
--   `abs(x: int) -> int`, `abs(x: float) -> float`  
+-   `abs(x: int) -> int`, `abs(x: float) -> float`, `abs(x: decimal) -> decimal`  
     Returns the absolute value of `x`, with the same type as `x`.
 
--   `sqrt(x: float) -> Result[float, MathError]`  
-    Returns the square root of `x`. Fails with `Complex` when `x` is negative.
+-   `sqrt(x: float) -> Result[float, MathError]`, `sqrt(x: decimal) -> Result[decimal, MathError]`  
+    Returns the square root of `x` (for a decimal, correctly rounded to 16 digits). Fails with `Complex` when `x` is negative.
 
 -   `pow(x: float, y: float) -> Result[float, MathError]`  
     Returns `x` raised to the power of `y`. Fails with `Complex` when `x` is negative and `y` is not an integer (e.g. `pow(-8, 0.5)`), and with `Infinite` when `x` is `0` and `y` is negative (e.g. `pow(0, -1)`, which is `1 / 0`). `pow(0, 0)` is `1`: that is the value of the expression (only the limit form 0⁰ is indeterminate).

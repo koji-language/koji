@@ -61,6 +61,16 @@ Most decisions follow from a few ideas:
 
 **Alternatives**: IEEE 754 infinities and NaN, as in most languages.
 
+### `decimal`
+
+**Decision**: `decimal` is a number with 16 significant digits in base 10 (the precision of IEEE 754 decimal64), computed by the runtime in software. A literal where a decimal is expected is exactly the number written, and one that does not hold exactly (more than 16 significant digits, or out of range) is a compile error. An operation rounds its exact result to 16 digits, half to even. A value has no trailing zeros (`1.50` is `1.5`). It follows the rules of `float`: no NaN, no infinity, a panic when a result does not fit, and also when it is too small to be anything but zero. An `int` becomes a `decimal` as it becomes a `float`; a `float` and a `decimal` never mix, and converting is explicit (`decimal(x)`, `float(x)`). `**` takes an `int` exponent.
+
+**Why**: Koji keeps the precision of the program above the influence of the hardware. A `float` is binary: `0.1` is not one tenth, and `0.1 + 0.2` is `0.30000000000000004`. A `decimal` holds the numbers people write and read (money, measures, data) exactly as written, and its rounding happens where people expect it, in base 10. 16 digits fit in the 8 bytes of a value, like a `float`, so it needs no memory of its own. Half to even does not drift when many results are rounded. Equal values print the same, so trailing zeros are not kept. Mixing would hide a conversion, which rounds.
+
+**Alternatives**: precision without limit (Java's `BigDecimal`, Python's `Decimal`), whose division needs a precision chosen somewhere (in Python, a global context); rational numbers (Raku), exact for the four operations but whose denominators grow without limit; 34 digits (decimal128), which needs 16 bytes; keeping only `float`.
+
+Still open: whether a literal like `1.5` is a `decimal` everywhere, with the binary type renamed (`binary`) and written in base 2. Until then, a literal is a `float` where no `decimal` is expected.
+
 ### `char`
 
 **Decision**: `char` is a primitive type, a Unicode code point. A one-character literal is a `char` where a `char` is expected.

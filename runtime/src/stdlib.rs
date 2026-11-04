@@ -227,6 +227,15 @@ pub extern "C" fn koji_std_float_from_string(string: *const KojiString, result: 
 }
 
 #[no_mangle]
+pub extern "C" fn koji_std_decimal_from_string(string: *const KojiString, result: *const KojiRecordType) -> *mut KojiRecord {
+    match crate::decimal::parse(text(string)) {
+        Ok(n) => make(result, "Ok", &[n.to_bits()]),
+        Err(crate::decimal::ParseFailure::Invalid) => error_with_text(result, "InvalidNumber", text(string)),
+        Err(crate::decimal::ParseFailure::OutOfRange) => error_with_text(result, "OutOfRange", text(string)),
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn koji_std_float_to_int(value: f64, location: *const c_char) -> i64 {
     float_to_int(value.trunc()).unwrap_or_else(|message| panic_at(location, &message))
 }
@@ -323,6 +332,19 @@ pub extern "C" fn koji_std_math_abs_int(value: i64, location: *const c_char) -> 
 #[no_mangle]
 pub extern "C" fn koji_std_math_abs_float(value: f64) -> f64 {
     value.abs()
+}
+
+#[no_mangle]
+pub extern "C" fn koji_std_math_abs_decimal(value: u64) -> u64 {
+    crate::decimal::Decimal::from_bits(value).abs().to_bits()
+}
+
+#[no_mangle]
+pub extern "C" fn koji_std_math_sqrt_decimal(value: u64, result: *const KojiRecordType) -> *mut KojiRecord {
+    match crate::decimal::Decimal::from_bits(value).sqrt() {
+        Some(root) => make(result, "Ok", &[root.to_bits()]),
+        None => math_error(result, "Complex"),
+    }
 }
 
 fn math_error(result: *const KojiRecordType, variant: &str) -> *mut KojiRecord {

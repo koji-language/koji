@@ -4,8 +4,9 @@
 export type Token = {
     Identifier(name: string)
     Int(value: int)
-    Float(value: float)
-    // A float literal too large for a float (`1e400`), as written: the parser rejects it.
+    // A literal with a point or an exponent, and its text (a decimal keeps every digit of it).
+    Float(value: float, text: string)
+    // Such a literal too large for a float (`1e400`), as written: only a decimal can hold it.
     LargeFloat(text: string)
     StringLiteral(value: string)
     // The text between backticks, with its escapes and `${...}` (the parser splits it).
@@ -199,7 +200,7 @@ function Lexer.number(mut self): Token {
     }
 
     return match (float(text)) {
-        Ok(f) => Float(f)
+        Ok(f) => Float(f, text)
         Err(_) => LargeFloat(text)
     }
 }
@@ -351,7 +352,7 @@ export function dump(token: Token): string {
     return match (token) {
         Identifier(name) => `Identifier ${name}`
         Int(value) => `Int ${value}`
-        Float(value) => `Float ${value}`
+        Float(value, _) => `Float ${value}`
         LargeFloat(text) => `LargeFloat ${text}`
         StringLiteral(value) => `String ${value.debug()}`
         TemplateString(raw) => `Template ${raw.debug()}`

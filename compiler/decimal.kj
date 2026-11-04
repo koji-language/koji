@@ -1,0 +1,89 @@
+// Decimal literals: `1.5` where a `decimal` is expected is exactly 15e-1. A decimal has 16
+// significant digits and is normalized like the runtime keeps it (runtime/src/decimal.rs): the
+// coefficient has no trailing zeros, and zero is 0e-398.
+
+// A decimal as coefficient * 10^exponent.
+export type DecimalParts = {
+    negative: boolean
+    coefficient: int
+    exponent: int
+}
+
+immut smallestExponent = -398
+
+// A value is below 10^limit (digits of the coefficient plus the exponent).
+immut limit = 385
+
+// The decimal that the literal `text` writes (like `-12.5e3`), or why it is not one.
+export function decimalLiteral(text: string): Result[DecimalParts, string] {
+    immut negative = text.startsWith('-')
+    immut unsigned = (if (negative) { text[1..] } else { text }).lower()
+    mut number = unsigned
+    mut exponent = 0
+
+    match (unsigned.indexOf('e')) {
+        Some(at) => {
+            number = unsigned[..at]
+            immut written = unsigned[at + 1..]
+            immut power = if (written.startsWith('+')) { written[1..] } else { written }
+
+            match (int(power)) {
+                Ok(value) => exponent = value
+                Err(_) => {
+                    if (power.startsWith('-')) { return Err(`decimal literal ${text} is too small for a decimal`) }
+
+                    return Err(`decimal literal ${text} is too large for a decimal`)
+                }
+            }
+        }
+        None => {}
+    }
+
+    // The significant digits, without the zeros before and after them.
+    mut digits = ''
+
+    for c in number {
+        if (c == '.') {
+            continue
+        }
+
+        if (digits == '' and c == '0') {
+            continue
+        }
+
+        digits += string(c)
+    }
+
+    match (number.indexOf('.')) {
+        Some(at) => exponent -= number.length() - at - 1
+        None => {}
+    }
+
+    // The zeros after the last significant digit belong to the exponent.
+    while (digits.endsWith('0')) {
+        digits = digits[..digits.length() - 1]
+        exponent += 1
+    }
+
+    if (digits == '') { return Ok({ negative: false, coefficient: 0, exponent: smallestExponent }) }
+
+    if (digits.length() > 16) {
+        return Err(`decimal literal ${text} has more than 16 significant digits, the precision of a decimal`)
+    }
+
+    if (digits.length() + exponent > limit) { return Err(`decimal literal ${text} is too large for a decimal`) }
+
+    if (exponent < smallestExponent) { return Err(`decimal literal ${text} is too small for a decimal`) }
+
+    immut coefficient = match (int(digits)) {
+        Ok(value) => value
+        Err(_) => 0
+    }
+    return Ok({ negative: negative, coefficient: coefficient, exponent: exponent })
+}
+
+// The decimal as the IR shows it: `15e-1`.
+export function decimalText(parts: DecimalParts): string {
+    immut sign = if (parts.negative) { '-' } else { '' }
+    return `${sign}${parts.coefficient}e${parts.exponent}`
+}

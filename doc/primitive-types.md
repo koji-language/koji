@@ -26,7 +26,31 @@ immut counts = [1, 2]
 immut values: float[] = counts // Error! cannot assign a value of type int[] to 'values' of type float[]
 ```
 
-When a numeric result does not fit in an `int` or a `float` (a representation limit), the program panics. For example, `9223372036854775807 + 1` and `1e308 * 10` stop the program. Results that do not exist in the real numbers (a domain problem, like the square root of a negative number) are reported by the `math` functions as a `MathError` (see [math](standard-library/math.md)).
+-   `decimal`: decimal numbers with 16 significant digits. A `decimal` holds exactly the numbers written in base 10 with up to 16 digits: `0.1` is exactly one tenth, so `0.1 + 0.2 == 0.3`. Like a `float`, it is always finite.
+
+```koji
+immut price: decimal = 19.99
+immut tax: decimal = 0.07
+
+print(price * tax) // 1.3993
+print(decimal(1) / 3) // 0.3333333333333333
+```
+
+A literal with a point or an exponent is a `decimal` where a `decimal` is expected (a declared type, an argument, the other side of an operator): `price * 1.5` multiplies two decimals. Elsewhere it is a `float`. A decimal literal must hold exactly: a literal with more than 16 significant digits, or out of the range of a decimal (about 1e-398 to 1e385), is a compile-time error.
+
+An operation rounds its exact result to 16 significant digits, to the nearest (half to even): `decimal(2) / 3` is `0.6666666666666667`. A value has no trailing zeros: `1.50` is `1.5`, and they are equal.
+
+An `int` becomes a `decimal` like it becomes a `float`. A `float` and a `decimal` never mix: `price + 0.5` is a decimal when `price` is one, but a `float` variable must be converted with `decimal(x)` (and a decimal with `float(x)`). `**` takes an `int` exponent for a `decimal` (`price ** 2`).
+
+```koji
+immut ratio = 0.5 // a float
+immut amount: decimal = 10
+
+print(amount * decimal(ratio)) // 5.0
+print(amount + ratio) // Error! operator '+' cannot be applied to decimal and float
+```
+
+When a numeric result does not fit in an `int`, a `float` or a `decimal` (a representation limit), the program panics. For example, `9223372036854775807 + 1` and `1e308 * 10` stop the program. A `decimal` also stops the program when a result is too small to be anything but zero (`decimal underflow`). Results that do not exist in the real numbers (a domain problem, like the square root of a negative number) are reported by the `math` functions as a `MathError` (see [math](standard-library/math.md)).
 
 ## Text
 

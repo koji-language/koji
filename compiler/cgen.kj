@@ -16,6 +16,7 @@ function cType(ty: Ty): string {
     return match (ty) {
         IntTy => 'int64_t'
         FloatTy => 'double'
+        DecimalTy => 'uint64_t'
         BoolTy => 'bool'
         CharTy => 'uint32_t'
         StrTy => 'KojiString *'
@@ -73,6 +74,7 @@ function elementType(ty: Ty): string {
     return match (ty) {
         IntTy => '&koji_element_int'
         FloatTy => '&koji_element_float'
+        DecimalTy => '&koji_element_decimal'
         BoolTy => '&koji_element_bool'
         CharTy => '&koji_element_char'
         StrTy => '&koji_element_string'
@@ -325,10 +327,17 @@ function operand(value: Operand): string {
         GlobalOp(id) => `koji_g${id}`
         IntOp(value) => if (value == -9223372036854775807 - 1) { 'INT64_MIN' } else { `INT64_C(${value})` }
         FloatOp(value) => floatDebug(value)
+        DecimalOp(negative, coefficient, exponent) => decimalConstant(negative, coefficient, exponent)
         BoolOp(value) => string(value)
         CharOp(value) => `UINT32_C(${value.code()})`
         StrOp(id) => `koji_s${id}`
     }
+}
+
+// A decimal constant: its bits, computed by the C compiler.
+function decimalConstant(negative: boolean, coefficient: int, exponent: int): string {
+    immut sign = if (negative) { 1 } else { 0 }
+    return `KOJI_DECIMAL(${sign}, INT64_C(${coefficient}), ${exponent})`
 }
 
 function place(where: Place): string {
@@ -409,6 +418,7 @@ function address(value: Operand): string {
         GlobalOp(_) => `&${operand(value)}`
         IntOp(_) => `&(int64_t){ ${operand(value)} }`
         FloatOp(_) => `&(double){ ${operand(value)} }`
+        DecimalOp(_, _, _) => `&(uint64_t){ ${operand(value)} }`
         BoolOp(_) => `&(bool){ ${operand(value)} }`
         CharOp(_) => `&(uint32_t){ ${operand(value)} }`
         StrOp(_) => `&(KojiString *){ ${operand(value)} }`
@@ -426,6 +436,7 @@ function Generator.operandType(self, routine: IrFunction, value: Operand): Ty {
         GlobalOp(id) => self.program.globals[id].ty
         IntOp(_) => IntTy
         FloatOp(_) => FloatTy
+        DecimalOp(_, _, _) => DecimalTy
         BoolOp(_) => BoolTy
         CharOp(_) => CharTy
         StrOp(_) => StrTy
@@ -439,6 +450,12 @@ function unaryExpression(op: string, value: string, location: string): string {
         'Not' => `!(${value})`
         'BitNot' => `~(${value})`
         'IntToFloat' => `(double)${value}`
+        'DecimalNeg' => `koji_decimal_neg(${value})`
+        'IntToDecimal' => `koji_decimal_from_int(${value})`
+        'FloatToDecimal' => `koji_decimal_from_float(${value})`
+        'DecimalToFloat' => `koji_decimal_to_float(${value}, ${location})`
+        'DecimalToInt' => `koji_decimal_to_int(${value}, 3, ${location})`
+        'DecimalToStr' => `koji_string_from_decimal(${value})`
         'IntToStr' => `koji_string_from_int(${value})`
         'FloatToStr' => `koji_string_from_float(${value})`
         'BoolToStr' => `koji_string_from_bool(${value})`
@@ -514,6 +531,13 @@ function Generator.binary(self, op: string, left: string, right: string, line: i
         'FloatDiv' => `koji_float_div(${left}, ${right}, ${location})`
         'FloatRem' => `koji_float_rem(${left}, ${right}, ${location})`
         'FloatPow' => `koji_float_pow(${left}, ${right}, ${location})`
+        'DecimalAdd' => `koji_decimal_add(${left}, ${right}, ${location})`
+        'DecimalSub' => `koji_decimal_sub(${left}, ${right}, ${location})`
+        'DecimalMul' => `koji_decimal_mul(${left}, ${right}, ${location})`
+        'DecimalDiv' => `koji_decimal_div(${left}, ${right}, ${location})`
+        'DecimalRem' => `koji_decimal_rem(${left}, ${right}, ${location})`
+        'DecimalPow' => `koji_decimal_pow(${left}, ${right}, ${location})`
+        'DecimalCompare' => `(koji_decimal_compare(${left}, ${right}) ${symbol(parts.comparison)} 0)`
         name if (name in ['IntCompare', 'FloatCompare', 'BoolCompare', 'CharCompare']) => `(${left} ${symbol(parts.comparison)} ${right})`
         'StrCompare' => {
             match (parts.comparison) {
@@ -806,6 +830,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                     before = match (params[0]) {
                         IntTy => 'int'
                         FloatTy => 'float'
+                        DecimalTy => 'decimal'
                         BoolTy => 'bool'
                         CharTy => 'char'
                         StrTy => 'string'

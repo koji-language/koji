@@ -8,7 +8,7 @@ These functions are available in every file, without `import`.
 | `printError(values...)` | Like `print`, on the standard error output |
 | `input(prompt)` | Reads a line typed by the user |
 | `range(...)` | A list of consecutive integers |
-| `int(x)`, `float(x)`, `string(x)`, `char(code)` | Conversions |
+| `int(x)`, `float(x)`, `decimal(x)`, `string(x)`, `char(code)` | Conversions |
 | `panic(message)` | Stops the program |
 
 ## `print`
@@ -63,12 +63,15 @@ In a `for` loop, the numbers are produced one at a time: `for i in range(1000000
 | ----------- | ----------------------- | ----------------- |
 | `int(x)`    | Converts to an integer  | `int(3.9) → 3`    |
 | `float(x)`  | Converts to a float     | `float(2) → 2.0`  |
+| `decimal(x)` | Converts to a decimal  | `decimal(2) / 4 → 0.5` |
 | `string(x)` | Converts to a string    | `string(0) → '0'` |
 | `char(code)` | The character with that code | `char(65) → Some('A')` |
 
-`int` truncates toward zero. A float too large for an `int` panics (see [Primitive Types](primitive-types.md)).
+`int` truncates toward zero. A float or a decimal too large for an `int` panics (see [Primitive Types](primitive-types.md)).
 
-Converting a `string` can fail, so `int(x)` and `float(x)` return a `Result[int, ParseError]` (or `Result[float, ParseError]`) when `x` is a string:
+`decimal(x)` of a literal is the literal as written (`decimal(0.1)` is exactly one tenth); of a `float`, it is the decimal with 16 digits nearest to it (`decimal(0.1 + 0.2)` is `0.3`). `float(x)` of a decimal is the nearest float.
+
+Converting a `string` can fail, so `int(x)`, `float(x)` and `decimal(x)` return a `Result[int, ParseError]` (or `Result[float, ParseError]`, `Result[decimal, ParseError]`) when `x` is a string. `decimal('0.1')` is exact; a text with more than 16 significant digits is rounded:
 
 ```koji
 type ParseError = {

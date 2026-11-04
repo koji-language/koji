@@ -1438,11 +1438,72 @@ fn floats_have_no_nan_or_infinity() {
     assert_error("immut x = 0.0 ** -1.0", "division by zero");
     // `1e400` is a finite number too large for a `float` (not an infinity).
     assert_error("immut x = 1e400", "test.kj:1: float literal 1e400 is too large for a float");
-    assert_error("match (1.5) {\n    -1e400 => print(0)\n    _ => print(1)\n}", "test.kj:2: float literal 1e400 is too large for a float");
+    assert_error("match (1.5) {\n    -1e400 => print(0)\n    _ => print(1)\n}", "test.kj:2: float literal -1e400 is too large for a float");
     assert_eq!(run("print(2.0 ** 0.5 > 1.41, 2 ** 3, (-8.0) ** 2.0)"), "true 8 64.0\n");
     // 0 ** 0 is 1: the value of the expression (the indeterminate form only concerns limits).
     assert_eq!(run("print(0 ** 0, 0.0 ** 0.0)"), "1 1.0\n");
     assert_eq!(run("print(6.022e23, 1e15, 2.5e-3)"), "6.022e23 1000000000000000.0 0.0025\n");
+}
+
+#[test]
+fn decimals_are_exact_as_written() {
+    let source = r#"
+import math
+
+immut price: decimal = 0.1
+immut tax: decimal = 0.2
+print(price + tax, price + tax == 0.3)
+print(0.1 + 0.2)
+mut total: decimal = 0
+for i in range(10) {
+    total += 0.1
+}
+print(total, total == 1)
+immut third = decimal(1) / 3
+print(third, third * 3)
+print(decimal(2) / 3, -decimal(7.5), 7.5 * price)
+print(decimal(1.5) ** 2, decimal(2) ** -2, decimal(10) ** 20)
+print(decimal(7.5) % 2, math.abs(decimal(-2.5)), math.sqrt(decimal(2)))
+print(math.floor(decimal(-2.5)), math.ceil(decimal(2.1)), math.round(decimal(2.5)), int(decimal(-2.7)))
+print(float(decimal(0.1)), decimal(0.1 + 0.2), decimal('12.50'), decimal('x'))
+immut values: decimal[] = [1.5, 0.25, 3]
+print(values, values.length())
+mut sorted = values
+sorted.sort()
+print(sorted, decimal(1.50) == 1.5, 1.5 < decimal(2), decimal(1e300) * 10)
+immut big: decimal = 1e384
+print(big, `interpolated ${price}`, string(tax))
+immut counts: Map[decimal, int] = [1.5: 1, 1.50: 2]
+print(counts)
+match (price) {
+    0.1 => print('a tenth')
+    _ => print('other')
+}
+"#;
+    assert_eq!(
+        run(source),
+        "0.3 true\n0.30000000000000004\n1.0 true\n0.3333333333333333 0.9999999999999999\n\
+         0.6666666666666667 -7.5 0.75\n2.25 0.25 1e20\n1.5 2.5 Ok(1.414213562373095)\n-3 3 3 -2\n\
+         0.1 0.3 Ok(12.5) Err(InvalidNumber('x'))\n[1.5, 0.25, 3.0] 3\n[0.25, 1.5, 3.0] true true 1e301\n\
+         1e384 interpolated 0.1 0.2\n[1.5: 2]\na tenth\n"
+    );
+    let errors = [
+        ("immut x: decimal = 0.12345678901234567", "decimal literal 0.12345678901234567 has more than 16 significant digits"),
+        ("immut x: decimal = 1e385", "decimal literal 1e385 is too large for a decimal"),
+        ("immut x: decimal = 1e-399", "decimal literal 1e-399 is too small for a decimal"),
+        ("immut f = 1.5\nimmut d: decimal = f", "cannot assign a value of type float to 'd' of type decimal"),
+        ("immut d: decimal = 1\nimmut f = 2.5\nprint(d + f)", "operator '+' cannot be applied to decimal and float"),
+        ("immut d: decimal = 2\nprint(d ** d)", "the exponent of a decimal must be an int"),
+        ("import time\ntime.sleep(decimal(1))", "must be int or float, found decimal (convert it with float(x))"),
+        ("print(decimal(true))", "cannot convert boolean to decimal"),
+        ("immut d: decimal = 1e384\nprint(d * 10)", "panic: test.kj:2: decimal overflow"),
+        ("immut d: decimal = 1\nprint(d / 0)", "panic: test.kj:2: division by zero"),
+        ("immut d: decimal = 1e-398\nprint(d / 3)", "panic: test.kj:2: decimal underflow"),
+        ("print(int(decimal(1e300)))", "integer overflow: 1e300 does not fit in an int"),
+    ];
+    for (code, fragment) in errors {
+        assert_error(code, fragment);
+    }
 }
 
 #[test]

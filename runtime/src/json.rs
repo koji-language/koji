@@ -271,9 +271,6 @@ pub fn write_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// Writes a `Json` value. Floats always keep a `.` or an exponent, so that parsing the text
-/// back gives a `Float` again.
-
 /// A float in JSON: always with a decimal point or an exponent.
 pub fn write_float(f: f64, out: &mut String) {
     let text = if f.abs() >= 1e16 {

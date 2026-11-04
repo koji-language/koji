@@ -2133,3 +2133,113 @@ function f2 twice(l0: Record(1), l1: Int): Int
     return l4
 ==== test/ir/cases.txt #30
 error: compile error: case30.kj:5: 'again' is not supported by 'kojic build' yet (use 'kojic run')
+==== test/ir/cases.txt #31
+string s0 = " "
+record r0 MathError
+    Complex ()
+    Indeterminate ()
+    Infinite ()
+record r1 Result[decimal, MathError]
+    Ok (value: Decimal)
+    Err (error: Record(0))
+global g0: Decimal // a
+global g1: Decimal // b
+
+function f0 main(): Void
+    local l0: Decimal
+    local l1: Decimal
+    local l2: Decimal
+    local l3: Str
+    local l4: Decimal
+    local l5: Decimal
+    local l6: Str
+    local l7: Str
+    local l8: Str
+    local l9: Decimal
+    local l10: Decimal
+    local l11: Str
+    local l12: Str
+    local l13: Str
+    local l14: Decimal
+    local l15: Str
+    local l16: Str
+    local l17: Str
+    local l18: Decimal
+    local l19: Str
+    local l20: Str
+    local l21: Str
+    local l22: Decimal
+    local l23: Bool
+    local l24: Str
+    local l25: Str
+    local l26: Str
+    local l27: Int
+    local l28: Str
+    local l29: Str
+    local l30: Str
+    local l31: Float
+    local l32: Str
+    local l33: Str
+    local l34: Str
+    local l35: Str
+    local l36: Str
+    local l37: Str
+    local l38: Record(1)
+    local l39: Str
+    local l40: Str
+    local l41: Str
+    local l42: Int
+    local l43: Str
+    local l44: Str
+    local l45: Str
+  b0:
+    g0 = 125e-2
+    l0 = IntToDecimal 3
+    l1 = DecimalMul g0, l0
+    l2 = DecimalSub l1, 5e-1
+    g1 = l2
+    l3 = DecimalToStr g1
+    l4 = IntToDecimal 7
+    l5 = DecimalDiv g1, l4
+    l6 = DecimalToStr l5
+    l7 = StrConcat l3, s0
+    l8 = StrConcat l7, l6
+    l9 = IntToDecimal 2
+    l10 = DecimalRem g1, l9
+    l11 = DecimalToStr l10
+    l12 = StrConcat l8, s0
+    l13 = StrConcat l12, l11
+    l14 = DecimalPow g1, 3
+    l15 = DecimalToStr l14
+    l16 = StrConcat l13, s0
+    l17 = StrConcat l16, l15
+    l18 = DecimalNeg g1
+    l19 = DecimalToStr l18
+    l20 = StrConcat l17, s0
+    l21 = StrConcat l20, l19
+    l22 = IntToDecimal 1
+    l23 = DecimalCompare(Greater) g1, l22
+    l24 = BoolToStr l23
+    l25 = StrConcat l21, s0
+    l26 = StrConcat l25, l24
+    l27 = DecimalToInt g1
+    l28 = IntToStr l27
+    l29 = StrConcat l26, s0
+    l30 = StrConcat l29, l28
+    l31 = DecimalToFloat g1
+    l32 = FloatToStr l31
+    l33 = StrConcat l30, s0
+    l34 = StrConcat l33, l32
+    l35 = DecimalToStr 25e-1
+    l36 = StrConcat l34, s0
+    l37 = StrConcat l36, l35
+    l38 = koji_std_math_sqrt_decimal([Value(Global(1)), Record(1)])
+    l39 = RecordToStr l38
+    l40 = StrConcat l37, s0
+    l41 = StrConcat l40, l39
+    l42 = koji_decimal_to_int([Value(Global(1)), Mode(2), Location(4)])
+    l43 = IntToStr l42
+    l44 = StrConcat l41, s0
+    l45 = StrConcat l44, l43
+    print l45
+    return

@@ -927,3 +927,20 @@ function count(t: Tree): int {
     }
 }
 print(count(Branch(Leaf, Leaf)))
+----
+immut a: decimal = 1.5
+immut b: decimal[] = [1, 2.25]
+mut c = a * 2 + b[0]
+c += 0.5
+print(-a, c, decimal('3') is Ok, a ** 2)
+----
+immut a: decimal = 0.1
+immut f = 0.2
+print(a + f)
+----
+immut a: decimal = 12345678901234567.0
+----
+match (decimal(1)) {
+    1.5 => print(1)
+    _ => print(2)
+}
