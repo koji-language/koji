@@ -1,72 +1,132 @@
-// The Koji compiler written in Koji (phase 3). For now it shows the stages written so far, like
-// `kojic dump`: `tokens <file.kj>` prints the tokens of a file, `ast <file.kj>` its syntax tree,
-// `types <file.kj>` what the checker finds, `ir <file.kj>` its intermediate representation and
-// `c <file.kj>` the C generated for it.
+// kojic, the Koji compiler written in Koji: the same commands as the kojic written in Rust, except
+// `run` (there is no interpreter in Koji). It compiles itself (test/bootstrap.rs).
 
 import file
+import path
 import system
+import time
 import { tokenize, dump } from 'lexer.kj'
 import parser from 'parser.kj'
-import { dumpTypes, check } from 'checker.kj'
+import { dumpTypes, check, Program } from 'checker.kj'
 import { lower } from 'lower.kj'
-import { programText } from 'ir.kj'
+import { IrProgram, programText } from 'ir.kj'
 import { generate } from 'cgen.kj'
 
-immut args = system.args()
+immut usage = [
+    'kojic - the Koji programming language (the compiler written in Koji)',
+    '',
+    'Usage:',
+    '    kojic check <file.kj>             only check syntax and types',
+    '    kojic build <file.kj> [options]   compile a program to an executable',
+    '        -o <output>                   the executable (default: the file name without .kj)',
+    '        --emit c                      write the generated C instead',
+    '        --emit ir                     write the intermediate representation instead',
+    '    kojic dump tokens <file.kj>       show the tokens of a file (for comparing compilers)',
+    '    kojic dump ast <file.kj>          show the syntax tree of a file',
+    '    kojic dump types <file.kj>        show what the checker finds (types, moves...)',
+    '    kojic dump ir <file.kj>           show the intermediate representation',
+    '    kojic dump c <file.kj>            show the generated C',
+    '    kojic help                        show this message',
+    '',
+    'To build an executable, the environment variable KOJI_RUNTIME names the runtime library',
+    '(libkoji_runtime.a) and KOJI_CC the C compiler (default: cc).'
+].join('\n')
 
-if (args.length() != 2 or not (args[0] in ['tokens', 'ast', 'types', 'ir', 'c'])) {
-    print('usage: main.kj tokens|ast|types|ir|c <file.kj>')
-    system.exit(2)
+// Writes a message to the standard error output.
+function printError(message: string) {
+    match (file.open('/dev/stderr', file.Append)) {
+        Ok(output) => {
+            output.write(`${message}\n`)
+            output.close()
+        }
+        Err(_) => print(message)
+    }
 }
 
-if (args[0] == 'ir' or args[0] == 'c') {
-    immut lowered = match (check(args[1])) {
-        Ok(program) => lower(program)
-        Err(message) => Err(message)
+// The text of a system error, as the kojic written in Rust shows it.
+function ioMessage(error: file.FileError): string {
+    return match (error) {
+        NotFound(_) => 'No such file or directory (os error 2)'
+        PermissionDenied(_) => 'Permission denied (os error 13)'
+        IsDirectory(_) => 'Is a directory (os error 21)'
+        InvalidUtf8(_) => 'stream did not contain valid UTF-8'
+        Io(_, message) => message
+    }
+}
+
+function readSource(name: string): Result[string, file.FileError] {
+    immut input = file.open(name, file.Read)?
+    return input.read()
+}
+
+function writeFile(name: string, text: string): Result[void, string] {
+    immut written = match (file.open(name, file.Write)) {
+        Ok(output) => output.write(text)
+        Err(error) => Err(error)
     }
 
-    match (lowered) {
-        Ok(program) => {
-            immut lines = if (args[0] == 'ir') { programText(program) } else { generate(program) }
+    return match (written) {
+        Ok(_) => Ok()
+        Err(error) => Err(`compile error: cannot write '${name}': ${ioMessage(error)}`)
+    }
+}
 
-            for line in lines {
+// The lines of a text, ending with a line break.
+function text(lines: string[]): string {
+    return `${lines.join('\n')}\n`
+}
+
+// The checked and lowered program in `name`.
+function lowered(name: string): Result[IrProgram, string] {
+    return lower(check(name)?)
+}
+
+// `kojic dump <stage> <file.kj>`: the text each stage gives, as `kojic dump` prints it.
+function dumpStage(stage: string, name: string) {
+    match (stage) {
+        'types' => {
+            for line in dumpTypes(name) {
                 print(line)
             }
+
+            return
         }
-        Err(message) => print(`error: ${message}`)
+        'ir' => {
+            match (lowered(name)) {
+                Ok(program) => print(programText(program).join('\n'))
+                Err(message) => print(`error: ${message}`)
+            }
+
+            return
+        }
+        'c' => {
+            match (lowered(name)) {
+                Ok(program) => print(generate(program).join('\n'))
+                Err(message) => print(`error: ${message}`)
+            }
+
+            return
+        }
+        _ => {}
     }
 
-    system.exit(0)
-}
-
-if (args[0] == 'types') {
-    for line in dumpTypes(args[1]) {
-        print(line)
+    immut source = match (readSource(name)) {
+        Ok(source) => source
+        Err(error) => {
+            printError(`cannot read '${name}': ${ioMessage(error)}`)
+            system.exit(1)
+        }
     }
 
-    system.exit(0)
-}
+    if (stage == 'tokens') {
+        for spanned in tokenize(source) {
+            print(`${spanned.line}:${spanned.column} ${dump(spanned.token)}`)
+        }
 
-immut source = match (file.open(args[1], file.Read)) {
-    Ok(input) => input.read()
-    Err(error) => Err(error)
-}
-
-immut text = match (source) {
-    Ok(text) => text
-    Err(error) => {
-        print('error:', error)
-        system.exit(1)
-        ''
+        return
     }
-}
 
-if (args[0] == 'tokens') {
-    for spanned in tokenize(text) {
-        print(`${spanned.line}:${spanned.column} ${dump(spanned.token)}`)
-    }
-} else {
-    match (parser.parse(text)) {
+    match (parser.parse(source)) {
         Ok(statements) => {
             for statement in statements {
                 print(parser.dump(statement))
@@ -75,3 +135,191 @@ if (args[0] == 'tokens') {
         Err(message) => print(`error: syntax error: ${message}`)
     }
 }
+
+// What `kojic build` writes.
+type Build = {
+    source: string
+    output: string
+    // 'executable', 'c' or 'ir'.
+    emit: string
+}
+
+// The options of `kojic build <file.kj> [-o <output>] [--emit c|ir]`.
+function buildOptions(args: string[]): Build {
+    mut source: Option[string] = None
+    mut output: Option[string] = None
+    mut emit = 'executable'
+    mut i = 0
+
+    while (i < args.length()) {
+        immut arg = args[i]
+        i += 1
+
+        if (arg == '-o' and i < args.length()) {
+            output = Some(args[i])
+            i += 1
+            continue
+        }
+
+        if (arg == '--emit') {
+            if (i < args.length() and (args[i] == 'c' or args[i] == 'ir')) {
+                emit = args[i]
+                i += 1
+                continue
+            }
+
+            printError(`--emit takes 'c' or 'ir'\n\n${usage}`)
+
+            system.exit(2)
+        }
+
+        if (source is None and not arg.startsWith('-')) {
+            source = Some(arg)
+            continue
+        }
+
+        printError(usage)
+
+        system.exit(2)
+    }
+
+    immut name = match (source) {
+        Some(name) => name
+        None => {
+            printError(usage)
+            system.exit(2)
+        }
+    }
+    immut stem = match (path.stem(name)) {
+        Some(stem) => stem
+        None => ''
+    }
+    immut chosen = match (output) {
+        Some(chosen) => chosen
+        None => match (emit) {
+            'c' => `${stem}.c`
+            'ir' => `${stem}.ir`
+            _ => stem
+        }
+    }
+    return { source: name, output: chosen, emit: emit }
+}
+
+// The libraries the runtime (a Rust static library) needs from the system.
+function systemLibraries(): string[] {
+    immut kernel = match (system.run('uname', ['-s'])) {
+        Ok(output) => output.stdout.trim()
+        Err(_) => ''
+    }
+
+    if (kernel == 'Darwin') { return ['-lSystem', '-lc', '-lm'] }
+
+    return ['-lpthread', '-ldl', '-lm', '-lrt', '-lutil']
+}
+
+function variable(name: string, otherwise: string): string {
+    return match (system.env(name)) {
+        Some(value) => value
+        None => otherwise
+    }
+}
+
+// Compiles the C of a program to `output` with the system's C compiler, linked with the runtime.
+function compileC(source: string, output: string): Result[void, string] {
+    immut runtime = match (system.env('KOJI_RUNTIME')) {
+        Some(runtime) => runtime
+        None => return Err('compile error: set KOJI_RUNTIME to the runtime library (libkoji_runtime.a) to build an executable')
+    }
+    // A file of its own in the temporary directory, removed after.
+    immut directory = variable('TMPDIR', '/tmp')
+    immut unique = string(time.now()).replace('.', '')
+    immut c = path.join(directory, `kojic-${unique}.c`)
+    writeFile(c, source)?
+    immut compiler = variable('KOJI_CC', 'cc')
+    mut args = ['-O2', '-o', output, c, runtime]
+
+    for library in systemLibraries() {
+        args.push(library)
+    }
+
+    immut result = system.run(compiler, args)
+    system.run('rm', ['-f', c])
+
+    return match (result) {
+        Ok(run) => {
+            if (run.status == 0) {
+                Ok()
+            } else {
+                Err(`compile error: the C compiler '${compiler}' failed:\n${run.stderr.trim()}`)
+            }
+        }
+        Err(_) => Err(`compile error: cannot run the C compiler '${compiler}' (set KOJI_CC to choose another one)`)
+    }
+}
+
+// `kojic build`: the executable, the C or the IR of a program.
+function build(args: string[]) {
+    immut options = buildOptions(args)
+    immut program = match (lowered(options.source)) {
+        Ok(program) => program
+        Err(message) => {
+            printError(message)
+            system.exit(1)
+        }
+    }
+    immut result = match (options.emit) {
+        'ir' => writeFile(options.output, text(programText(program)))
+        'c' => writeFile(options.output, text(generate(program)))
+        _ => compileC(text(generate(program)), options.output)
+    }
+
+    match (result) {
+        Ok(_) => {}
+        Err(message) => {
+            printError(message)
+            system.exit(1)
+        }
+    }
+}
+
+immut args = system.args()
+immut command = if (args.length() > 0) { args[0] } else { '' }
+
+if (command == 'build') {
+    build(args[1..])
+    system.exit(0)
+}
+
+if (command == 'dump' and args.length() == 3 and args[1] in ['tokens', 'ast', 'types', 'ir', 'c']) {
+    dumpStage(args[1], args[2])
+    system.exit(0)
+}
+
+if (command == 'check' and args.length() == 2) {
+    match (check(args[1])) {
+        Ok(_) => system.exit(0)
+        Err(message) => {
+            printError(message)
+            system.exit(1)
+        }
+    }
+}
+
+if (args.length() == 1 and command in ['help', '--help', '-h']) {
+    print(usage)
+    system.exit(0)
+}
+
+if (command == 'run') {
+    printError("'run' needs the interpreter, which is in the kojic written in Rust: use 'kojic build' and run the executable")
+    system.exit(2)
+}
+
+if (args.length() == 1 and command.endsWith('.kj')) {
+    printError(`use 'kojic build ${command}' to compile a program\n\n${usage}`)
+    system.exit(2)
+}
+
+printError(usage)
+
+system.exit(2)

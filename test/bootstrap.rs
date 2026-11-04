@@ -67,7 +67,7 @@ fn the_lexer_in_koji_gives_the_same_tokens() {
     let compiler = koji_compiler();
     for file in corpus() {
         let expected = kojic::dump_tokens(&std::fs::read_to_string(&file).unwrap());
-        let tokens = output(Command::new(compiler).arg("tokens").arg(&file));
+        let tokens = output(Command::new(compiler).args(["dump", "tokens"]).arg(&file));
         assert_eq!(tokens, expected, "the tokens of {} differ", file.display());
     }
 }
@@ -77,7 +77,7 @@ fn the_interpreted_lexer_agrees() {
     // The interpreter runs the compiler written in Koji too (slower: a few files).
     for file in ["examples/shapes.kj", "test/lexer/edge.kj", "compiler/lexer.kj"] {
         let expected = kojic::dump_tokens(&std::fs::read_to_string(file).unwrap());
-        let tokens = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "tokens", file]));
+        let tokens = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "dump", "tokens", file]));
         assert_eq!(tokens, expected, "the tokens of {} differ", file);
     }
 }
@@ -206,7 +206,7 @@ fn the_parser_in_koji_gives_the_same_tree() {
     let compiler = koji_compiler();
     for file in corpus().into_iter().chain(parser_cases()) {
         let expected = kojic::dump_ast(&std::fs::read_to_string(&file).unwrap());
-        let tree = output(Command::new(compiler).arg("ast").arg(&file));
+        let tree = output(Command::new(compiler).args(["dump", "ast"]).arg(&file));
         assert_eq!(tree, expected, "the syntax tree of {} differs", file.display());
     }
 }
@@ -215,7 +215,7 @@ fn the_parser_in_koji_gives_the_same_tree() {
 fn the_interpreted_parser_agrees() {
     for file in ["examples/shapes.kj", "compiler/lexer.kj"] {
         let expected = kojic::dump_ast(&std::fs::read_to_string(file).unwrap());
-        let tree = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "ast", file]));
+        let tree = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "dump", "ast", file]));
         assert_eq!(tree, expected, "the syntax tree of {} differs", file);
     }
 }
@@ -263,7 +263,7 @@ fn the_checker_in_koji_finds_the_same() {
     let files = corpus().into_iter().chain(parser_cases()).chain(checker_cases()).chain(checker_modules());
     for file in files {
         let expected = kojic::dump_types(&file);
-        let found = output(Command::new(compiler).arg("types").arg(&file));
+        let found = output(Command::new(compiler).args(["dump", "types"]).arg(&file));
         assert_eq!(found, expected, "what the checkers find in {} differs", file.display());
     }
 }
@@ -272,7 +272,7 @@ fn the_checker_in_koji_finds_the_same() {
 fn the_interpreted_checker_agrees() {
     for file in ["examples/shapes.kj", "test/checker/modules.kj", "test/checker/wrap.kj"] {
         let expected = kojic::dump_types(Path::new(file));
-        let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "types", file]));
+        let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "dump", "types", file]));
         assert_eq!(found, expected, "what the checkers find in {} differs", file);
     }
 }
@@ -288,7 +288,7 @@ fn the_lowering_in_koji_gives_the_same_ir() {
         .chain(cases("test/ir/cases.txt", "bootstrap-ir-cases"));
     for file in files {
         let expected = kojic::dump_ir(&file);
-        let found = output(Command::new(compiler).arg("ir").arg(&file));
+        let found = output(Command::new(compiler).args(["dump", "ir"]).arg(&file));
         assert_eq!(found, expected, "the IR of {} differs", file.display());
     }
 }
@@ -297,7 +297,7 @@ fn the_lowering_in_koji_gives_the_same_ir() {
 fn the_interpreted_lowering_agrees() {
     for file in ["examples/shapes.kj", "examples/modules.kj"] {
         let expected = kojic::dump_ir(Path::new(file));
-        let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "ir", file]));
+        let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "dump", "ir", file]));
         assert_eq!(found, expected, "the IR of {} differs", file);
     }
 }
@@ -339,7 +339,7 @@ fn the_c_generator_in_koji_gives_the_same_c() {
         .chain(cases("test/ir/cases.txt", "bootstrap-c-cases"));
     for file in files {
         let expected = kojic::dump_c(&file);
-        let found = output(Command::new(compiler).arg("c").arg(&file));
+        let found = output(Command::new(compiler).args(["dump", "c"]).arg(&file));
         assert!(found == expected, "the C of {} differs", file.display());
     }
 }
@@ -347,35 +347,71 @@ fn the_c_generator_in_koji_gives_the_same_c() {
 #[test]
 fn the_interpreted_c_generator_agrees() {
     let expected = kojic::dump_c(Path::new("examples/shapes.kj"));
-    let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "c", "examples/shapes.kj"]));
+    let found = output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", "compiler/main.kj", "dump", "c", "examples/shapes.kj"]));
     assert!(found == expected, "the C of examples/shapes.kj differs");
 }
 
+/// The output of a program run by the interpreter of the kojic written in Rust.
+fn interpreted(file: &str) -> String {
+    output(Command::new(env!("CARGO_BIN_EXE_kojic")).args(["run", file]))
+}
+
+#[test]
+fn the_compiler_in_koji_builds_programs() {
+    let compiler = koji_compiler();
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-builds");
+    std::fs::create_dir_all(&directory).unwrap();
+    for file in ["examples/shapes.kj", "examples/modules.kj", "examples/functions.kj", "test/checker/modules.kj"] {
+        let executable = directory.join(Path::new(file).file_stem().unwrap());
+        let built = Command::new(compiler)
+            .args(["build", file, "-o"])
+            .arg(&executable)
+            .env("KOJI_RUNTIME", env!("KOJI_RUNTIME_LIB"))
+            .output()
+            .unwrap();
+        match kojic::build_file(Path::new(file), &directory.join("rust-built"), kojic::Emit::Executable) {
+            // Built by both: the programs give the same output as the interpreter.
+            Ok(()) => {
+                assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+                assert_eq!(output(&mut Command::new(&executable)), interpreted(file), "{} runs differently", file);
+            }
+            // Refused by both, with the same message.
+            Err(error) => {
+                assert_eq!(built.status.code(), Some(1));
+                assert_eq!(String::from_utf8_lossy(&built.stderr).trim_end(), error.to_string());
+            }
+        }
+    }
+    // Errors go to the standard error output, with the code 1 (2 for a wrong command line).
+    let checked = Command::new(compiler).args(["check", "test/checker/private.kj"]).output().unwrap();
+    assert_eq!(checked.status.code(), Some(1));
+    let expected = kojic::check_file(Path::new("test/checker/private.kj")).unwrap_err().to_string();
+    assert_eq!(String::from_utf8_lossy(&checked.stderr).trim_end(), expected);
+    assert!(checked.stdout.is_empty());
+    assert_eq!(Command::new(compiler).arg("nonsense").output().unwrap().status.code(), Some(2));
+    assert!(Command::new(compiler).args(["check", "examples/shapes.kj"]).status().unwrap().success());
+}
+
 /// Phase 4: the compiler written in Koji compiles itself. Stage 1 is the compiler in Koji built by
-/// `kojic build`; stage 2 is built from the C that stage 1 generates for the compiler; the C that
-/// stage 2 generates must be the same. Slow (the C compiler builds the compiler twice): run it
-/// with `cargo test --test bootstrap -- --ignored`.
+/// the kojic written in Rust; stage 1 builds stage 2 from the same source, and the C that stage 2
+/// generates for the compiler must be the same as stage 1's. Slow (the C compiler builds the
+/// compiler once more): run it with `cargo test --test bootstrap -- --ignored`.
 #[test]
 #[ignore]
 fn the_compiler_in_koji_compiles_itself() {
     let stage1 = koji_compiler();
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-stages");
     std::fs::create_dir_all(&directory).unwrap();
-    let c_of = |compiler: &Path| output(Command::new(compiler).args(["c", "compiler/main.kj"]));
-    let stage2_c = c_of(stage1);
-    assert!(stage2_c == kojic::dump_c(Path::new("compiler/main.kj")), "stage 1 generates another C than kojic");
-    let source = directory.join("stage2.c");
-    std::fs::write(&source, &stage2_c).unwrap();
+    let c_of = |compiler: &Path| output(Command::new(compiler).args(["dump", "c", "compiler/main.kj"]));
+    let stage1_c = c_of(stage1);
+    assert!(stage1_c == kojic::dump_c(Path::new("compiler/main.kj")), "stage 1 generates another C than kojic");
     let stage2 = directory.join("stage2");
-    let compiler = std::env::var("KOJI_CC").unwrap_or_else(|_| "cc".to_string());
-    let mut command = Command::new(compiler);
-    command.arg("-O2").arg("-o").arg(&stage2).arg(&source).arg(env!("KOJI_RUNTIME_LIB"));
-    if cfg!(target_os = "macos") {
-        command.args(["-lSystem", "-lc", "-lm"]);
-    } else {
-        command.args(["-lpthread", "-ldl", "-lm", "-lrt", "-lutil"]);
-    }
-    let built = command.output().unwrap();
+    let built = Command::new(stage1)
+        .args(["build", "compiler/main.kj", "-o"])
+        .arg(&stage2)
+        .env("KOJI_RUNTIME", env!("KOJI_RUNTIME_LIB"))
+        .output()
+        .unwrap();
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    assert!(c_of(&stage2) == stage2_c, "stage 2 generates another C than stage 1");
+    assert!(c_of(&stage2) == stage1_c, "stage 2 generates another C than stage 1");
 }
