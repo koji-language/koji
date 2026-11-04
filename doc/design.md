@@ -91,11 +91,14 @@ Most decisions follow from a few ideas:
 
 ### No `else if`
 
-**Decision**: `if` has an optional `else` with a block; there is no `else if`. More than two branches are a `match` with guards, or early returns.
+**Decision**: `if` has an optional `else` with a block; there is no `else if`. More than two branches are a `match` with guards, or special cases handled first with an early `return`.
 
-**Why**: a long `else if` chain hides the shape of the cases; a `match` with guards puts them side by side, and the special cases with an early `return` leave the main code unnested (see [Conventions](conventions.md)). One construct for several branches instead of two.
+**Why**: two rules of thumb, built into the language:
 
-**Alternatives**: `else if`, as in most languages. A `match` without a value (`match { x > 18 => ... }`) could make guard chains shorter later.
+-   **When a condition needs a third branch, it is a case analysis**, and a case analysis reads better as `switch` / `case` than as an `if` / `else if` / `else` chain. Koji's `match` takes that role: with guards, it lays the cases side by side (`x if (x > 18) => 'Adult'`), and with patterns it also checks that every variant is handled.
+-   **Early returns should be the natural way to write**: special cases first, each ending with `return` (or `break` and `continue`), and the main code after them, unnested (see [Conventions](conventions.md)). `else if` invites the opposite, a chain where every branch stays nested until the end; without it, the early return is the obvious way to handle a special case.
+
+**Alternatives**: `else if`, as in most languages; a `switch` statement next to `match`, which would be a second construct for the same job. A `match` without a value (`match { x > 18 => ... }`) could make guard chains shorter later.
 
 ### Conditions in parentheses
 
