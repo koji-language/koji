@@ -1,5 +1,5 @@
-//! The `system` module: command-line arguments, environment variables, the exit code and
-//! running other programs.
+//! The `system` module: command-line arguments, environment variables, the exit code, running
+//! other programs and the operating system.
 
 use super::*;
 use crate::error::EzError;
@@ -21,13 +21,20 @@ pub(super) fn call(interpreter: &mut Interpreter, name: &str, args: Vec<Value>) 
             let _ = interpreter.out.flush();
             Err(Flow::Error(EzError::Exit(code.clamp(i32::MIN as i64, i32::MAX as i64) as i32)))
         }
-        "system.run" => {
+        "system.run" | "system.capture" => {
             let command = str_arg(interpreter, &args, 0)?.to_string();
             let arguments: Vec<String> = match args.get(1) {
                 Some(Value::List(items)) => items.borrow().iter().map(Value::display).collect(),
                 _ => Vec::new(),
             };
             let _ = interpreter.out.flush();
+            // `run`: the program uses the terminal (the input and outputs) of this one.
+            if name == "system.run" {
+                return Ok(match std::process::Command::new(&command).args(&arguments).status() {
+                    Ok(status) => ok(Value::Int(status.code().unwrap_or(-1) as i64)),
+                    Err(error) => err(system_error(&command, &error)),
+                });
+            }
             Ok(match std::process::Command::new(&command).args(&arguments).output() {
                 Ok(output) => ok(Value::object(vec![
                     ("status".to_string(), Value::Int(output.status.code().unwrap_or(-1) as i64)),

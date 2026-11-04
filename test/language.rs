@@ -2675,10 +2675,18 @@ fn stdlib_system() {
 
         print(system.args(), system.env('KOJI_NOT_SET'))
 
-        match (system.run('echo', ['hello', 'koji'])) {
+        match (system.capture('echo', ['hello', 'koji'])) {
             Ok(output) => print(output.status, output.stdout.trim())
             Err(error) => print(error)
         }
+
+        match (system.capture('kj-no-such-command', [])) {
+            Ok(_) => print('?')
+            Err(error) => print(error, '|', error.debug())
+        }
+
+        // `run` uses the terminal: the program's output is not in `output` here.
+        print(system.run('true', []), system.run('false', []))
 
         match (system.run('kj-no-such-command', [])) {
             Ok(_) => print('?')
@@ -2695,7 +2703,7 @@ fn stdlib_system() {
     assert_eq!(result, Err(kojic::error::EzError::Exit(3)));
     assert_eq!(
         output,
-        "[] None\n0 hello koji\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nbefore exit\n"
+        "[] None\n0 hello koji\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nOk(0) Ok(1)\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nbefore exit\n"
     );
 }
 

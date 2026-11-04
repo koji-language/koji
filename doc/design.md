@@ -216,6 +216,14 @@ Most decisions follow from a few ideas:
 
 **Alternatives**: a string (`'linux'`), which a typo (`'macOS'`) gets past the compiler.
 
+### `system.run` and `system.capture`
+
+**Decision**: `system.run(command, args)` runs a program with the terminal of this one (the same input and outputs) and gives its exit code; `system.capture(command, args)` runs it and keeps what it prints, as an `Output`.
+
+**Why**: the two differ in what happens to the program's output, and each name says it: `run` runs it as if it were typed in the terminal, the common case; `capture` keeps the output. They are verbs, like the other functions that do something (`open`, `remove`, `exit`), while the nouns of `system` (`args`, `env`, `os`) only read the state of the process.
+
+**Alternatives**: `system.output(...)` for capturing (the name of the type it gives, and of Rust's `Command::output`), a noun that would hide that it runs a program; keeping `run` for capturing with a new `execute` or `call` for the terminal, names whose difference from `run` is not visible; a mode argument (`run(command, args, Terminal)`), which would make the result type depend on the mode.
+
 ## Conventions
 
 ### Special cases first

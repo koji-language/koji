@@ -227,7 +227,7 @@ function compileC(source: string, output: string): Result[void, string] {
         args.push(library)
     }
 
-    immut result = system.run(compiler, args)
+    immut result = system.capture(compiler, args)
     file.remove(c)
 
     return match (result) {

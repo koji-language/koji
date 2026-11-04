@@ -331,8 +331,8 @@ print(run())
 
 #[test]
 fn errors_files_and_the_operating_system() {
-    // `printError`, `file.remove` and `system.os`, interpreted and compiled: the same standard
-    // output and standard error output.
+    // `printError`, `file.remove`, `system.os` and `system.run` (whose program writes to the same
+    // outputs), interpreted and compiled: the same standard output and standard error output.
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler-system");
     std::fs::create_dir_all(&directory).unwrap();
     let scratch = directory.join("scratch.txt");
@@ -371,6 +371,8 @@ immut known = match (system.os) {{
     Other(_) => false
 }}
 print(known)
+print(system.run('echo', ['from', 'echo']))
+print(system.run('sh', ['-c', 'echo to errors >&2; exit 4']))
 ",
         scratch = scratch.display(),
         folder = folder.display()
@@ -384,11 +386,11 @@ print(known)
     assert_eq!(String::from_utf8_lossy(&compiled.stdout), String::from_utf8_lossy(&interpreted.stdout));
     assert_eq!(String::from_utf8_lossy(&compiled.stderr), String::from_utf8_lossy(&interpreted.stderr));
     let expected = format!(
-        "out (1)\nafter\nOk(void)\ntrue Ok(void) false\nErr(NotFound('{}'))\ntrue\ntrue\n",
+        "out (1)\nafter\nOk(void)\ntrue Ok(void) false\nErr(NotFound('{}'))\ntrue\ntrue\nfrom echo\nOk(0)\nOk(4)\n",
         scratch.display()
     );
     assert_eq!(String::from_utf8_lossy(&compiled.stdout), expected);
-    assert_eq!(String::from_utf8_lossy(&compiled.stderr), "error (1) 2\n\n");
+    assert_eq!(String::from_utf8_lossy(&compiled.stderr), "error (1) 2\n\nto errors\n");
 }
 
 #[test]
@@ -1303,7 +1305,7 @@ print('a,b,,c'.split(','), 'banana'.replace('an', 'AN'), 'koji'.startsWith('ko')
 print(path.join('src', 'main.kj'), path.parent('src/main.kj'), path.parent('main.kj'), path.name('a/b.kj'), path.stem('a/b.kj'), path.extension('Makefile'), path.isAbsolute('/tmp'))\n\
 print(system.args(), system.env('KOJI_TEST_VARIABLE'), system.env('HOME') is Some)\n\
 \n\
-match (system.run('echo', ['hi', 'there'])) {\n\
+match (system.capture('echo', ['hi', 'there'])) {\n\
     Ok(output) => print(output.status, output.stdout.trim(), output.stderr)\n\
     Err(error) => print(error)\n\
 }\n\

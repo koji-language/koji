@@ -151,7 +151,7 @@ pub fn stdlib_functions(module: &str) -> &'static [&'static str] {
         "http" => &["get", "post", "put", "delete"],
         "json" => &["parse", "stringify", "get", "asString", "asInt", "asFloat", "asBool"],
         "regex" => &["compile"],
-        "system" => &["args", "env", "exit", "run"],
+        "system" => &["args", "env", "exit", "run", "capture"],
         _ => &[],
     }
 }

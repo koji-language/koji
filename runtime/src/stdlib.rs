@@ -453,16 +453,42 @@ pub extern "C" fn koji_std_system_exit(code: i64) -> ! {
     std::process::exit(code.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
 }
 
-/// `system.run(command, arguments)`: `Ok(Output)` or `Err(SystemError)`.
+/// The texts of a list of strings.
+fn texts(list: *const KojiList) -> Vec<String> {
+    let list = unsafe { &*list };
+    list.items.iter().map(|item| text(*item as usize as *const KojiString).to_string()).collect()
+}
+
+/// `Err(SystemError)` for a program that could not be run.
+fn system_error(result: *const KojiRecordType, command: &str, error: &std::io::Error) -> *mut KojiRecord {
+    use std::io::ErrorKind;
+    let error_type = field_record(result, "Err", 0);
+    let name = slot(new_string(command.to_string()));
+    let error = match error.kind() {
+        ErrorKind::NotFound => make(error_type, "NotFound", &[name]),
+        ErrorKind::PermissionDenied => make(error_type, "PermissionDenied", &[name]),
+        _ => make(error_type, "Io", &[name, slot(new_string(error.to_string()))]),
+    };
+    make(result, "Err", &[error as usize as u64])
+}
+
+/// `system.run(command, arguments)`, with the terminal of this program: `Ok` of its exit code
+/// (`-1` if a signal stopped it) or `Err(SystemError)`.
 #[no_mangle]
 pub extern "C" fn koji_std_system_run(command: *const KojiString, arguments: *const KojiList, result: *const KojiRecordType) -> *mut KojiRecord {
     let command = text(command).to_string();
-    let list = unsafe { &*arguments };
-    let arguments: Vec<String> = list
-        .items
-        .iter()
-        .map(|item| text(*item as usize as *const KojiString).to_string())
-        .collect();
+    let _ = std::io::stdout().flush();
+    match std::process::Command::new(&command).args(texts(arguments)).status() {
+        Ok(status) => make(result, "Ok", &[status.code().unwrap_or(-1) as i64 as u64]),
+        Err(error) => system_error(result, &command, &error),
+    }
+}
+
+/// `system.capture(command, arguments)`: `Ok(Output)`, with what it printed, or `Err(SystemError)`.
+#[no_mangle]
+pub extern "C" fn koji_std_system_capture(command: *const KojiString, arguments: *const KojiList, result: *const KojiRecordType) -> *mut KojiRecord {
+    let command = text(command).to_string();
+    let arguments = texts(arguments);
     let _ = std::io::stdout().flush();
     match std::process::Command::new(&command).args(&arguments).output() {
         Ok(output) => {
@@ -478,17 +504,7 @@ pub extern "C" fn koji_std_system_run(command: *const KojiString, arguments: *co
             );
             make(result, "Ok", &[value as usize as u64])
         }
-        Err(error) => {
-            use std::io::ErrorKind;
-            let error_type = field_record(result, "Err", 0);
-            let name = slot(new_string(command.clone()));
-            let error = match error.kind() {
-                ErrorKind::NotFound => make(error_type, "NotFound", &[name]),
-                ErrorKind::PermissionDenied => make(error_type, "PermissionDenied", &[name]),
-                _ => make(error_type, "Io", &[name, slot(new_string(error.to_string()))]),
-            };
-            make(result, "Err", &[error as usize as u64])
-        }
+        Err(error) => system_error(result, &command, &error),
     }
 }
 

@@ -3671,8 +3671,8 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             builder.terminate(UnreachableT)
             return Ok(None)
         }
-        'system.run' => {
-            runner = 'koji_std_system_run'
+        other if (other == 'system.run' or other == 'system.capture') => {
+            runner = if (name == 'run') { 'koji_std_system_run' } else { 'koji_std_system_capture' }
             immut command = self.stdValue(mut builder, args, 0, StrTy)?
             immut arguments2 = self.stdValue(mut builder, args, 1, ListTy(StrTy))?
             arguments = [command, arguments2, self.stdResult(builder, call)?]

@@ -3549,8 +3549,8 @@ impl<'a> Lowerer<'a> {
                 builder.terminate(Terminator::Unreachable);
                 return Ok(None);
             }
-            ("system", "run") => (
-                "koji_std_system_run",
+            ("system", "run" | "capture") => (
+                if name == "run" { "koji_std_system_run" } else { "koji_std_system_capture" },
                 vec![
                     value_as(self, builder, 0, Ty::Str)?,
                     value_as(self, builder, 1, Ty::List(Box::new(Ty::Str)))?,

@@ -546,7 +546,13 @@ impl Checker {
                 check(self, &[Type::Int])?;
                 Ok(Type::Never)
             }
+            // With the terminal of this program: its exit code.
             "system.run" => {
+                check(self, &[s.clone(), Type::List(Box::new(Type::String))])?;
+                Ok(result_with(Type::Int, b.system_error))
+            }
+            // What it printed.
+            "system.capture" => {
                 check(self, &[s.clone(), Type::List(Box::new(Type::String))])?;
                 Ok(result_with(Self::named(b.output), b.system_error))
             }

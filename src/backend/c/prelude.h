@@ -161,6 +161,7 @@ KojiRecord *koji_std_system_env(const KojiString *name, const KojiRecordType *op
 _Noreturn void koji_std_system_exit(int64_t code);
 KojiRecord *koji_std_system_os(const KojiRecordType *os);
 KojiRecord *koji_std_system_run(const KojiString *command, const KojiList *arguments, const KojiRecordType *result);
+KojiRecord *koji_std_system_capture(const KojiString *command, const KojiList *arguments, const KojiRecordType *result);
 
 KojiRecord *koji_std_char(int64_t code, const KojiRecordType *option);
 KojiList *koji_std_string_chars(const KojiString *string, const KojiElementType *element);

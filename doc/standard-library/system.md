@@ -13,8 +13,11 @@ The `system` module gives access to the command line, the environment, the exit 
 -   `exit(code: int) -> never`  
     Ends the program with the exit code `code` (`0` means success). The code after it does not run, and values are not dropped.
 
--   `run(command: string, args: string[]) -> Result[Output, SystemError]`  
-    Runs the program `command` with the arguments `args`, waits for it to end, and returns what it printed. A program that ends with an error code is still `Ok`: check `status`.
+-   `run(command: string, args: string[]) -> Result[int, SystemError]`  
+    Runs the program `command` with the arguments `args` and waits for it to end. It uses the terminal of this program: it reads the same input and writes to the same outputs, as if it were typed in the terminal. Gives its exit code (`-1` if it was stopped by a signal); a program that ends with an error code is still `Ok`.
+
+-   `capture(command: string, args: string[]) -> Result[Output, SystemError]`  
+    Like `run`, but keeps what the program prints instead of showing it, and gives it with the exit code as an `Output`.
 
 ## Constants
 
@@ -74,8 +77,14 @@ if (args.length() == 0) {
 
 print(`Hello, ${args[0]}!`)
 
-match (system.run('git', ['--version'])) {
+match (system.capture('git', ['--version'])) {
     Ok(output) => print(output.stdout.trim())
     Err(error) => print(error) // command 'git' not found
+}
+
+match (system.run('git', ['status'])) {
+    Ok(0) => print('done')
+    Ok(code) => print(`git ended with the code ${code}`)
+    Err(error) => print(error)
 }
 ```

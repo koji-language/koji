@@ -381,7 +381,7 @@ function stdlibFunctions(module: string): string[] {
         'http' => ['get', 'post', 'put', 'delete']
         'json' => ['parse', 'stringify', 'get', 'asString', 'asInt', 'asFloat', 'asBool']
         'regex' => ['compile']
-        'system' => ['args', 'env', 'exit', 'run']
+        'system' => ['args', 'env', 'exit', 'run', 'capture']
         _ => []
     }
 }
@@ -4662,7 +4662,13 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
             self.checkExactly(name, types, [IntType])?
             return Ok(NeverType)
         }
+        // With the terminal of this program: its exit code.
         'system.run' => {
+            self.checkExactly(name, types, [s, ListType(StringType)])?
+            return Ok(self.resultWith(IntType, b.systemError))
+        }
+        // What it printed.
+        'system.capture' => {
             self.checkExactly(name, types, [s, ListType(StringType)])?
             return Ok(self.resultWith(named(b.output), b.systemError))
         }
