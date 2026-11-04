@@ -1,34 +1,45 @@
-//! Runs the examples from the documentation and checks their output.
+//! Runs the examples from the documentation with the compiler written in Koji and checks their
+//! output.
 
-use std::cell::RefCell;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
-#[derive(Clone, Default)]
-struct Output(Rc<RefCell<Vec<u8>>>);
+#[path = "koji/mod.rs"]
+mod koji;
 
-impl Write for Output {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.borrow_mut().extend_from_slice(buf);
-        Ok(buf.len())
-    }
+/// How a program failed: it ended with `system.exit` and this code, or with an error (a type
+/// error, an error stopping the program, a panic) and its message.
+#[derive(Debug, PartialEq)]
+enum Failure {
+    Exit(i32),
+    Error(String),
+}
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+impl std::fmt::Display for Failure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Failure::Exit(code) => write!(formatter, "exit({})", code),
+            Failure::Error(message) => write!(formatter, "{}", message),
+        }
     }
 }
 
-fn execute(source: &str, input: &str, path: &Path) -> (String, Result<(), kojic::error::EzError>) {
-    let output = Output::default();
-    let result = kojic::run_source(
-        source,
-        path,
-        Box::new(output.clone()),
-        Box::new(std::io::Cursor::new(input.to_string().into_bytes())),
-    );
-    let text = String::from_utf8(output.0.borrow().clone()).unwrap();
-    (text, result)
+/// Compiles and runs `source` as the file `path` with the compiler written in Koji. A relative
+/// path is written in a directory of its own, which is the program's current directory; the
+/// messages name the file as `path` writes it.
+fn execute(source: &str, input: &str, path: &Path) -> (String, Result<(), Failure>) {
+    let directory = koji::scratch("language");
+    let file = if path.is_absolute() { path.to_path_buf() } else { directory.join(path) };
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, source).unwrap();
+    let finished = koji::run(path, &directory, input);
+    let result = match finished.code {
+        Some(0) => Ok(()),
+        Some(1) if !finished.stderr.is_empty() => Err(Failure::Error(finished.stderr.trim_end().to_string())),
+        Some(code) => Err(Failure::Exit(code)),
+        None => Err(Failure::Error(format!("stopped by a signal\n{}", finished.stderr))),
+    };
+    let _ = std::fs::remove_dir_all(&directory);
+    (finished.stdout, result)
 }
 
 fn run_with_input(source: &str, input: &str) -> String {
@@ -1645,12 +1656,11 @@ fn stdlib_http() {
 fn all_examples_type_check() {
     for entry in std::fs::read_dir("examples").unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("Koji") {
+        if path.extension().and_then(|e| e.to_str()) != Some("kj") {
             continue;
         }
-        if let Err(error) = kojic::check_file(&path) {
-            panic!("{}: {}", path.display(), error);
-        }
+        let checked = koji::finish(koji::kojic().arg("check").arg(&path), "");
+        assert_eq!(checked.code, Some(0), "{}: {}", path.display(), checked.stderr);
     }
 }
 
@@ -2700,7 +2710,7 @@ fn stdlib_system() {
         print('not printed')
     "#;
     let (output, result) = execute(source, "", Path::new("test.kj"));
-    assert_eq!(result, Err(kojic::error::EzError::Exit(3)));
+    assert_eq!(result, Err(Failure::Exit(3)));
     assert_eq!(
         output,
         "[] None\n0 hello koji\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nOk(0) Ok(1)\ncommand 'kj-no-such-command' not found | NotFound('kj-no-such-command')\nbefore exit\n"

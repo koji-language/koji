@@ -1,24 +1,11 @@
-//! Compiles programs with `kojic build` and checks that the executable behaves exactly like the
-//! interpreter: same output, same panic message, same exit code.
+//! Compiles programs with `kojic build` (the compiler written in Koji) and checks what the
+//! executable does: its output, its panic message, its exit code.
 
-use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
 
-#[derive(Clone, Default)]
-struct Output(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Output {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
+#[path = "koji/mod.rs"]
+mod koji;
 
 /// What a program did: its output, its error (the last line of the standard error) and
 /// whether it succeeded.
@@ -45,20 +32,15 @@ fn has_valgrind() -> bool {
     *FOUND.get_or_init(|| Command::new("valgrind").arg("--version").output().is_ok_and(|o| o.status.success()))
 }
 
-fn interpret(path: &Path, source: &str) -> Run {
-    let output = Output::default();
-    let input: Box<dyn BufRead> = Box::new(std::io::empty());
-    let result = kojic::run_source(source, path, Box::new(output.clone()), input);
-    let output = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
-    match result {
-        Ok(()) => Run { output, error: String::new(), success: true },
-        Err(error) => Run { output, error: error.to_string(), success: false },
-    }
+/// Builds `path` to `executable` with the compiler written in Koji.
+fn build(path: &Path, executable: &Path) {
+    let built = koji::finish(koji::kojic().arg("build").arg(path).arg("-o").arg(executable), "");
+    assert_eq!(built.code, Some(0), "{} does not compile: {}", path.display(), built.stderr);
 }
 
 fn compile_and_run(path: &Path) -> Run {
     let executable = path.with_extension("");
-    kojic::build_file(path, &executable, kojic::Emit::Executable).unwrap_or_else(|error| panic!("{}", error));
+    build(path, &executable);
     // Under valgrind when it is installed: a memory error (a double free, an invalid read)
     // fails the test even when the output is right.
     let result = if has_valgrind() {
@@ -79,22 +61,19 @@ fn compile_and_run(path: &Path) -> Run {
     }
 }
 
-/// Compiles `source`, runs it, and checks that it prints `expected`, like the interpreter.
+/// Compiles `source`, runs it, and checks that it succeeds and prints `expected`.
 fn assert_same(name: &str, source: &str, expected: &str) {
     let path = source_file(name, source);
-    let interpreted = interpret(&path, source);
     let compiled = compile_and_run(&path);
-    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
     assert_eq!(compiled.output, expected);
+    assert!(compiled.success, "the program failed: {}", compiled.error);
 }
 
 /// Like `assert_same`, for a program that panics with `message` (after the location).
 fn assert_same_panic(name: &str, source: &str, message: &str) {
     let path = source_file(name, source);
-    let interpreted = interpret(&path, source);
     let compiled = compile_and_run(&path);
-    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
-    assert!(!compiled.success);
+    assert!(!compiled.success, "the program succeeded: {}", compiled.output);
     assert!(compiled.error.ends_with(message), "unexpected error: {}", compiled.error);
 }
 
@@ -332,7 +311,7 @@ print(run())
 #[test]
 fn errors_files_and_the_operating_system() {
     // `printError`, `file.remove`, `system.os` and `system.run` (whose program writes to the same
-    // outputs), interpreted and compiled: the same standard output and standard error output.
+    // outputs), compiled: what each writes to the standard output and the standard error output.
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler-system");
     std::fs::create_dir_all(&directory).unwrap();
     let scratch = directory.join("scratch.txt");
@@ -378,13 +357,10 @@ print(system.run('sh', ['-c', 'echo to errors >&2; exit 4']))
         folder = folder.display()
     );
     let path = source_file("system", &source);
-    let interpreted = Command::new(env!("CARGO_BIN_EXE_kojic")).arg("run").arg(&path).output().unwrap();
     let executable = path.with_extension("");
-    kojic::build_file(&path, &executable, kojic::Emit::Executable).unwrap();
+    build(&path, &executable);
     let compiled = Command::new(&executable).output().unwrap();
-    assert!(interpreted.status.success() && compiled.status.success());
-    assert_eq!(String::from_utf8_lossy(&compiled.stdout), String::from_utf8_lossy(&interpreted.stdout));
-    assert_eq!(String::from_utf8_lossy(&compiled.stderr), String::from_utf8_lossy(&interpreted.stderr));
+    assert!(compiled.status.success());
     let expected = format!(
         "out (1)\nafter\nOk(void)\ntrue Ok(void) false\nErr(NotFound('{}'))\ntrue\ntrue\nfrom echo\nOk(0)\nOk(4)\n",
         scratch.display()
@@ -656,9 +632,8 @@ immut value = check(-5)?\n\
 print('unreachable')\n\
 ";
     let path = source_file("records", source);
-    let interpreted = interpret(&path, source);
     let compiled = compile_and_run(&path);
-    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert!(!compiled.success && compiled.error.starts_with("error: ") && compiled.error.ends_with("records.kj:94: negative"), "{}", compiled.error);
     assert_eq!(compiled.output, "[{ name: 'Ana', age: 31, tags: [] }, { name: 'Bea', age: 25, tags: ['x', 'y'] }] Bia true true\n\
 Node(Node(Node(Leaf, 1, Leaf), 2, Leaf), 5, Node(Leaf, 8, Leaf)) 16\n\
 Ok(4) Err('negative') Some(5) None\n\
@@ -799,9 +774,8 @@ print(visits, visits[home])\n\
 print(ages['Zed'])\n\
 ";
     let path = source_file("maps", source);
-    let interpreted = interpret(&path, source);
     let compiled = compile_and_run(&path);
-    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert!(!compiled.success && compiled.error.starts_with("panic: ") && compiled.error.ends_with("maps.kj:53: key 'Zed' not found"), "{}", compiled.error);
     assert_eq!(compiled.output, "30 None Some(25) true false\n\
 Some(25) None ['Ana': 31, 'Carl': 41] ['Ana': 30, 'Bia': 25] [1: 'one', 2: 'two'] [:] 0\n\
 Ana 31\n\
@@ -1085,9 +1059,9 @@ export function describe(): string {\n\
     }
     let main = directory.join("main.kj");
     let main = main.strip_prefix(std::env::current_dir().unwrap()).unwrap().to_path_buf();
-    let interpreted = interpret(&main, &std::fs::read_to_string(&main).unwrap());
     let compiled = compile_and_run(&main);
-    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert_eq!(compiled.error, "panic: lib/shapes.kj:32: division by zero");
+    assert!(!compiled.success);
     assert_eq!(compiled.output, "counter loaded\n\
 shapes loaded 1\n\
 main starts 1\n\
@@ -1360,9 +1334,8 @@ print(counts)\n\
 print(text[20])\n\
 ";
     let path = source_file("chars", source);
-    let interpreted = interpret(&path, source);
     let compiled = compile_and_run(&path);
-    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert!(!compiled.success && compiled.error.starts_with("panic: ") && compiled.error.ends_with("chars.kj:27: index 20 out of range (length 9)"), "{}", compiled.error);
     assert_eq!(compiled.output, "K 75 Some('a') None 'K' ['b', 'a', '\\''] ['\\'', 'a', 'b']\n\
 á Koji olá ['o', 'l', 'á', ',', ' ', 'K', 'o', 'j', 'i'] true false true true\n\
 4 K! K\n\
@@ -1415,10 +1388,9 @@ print('not printed')\n\
 ".replace("DATA", &data.display().to_string());
     let path = source_file("files", &source);
     let _ = std::fs::remove_dir_all(&data);
-    let interpreted = interpret(&path, &source);
     let _ = std::fs::remove_dir_all(&data);
     let compiled = compile_and_run(&path);
-    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert!(!compiled.success);
     assert!(compiled.output.contains("Ok('first line\\nsecond line\\n')"), "{}", compiled.output);
     assert!(compiled.error.ends_with("absent.txt' not found"), "{}", compiled.error);
 }
@@ -1622,9 +1594,8 @@ export function shout(text: string): string {\n\
     }
     let main = directory.join("main.kj");
     let main = main.strip_prefix(std::env::current_dir().unwrap()).unwrap().to_path_buf();
-    let interpreted = interpret(&main, &std::fs::read_to_string(&main).unwrap());
     let compiled = compile_and_run(&main);
-    assert_eq!(compiled, interpreted, "the compiled program differs from the interpreter");
+    assert!(compiled.success, "the program failed: {}", compiled.error);
     assert_eq!(compiled.output, "start\n\
 tools loaded\n\
 uses before 0 2\n\
@@ -1637,20 +1608,26 @@ BIA!\n\
 
 #[test]
 fn examples_that_compile() {
-    for example in ["hello", "booleans", "comments", "condition", "interpolation", "length", "shapes", "functions", "input", "modules", "types"] {
-        let path = PathBuf::from(format!("examples/{}.kj", example));
-        let source = std::fs::read_to_string(&path).unwrap();
-        let interpreted = interpret(&path, &source);
-        let executable = Path::new(env!("CARGO_TARGET_TMPDIR")).join(example);
-        kojic::build_file(&path, &executable, kojic::Emit::Executable).unwrap();
-        let result = Command::new(&executable).output().unwrap();
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), interpreted.output, "{}", example);
+    // Each example prints what `test/examples/<example>.txt` holds (without input).
+    for entry in std::fs::read_dir("examples").unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|extension| extension != "kj") {
+            continue;
+        }
+        let example = path.file_stem().unwrap().to_str().unwrap().to_string();
+        let expected = std::fs::read_to_string(format!("test/examples/{}.txt", example)).unwrap();
+        let executable = Path::new(env!("CARGO_TARGET_TMPDIR")).join(&example);
+        build(&path, &executable);
+        let result = Command::new(&executable).stdin(std::process::Stdio::null()).output().unwrap();
+        assert!(result.status.success(), "{}: {}", example, String::from_utf8_lossy(&result.stderr));
+        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{}", example);
     }
 }
 
 #[test]
 fn errors_are_reported_before_compiling() {
     let path = source_file("type_error", "immut n: int = 'text'\n");
-    let error = kojic::build_file(&path, &path.with_extension(""), kojic::Emit::Executable).unwrap_err();
-    assert!(error.to_string().starts_with("type error: "), "{}", error);
+    let built = koji::finish(koji::kojic().arg("build").arg(&path).arg("-o").arg(path.with_extension("")), "");
+    assert_eq!(built.code, Some(1));
+    assert!(built.stderr.starts_with("type error: "), "{}", built.stderr);
 }

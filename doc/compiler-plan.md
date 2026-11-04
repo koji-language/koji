@@ -176,7 +176,7 @@ Decided: **a seed in C**. The C that the compiler in Koji generates for itself i
 Steps:
 
 1.  **`kojic run` in the compiler in Koji**: it compiles to a temporary executable and runs it with the terminal of `kojic` (`system.run`), ending with the program's exit code. Done; `test/bootstrap.rs` checks that every example runs like the interpreter.
-2.  **The tests use the compiler in Koji**: `test/language.rs` and `test/compiler.rs` compile and run their programs with it, instead of the interpreter in Rust inside the test process. The language tests already pass compiled (the last differences, nested functions, `range` as a value, `Set.from` of a later type and the variants of a module, are done).
+2.  **The tests use the compiler in Koji**: `test/language.rs` and `test/compiler.rs` compile and run their programs with it, instead of the interpreter in Rust inside the test process. Done: the compiler in Koji is built once (`test/koji/mod.rs`, kept in the target directory while its C and the runtime stay the same), and each test runs it as a command (`kojic run`, `kojic build`, `kojic check`). What `test/compiler.rs` compared with the interpreter is now written in the tests, and the outputs of the examples are in `test/examples/`.
 3.  **The seed**: `bootstrap/kojic.c.gz` and a script that builds `kojic` from it; a test checks that the seed regenerated reaches the fixed point.
 4.  **The compiler and the interpreter in Rust are removed** (`src/`); what stays in Rust is the runtime and the code that runs the tests.
 

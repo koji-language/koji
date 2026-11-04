@@ -3,17 +3,13 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+
+#[path = "koji/mod.rs"]
+mod koji;
 
 /// The compiler written in Koji, compiled by `kojic build` (once for all the tests).
 fn koji_compiler() -> &'static Path {
-    static EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
-    EXECUTABLE.get_or_init(|| {
-        let executable = Path::new(env!("CARGO_TARGET_TMPDIR")).join("kojic-in-koji");
-        kojic::build_file(Path::new("compiler/main.kj"), &executable, kojic::Emit::Executable)
-            .unwrap_or_else(|error| panic!("the compiler written in Koji does not compile: {}", error));
-        executable
-    })
+    koji::compiler()
 }
 
 fn output(command: &mut Command) -> String {
