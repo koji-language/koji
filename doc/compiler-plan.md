@@ -127,7 +127,7 @@ The standard library is in the runtime: the generated code calls a Rust function
 
 ## The compiler in Koji (phase 3)
 
-The compiler written in Koji is in `compiler/`, one file per stage; `compiler/main.kj` is its entry point, with the commands of `kojic` (`check`, `build`, `dump`, `help`) except `run`, as there is no interpreter in Koji. It runs with `kojic run compiler/main.kj ...`, and `kojic build` compiles it to an executable (the first step of the bootstrap). To build an executable, it needs the runtime library in `KOJI_RUNTIME` (the kojic written in Rust knows where it built it) and a C compiler (`KOJI_CC`, by default `cc`).
+The compiler written in Koji is in `compiler/`, one file per stage; `compiler/main.kj` is its entry point, with the commands of `kojic` (`run`, `check`, `build`, `dump`, `help`); there is no interpreter in Koji, so `run` compiles the program to a temporary executable and runs it. It runs with `kojic run compiler/main.kj ...`, and `kojic build` compiles it to an executable (the first step of the bootstrap). To build an executable, it needs the runtime library in `KOJI_RUNTIME` (the kojic written in Rust knows where it built it) and a C compiler (`KOJI_CC`, by default `cc`).
 
 Each stage prints the same text as a `kojic dump <stage>` command of the compiler in Rust, and `test/bootstrap.rs` compares them on the examples, the compiler's own files, every code block of the documentation and edge cases (`test/lexer/`, the syntax errors listed in `test/bootstrap.rs`, the programs and modules of `test/checker/`, and the programs of `test/ir/cases.txt`). The compiled Koji compiler is checked on all of them, and the interpreted one on a few.
 
@@ -161,13 +161,24 @@ Notes for writing the compiler in Koji:
 | **2. Compiler in Rust** | A typed IR in `src/ir/` (monomorphization, closure conversion, `match` compiled to decision trees), a C code generator, a runtime in Rust (strings, lists, maps, memory management) and a `kojic build` command | Every test runs both interpreted and compiled, with identical output |
 | **3. `kojic` in Koji** | Lexer → parser → checker → IR → C generator, in this order | At each step, compare with the Rust implementation: same tokens, same AST, same errors, same generated C |
 | **4. Bootstrap** | Stages 1 → 2 → 3 | Stage 2 output identical to stage 3: reached, checked by `cargo test --test bootstrap -- --ignored` (stage 1 is the compiler in Koji built by `kojic build`, stage 2 the C it generates for itself compiled by `cc`) |
-| **5. Maintenance** | A bootstrap policy: freeze the Rust implementation as stage 0, or commit the generated C of `kojic` so that only a C compiler is needed to build everything | CI rebuilds every stage |
+| **5. Maintenance** | A bootstrap policy (decided: a seed in C, see below) | CI rebuilds every stage |
 | **6. Optimization** | The optimizations below, in the compiler written in Koji only (the Rust implementation stays as stage 0) | A benchmark (the compiler checking and lowering its own files) measures each one; every test still gives the same output |
 
 Notes:
 
 -   **Compiled standard library**: `json` and `regex` can be rewritten in Koji. `http` with TLS is heavy: it can go through FFI (e.g. libcurl) or stay outside the core.
 -   **Rule for `kojic`**: it may only use features supported by the previous compiler version, otherwise the bootstrap breaks.
+
+### The seed (phase 5)
+
+Decided: **a seed in C**. The C that the compiler in Koji generates for itself is committed (compressed, `bootstrap/kojic.c.gz`), and building Koji needs only a C compiler and the runtime: `cc` builds stage 1 from the seed, and stage 1 builds the compiler from `compiler/`. There is then one implementation of the language, the one in Koji, which can use any feature of the language once the seed is regenerated with it (a feature is implemented first, the seed regenerated, and only then can the compiler use it). The runtime stays in Rust, so building it still needs `cargo`.
+
+Steps:
+
+1.  **`kojic run` in the compiler in Koji**: it compiles to a temporary executable and runs it with the terminal of `kojic` (`system.run`), ending with the program's exit code. Done; `test/bootstrap.rs` checks that every example runs like the interpreter.
+2.  **The tests use the compiler in Koji**: `test/language.rs` and `test/compiler.rs` compile and run their programs with it, instead of the interpreter in Rust inside the test process. The language tests already pass compiled (the last differences, nested functions, `range` as a value, `Set.from` of a later type and the variants of a module, are done).
+3.  **The seed**: `bootstrap/kojic.c.gz` and a script that builds `kojic` from it; a test checks that the seed regenerated reaches the fixed point.
+4.  **The compiler and the interpreter in Rust are removed** (`src/`); what stays in Rust is the runtime and the code that runs the tests.
 
 ### Optimizations
 

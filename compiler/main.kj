@@ -1,5 +1,5 @@
-// kojic, the Koji compiler written in Koji: the same commands as the kojic written in Rust, except
-// `run` (there is no interpreter in Koji). It compiles itself (test/bootstrap.rs).
+// kojic, the Koji compiler written in Koji: the same commands as the kojic written in Rust. It has
+// no interpreter: `run` compiles the program and runs it. It compiles itself (test/bootstrap.rs).
 
 import file
 import path
@@ -16,6 +16,7 @@ immut usage = [
     'kojic - the Koji programming language (the compiler written in Koji)',
     '',
     'Usage:',
+    '    kojic run <file.kj> [arguments]   check, compile and run a program',
     '    kojic check <file.kj>             only check syntax and types',
     '    kojic build <file.kj> [options]   compile a program to an executable',
     '        -o <output>                   the executable (default: the file name without .kj)',
@@ -209,6 +210,22 @@ function variable(name: string, otherwise: string): string {
     }
 }
 
+// A new path in the temporary directory, ending with `extension`: named after the time, with a
+// number after it if that name is taken.
+function temporary(extension: string): string {
+    immut directory = variable('TMPDIR', '/tmp')
+    immut unique = string(time.now()).replace('.', '')
+    mut name = path.join(directory, `kojic-${unique}${extension}`)
+    mut count = 1
+
+    while (file.exists(name)) {
+        name = path.join(directory, `kojic-${unique}-${count}${extension}`)
+        count += 1
+    }
+
+    return name
+}
+
 // Compiles the C of a program to `output` with the system's C compiler, linked with the runtime.
 function compileC(source: string, output: string): Result[void, string] {
     immut runtime = match (system.env('KOJI_RUNTIME')) {
@@ -216,9 +233,7 @@ function compileC(source: string, output: string): Result[void, string] {
         None => return Err('compile error: set KOJI_RUNTIME to the runtime library (libkoji_runtime.a) to build an executable')
     }
     // A file of its own in the temporary directory, removed after.
-    immut directory = variable('TMPDIR', '/tmp')
-    immut unique = string(time.now()).replace('.', '')
-    immut c = path.join(directory, `kojic-${unique}.c`)
+    immut c = temporary('.c')
     writeFile(c, source)?
     immut compiler = variable('KOJI_CC', 'cc')
     mut args = ['-O2', '-o', output, c, runtime]
@@ -267,6 +282,38 @@ function build(args: string[]) {
     }
 }
 
+// `kojic run <file.kj> [arguments]`: compiles the program to a temporary executable, runs it with
+// the arguments and the terminal of kojic, and ends with its exit code.
+function runProgram(args: string[]) {
+    immut program = match (lowered(args[0])) {
+        Ok(program) => program
+        Err(message) => {
+            printError(message)
+            system.exit(1)
+        }
+    }
+    immut executable = temporary('')
+
+    match (compileC(text(generate(program)), executable)) {
+        Ok(_) => {}
+        Err(message) => {
+            printError(message)
+            system.exit(1)
+        }
+    }
+
+    immut code = match (system.run(executable, args[1..])) {
+        Ok(code) => code
+        Err(error) => {
+            printError(`cannot run the program: ${error}`)
+            1
+        }
+    }
+    file.remove(executable)
+    // A program stopped by a signal has no exit code.
+    system.exit(if (code < 0) { 1 } else { code })
+}
+
 immut args = system.args()
 immut command = if (args.length() > 0) { args[0] } else { '' }
 
@@ -295,13 +342,10 @@ if (args.length() == 1 and command in ['help', '--help', '-h']) {
     system.exit(0)
 }
 
-if (command == 'run') {
-    printError("'run' needs the interpreter, which is in the kojic written in Rust: use 'kojic build' and run the executable")
-    system.exit(2)
-}
+if (command == 'run' and args.length() >= 2) { runProgram(args[1..]) }
 
 if (args.length() == 1 and command.endsWith('.kj')) {
-    printError(`use 'kojic build ${command}' to compile a program\n\n${usage}`)
+    printError(`use 'kojic run ${command}' to run a program\n\n${usage}`)
     system.exit(2)
 }
 

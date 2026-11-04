@@ -392,6 +392,56 @@ fn the_compiler_in_koji_builds_programs() {
     assert!(Command::new(compiler).args(["check", "examples/shapes.kj"]).status().unwrap().success());
 }
 
+/// Runs `command` with `input` as its standard input; gives its standard output, standard error
+/// output and exit code.
+fn run_with_input(command: &mut Command, input: &str) -> (String, String, Option<i32>) {
+    use std::io::Write;
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // A program that does not read its input may end before it is written.
+    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+    let result = child.wait_with_output().unwrap();
+    (
+        String::from_utf8_lossy(&result.stdout).to_string(),
+        String::from_utf8_lossy(&result.stderr).to_string(),
+        result.status.code(),
+    )
+}
+
+#[test]
+fn the_compiler_in_koji_runs_programs() {
+    // `kojic run` compiles the program and runs it: the same outputs and exit code as the
+    // interpreter of the kojic written in Rust, with the arguments and the input of kojic.
+    let compiler = koji_compiler();
+    let mut files: Vec<PathBuf> = std::fs::read_dir("examples")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "kj"))
+        .collect();
+    files.sort();
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-runs");
+    std::fs::create_dir_all(&directory).unwrap();
+    let program = directory.join("program.kj");
+    std::fs::write(
+        &program,
+        "import system\nimmut name = input('name? ')\nprint(name, system.args())\nprintError('to errors')\nprint(1 / (system.args().length() - 2))\n",
+    )
+    .unwrap();
+    files.push(program);
+    for file in files {
+        let koji = run_with_input(
+            Command::new(compiler).arg("run").arg(&file).args(["one", "two"]).env("KOJI_RUNTIME", env!("KOJI_RUNTIME_LIB")),
+            "Ana\n",
+        );
+        let rust = run_with_input(Command::new(env!("CARGO_BIN_EXE_kojic")).arg("run").arg(&file).args(["one", "two"]), "Ana\n");
+        assert_eq!(koji, rust, "{} runs differently", file.display());
+    }
+}
+
 /// Phase 4: the compiler written in Koji compiles itself. Stage 1 is the compiler in Koji built by
 /// the kojic written in Rust; stage 1 builds stage 2 from the same source, and the C that stage 2
 /// generates for the compiler must be the same as stage 1's. Slow (the C compiler builds the
