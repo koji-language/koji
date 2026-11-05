@@ -633,6 +633,31 @@ print(kind(Word('if')), kind(Word('of')), kind(Number(1, true)), kind(Mark('+'))
 }
 
 #[test]
+fn chars_appended() {
+    // `text += string(c)` appends the char in place (in UTF-8), without a string for it; a copy
+    // keeps its value.
+    assert_same(
+        "chars appended",
+        "\
+mut text = ''
+mut copies: string[] = []
+
+for c in 'aé€😀b' {
+    text += string(c)
+    copies.push(text)
+}
+
+immut kept = text
+text += string('!')
+mut other = kept
+other += string('?')
+print(text, kept, other, copies, text.length())
+",
+        "aé€😀b! aé€😀b aé€😀b? ['a', 'aé', 'aé€', 'aé€😀', 'aé€😀b'] 6\n",
+    );
+}
+
+#[test]
 fn values_moved_at_their_last_use() {
     // `text += c` adds in place only when no one else sees the string: a copy keeps its value.
     assert_same(

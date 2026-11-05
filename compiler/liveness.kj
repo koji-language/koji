@@ -1,21 +1,44 @@
-// Which locals are still read after each instruction (liveness, by the usual backward analysis
+// Which locals each instruction reads for the last time (liveness, by the usual backward analysis
 // over the blocks of a function). A value read for the last time can be moved instead of copied
-// (see `CopyIns`, `ReturnT` and `StrConcat` in cgen.kj).
+// (see `CopyIns`, `RecordNewIns` and `StrConcat` in cgen.kj).
 
 import { Operand, Place, Target, Step, StdArg, Instruction, Terminator, IrFunction } from 'ir.kj'
 
-// For each block, and each instruction in it, the locals read after the instruction (by a later
-// one, by the terminator or by another block).
-export function liveAfter(routine: IrFunction): Set[int][][] {
+// For each block, and each instruction in it, the locals it reads that are not read after it (by a
+// later one, by the terminator or by another block).
+export function lastUses(routine: IrFunction): int[][][] {
     immut count = routine.blocks.length()
     mut liveIn: Set[int][] = []
+    // For each block, the locals it reads before writing them (`gen`), and those it writes
+    // (`kill`): what it needs is `gen` and what the blocks after it need that it does not write.
+    mut gen: Set[int][] = []
+    mut kill: Set[int][] = []
 
-    for i in range(count) {
-        liveIn.push(Set.from([]))
+    for index in range(count) {
+        immut block = routine.blocks[index]
+        mut reads: Set[int] = Set.from([])
+        mut writes: Set[int] = Set.from([])
+        terminatorUses(block.terminator, mut reads)
+
+        for i in range(block.instructions.length()) {
+            immut instruction = block.instructions[block.instructions.length() - 1 - i]
+
+            for local in defs(instruction) {
+                reads.remove(local)
+                writes.add(local)
+            }
+
+            for local in uses(instruction) {
+                reads.add(local)
+            }
+        }
+
+        gen.push(reads)
+        kill.push(writes)
+        liveIn.push(reads)
     }
 
-    // Until nothing changes: what a block needs is what it reads before writing, and what the
-    // blocks after it need that it does not write.
+    // Until nothing changes (the sets only grow).
     mut changed = true
 
     while (changed) {
@@ -23,34 +46,57 @@ export function liveAfter(routine: IrFunction): Set[int][][] {
 
         for i in range(count) {
             immut index = count - 1 - i
-            immut needed = blockLiveIn(routine, index, liveOut(routine, index, liveIn))
+            mut needed = liveIn[index]
+            immut before = needed.length()
 
-            if (needed.length() != liveIn[index].length()) {
+            for next in successors(routine.blocks[index].terminator) {
+                for local in liveIn[next] {
+                    if (not kill[index].has(local)) { needed.add(local) }
+                }
+            }
+
+            if (needed.length() != before) {
                 liveIn[index] = needed
                 changed = true
             }
         }
     }
 
-    mut result: Set[int][][] = []
+    // Each block backwards, with the locals live after each instruction changed in place.
+    mut result: int[][][] = []
 
     for index in range(count) {
         immut block = routine.blocks[index]
         mut live = liveOut(routine, index, liveIn)
         terminatorUses(block.terminator, mut live)
-        mut after: Set[int][] = []
+        mut lasts: int[][] = []
 
         for i in range(block.instructions.length()) {
-            after.push(Set.from([]))
+            lasts.push([])
         }
 
         for i in range(block.instructions.length()) {
             immut position = block.instructions.length() - 1 - i
-            after[position] = live
-            live = step(block.instructions[position], live)
+            immut instruction = block.instructions[position]
+            immut read = uses(instruction)
+            mut last: int[] = []
+
+            for local in read {
+                if (not live.has(local) and not (local in last)) { last.push(local) }
+            }
+
+            lasts[position] = last
+
+            for local in defs(instruction) {
+                live.remove(local)
+            }
+
+            for local in read {
+                live.add(local)
+            }
         }
 
-        result.push(after)
+        result.push(lasts)
     }
 
     return result
@@ -64,33 +110,6 @@ function liveOut(routine: IrFunction, index: int, liveIn: Set[int][]): Set[int] 
         for local in liveIn[next] {
             live.add(local)
         }
-    }
-
-    return live
-}
-
-function blockLiveIn(routine: IrFunction, index: int, out: Set[int]): Set[int] {
-    immut block = routine.blocks[index]
-    mut live = out
-    terminatorUses(block.terminator, mut live)
-
-    for i in range(block.instructions.length()) {
-        live = step(block.instructions[block.instructions.length() - 1 - i], live)
-    }
-
-    return live
-}
-
-// The locals live before an instruction, from those live after it.
-function step(instruction: Instruction, after: Set[int]): Set[int] {
-    mut live = after
-
-    for local in defs(instruction) {
-        live.remove(local)
-    }
-
-    for local in uses(instruction) {
-        live.add(local)
     }
 
     return live

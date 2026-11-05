@@ -109,13 +109,34 @@ pub extern "C" fn koji_string_concat(a: *const KojiString, b: *const KojiString)
 /// string built piece by piece (`text += c`) costs a constant time per piece on average.
 #[no_mangle]
 pub extern "C" fn koji_string_append(a: *mut KojiString, b: *const KojiString) -> *mut KojiString {
-    let unique = unsafe { (*a).references.get() == 1 } && !std::ptr::eq(a, b);
-    if !unique {
+    if std::ptr::eq(a, b) {
         let result = koji_string_concat(a, b);
         koji_string_release(a);
         return result;
     }
-    let (length, more) = unsafe { ((*a).length, string_text(b)) };
+    append_bytes(a, string_text(b).as_bytes())
+}
+
+/// `text + string(c)` where `text` is read for the last time: like `koji_string_append`, without
+/// a string for the char.
+#[no_mangle]
+pub extern "C" fn koji_string_append_char(a: *mut KojiString, code: u32) -> *mut KojiString {
+    let mut buffer = [0u8; 4];
+    append_bytes(a, char_of(code).encode_utf8(&mut buffer).as_bytes())
+}
+
+/// `a` (given up) followed by the UTF-8 bytes `more`, which are not in `a`.
+fn append_bytes(a: *mut KojiString, more: &[u8]) -> *mut KojiString {
+    let length = unsafe { (*a).length };
+    if unsafe { (*a).references.get() } != 1 {
+        let text = string_text(a);
+        let result = allocate_with(length + more.len(), length + more.len(), |bytes| {
+            bytes[..length].copy_from_slice(text.as_bytes());
+            bytes[length..].copy_from_slice(more);
+        });
+        koji_string_release(a);
+        return result;
+    }
     unsafe {
         if length + more.len() <= (*a).capacity {
             std::ptr::copy_nonoverlapping(more.as_ptr(), (*a).bytes.as_mut_ptr().add(length), more.len());
@@ -126,7 +147,7 @@ pub extern "C" fn koji_string_append(a: *mut KojiString, b: *const KojiString) -
     let text = string_text(a);
     let grown = allocate_with(length + more.len(), (length + more.len()).max(2 * length), |bytes| {
         bytes[..length].copy_from_slice(text.as_bytes());
-        bytes[length..].copy_from_slice(more.as_bytes());
+        bytes[length..].copy_from_slice(more);
     });
     koji_string_free(a);
     grown
