@@ -155,8 +155,14 @@ pub(crate) fn new_list(element: *const KojiElementType, items: Vec<u64>) -> *mut
     let stride = words(unsafe { &*element });
     let mut list = KojiList { references: Cell::new(1), element, stride, items: std::ptr::NonNull::dangling().as_ptr(), length: 0, capacity: 0 };
     list.put(items);
-    Box::into_raw(Box::new(list))
+    // In the pool, like records: lists are many and short-lived.
+    let block = crate::pool::take(LIST_WORDS) as *mut KojiList;
+    unsafe { block.write(list) };
+    block
 }
+
+/// The words of a `KojiList`.
+const LIST_WORDS: usize = std::mem::size_of::<KojiList>() / 8;
 
 fn list<'a>(list: *const KojiList) -> &'a KojiList {
     unsafe { &*list }
@@ -223,11 +229,12 @@ pub extern "C" fn koji_list_release(list: *mut KojiList) {
 /// Releases the items of a list without references and frees it.
 #[no_mangle]
 pub extern "C" fn koji_list_free(list: *mut KojiList) {
-    let mut list = unsafe { Box::from_raw(list) };
-    for index in 0..list.len() {
-        list.release_item(index);
+    let reference = unsafe { &mut *list };
+    for index in 0..reference.len() {
+        reference.release_item(index);
     }
-    drop(list.take());
+    drop(reference.take());
+    crate::pool::give(list as *mut u8, LIST_WORDS);
 }
 
 /// The panic of an index out of range (`koji_list_get` of the prelude).

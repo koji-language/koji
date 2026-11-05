@@ -161,6 +161,16 @@ fn new_map(key: *const KojiElementType, value: *const KojiElementType) -> KojiMa
     }
 }
 
+/// The words of a `KojiMap`.
+const MAP_WORDS: usize = std::mem::size_of::<KojiMap>() / 8;
+
+/// A map in a block of the pool, like records and lists: maps are many and short-lived.
+fn boxed(map: KojiMap) -> *mut KojiMap {
+    let block = crate::pool::take(MAP_WORDS) as *mut KojiMap;
+    unsafe { block.write(map) };
+    block
+}
+
 /// Makes the map in `variable` its own (copying it if it is shared) and returns it.
 fn unshare<'a>(variable: *mut *mut KojiMap) -> &'a mut KojiMap {
     unsafe {
@@ -174,7 +184,7 @@ fn unshare<'a>(variable: *mut *mut KojiMap) -> &'a mut KojiMap {
                 copy.retain_entry(index);
             }
             current.references.set(current.references.get() - 1);
-            *variable = Box::into_raw(Box::new(copy));
+            *variable = boxed(copy);
         }
         &mut **variable
     }
@@ -183,7 +193,7 @@ fn unshare<'a>(variable: *mut *mut KojiMap) -> &'a mut KojiMap {
 /// A new empty map (`value` is `NULL` for a set).
 #[no_mangle]
 pub extern "C" fn koji_map_new(key: *const KojiElementType, value: *const KojiElementType) -> *mut KojiMap {
-    Box::into_raw(Box::new(new_map(key, value)))
+    boxed(new_map(key, value))
 }
 
 #[no_mangle]
@@ -206,7 +216,8 @@ pub extern "C" fn koji_map_release(map: *mut KojiMap) {
     for index in 0..reference.entries.len() {
         reference.release_entry(index);
     }
-    drop(unsafe { Box::from_raw(map) });
+    unsafe { std::ptr::drop_in_place(map) };
+    crate::pool::give(map as *mut u8, MAP_WORDS);
 }
 
 #[no_mangle]
@@ -331,7 +342,7 @@ pub extern "C" fn koji_map_values(map: *const KojiMap) -> *mut KojiList {
 #[no_mangle]
 pub extern "C" fn koji_set_from_list(list: *const KojiList) -> *mut KojiMap {
     let list = unsafe { &*list };
-    let mut set = Box::into_raw(Box::new(new_map(list.element() as *const KojiElementType, std::ptr::null())));
+    let mut set = boxed(new_map(list.element() as *const KojiElementType, std::ptr::null()));
     for index in 0..list.len() {
         koji_map_set(&mut set, list.slot(index), std::ptr::null());
     }
