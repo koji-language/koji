@@ -8,67 +8,135 @@ import { Operand, Place, Target, Step, StdArg, Instruction, Terminator, IrFuncti
 // later one, by the terminator or by another block).
 export function lastUses(routine: IrFunction): int[][][] {
     immut count = routine.blocks.length()
-    mut liveIn: Set[int][] = []
-    // For each block, the locals it reads before writing them (`gen`), and those it writes
-    // (`kill`): what it needs is `gen` and what the blocks after it need that it does not write.
-    mut gen: Set[int][] = []
-    mut kill: Set[int][] = []
+    immut locals = routine.locals.length()
+    // For each block, the blocks before it, and the locals it reads before writing them; for
+    // each local, the blocks that read it so, and those that write it.
+    mut predecessors: int[][] = []
+    mut readFirst: int[][] = []
+    mut writtenIn: int[][] = []
+
+    for index in range(count) {
+        predecessors.push([])
+    }
+
+    for local in range(locals) {
+        readFirst.push([])
+        writtenIn.push([])
+    }
+
+    // `seen[local] == stamp`: the local is in the set being built (a new stamp empties it).
+    mut seen: int[] = []
+    mut written: int[] = []
+
+    for local in range(locals) {
+        seen.push(-1)
+        written.push(-1)
+    }
 
     for index in range(count) {
         immut block = routine.blocks[index]
-        mut reads: Set[int] = Set.from([])
-        mut writes: Set[int] = Set.from([])
-        terminatorUses(block.terminator, mut reads)
 
-        for i in range(block.instructions.length()) {
-            immut instruction = block.instructions[block.instructions.length() - 1 - i]
-
-            for local in defs(instruction) {
-                reads.remove(local)
-                writes.add(local)
-            }
-
-            for local in uses(instruction) {
-                reads.add(local)
-            }
+        for next in successors(block.terminator) {
+            predecessors[next].push(index)
         }
 
-        gen.push(reads)
-        kill.push(writes)
-        liveIn.push(reads)
-    }
-
-    // Until nothing changes (the sets only grow).
-    mut changed = true
-
-    while (changed) {
-        changed = false
-
-        for i in range(count) {
-            immut index = count - 1 - i
-            mut needed = liveIn[index]
-            immut before = needed.length()
-
-            for next in successors(routine.blocks[index].terminator) {
-                for local in liveIn[next] {
-                    if (not kill[index].has(local)) { needed.add(local) }
+        // Forwards: a local read before the block writes it is read first.
+        for instruction in block.instructions {
+            for local in uses(instruction) {
+                if (written[local] != index and seen[local] != index) {
+                    seen[local] = index
+                    readFirst[local].push(index)
                 }
             }
 
-            if (needed.length() != before) {
-                liveIn[index] = needed
-                changed = true
+            for local in defs(instruction) {
+                if (written[local] != index) {
+                    written[local] = index
+                    writtenIn[local].push(index)
+                }
+            }
+        }
+
+        for local in terminatorUses(block.terminator) {
+            if (written[local] != index and seen[local] != index) {
+                seen[local] = index
+                readFirst[local].push(index)
             }
         }
     }
 
-    // Each block backwards, with the locals live after each instruction changed in place.
+    // For each local, from the blocks that read it first, back through the blocks before them:
+    // it is live at their end, and at their start unless they write it.
+    mut liveOut: int[][] = []
+    // `outStamp[block] == local`: the local is already live at the end of the block; `inStamp`,
+    // at its start; `writes`, the block writes it.
+    mut outStamp: int[] = []
+    mut inStamp: int[] = []
+    mut writes: int[] = []
+
+    for index in range(count) {
+        liveOut.push([])
+        outStamp.push(-1)
+        inStamp.push(-1)
+        writes.push(-1)
+    }
+
+    for local in range(locals) {
+        for index in writtenIn[local] {
+            writes[index] = local
+        }
+
+        mut pending: int[] = []
+
+        for index in readFirst[local] {
+            inStamp[index] = local
+            pending.push(index)
+        }
+
+        while (true) {
+            immut index = match (pending.pop()) {
+                Some(found) => found
+                None => break
+            }
+
+            for before in predecessors[index] {
+                if (outStamp[before] != local) {
+                    outStamp[before] = local
+                    liveOut[before].push(local)
+                }
+
+                if (writes[before] != local and inStamp[before] != local) {
+                    inStamp[before] = local
+                    pending.push(before)
+                }
+            }
+        }
+    }
+
+    // Each block backwards, with the locals live after each instruction (`live[local]`, cleared
+    // after the block through `set`).
+    mut live: boolean[] = []
+
+    for local in range(locals) {
+        live.push(false)
+    }
+
     mut result: int[][][] = []
 
     for index in range(count) {
         immut block = routine.blocks[index]
-        mut live = liveOut(routine, index, liveIn)
-        terminatorUses(block.terminator, mut live)
+        mut set: int[] = []
+
+        for local in liveOut[index] {
+            live[local] = true
+            set.push(local)
+        }
+
+        for local in terminatorUses(block.terminator) {
+            live[local] = true
+            set.push(local)
+        }
+
         mut lasts: int[][] = []
 
         for i in range(block.instructions.length()) {
@@ -82,37 +150,29 @@ export function lastUses(routine: IrFunction): int[][][] {
             mut last: int[] = []
 
             for local in read {
-                if (not live.has(local) and not (local in last)) { last.push(local) }
+                if (not live[local] and not (local in last)) { last.push(local) }
             }
 
             lasts[position] = last
 
             for local in defs(instruction) {
-                live.remove(local)
+                live[local] = false
             }
 
             for local in read {
-                live.add(local)
+                live[local] = true
+                set.push(local)
             }
+        }
+
+        for local in set {
+            live[local] = false
         }
 
         result.push(lasts)
     }
 
     return result
-}
-
-// What the blocks after block `index` need.
-function liveOut(routine: IrFunction, index: int, liveIn: Set[int][]): Set[int] {
-    mut live: Set[int] = Set.from([])
-
-    for next in successors(routine.blocks[index].terminator) {
-        for local in liveIn[next] {
-            live.add(local)
-        }
-    }
-
-    return live
 }
 
 function successors(terminator: Terminator): int[] {
@@ -124,24 +184,17 @@ function successors(terminator: Terminator): int[] {
     }
 }
 
-function terminatorUses(terminator: Terminator, mut live: Set[int]) {
-    match (terminator) {
-        BranchT(condition, _, _) => addOperand(condition, mut live)
-        ReturnT(value) => {
-            match (value) {
-                Some(operand) => addOperand(operand, mut live)
-                None => {}
-            }
-        }
-        _ => {}
-    }
-}
+// The locals a terminator reads.
+function terminatorUses(terminator: Terminator): int[] {
+    mut found: int[] = []
 
-function addOperand(value: Operand, mut live: Set[int]) {
-    match (value) {
-        LocalOp(id) => live.add(id)
+    match (terminator) {
+        BranchT(condition, _, _) => operandLocal(condition, mut found)
+        ReturnT(Some(value)) => operandLocal(value, mut found)
         _ => {}
     }
+
+    return found
 }
 
 // The locals an instruction gives a whole new value (without reading the old one).

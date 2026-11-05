@@ -733,6 +733,36 @@ print(joined(changing), changing, fromGlobal(), changing, joined(fixed))
 }
 
 #[test]
+fn items_set_in_place() {
+    // `items[i] = value` writes in place when the list is not shared and `i` is in it; a copy
+    // keeps its value, and an index out of range panics.
+    assert_same(
+        "items set",
+        "\
+mut words = ['a', 'b', 'c']
+immut before = words
+words[1] = 'x'
+words[2] = words[0] + '!'
+mut flags = [false, false]
+flags[1] = true
+mut amounts: decimal[] = [1.5, 2.5]
+amounts[0] = 9.25
+mut grid = [[1, 2], [3, 4]]
+immut row = grid[0]
+grid[0][1] = 7
+mut names: string[] = []
+for i in range(3) {
+    names.push(string(i))
+    names[i] = names[i] + '?'
+}
+print(words, before, flags, amounts, grid, row, names)
+",
+        "['a', 'x', 'a!'] ['a', 'b', 'c'] [false, true] [9.25, 2.5] [[1, 7], [3, 4]] [1, 2] ['0?', '1?', '2?']\n",
+    );
+    assert_same_panic("items set out of range", "mut words = ['a']\nwords[5] = 'z'\n", "index 5 out of range (length 1)");
+}
+
+#[test]
 fn values_moved_at_their_last_use() {
     // `text += c` adds in place only when no one else sees the string: a copy keeps its value.
     assert_same(

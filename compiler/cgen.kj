@@ -11,8 +11,9 @@ type Generator = {
     program: IrProgram
     // The lines of the C file.
     out: string[]
-    // The file of the function being generated.
+    // The file of the function being generated, and its name escaped for C (see `location`).
     file: string
+    escapedFile: string
     // For each function, which parameters are borrowed, and the globals that never change once
     // they have their value (borrow.kj).
     borrowed: boolean[][]
@@ -147,8 +148,9 @@ function utf8(c: char): int[] {
 function byteLength(text: string): int {
     mut length = 0
 
-    for c in text.chars() {
-        length += utf8(c).length()
+    for c in text {
+        immut code = c.code()
+        length += if (code < 128) { 1 } else { utf8(c).length() }
     }
 
     return length
@@ -161,19 +163,28 @@ function octal(byte: int): string {
 
 // A C string literal with the bytes of `text`.
 function cString(text: string): string {
-    mut literal = '"'
+    return `"${escaped(text)}"`
+}
 
-    for c in text.chars() {
+// The bytes of `text` in a C string literal: a printable ASCII character as it is, but `"`,
+// `\` and `?`; the others as octal escapes.
+function escaped(text: string): string {
+    mut literal = ''
+
+    for c in text {
+        immut code = c.code()
+
+        if (code >= 32 and code <= 126 and code != 34 and code != 92 and code != 63) {
+            literal += string(c)
+            continue
+        }
+
         for byte in utf8(c) {
-            if (byte == 34 or byte == 92 or byte == 63 or byte < 32 or byte > 126) {
-                literal += octal(byte)
-            } else {
-                literal += string(c)
-            }
+            literal += octal(byte)
         }
     }
 
-    return `${literal}"`
+    return literal
 }
 
 function functionName(id: int): string {
@@ -186,7 +197,7 @@ function Generator.line(mut self, text: string) {
 
 // The C source of `program`, line by line.
 export function generate(program: IrProgram): string[] {
-    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), constants: constantGlobals(program), smalls: smallFunctions(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [], charLocal: -1, charValue: '' }
+    mut generator: Generator = { program: program, out: [], file: '', escapedFile: '', borrowed: borrowedParams(program), constants: constantGlobals(program), smalls: smallFunctions(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [], charLocal: -1, charValue: '' }
     generator.generateProgram()
     return generator.out
 }
@@ -436,13 +447,14 @@ function inlinedSize(routine: IrFunction, sizes: int[]): int {
 }
 
 function Generator.location(self, line: int): string {
-    if (line == 0) { return cString(self.file) }
+    if (line == 0) { return `"${self.escapedFile}"` }
 
-    return cString(`${self.file}:${line}`)
+    return `"${self.escapedFile}:${line}"`
 }
 
 function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
     self.file = routine.file
+    self.escapedFile = escaped(routine.file)
     self.line(`${signature(id, routine, self.smalls[id])} {`)
 
     // A parameter the function only reads is borrowed: the caller keeps it alive (borrow.kj).
@@ -1021,9 +1033,37 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
 
             self.set(`l${dest}`, ty, share(ty, item))
         }
+        // In place when the list is not shared and the index is in it; the runtime copies the
+        // list, or panics, otherwise.
         ListSetIns(list, index, value, line) => {
             immut ty = self.operandType(routine, value)
-            self.withAddress(ty, value, `koji_list_set(${self.target(list, line)}, ${operand(index)}, VALUE, ${self.location(line)})`)
+            immut c = cType(ty)
+            immut moved = match (self.movable(routine, value)) {
+                Some(local) if (not targetReads(list, local) and LocalOp(local) != index) => Some(local)
+                _ => None
+            }
+            immut fresh = match (moved) {
+                Some(local) => `l${local}`
+                None => share(ty, operand(value))
+            }
+            self.line(`    { ${c} fresh = ${fresh}; int64_t at = ${operand(index)};`)
+
+            match (moved) {
+                Some(local) => self.line(`    l${local} = NULL;`)
+                None => {}
+            }
+
+            self.line(`    KojiList **variable = ${self.target(list, line)}; KojiList *items = *variable;`)
+            match (release(ty)) {
+                Some(name) => {
+                    self.line(`    if (items->references == 1 && (uint64_t)at < items->length) { ${c} *slot = (${c} *)&items->items[at * ${words(ty)}]; ${c} old = *slot; *slot = fresh; ${name}(old); }`)
+                    self.line(`    else { koji_list_set(variable, at, &fresh, ${self.location(line)}); ${name}(fresh); } }`)
+                }
+                None => {
+                    self.line(`    if (items->references == 1 && (uint64_t)at < items->length) *(${c} *)&items->items[at * ${words(ty)}] = fresh;`)
+                    self.line(`    else koji_list_set(variable, at, &fresh, ${self.location(line)}); }`)
+                }
+            }
         }
         // In place when the list is not shared and has room; the runtime grows it otherwise.
         ListPushIns(list, value, line) => {
