@@ -1,0 +1,323 @@
+// Which locals are still read after each instruction (liveness, by the usual backward analysis
+// over the blocks of a function). A value read for the last time can be moved instead of copied
+// (see `CopyIns`, `ReturnT` and `StrConcat` in cgen.kj).
+
+import { Operand, Place, Target, Step, StdArg, Instruction, Terminator, IrFunction } from 'ir.kj'
+
+// For each block, and each instruction in it, the locals read after the instruction (by a later
+// one, by the terminator or by another block).
+export function liveAfter(routine: IrFunction): Set[int][][] {
+    immut count = routine.blocks.length()
+    mut liveIn: Set[int][] = []
+
+    for i in range(count) {
+        liveIn.push(Set.from([]))
+    }
+
+    // Until nothing changes: what a block needs is what it reads before writing, and what the
+    // blocks after it need that it does not write.
+    mut changed = true
+
+    while (changed) {
+        changed = false
+
+        for i in range(count) {
+            immut index = count - 1 - i
+            immut needed = blockLiveIn(routine, index, liveOut(routine, index, liveIn))
+
+            if (needed.length() != liveIn[index].length()) {
+                liveIn[index] = needed
+                changed = true
+            }
+        }
+    }
+
+    mut result: Set[int][][] = []
+
+    for index in range(count) {
+        immut block = routine.blocks[index]
+        mut live = liveOut(routine, index, liveIn)
+        terminatorUses(block.terminator, mut live)
+        mut after: Set[int][] = []
+
+        for i in range(block.instructions.length()) {
+            after.push(Set.from([]))
+        }
+
+        for i in range(block.instructions.length()) {
+            immut position = block.instructions.length() - 1 - i
+            after[position] = live
+            live = step(block.instructions[position], live)
+        }
+
+        result.push(after)
+    }
+
+    return result
+}
+
+// What the blocks after block `index` need.
+function liveOut(routine: IrFunction, index: int, liveIn: Set[int][]): Set[int] {
+    mut live: Set[int] = Set.from([])
+
+    for next in successors(routine.blocks[index].terminator) {
+        for local in liveIn[next] {
+            live.add(local)
+        }
+    }
+
+    return live
+}
+
+function blockLiveIn(routine: IrFunction, index: int, out: Set[int]): Set[int] {
+    immut block = routine.blocks[index]
+    mut live = out
+    terminatorUses(block.terminator, mut live)
+
+    for i in range(block.instructions.length()) {
+        live = step(block.instructions[block.instructions.length() - 1 - i], live)
+    }
+
+    return live
+}
+
+// The locals live before an instruction, from those live after it.
+function step(instruction: Instruction, after: Set[int]): Set[int] {
+    mut live = after
+
+    for local in defs(instruction) {
+        live.remove(local)
+    }
+
+    for local in uses(instruction) {
+        live.add(local)
+    }
+
+    return live
+}
+
+function successors(terminator: Terminator): int[] {
+    return match (terminator) {
+        GotoT(block) => [block]
+        BranchT(_, thenBlock, elseBlock) => [thenBlock, elseBlock]
+        ReturnT(_) => []
+        UnreachableT => []
+    }
+}
+
+function terminatorUses(terminator: Terminator, mut live: Set[int]) {
+    match (terminator) {
+        BranchT(condition, _, _) => addOperand(condition, mut live)
+        ReturnT(value) => {
+            match (value) {
+                Some(operand) => addOperand(operand, mut live)
+                None => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+function addOperand(value: Operand, mut live: Set[int]) {
+    match (value) {
+        LocalOp(id) => live.add(id)
+        _ => {}
+    }
+}
+
+// The locals an instruction gives a whole new value (without reading the old one).
+function defs(instruction: Instruction): int[] {
+    return match (instruction) {
+        CopyIns(dest, _) => placeLocal(dest)
+        UnaryIns(dest, _, _, _) => [dest]
+        BinaryIns(dest, _, _, _, _) => [dest]
+        CallIns(dest, _, _, _, _) => optional(dest)
+        ListNewIns(dest, _) => [dest]
+        ListGetIns(dest, _, _, _) => [dest]
+        ListSliceIns(dest, _, _, _, _) => [dest]
+        RecordNewIns(dest, _, _) => [dest]
+        FieldGetIns(dest, _, _) => [dest]
+        ListRemoveIns(dest, _, _, _) => [dest]
+        StdCallIns(dest, _, _) => optional(dest)
+        TakeIns(dest, _) => [dest]
+        MakeClosureIns(dest, _, _) => [dest]
+        CallClosureIns(dest, _, _, _) => optional(dest)
+        MapNewIns(dest, _) => [dest]
+        MapGetIns(dest, _, _, _) => [dest]
+        MapLookupIns(dest, _, _) => [dest]
+        MapRemoveIns(dest, _, _, _) => [dest]
+        RangeNextIns(hasValue, value, _, _, _, _) => [hasValue, value]
+        _ => []
+    }
+}
+
+// The locals an instruction reads (a value changed in place is read too).
+function uses(instruction: Instruction): int[] {
+    mut found: int[] = []
+
+    match (instruction) {
+        CopyIns(_, value) => operandLocal(value, mut found)
+        UnaryIns(_, _, value, _) => operandLocal(value, mut found)
+        BinaryIns(_, _, left, right, _) => {
+            operandLocal(left, mut found)
+            operandLocal(right, mut found)
+        }
+        CallIns(_, _, args, writebacks, _) => {
+            for arg in args {
+                operandLocal(arg, mut found)
+            }
+
+            for writeback in writebacks {
+                targetLocals(writeback.target, mut found)
+            }
+        }
+        ListNewIns(_, items) => {
+            for item in items {
+                operandLocal(item, mut found)
+            }
+        }
+        ListGetIns(_, list, index, _) => {
+            operandLocal(list, mut found)
+            operandLocal(index, mut found)
+        }
+        ListSetIns(list, index, value, _) => {
+            targetLocals(list, mut found)
+            operandLocal(index, mut found)
+            operandLocal(value, mut found)
+        }
+        ListPushIns(list, value, _) => {
+            targetLocals(list, mut found)
+            operandLocal(value, mut found)
+        }
+        ListInsertIns(list, index, value, _) => {
+            targetLocals(list, mut found)
+            operandLocal(index, mut found)
+            operandLocal(value, mut found)
+        }
+        ListSortIns(list, _) => targetLocals(list, mut found)
+        ListSliceIns(_, list, start, end, _) => {
+            operandLocal(list, mut found)
+            optionalOperand(start, mut found)
+            optionalOperand(end, mut found)
+        }
+        RecordNewIns(_, _, fields) => {
+            for field in fields {
+                operandLocal(field, mut found)
+            }
+        }
+        FieldGetIns(_, record, _) => operandLocal(record, mut found)
+        FieldSetIns(record, _, value, _) => {
+            targetLocals(record, mut found)
+            operandLocal(value, mut found)
+        }
+        ListRemoveIns(_, list, index, _) => {
+            targetLocals(list, mut found)
+            optionalOperand(index, mut found)
+        }
+        StdCallIns(_, _, args) => {
+            for arg in args {
+                match (arg) {
+                    ValueArg(value) => operandLocal(value, mut found)
+                    _ => {}
+                }
+            }
+        }
+        TakeIns(_, source) => placeLocals(source, mut found)
+        DropIns(value, _) => placeLocals(value, mut found)
+        MakeClosureIns(_, _, environment) => optionalOperand(environment, mut found)
+        CallClosureIns(_, closure, args, _) => {
+            operandLocal(closure, mut found)
+
+            for arg in args {
+                operandLocal(arg, mut found)
+            }
+        }
+        ListSortByIns(list, comparison, _) => {
+            targetLocals(list, mut found)
+            operandLocal(comparison, mut found)
+        }
+        MapNewIns(_, entries) => {
+            for entry in entries {
+                operandLocal(entry.key, mut found)
+                operandLocal(entry.value, mut found)
+            }
+        }
+        MapGetIns(_, map, key, _) => {
+            operandLocal(map, mut found)
+            operandLocal(key, mut found)
+        }
+        MapLookupIns(_, map, key) => {
+            operandLocal(map, mut found)
+            operandLocal(key, mut found)
+        }
+        MapSetIns(map, key, value, _) => {
+            targetLocals(map, mut found)
+            operandLocal(key, mut found)
+            optionalOperand(value, mut found)
+        }
+        MapRemoveIns(_, map, key, _) => {
+            targetLocals(map, mut found)
+            operandLocal(key, mut found)
+        }
+        FailIns(message, _) => operandLocal(message, mut found)
+        PrintIns(value, _) => operandLocal(value, mut found)
+        // The state of the range is read and written at each step.
+        RangeNextIns(_, _, next, end, step, done) => {
+            found.push(next)
+            found.push(done)
+            operandLocal(end, mut found)
+            operandLocal(step, mut found)
+        }
+        RangeCheckIns(step, _) => operandLocal(step, mut found)
+    }
+
+    return found
+}
+
+function operandLocal(value: Operand, mut found: int[]) {
+    match (value) {
+        LocalOp(id) => found.push(id)
+        _ => {}
+    }
+}
+
+function optionalOperand(value: Option[Operand], mut found: int[]) {
+    match (value) {
+        Some(operand) => operandLocal(operand, mut found)
+        None => {}
+    }
+}
+
+function placeLocals(where: Place, mut found: int[]) {
+    match (where) {
+        LocalPlace(id) => found.push(id)
+        GlobalPlace(_) => {}
+    }
+}
+
+// The root of a target and the operands of its path (indexes and keys).
+function targetLocals(target: Target, mut found: int[]) {
+    placeLocals(target.root, mut found)
+
+    for part in target.path {
+        match (part) {
+            IndexStep(index) => operandLocal(index, mut found)
+            KeyStep(key) => operandLocal(key, mut found)
+            FieldStep(_) => {}
+        }
+    }
+}
+
+function placeLocal(where: Place): int[] {
+    return match (where) {
+        LocalPlace(id) => [id]
+        GlobalPlace(_) => []
+    }
+}
+
+function optional(dest: Option[int]): int[] {
+    return match (dest) {
+        Some(local) => [local]
+        None => []
+    }
+}

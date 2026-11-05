@@ -4,6 +4,7 @@
 import { Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
 import { preludeLines } from 'prelude.kj'
 import { borrowedParams } from 'borrow.kj'
+import { liveAfter } from 'liveness.kj'
 
 type Generator = {
     program: IrProgram
@@ -15,6 +16,11 @@ type Generator = {
     borrowed: boolean[][]
     // Those of the function being generated.
     current: boolean[]
+    // The locals read after each instruction of the function being generated (liveness.kj), and
+    // the position of the instruction being generated.
+    live: Set[int][][]
+    block: int
+    position: int
 }
 
 function cType(ty: Ty): string {
@@ -165,7 +171,7 @@ function Generator.line(mut self, text: string) {
 
 // The C source of `program`, line by line.
 export function generate(program: IrProgram): string[] {
-    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), current: [] }
+    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), current: [], live: [], block: 0, position: 0 }
     generator.generateProgram()
     return generator.out
 }
@@ -349,11 +355,15 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
         self.line(`    ${cType(info.ty)} l${local} = ${initial};${comment}`)
     }
 
+    self.live = liveAfter(routine)
+
     for block in range(routine.blocks.length()) {
         self.line(`b${block}:;`)
+        self.block = block
 
-        for instruction in routine.blocks[block].instructions {
-            self.instruction(routine, instruction)
+        for position in range(routine.blocks[block].instructions.length()) {
+            self.position = position
+            self.instruction(routine, routine.blocks[block].instructions[position])
         }
 
         self.terminator(routine, routine.blocks[block].terminator)
@@ -642,6 +652,17 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
     match (instruction) {
         CopyIns(dest, value) => {
             immut ty = self.placeType(routine, dest)
+
+            // Read for the last time: the reference moves, without retaining and releasing.
+            match (self.movable(routine, value)) {
+                Some(local) if (dest != LocalPlace(local)) => {
+                    self.set(place(dest), ty, `l${local}`)
+                    self.line(`    l${local} = NULL;`)
+                    return
+                }
+                _ => {}
+            }
+
             self.set(place(dest), ty, share(ty, operand(value)))
         }
         UnaryIns(dest, op, value, line) => self.setLocal(routine, dest, unaryExpression(op, operand(value), self.location(line)))
@@ -658,6 +679,18 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                 'ListContains' => {
                     immut item = itemOf(self.operandType(routine, right))
                     expression = `({ ${cType(item)} item = ${operand(left)}; koji_list_contains(${operand(right)}, &item); })`
+                }
+                // `text + more` where `text` is read for the last time: the runtime adds to it in
+                // place when no one else sees it.
+                'StrConcat' => {
+                    match (self.movable(routine, left)) {
+                        Some(local) if (left != right and dest != local) => {
+                            self.setLocal(routine, dest, `koji_string_append(l${local}, ${operand(right)})`)
+                            self.line(`    l${local} = NULL;`)
+                            return
+                        }
+                        _ => expression = self.binary(op, operand(left), operand(right), line)
+                    }
                 }
                 _ => expression = self.binary(op, operand(left), operand(right), line)
             }
@@ -985,6 +1018,27 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
 }
 
 // Releases the values the function owns (before it returns).
+// The local of `value` when this instruction reads it for the last time and owns it (not a
+// borrowed or a `mut` parameter, of a managed type): its reference can move.
+function Generator.movable(self, routine: IrFunction, value: Operand): Option[int] {
+    immut local = match (value) {
+        LocalOp(id) => id
+        _ => return None
+    }
+
+    if (not isManaged(routine.locals[local].ty)) { return None }
+
+    if (local < routine.params) {
+        if (self.current[local]) { return None }
+
+        if (local < routine.writeback.length() and routine.writeback[local]) { return None }
+    }
+
+    if (self.live[self.block][self.position].has(local)) { return None }
+
+    return Some(local)
+}
+
 function Generator.releaseLocals(mut self, routine: IrFunction) {
     for id in range(routine.locals.length()) {
         // A borrowed parameter is not the function's to release.
@@ -1013,6 +1067,20 @@ function Generator.terminator(mut self, routine: IrFunction, terminator: Termina
             match (value) {
                 // The result is computed before the locals are released: it may be one of them.
                 Some(returned) => {
+                    // A local returned moves out of the function, which ends.
+                    immut owned = match (returned) {
+                        LocalOp(local) => isManaged(routine.locals[local].ty) and not (local < routine.params and (self.current[local] or (local < routine.writeback.length() and routine.writeback[local])))
+                        _ => false
+                    }
+
+                    if (owned) {
+                        self.line(`    { ${cType(routine.returns)} result = ${operand(returned)};`)
+                        self.line(`    ${operand(returned)} = NULL;`)
+                        self.releaseLocals(routine)
+                        self.line('    return result; }')
+                        return
+                    }
+
                     self.line(`    { ${cType(routine.returns)} result = ${share(routine.returns, operand(returned))};`)
                     self.releaseLocals(routine)
                     self.line('    return result; }')

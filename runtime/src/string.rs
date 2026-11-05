@@ -16,6 +16,8 @@ use crate::numbers::format_float;
 pub struct KojiString {
     references: Cell<usize>,
     length: usize,
+    /// The bytes the block holds; more than `length` when the string grew in place.
+    capacity: usize,
     bytes: [u8; 0],
 }
 
@@ -25,19 +27,26 @@ impl KojiString {
     }
 }
 
-/// The 8-byte words of a string of `length` bytes.
-fn block_words(length: usize) -> usize {
-    std::mem::size_of::<KojiString>() / 8 + length.div_ceil(8)
+/// The 8-byte words of a string that holds `capacity` bytes.
+fn block_words(capacity: usize) -> usize {
+    std::mem::size_of::<KojiString>() / 8 + capacity.div_ceil(8)
 }
 
-/// A new string of `length` bytes that `fill` writes (they must be UTF-8).
-fn allocate(length: usize, fill: impl FnOnce(&mut [u8])) -> *mut KojiString {
+/// A new string of `length` bytes that `fill` writes (they must be UTF-8), in a block that holds
+/// `capacity` bytes.
+fn allocate_with(length: usize, capacity: usize, fill: impl FnOnce(&mut [u8])) -> *mut KojiString {
+    // The whole last word is usable.
+    let capacity = capacity.div_ceil(8) * 8;
     unsafe {
-        let string = crate::pool::take(block_words(length)) as *mut KojiString;
-        string.write(KojiString { references: Cell::new(1), length, bytes: [] });
+        let string = crate::pool::take(block_words(capacity)) as *mut KojiString;
+        string.write(KojiString { references: Cell::new(1), length, capacity, bytes: [] });
         fill(std::slice::from_raw_parts_mut((*string).bytes.as_mut_ptr(), length));
         string
     }
+}
+
+fn allocate(length: usize, fill: impl FnOnce(&mut [u8])) -> *mut KojiString {
+    allocate_with(length, length, fill)
 }
 
 pub(crate) fn new_string(text: String) -> *mut KojiString {
@@ -62,8 +71,8 @@ pub extern "C" fn koji_string_new(bytes: *const u8, length: usize) -> *mut KojiS
 /// Frees a string without references (the prelude releases strings inline).
 #[no_mangle]
 pub extern "C" fn koji_string_free(string: *mut KojiString) {
-    let length = unsafe { (*string).length };
-    crate::pool::give(string as *mut u8, block_words(length));
+    let capacity = unsafe { (*string).capacity };
+    crate::pool::give(string as *mut u8, block_words(capacity));
 }
 
 #[no_mangle]
@@ -93,6 +102,34 @@ pub extern "C" fn koji_string_concat(a: *const KojiString, b: *const KojiString)
         bytes[..a.len()].copy_from_slice(a.as_bytes());
         bytes[a.len()..].copy_from_slice(b.as_bytes());
     })
+}
+
+/// `a + b`, where the caller gives its reference to `a` (it read `a` for the last time): when no
+/// one else sees `a`, `b` is added to it in place, and its block grows by doubling, so that a
+/// string built piece by piece (`text += c`) costs a constant time per piece on average.
+#[no_mangle]
+pub extern "C" fn koji_string_append(a: *mut KojiString, b: *const KojiString) -> *mut KojiString {
+    let unique = unsafe { (*a).references.get() == 1 } && !std::ptr::eq(a, b);
+    if !unique {
+        let result = koji_string_concat(a, b);
+        koji_string_release(a);
+        return result;
+    }
+    let (length, more) = unsafe { ((*a).length, string_text(b)) };
+    unsafe {
+        if length + more.len() <= (*a).capacity {
+            std::ptr::copy_nonoverlapping(more.as_ptr(), (*a).bytes.as_mut_ptr().add(length), more.len());
+            (*a).length += more.len();
+            return a;
+        }
+    }
+    let text = string_text(a);
+    let grown = allocate_with(length + more.len(), (length + more.len()).max(2 * length), |bytes| {
+        bytes[..length].copy_from_slice(text.as_bytes());
+        bytes[length..].copy_from_slice(more.as_bytes());
+    });
+    koji_string_free(a);
+    grown
 }
 
 /// `text * count` (an empty string for a count below 1).
@@ -207,4 +244,31 @@ pub extern "C" fn koji_char_repr(code: u32) -> *mut KojiString {
 #[no_mangle]
 pub extern "C" fn koji_string_contains_char(haystack: *const KojiString, code: u32) -> bool {
     string_text(haystack).contains(char_of(code))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appending_in_place_only_when_no_one_else_sees_it() {
+        let piece = from_str("ab");
+        let mut text = from_str("");
+        for _ in 0..1000 {
+            text = koji_string_append(text, piece);
+        }
+        assert_eq!(string_text(text).len(), 2000);
+        assert!(string_text(text).starts_with("abab"));
+        // Shared: a new string, and the other one does not change.
+        koji_string_retain(text);
+        let more = koji_string_append(text, piece);
+        assert_eq!(string_text(text).len(), 2000);
+        assert_eq!(string_text(more).len(), 2002);
+        // The same string on both sides.
+        let twice = koji_string_append(more, more);
+        assert_eq!(string_text(twice).len(), 4004);
+        for string in [text, twice, piece] {
+            koji_string_release(string);
+        }
+    }
 }

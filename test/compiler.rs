@@ -459,6 +459,49 @@ print(longest(['ab', 'abc'], ''), longest([], 'none'))
 }
 
 #[test]
+fn values_moved_at_their_last_use() {
+    // `text += c` adds in place only when no one else sees the string: a copy keeps its value.
+    assert_same(
+        "moves",
+        "\
+function build(count: int): string {
+    mut text = ''
+
+    for i in range(count) {
+        text += string(i % 10)
+    }
+
+    return text
+}
+
+function pair(first: string): string[] {
+    immut second = first + '!'
+    return [first, second]
+}
+
+mut text = build(5)
+immut copy = text
+text += 'x'
+immut again = text
+text += 'y'
+print(text, copy, again, build(12).length())
+print(pair('a'), text + text)
+
+mut names: string[] = []
+
+for name in ['ana', 'bia'] {
+    mut shout = name
+    shout += '!'
+    names.push(shout)
+}
+
+print(names)
+",
+        "01234xy 01234 01234x 12\n['a', 'a!'] 01234xy01234xy\n['ana!', 'bia!']\n",
+    );
+}
+
+#[test]
 fn compound_assignments() {
     assert_same(
         "compound",

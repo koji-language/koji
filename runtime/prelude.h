@@ -21,6 +21,7 @@ typedef struct {
 struct KojiString {
     size_t references;
     size_t length;
+    size_t capacity;
     char bytes[];
 };
 
@@ -36,6 +37,8 @@ static inline void koji_string_release(KojiString *string) {
     if (string && --string->references == 0) koji_string_free(string);
 }
 KojiString *koji_string_concat(const KojiString *a, const KojiString *b);
+/* `a + b`, taking the reference to `a`: adds to it in place when no one else sees it. */
+KojiString *koji_string_append(KojiString *a, const KojiString *b);
 KojiString *koji_string_repeat(const KojiString *string, int64_t count);
 bool koji_string_equal(const KojiString *a, const KojiString *b);
 int32_t koji_string_compare(const KojiString *a, const KojiString *b);
