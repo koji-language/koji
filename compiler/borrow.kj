@@ -3,9 +3,10 @@
 // value of a global could die during the call (the function may change the global): the caller
 // keeps a reference of its own to a global it passes (see `CallIns` in cgen.kj).
 //
-// A local is borrowed the same way when it is only given the value of a field of a borrowed
-// parameter (or of such a local): the parameter does not change during the call, so its field
-// keeps the value alive (see `FieldGetIns` in cgen.kj).
+// A local is borrowed the same way when it is only given values read from something that stays
+// as it is during the call (a borrowed parameter, such a local, or a global that never changes):
+// a field, an item of a list, or the value itself. What it was read from keeps the value alive
+// (see `FieldGetIns`, `ListGetIns` and `CopyIns` in cgen.kj).
 
 import { Ty, Operand, Place, Target, Instruction, IrFunction, IrProgram, isManaged } from 'ir.kj'
 
@@ -50,23 +51,101 @@ export function borrowedParams(program: IrProgram): boolean[][] {
     return result
 }
 
+// The globals that never change once they have their value: given it by one copy (their
+// declaration), and never changed, moved or dropped after.
+export function constantGlobals(program: IrProgram): boolean[] {
+    mut copies: int[] = []
+    mut changed: boolean[] = []
+
+    for global in program.globals {
+        copies.push(0)
+        changed.push(false)
+    }
+
+    for routine in program.functions {
+        for block in routine.blocks {
+            for instruction in block.instructions {
+                match (instruction) {
+                    CopyIns(GlobalPlace(id), _) => copies[id] += 1
+                    _ => {
+                        for id in changedGlobals(instruction) {
+                            changed[id] = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    mut result: boolean[] = []
+
+    for id in range(program.globals.length()) {
+        result.push(copies[id] == 1 and not changed[id])
+    }
+
+    return result
+}
+
+// The globals an instruction changes in place, moves out or drops.
+function changedGlobals(instruction: Instruction): int[] {
+    immut targets: Target[] = match (instruction) {
+        CallIns(_, _, _, writebacks, _) => {
+            mut found: Target[] = []
+
+            for writeback in writebacks {
+                found.push(writeback.target)
+            }
+
+            found
+        }
+        ListSetIns(list, _, _, _) => [list]
+        ListPushIns(list, _, _) => [list]
+        ListInsertIns(list, _, _, _) => [list]
+        ListSortIns(list, _) => [list]
+        FieldSetIns(record, _, _, _) => [record]
+        ListRemoveIns(_, list, _, _) => [list]
+        ListSortByIns(list, _, _) => [list]
+        MapSetIns(map, _, _, _) => [map]
+        MapRemoveIns(_, map, _, _) => [map]
+        _ => []
+    }
+    mut found: int[] = []
+
+    for target in targets {
+        match (target.root) {
+            GlobalPlace(id) => found.push(id)
+            LocalPlace(_) => {}
+        }
+    }
+
+    match (instruction) {
+        TakeIns(_, GlobalPlace(id)) => found.push(id)
+        DropIns(GlobalPlace(id), _) => found.push(id)
+        _ => {}
+    }
+
+    return found
+}
+
 // For each local of the function, whether it is borrowed: the borrowed parameters `params`, and
-// the locals that only read a field of a borrowed one.
-export function borrowedLocals(routine: IrFunction, params: boolean[]): boolean[] {
+// the locals only given values read (a field, an item, the value) from a borrowed one or from a
+// global of `constants`.
+export function borrowedLocals(routine: IrFunction, params: boolean[], constants: boolean[]): boolean[] {
     mut flags: boolean[] = []
 
     for local in range(routine.locals.length()) {
         flags.push(local < params.length() and params[local])
     }
 
-    // The instructions that change each local, and whether each one reads a field.
+    // The instructions that change each local, those that read for it from a local (its source)
+    // and those that read for it from a global that never changes.
     mut writes: int[] = []
-    mut fieldReads: int[] = []
+    mut reads: int[] = []
     mut sources: int[][] = []
 
     for local in range(routine.locals.length()) {
         writes.push(0)
-        fieldReads.push(0)
+        reads.push(0)
         sources.push([])
     }
 
@@ -76,12 +155,25 @@ export function borrowedLocals(routine: IrFunction, params: boolean[]): boolean[
                 writes[local] += 1
             }
 
-            match (instruction) {
-                FieldGetIns(dest, LocalOp(record), _) => {
-                    fieldReads[dest] += 1
-                    sources[dest].push(record)
+            immut read: Option[Read] = match (instruction) {
+                FieldGetIns(dest, origin, _) => Some({ dest: dest, origin: origin })
+                ListGetIns(dest, origin, _, _) => Some({ dest: dest, origin: origin })
+                CopyIns(LocalPlace(dest), origin) => Some({ dest: dest, origin: origin })
+                _ => None
+            }
+
+            match (read) {
+                Some(found) => {
+                    match (found.origin) {
+                        LocalOp(source) if (source != found.dest) => {
+                            reads[found.dest] += 1
+                            sources[found.dest].push(source)
+                        }
+                        GlobalOp(id) if (constants[id]) => reads[found.dest] += 1
+                        _ => {}
+                    }
                 }
-                _ => {}
+                None => {}
             }
         }
     }
@@ -95,7 +187,7 @@ export function borrowedLocals(routine: IrFunction, params: boolean[]): boolean[
         for local in range(routine.params, routine.locals.length()) {
             if (flags[local] or not isManaged(routine.locals[local].ty)) { continue }
 
-            if (fieldReads[local] == 0 or writes[local] != fieldReads[local]) { continue }
+            if (reads[local] == 0 or writes[local] != reads[local]) { continue }
 
             mut all = true
 
@@ -111,6 +203,12 @@ export function borrowedLocals(routine: IrFunction, params: boolean[]): boolean[
     }
 
     return flags
+}
+
+// A value read for a local, and what it is read from.
+type Read = {
+    dest: int
+    origin: Operand
 }
 
 function owned(count: int): boolean[] {

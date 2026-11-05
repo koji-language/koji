@@ -694,6 +694,43 @@ print(found, table.names, before.names, before.ids.length(), table.ids['d'])
 }
 
 #[test]
+fn borrowed_items_and_globals() {
+    // An item of a borrowed list, and a value read from a global that never changes, are read
+    // without a reference; a global that changes keeps its old value alive for the call it was
+    // given to, and an item read from it has a reference of its own.
+    assert_same(
+        "borrowed items",
+        "\
+immut fixed = ['x', 'y']
+mut changing = ['a', 'b']
+
+function joined(words: string[]): string {
+    mut text = ''
+
+    for word in words {
+        changing = ['c']
+        text += word
+    }
+
+    immut first = words[0]
+    changing = ['q']
+    return text + first
+}
+
+function fromGlobal(): string {
+    immut item = changing[0]
+    changing = ['z']
+    immut copy = fixed
+    return item + copy[1] + fixed[0]
+}
+
+print(joined(changing), changing, fromGlobal(), changing, joined(fixed))
+",
+        "aba ['q'] qyx ['z'] xyx\n",
+    );
+}
+
+#[test]
 fn values_moved_at_their_last_use() {
     // `text += c` adds in place only when no one else sees the string: a copy keeps its value.
     assert_same(

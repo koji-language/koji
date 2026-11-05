@@ -3,7 +3,7 @@
 
 import { Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
 import { preludeLines } from 'prelude.kj'
-import { borrowedParams, borrowedLocals } from 'borrow.kj'
+import { borrowedParams, borrowedLocals, constantGlobals } from 'borrow.kj'
 import { lastUses } from 'liveness.kj'
 import { StackRecords, stackRecords } from 'escape.kj'
 
@@ -13,8 +13,10 @@ type Generator = {
     out: string[]
     // The file of the function being generated.
     file: string
-    // For each function, which parameters are borrowed (borrow.kj).
+    // For each function, which parameters are borrowed, and the globals that never change once
+    // they have their value (borrow.kj).
     borrowed: boolean[][]
+    constants: boolean[]
     // The borrowed locals of the function being generated: its borrowed parameters, and the
     // locals that only read their fields (borrow.kj).
     current: boolean[]
@@ -182,7 +184,7 @@ function Generator.line(mut self, text: string) {
 
 // The C source of `program`, line by line.
 export function generate(program: IrProgram): string[] {
-    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [], charLocal: -1, charValue: '' }
+    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), constants: constantGlobals(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [], charLocal: -1, charValue: '' }
     generator.generateProgram()
     return generator.out
 }
@@ -402,7 +404,7 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
     // A parameter the function only reads is borrowed: the caller keeps it alive (borrow.kj).
     // Another one gets a reference of its own, since the function changes it or moves it out. A
     // `mut` parameter is given its own reference by the caller (see `CallIns`).
-    self.current = borrowedLocals(routine, self.borrowed[id])
+    self.current = borrowedLocals(routine, self.borrowed[id], self.constants)
 
     for param in range(routine.params) {
         if (param < routine.writeback.length() and routine.writeback[param]) { continue }
@@ -780,7 +782,8 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
         CopyIns(dest, value) => {
             immut ty = self.placeType(routine, dest)
 
-            // An alias of a record on the stack (escape.kj).
+            // A borrowed local (borrow.kj), or an alias of a record on the stack (escape.kj): the
+            // value, without a reference of its own.
             match (dest) {
                 LocalPlace(local) if (self.current[local] and local >= routine.params) => {
                     self.line(`    l${local} = ${operand(value)};`)
@@ -871,7 +874,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
 
             for i in range(args.length()) {
                 match (args[i]) {
-                    GlobalOp(_) if (i < self.borrowed[callee].length() and self.borrowed[callee][i]) => {
+                    GlobalOp(global) if (not self.constants[global] and i < self.borrowed[callee].length() and self.borrowed[callee][i]) => {
                         kept.push(`kept${i}`)
                         values.push(`kept${i}`)
                     }
@@ -965,6 +968,13 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
         ListGetIns(dest, list, index, line) => {
             immut ty = routine.locals[dest].ty
             immut item = `*(${cType(ty)} const *)koji_list_get(${operand(list)}, ${operand(index)}, ${self.location(line)})`
+
+            // Borrowed: the list keeps the item alive (borrow.kj).
+            if (self.current[dest]) {
+                self.line(`    l${dest} = ${item};`)
+                return
+            }
+
             self.set(`l${dest}`, ty, share(ty, item))
         }
         ListSetIns(list, index, value, line) => {
