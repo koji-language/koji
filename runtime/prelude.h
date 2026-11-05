@@ -129,6 +129,8 @@ int64_t koji_list_index_of(const KojiList *list, const void *value);
 /* The memory of records and strings (runtime/src/pool.rs): the first free block of each size, in
    8-byte words up to 16, each free block holding the next one. */
 extern void *koji_pool[17];
+/* With KOJI_POOL=0, every block comes from the system and goes back to it (for valgrind). */
+extern bool koji_pool_off;
 void *koji_pool_refill(size_t words);
 void koji_pool_free(void *block, size_t words);
 
@@ -140,7 +142,7 @@ KOJI_INLINE void *koji_pool_take(size_t words) {
 }
 
 KOJI_INLINE void koji_pool_give(void *block, size_t words) {
-    if (words > 16) {
+    if (words > 16 || koji_pool_off) {
         koji_pool_free(block, words);
         return;
     }

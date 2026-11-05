@@ -30,6 +30,8 @@ export PATH=$PWD/build:$PATH
 
 After a change to the compiler, `bootstrap/build.sh --seed` also writes the seed again from the compiler it built, so that the next build starts from it.
 
+A compiled program keeps the memory of the small values it drops for the next ones, which is faster than asking the system each time. To check a program with valgrind, run it with `KOJI_POOL=0`: each value then gets its own memory from the system, and valgrind sees the use of a value after it was freed.
+
 ## Your First Program
 
 Create a file named `hello.kj`:

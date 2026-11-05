@@ -42,9 +42,11 @@ fn compile_and_run(path: &Path) -> Run {
     let executable = path.with_extension("");
     build(path, &executable);
     // Under valgrind when it is installed: a memory error (a double free, an invalid read)
-    // fails the test even when the output is right.
+    // fails the test even when the output is right. Without the pool, so that valgrind sees each
+    // block given back.
     let result = if has_valgrind() {
         Command::new("valgrind")
+            .env("KOJI_POOL", "0")
             .args(["-q", "--error-exitcode=99"])
             .arg(&executable)
             .output()

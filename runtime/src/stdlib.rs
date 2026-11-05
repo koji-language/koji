@@ -23,6 +23,7 @@ static STARTED: OnceLock<Instant> = OnceLock::new();
 /// Called by `main` before anything else.
 #[no_mangle]
 pub extern "C" fn koji_init(argc: i32, argv: *const *const c_char) {
+    crate::pool::adopt();
     let args = (1..argc.max(1) as usize)
         .map(|index| unsafe { CStr::from_ptr(*argv.add(index)) }.to_string_lossy().into_owned())
         .collect();
