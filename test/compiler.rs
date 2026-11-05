@@ -424,6 +424,41 @@ Set([9.75, 2.25, 1.5]) [9.75] [9.75, 2.25, 9.75, 2.25]\n\
 }
 
 #[test]
+fn borrowed_parameters() {
+    // `items` is borrowed (the function only reads it); given a global that the call changes, the
+    // caller keeps the old value alive until the call ends.
+    assert_same(
+        "borrowed",
+        "\
+mut names: string[] = ['a', 'b']
+
+function reset() {
+    names = ['x']
+}
+
+function show(items: string[]): string {
+    reset()
+    return items.join(',')
+}
+
+function longest(words: string[], fallback: string): string {
+    mut best = fallback
+
+    for word in words {
+        if (word.length() > best.length()) { best = word }
+    }
+
+    return best
+}
+
+print(show(names), names)
+print(longest(['ab', 'abc'], ''), longest([], 'none'))
+",
+        "a,b ['x']\nabc none\n",
+    );
+}
+
+#[test]
 fn compound_assignments() {
     assert_same(
         "compound",

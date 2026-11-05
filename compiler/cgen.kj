@@ -3,6 +3,7 @@
 
 import { Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
 import { preludeLines } from 'prelude.kj'
+import { borrowedParams } from 'borrow.kj'
 
 type Generator = {
     program: IrProgram
@@ -10,6 +11,10 @@ type Generator = {
     out: string[]
     // The file of the function being generated.
     file: string
+    // For each function, which parameters are borrowed (borrow.kj).
+    borrowed: boolean[][]
+    // Those of the function being generated.
+    current: boolean[]
 }
 
 function cType(ty: Ty): string {
@@ -160,7 +165,7 @@ function Generator.line(mut self, text: string) {
 
 // The C source of `program`, line by line.
 export function generate(program: IrProgram): string[] {
-    mut generator: Generator = { program: program, out: [], file: '' }
+    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), current: [] }
     generator.generateProgram()
     return generator.out
 }
@@ -310,11 +315,15 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
     self.file = routine.file
     self.line(`${signature(id, routine)} {`)
 
-    // Parameters are borrowed from the caller; a reference of their own keeps them alive even if
-    // the caller's variable changes during the call. A `mut` parameter is given its own reference
-    // by the caller (see `CallIns`).
+    // A parameter the function only reads is borrowed: the caller keeps it alive (borrow.kj).
+    // Another one gets a reference of its own, since the function changes it or moves it out. A
+    // `mut` parameter is given its own reference by the caller (see `CallIns`).
+    self.current = self.borrowed[id]
+
     for param in range(routine.params) {
         if (param < routine.writeback.length() and routine.writeback[param]) { continue }
+
+        if (self.current[param]) { continue }
 
         match (retain(routine.locals[param].ty)) {
             Some(name) => self.line(`    ${name}(l${param});`)
@@ -657,9 +666,30 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
         }
         CallIns(dest, callee, args, writebacks, line) => {
             mut values: string[] = []
+            // A global given to a borrowed parameter: the function may change the global, so the
+            // caller keeps the value alive with a reference of its own during the call.
+            mut kept: string[] = []
 
-            for arg in args {
-                values.push(operand(arg))
+            for i in range(args.length()) {
+                match (args[i]) {
+                    GlobalOp(_) if (i < self.borrowed[callee].length() and self.borrowed[callee][i]) => {
+                        kept.push(`kept${i}`)
+                        values.push(`kept${i}`)
+                    }
+                    _ => values.push(operand(args[i]))
+                }
+            }
+
+            // In a C block of their own: the names are reused by the next call.
+            if (kept.length() > 0) {
+                self.line('    {')
+
+                for i in range(args.length()) {
+                    if (`kept${i}` in kept) {
+                        immut ty = self.operandType(routine, args[i])
+                        self.line(`    ${cType(ty)} kept${i} = ${share(ty, operand(args[i]))};`)
+                    }
+                }
             }
 
             // The final values of the `mut` parameters, owned by the caller after the call (in a C
@@ -712,6 +742,17 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             }
 
             if (writebacks.length() > 0) { self.line('    }') }
+
+            for i in range(args.length()) {
+                if (`kept${i}` in kept) {
+                    match (release(self.operandType(routine, args[i]))) {
+                        Some(name) => self.line(`    ${name}(kept${i});`)
+                        None => {}
+                    }
+                }
+            }
+
+            if (kept.length() > 0) { self.line('    }') }
         }
         ListNewIns(dest, items) => {
             immut ty = routine.locals[dest].ty
@@ -946,6 +987,9 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
 // Releases the values the function owns (before it returns).
 function Generator.releaseLocals(mut self, routine: IrFunction) {
     for id in range(routine.locals.length()) {
+        // A borrowed parameter is not the function's to release.
+        if (id < self.current.length() and self.current[id]) { continue }
+
         match (release(routine.locals[id].ty)) {
             Some(name) => self.line(`    ${name}(l${id});`)
             None => {}

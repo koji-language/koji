@@ -1,0 +1,135 @@
+// Borrowed parameters: a parameter whose value the function only reads is borrowed from the caller,
+// which keeps it alive during the call, so the function neither retains nor releases it. Only the
+// value of a global could die during the call (the function may change the global): the caller
+// keeps a reference of its own to a global it passes (see `CallIns` in cgen.kj).
+
+import { Ty, Operand, Place, Target, Instruction, IrFunction, IrProgram, isManaged } from 'ir.kj'
+
+// For each function, which of its parameters are borrowed.
+export function borrowedParams(program: IrProgram): boolean[][] {
+    // A function called through a closure is called by code that does not know it: its
+    // parameters are owned, as before.
+    mut closures: Set[int] = Set.from([])
+
+    for routine in program.functions {
+        for block in routine.blocks {
+            for instruction in block.instructions {
+                match (instruction) {
+                    MakeClosureIns(_, code, _) => closures.add(code)
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    mut result: boolean[][] = []
+
+    for id in range(program.functions.length()) {
+        immut routine = program.functions[id]
+
+        if (closures.has(id)) {
+            result.push(owned(routine.params))
+            continue
+        }
+
+        immut changed = changedLocals(routine)
+        mut borrowed: boolean[] = []
+
+        for param in range(routine.params) {
+            immut written = param < routine.writeback.length() and routine.writeback[param]
+            borrowed.push(isManaged(routine.locals[param].ty) and not written and not changed.has(param))
+        }
+
+        result.push(borrowed)
+    }
+
+    return result
+}
+
+function owned(count: int): boolean[] {
+    mut flags: boolean[] = []
+
+    for i in range(count) {
+        flags.push(false)
+    }
+
+    return flags
+}
+
+// The locals an instruction of the function writes, changes in place, moves out or drops.
+function changedLocals(routine: IrFunction): Set[int] {
+    mut changed: Set[int] = Set.from([])
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            for local in changes(instruction) {
+                changed.add(local)
+            }
+        }
+    }
+
+    return changed
+}
+
+function changes(instruction: Instruction): int[] {
+    return match (instruction) {
+        CopyIns(dest, _) => placeLocal(dest)
+        UnaryIns(dest, _, _, _) => [dest]
+        BinaryIns(dest, _, _, _, _) => [dest]
+        CallIns(dest, _, _, writebacks, _) => {
+            mut locals = optional(dest)
+
+            for writeback in writebacks {
+                for local in targetLocal(writeback.target) {
+                    locals.push(local)
+                }
+            }
+
+            locals
+        }
+        ListNewIns(dest, _) => [dest]
+        ListGetIns(dest, _, _, _) => [dest]
+        ListSetIns(list, _, _, _) => targetLocal(list)
+        ListPushIns(list, _, _) => targetLocal(list)
+        ListInsertIns(list, _, _, _) => targetLocal(list)
+        ListSortIns(list, _) => targetLocal(list)
+        ListSliceIns(dest, _, _, _, _) => [dest]
+        RecordNewIns(dest, _, _) => [dest]
+        FieldGetIns(dest, _, _) => [dest]
+        FieldSetIns(record, _, _, _) => targetLocal(record)
+        ListRemoveIns(dest, list, _, _) => [dest] + targetLocal(list)
+        StdCallIns(dest, _, _) => optional(dest)
+        TakeIns(dest, source) => [dest] + placeLocal(source)
+        DropIns(value, _) => placeLocal(value)
+        MakeClosureIns(dest, _, _) => [dest]
+        CallClosureIns(dest, _, _, _) => optional(dest)
+        ListSortByIns(list, _, _) => targetLocal(list)
+        MapNewIns(dest, _) => [dest]
+        MapGetIns(dest, _, _, _) => [dest]
+        MapLookupIns(dest, _, _) => [dest]
+        MapSetIns(map, _, _, _) => targetLocal(map)
+        MapRemoveIns(dest, map, _, _) => [dest] + targetLocal(map)
+        FailIns(_, _) => []
+        PrintIns(_, _) => []
+        RangeNextIns(hasValue, value, next, _, _, done) => [hasValue, value, next, done]
+        RangeCheckIns(_, _) => []
+    }
+}
+
+function optional(dest: Option[int]): int[] {
+    return match (dest) {
+        Some(local) => [local]
+        None => []
+    }
+}
+
+function placeLocal(where: Place): int[] {
+    return match (where) {
+        LocalPlace(id) => [id]
+        GlobalPlace(_) => []
+    }
+}
+
+function targetLocal(target: Target): int[] {
+    return placeLocal(target.root)
+}
