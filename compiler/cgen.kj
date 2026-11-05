@@ -353,7 +353,30 @@ function signature(id: int, routine: IrFunction): string {
     }
 
     immut list = if (params.length() == 0) { 'void' } else { params.join(', ') }
-    return `static ${cType(routine.returns)} ${functionName(id)}(${list}) /* ${routine.name} */`
+    immut inline = if (small(routine)) { 'KOJI_INLINE' } else { 'static' }
+    return `${inline} ${cType(routine.returns)} ${functionName(id)}(${list}) /* ${routine.name} */`
+}
+
+// A function of a few instructions that calls no other one (`Lexer.at`): inlined where it is
+// called. The C compiler does not always do it by itself, in the large functions of a program.
+function small(routine: IrFunction): boolean {
+    if (routine.blocks.length() > 4) { return false }
+
+    mut count = 0
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            count += 1
+
+            match (instruction) {
+                CallIns(_, _, _, _, _) => return false
+                CallClosureIns(_, _, _, _) => return false
+                _ => {}
+            }
+        }
+    }
+
+    return count <= 12
 }
 
 function Generator.location(self, line: int): string {
@@ -674,6 +697,32 @@ function Generator.optionVariants(self, option: int): OptionVariants {
     return { some: some, none: none }
 }
 
+// The address of field `field` of the record `record` (of type `ty`): where its variant puts it,
+// known here when no variant has a field of two words (each field is at its index) or when the
+// type has one variant; otherwise the runtime reads it from the description of the variant.
+function Generator.fieldSlot(self, ty: Ty, record: string, field: int): string {
+    immut variants = self.program.records[recordId(ty)].variants
+    mut wide = false
+
+    for variant in variants {
+        if (hasWideField(variant.fields)) { wide = true }
+    }
+
+    if (not wide) { return `&${record}->words[${field}]` }
+
+    if (variants.length() == 1) {
+        mut word = 0
+
+        for index in range(field) {
+            word += words(variants[0].fields[index].ty)
+        }
+
+        return `&${record}->words[${word}]`
+    }
+
+    return `koji_record_get(${record}, ${field})`
+}
+
 function recordId(ty: Ty): int {
     return match (ty) {
         RecordTy(id) => id
@@ -908,7 +957,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
         }
         FieldGetIns(dest, record, field) => {
             immut ty = routine.locals[dest].ty
-            immut value = `*(${cType(ty)} const *)koji_record_get(${operand(record)}, ${field})`
+            immut value = `*(${cType(ty)} const *)${self.fieldSlot(self.operandType(routine, record), operand(record), field)}`
 
             // Borrowed: the record keeps the value alive (borrow.kj).
             if (self.current[dest]) {
