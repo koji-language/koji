@@ -1,0 +1,373 @@
+// Escape analysis: a record built in a function and never seen outside it is put on the stack of
+// the function (see `RecordNewIns` in cgen.kj), without taking memory from the pool nor counting
+// its references; its fields are released when it is built again and when the function returns.
+//
+// A local escapes when its value may be kept by someone else: copied, stored in a list, a record
+// or a map, returned, captured, given to the runtime (other than to print it) or to a parameter
+// that escapes, or changed in any way (it would be copied). It does not when it is only read: its
+// fields, its tag, compared, shown, or given to a parameter that does not escape.
+//
+// A record built and copied at once into a local (`immut point = { ... }` builds it in a temporary)
+// may still be on the stack: the local is then an alias of the temporary, if it is given no other
+// value and does not escape. The temporary releases the fields; the alias releases nothing.
+
+import { Operand, Place, Target, Step, StdArg, Instruction, Terminator, IrFunction, IrProgram } from 'ir.kj'
+
+// What a function does with its locals: those that escape by themselves, and those it gives to
+// parameters of the functions it calls (they escape when the parameter does).
+type Summary = {
+    direct: Set[int]
+    calls: CallEdge[]
+    copies: Copy[]
+}
+
+// `dest = source` between two locals that are not parameters; `built`: right after `source` was
+// built.
+type Copy = {
+    dest: int
+    source: int
+    built: boolean
+}
+
+// The records of a function on its stack, and the locals that are aliases of them.
+export type StackRecords = {
+    records: Set[int]
+    aliases: Set[int]
+}
+
+type CallEdge = {
+    local: int
+    callee: int
+    param: int
+}
+
+// For each function, the locals whose record is put on the stack.
+export function stackRecords(program: IrProgram): StackRecords[] {
+    mut summaries: Summary[] = []
+
+    for routine in program.functions {
+        summaries.push(summary(routine))
+    }
+
+    immut escaping = escapingParams(program, summaries)
+    mut result: StackRecords[] = []
+
+    for id in range(program.functions.length()) {
+        immut routine = program.functions[id]
+        mut escapes = summaries[id].direct
+
+        for edge in summaries[id].calls {
+            if (edge.param >= escaping[edge.callee].length() or escaping[edge.callee][edge.param]) { escapes.add(edge.local) }
+        }
+
+        mut writes: int[] = []
+        mut built: int[] = []
+
+        for local in range(routine.locals.length()) {
+            writes.push(0)
+            built.push(0)
+        }
+
+        for block in routine.blocks {
+            for instruction in block.instructions {
+                immut local = written(instruction)
+
+                if (local < 0) { continue }
+
+                writes[local] += 1
+
+                match (instruction) {
+                    RecordNewIns(_, _, _) => built[local] += 1
+                    _ => {}
+                }
+            }
+        }
+
+        // A copy makes an alias of a record on the stack, or makes it escape.
+        mut copied: int[] = []
+
+        for local in range(routine.locals.length()) {
+            copied.push(0)
+        }
+
+        for copy in summaries[id].copies {
+            copied[copy.source] += 1
+        }
+
+        mut aliases: Set[int] = Set.from([])
+        mut aliased: Map[int, int] = [:]
+
+        for copy in summaries[id].copies {
+            immut alias = copy.built and copied[copy.source] == 1 and writes[copy.dest] == 1 and copied[copy.dest] == 0 and not escapes.has(copy.dest)
+
+            if (alias) {
+                aliased[copy.source] = copy.dest
+            } else {
+                escapes.add(copy.source)
+            }
+        }
+
+        mut stack: Set[int] = Set.from([])
+
+        // Built by one instruction and given no other value: its variant is known.
+        for local in range(routine.params, routine.locals.length()) {
+            if (built[local] == 1 and writes[local] == 1 and not escapes.has(local)) {
+                stack.add(local)
+
+                match (aliased.get(local)) {
+                    Some(alias) => aliases.add(alias)
+                    None => {}
+                }
+            }
+        }
+
+        result.push({ records: stack, aliases: aliases })
+    }
+
+    return result
+}
+
+// For each function, which of its parameters escape: those that escape by themselves, then,
+// from them, those given to one that escapes.
+function escapingParams(program: IrProgram, summaries: Summary[]): boolean[][] {
+    mut escaping: boolean[][] = []
+    // For each parameter of each function, the parameters of other functions given to it.
+    mut givers: CallEdge[][][] = []
+    mut pending: CallEdge[] = []
+
+    for id in range(program.functions.length()) {
+        immut routine = program.functions[id]
+        mut flags: boolean[] = []
+        mut lists: CallEdge[][] = []
+
+        for param in range(routine.params) {
+            immut direct = summaries[id].direct.has(param)
+            flags.push(direct)
+            lists.push([])
+
+            if (direct) { pending.push({ local: param, callee: id, param: param }) }
+        }
+
+        escaping.push(flags)
+        givers.push(lists)
+    }
+
+    for id in range(program.functions.length()) {
+        for edge in summaries[id].calls {
+            if (edge.local >= program.functions[id].params) { continue }
+
+            // An argument without a parameter (never made by the lowering) escapes.
+            if (edge.param >= givers[edge.callee].length()) {
+                if (not escaping[id][edge.local]) {
+                    escaping[id][edge.local] = true
+                    pending.push({ local: edge.local, callee: id, param: edge.local })
+                }
+
+                continue
+            }
+
+            // A parameter given to another one (here `callee` is the function that gives it).
+            givers[edge.callee][edge.param].push({ local: edge.local, callee: id, param: edge.local })
+        }
+    }
+
+    while (true) {
+        immut done = match (pending.pop()) {
+            Some(edge) => edge
+            None => break
+        }
+
+        for giver in givers[done.callee][done.param] {
+            if (not escaping[giver.callee][giver.param]) {
+                escaping[giver.callee][giver.param] = true
+                pending.push(giver)
+            }
+        }
+    }
+
+    return escaping
+}
+
+function summary(routine: IrFunction): Summary {
+    mut found: int[] = []
+    mut calls: CallEdge[] = []
+    mut copies: Copy[] = []
+
+    // A `mut` parameter gives its value back to the caller.
+    for param in range(routine.writeback.length()) {
+        if (routine.writeback[param]) { found.push(param) }
+    }
+
+    for block in routine.blocks {
+        mut previous = -1
+
+        for instruction in block.instructions {
+            match (instruction) {
+                // Between locals: an alias, if the rest allows it (see `stackRecords`).
+                CopyIns(LocalPlace(dest), LocalOp(source)) if (dest >= routine.params and source >= routine.params and dest != source) => {
+                    copies.push({ dest: dest, source: source, built: previous == source })
+                }
+                CallIns(_, callee, args, writebacks, _) => {
+                    for i in range(args.length()) {
+                        match (args[i]) {
+                            LocalOp(local) => calls.push({ local: local, callee: callee, param: i })
+                            _ => {}
+                        }
+                    }
+
+                    for writeback in writebacks {
+                        targetLocals(writeback.target, mut found)
+                    }
+                }
+                _ => escapingIn(instruction, mut found)
+            }
+
+            previous = match (instruction) {
+                RecordNewIns(dest, _, _) => dest
+                _ => -1
+            }
+        }
+
+        match (block.terminator) {
+            ReturnT(Some(value)) => operandLocal(value, mut found)
+            _ => {}
+        }
+    }
+
+    return { direct: Set.from(found), calls: calls, copies: copies }
+}
+
+function escapingIn(instruction: Instruction, mut found: int[]) {
+    match (instruction) {
+        CopyIns(dest, value) => {
+            placeLocal(dest, mut found)
+            operandLocal(value, mut found)
+        }
+        ListNewIns(_, items) => {
+            for item in items {
+                operandLocal(item, mut found)
+            }
+        }
+        ListSetIns(list, index, value, _) => {
+            targetLocals(list, mut found)
+            operandLocal(value, mut found)
+        }
+        ListPushIns(list, value, _) => {
+            targetLocals(list, mut found)
+            operandLocal(value, mut found)
+        }
+        ListInsertIns(list, _, value, _) => {
+            targetLocals(list, mut found)
+            operandLocal(value, mut found)
+        }
+        ListSortIns(list, _) => targetLocals(list, mut found)
+        RecordNewIns(_, _, fields) => {
+            for field in fields {
+                operandLocal(field, mut found)
+            }
+        }
+        FieldSetIns(record, _, value, _) => {
+            targetLocals(record, mut found)
+            operandLocal(value, mut found)
+        }
+        ListRemoveIns(_, list, _, _) => targetLocals(list, mut found)
+        StdCallIns(_, _, args) => {
+            for arg in args {
+                match (arg) {
+                    ValueArg(value) => operandLocal(value, mut found)
+                    _ => {}
+                }
+            }
+        }
+        TakeIns(_, source) => placeLocal(source, mut found)
+        DropIns(value, _) => placeLocal(value, mut found)
+        MakeClosureIns(_, _, environment) => {
+            match (environment) {
+                Some(value) => operandLocal(value, mut found)
+                None => {}
+            }
+        }
+        CallClosureIns(_, closure, args, _) => {
+            operandLocal(closure, mut found)
+
+            for arg in args {
+                operandLocal(arg, mut found)
+            }
+        }
+        ListSortByIns(list, comparison, _) => {
+            targetLocals(list, mut found)
+            operandLocal(comparison, mut found)
+        }
+        MapNewIns(_, entries) => {
+            for entry in entries {
+                operandLocal(entry.key, mut found)
+                operandLocal(entry.value, mut found)
+            }
+        }
+        MapSetIns(map, key, value, _) => {
+            targetLocals(map, mut found)
+            operandLocal(key, mut found)
+
+            match (value) {
+                Some(operand) => operandLocal(operand, mut found)
+                None => {}
+            }
+        }
+        MapRemoveIns(_, map, _, _) => targetLocals(map, mut found)
+        // Read only: unary and binary operations (a tag, a comparison, a text), fields, lookups,
+        // `print`, `fail`, ranges.
+        _ => {}
+    }
+}
+
+// The local an instruction gives a value, or -1 (the locals of a range, which are not records,
+// are left out).
+function written(instruction: Instruction): int {
+    return match (instruction) {
+        CopyIns(LocalPlace(dest), _) => dest
+        UnaryIns(dest, _, _, _) => dest
+        BinaryIns(dest, _, _, _, _) => dest
+        CallIns(Some(dest), _, _, _, _) => dest
+        ListNewIns(dest, _) => dest
+        ListGetIns(dest, _, _, _) => dest
+        ListSliceIns(dest, _, _, _, _) => dest
+        RecordNewIns(dest, _, _) => dest
+        FieldGetIns(dest, _, _) => dest
+        ListRemoveIns(dest, _, _, _) => dest
+        StdCallIns(Some(dest), _, _) => dest
+        TakeIns(dest, _) => dest
+        MakeClosureIns(dest, _, _) => dest
+        CallClosureIns(Some(dest), _, _, _) => dest
+        MapNewIns(dest, _) => dest
+        MapGetIns(dest, _, _, _) => dest
+        MapLookupIns(dest, _, _) => dest
+        MapRemoveIns(dest, _, _, _) => dest
+        _ => -1
+    }
+}
+
+function operandLocal(value: Operand, mut found: int[]) {
+    match (value) {
+        LocalOp(id) => found.push(id)
+        _ => {}
+    }
+}
+
+function placeLocal(where: Place, mut found: int[]) {
+    match (where) {
+        LocalPlace(id) => found.push(id)
+        GlobalPlace(_) => {}
+    }
+}
+
+// A target changes its root; its keys may be kept in a map.
+function targetLocals(target: Target, mut found: int[]) {
+    placeLocal(target.root, mut found)
+
+    for part in target.path {
+        match (part) {
+            KeyStep(key) => operandLocal(key, mut found)
+            _ => {}
+        }
+    }
+}

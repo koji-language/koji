@@ -5,6 +5,7 @@ import { Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, Instructio
 import { preludeLines } from 'prelude.kj'
 import { borrowedParams, borrowedLocals } from 'borrow.kj'
 import { liveAfter } from 'liveness.kj'
+import { StackRecords, stackRecords } from 'escape.kj'
 
 type Generator = {
     program: IrProgram
@@ -22,6 +23,12 @@ type Generator = {
     live: Set[int][][]
     block: int
     position: int
+    // For each function, the locals whose record is on its stack (escape.kj), and for those of
+    // the function being generated, their variant.
+    stacks: StackRecords[]
+    stack: Map[int, int]
+    // The lines that release the locals of the function being generated, at each `return`.
+    releases: string[]
 }
 
 function cType(ty: Ty): string {
@@ -172,7 +179,7 @@ function Generator.line(mut self, text: string) {
 
 // The C source of `program`, line by line.
 export function generate(program: IrProgram): string[] {
-    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), current: [], live: [], block: 0, position: 0 }
+    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [] }
     generator.generateProgram()
     return generator.out
 }
@@ -423,6 +430,28 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
         self.line(`    ${cType(info.ty)} l${local} = ${initial};${comment}`)
     }
 
+    // The memory of the records on the stack (escape.kj).
+    self.stack = [:]
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            match (instruction) {
+                RecordNewIns(dest, variant, _) if (self.stacks[id].records.has(dest)) => {
+                    self.stack[dest] = variant
+                    immut fields = self.program.records[recordId(routine.locals[dest].ty)].variants[variant].fields
+                    self.line(`    uint64_t s${dest}[${3 + variantWords(fields)}];`)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // An alias of a record on the stack is borrowed from it.
+    for alias in self.stacks[id].aliases {
+        self.current[alias] = true
+    }
+
+    self.releases = self.localReleases(routine)
     self.live = liveAfter(routine)
 
     for block in range(routine.blocks.length()) {
@@ -747,6 +776,15 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
         CopyIns(dest, value) => {
             immut ty = self.placeType(routine, dest)
 
+            // An alias of a record on the stack (escape.kj).
+            match (dest) {
+                LocalPlace(local) if (self.current[local] and local >= routine.params) => {
+                    self.line(`    l${local} = ${operand(value)};`)
+                    return
+                }
+                _ => {}
+            }
+
             // Read for the last time: the reference moves, without retaining and releasing.
             match (self.movable(routine, value)) {
                 Some(local) if (dest != LocalPlace(local)) => {
@@ -923,7 +961,15 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             immut ty = routine.locals[dest].ty
             immut record = recordId(ty)
             immut fieldTypes = self.program.records[record].variants[variant].fields
-            self.set(`l${dest}`, ty, `koji_record_make(&koji_record_${record}, ${variant}, ${variantWords(fieldTypes)})`)
+
+            // On the stack: the fields of the record built before are released.
+            if (self.stack.has(dest)) {
+                self.releaseFields(routine, dest)
+                self.line(`    l${dest} = koji_record_at(s${dest}, &koji_record_${record}, ${variant}, ${variantWords(fieldTypes)});`)
+            } else {
+                self.set(`l${dest}`, ty, `koji_record_make(&koji_record_${record}, ${variant}, ${variantWords(fieldTypes)})`)
+            }
+
             // Each field is written in place, at the word the variant puts it; a value read for the
             // last time (and by one field only) moves into it.
             mut word = 0
@@ -1207,15 +1253,63 @@ function Generator.movable(self, routine: IrFunction, value: Operand): Option[in
     return Some(local)
 }
 
-function Generator.releaseLocals(mut self, routine: IrFunction) {
+// Releases the fields of the record on the stack in `local`, if it was built.
+function Generator.releaseFields(mut self, routine: IrFunction, local: int) {
+    match (self.fieldReleases(routine, local)) {
+        Some(text) => self.line(text)
+        None => {}
+    }
+}
+
+function Generator.fieldReleases(self, routine: IrFunction, local: int): Option[string] {
+    immut fields = self.program.records[recordId(routine.locals[local].ty)].variants[self.stack[local]].fields
+    mut releases: string[] = []
+    mut word = 0
+
+    for field in fields {
+        match (release(field.ty)) {
+            Some(name) => releases.push(`${name}(*(${cType(field.ty)} *)&l${local}->words[${word}]);`)
+            None => {}
+        }
+
+        word += words(field.ty)
+    }
+
+    if (releases.length() == 0) { return None }
+
+    return Some(`    if (l${local}) { ${releases.join(' ')} }`)
+}
+
+// The lines that release the locals of the function (written at each `return`).
+function Generator.localReleases(self, routine: IrFunction): string[] {
+    mut lines: string[] = []
+
     for id in range(routine.locals.length()) {
         // A borrowed local is not the function's to release.
         if (self.current[id]) { continue }
 
+        // A record on the stack has only its fields to release.
+        if (self.stack.has(id)) {
+            match (self.fieldReleases(routine, id)) {
+                Some(text) => lines.push(text)
+                None => {}
+            }
+
+            continue
+        }
+
         match (release(routine.locals[id].ty)) {
-            Some(name) => self.line(`    ${name}(l${id});`)
+            Some(name) => lines.push(`    ${name}(l${id});`)
             None => {}
         }
+    }
+
+    return lines
+}
+
+function Generator.releaseLocals(mut self, routine: IrFunction) {
+    for text in self.releases {
+        self.line(text)
     }
 }
 

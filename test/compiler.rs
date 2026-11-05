@@ -495,6 +495,98 @@ print(last({ inner: { words: ['x', 'y'] }, name: 'z' }))
 }
 
 #[test]
+fn records_on_the_stack() {
+    // A record that does not leave its function is on its stack (escape.kj): built again in a
+    // loop, given to functions that only read it, compared; one kept elsewhere is not.
+    assert_same(
+        "stack records",
+        "\
+type Point = { name: string, tags: string[] }
+type Shape = {
+    Dot(name: string)
+    Line(from: string, to: string)
+}
+
+mut kept: Point[] = []
+
+function describe(point: Point): string {
+    return `${point.name}:${point.tags.join('+')}`
+}
+
+function keep(point: Point) {
+    kept.push(point)
+}
+
+function deeper(point: Point): string {
+    return describe(point)
+}
+
+mut texts: string[] = []
+
+for i in range(3) {
+    immut point: Point = { name: `p${i}`, tags: [string(i), 'x'] }
+    texts.push(deeper(point))
+    immut other: Point = { name: `k${i}`, tags: [] }
+    keep(other)
+    immut shape = Line(`a${i}`, 'b')
+
+    if (shape == Line('a1', 'b')) { texts.push('found') }
+}
+
+print(texts, kept.length(), kept[2].name)
+",
+        "['p0:0+x', 'p1:1+x', 'found', 'p2:2+x'] 3 k2\n",
+    );
+    // Returned, captured, stored by the function it is given to: on the heap. Given to a
+    // recursive call that only reads it: on the stack.
+    assert_same(
+        "stack records escaping",
+        "\
+type P = { name: string }
+
+mut saved: P[] = []
+
+function same(p: P): P {
+    return p
+}
+
+function later(p: P): () => string {
+    return () => p.name
+}
+
+function store(p: P) {
+    saved.push(p)
+}
+
+function relay(p: P) {
+    store(p)
+}
+
+function depth(p: P, n: int): int {
+    if (n == 0) { return p.name.length() }
+
+    immut inner: P = { name: p.name + '!' }
+    return depth(inner, n - 1)
+}
+
+function run(): string[] {
+    immut a: P = { name: 'a' }
+    immut b = same(a)
+    immut c: P = { name: 'c' }
+    immut f = later(c)
+    immut d: P = { name: 'd' }
+    relay(d)
+    immut e: P = { name: 'e' }
+    return [b.name, f(), string(depth(e, 3))]
+}
+
+print(run(), saved)
+",
+        "['a', 'c', '4'] [{ name: 'd' }]\n",
+    );
+}
+
+#[test]
 fn values_moved_at_their_last_use() {
     // `text += c` adds in place only when no one else sees the string: a copy keeps its value.
     assert_same(
