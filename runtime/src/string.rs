@@ -205,10 +205,7 @@ pub extern "C" fn koji_string_contains(haystack: *const KojiString, needle: *con
 
 #[no_mangle]
 pub extern "C" fn koji_string_hash(string: *const KojiString) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    string_text(string).hash(&mut hasher);
-    hasher.finish()
+    crate::hash::bytes(string_text(string).as_bytes())
 }
 
 fn char_of(code: u32) -> char {

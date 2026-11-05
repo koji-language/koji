@@ -994,6 +994,44 @@ Set([[1, 2], [3]]) true\n\
 }
 
 #[test]
+fn many_keys() {
+    // The index of a map grows, loses keys and is copied; ints that differ only in their high bits
+    // are found as well as the others.
+    assert_same(
+        "many keys",
+        "\
+mut squares: Map[int, int] = [:]
+mut names: Map[string, int] = [:]
+
+for i in range(2000) {
+    squares[i * 4294967296] = i * i
+    names[`n${i}`] = i
+}
+
+immut copy = squares
+
+for i in range(0, 2000, 2) {
+    squares.remove(i * 4294967296)
+    names.remove(`n${i}`)
+}
+
+mut total = 0
+
+for i in range(2000) {
+    match (squares.get(i * 4294967296)) {
+        Some(value) => total += value
+        None => {}
+    }
+}
+
+print(squares.length(), copy.length(), names.length(), total)
+print(names['n1999'], 'n1998' in names, copy[1998 * 4294967296], names.keys()[..3])
+",
+        "1000 2000 1000 1333333000\n1999 false 3992004 ['n1', 'n3', 'n5']\n",
+    );
+}
+
+#[test]
 fn closures() {
     assert_same(
         "closures",

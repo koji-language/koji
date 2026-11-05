@@ -442,7 +442,7 @@ pub extern "C" fn koji_list_index_of(list: *const KojiList, value: *const c_void
 pub extern "C" fn koji_list_hash(list: *const KojiList) -> u64 {
     use std::hash::{Hash, Hasher};
     let list = self::list(list);
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = crate::hash::Fast::default();
     for index in 0..list.len() {
         unsafe { (list.element().hash)(list.slot(index)) }.hash(&mut hasher);
     }

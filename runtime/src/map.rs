@@ -1,9 +1,9 @@
 //! Maps and sets: entries kept in the order their keys were added, with a hash index to find
-//! a key. A set is a map without values. Like lists, they are reference-counted and copied
+//! a key: a table of positions in the entries, open addressing, at most half full. Each entry
+//! keeps the hash of its key, so the table is built again without hashing the keys. A set is a map without values. Like lists, they are reference-counted and copied
 //! when a shared one is changed.
 
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
 
 use crate::list::{new_list, read_slot, words, KojiElementType, KojiList, Slot};
@@ -17,8 +17,16 @@ pub struct KojiMap {
     value: *const KojiElementType,
     /// Keys and values, in two words each (a decimal takes both).
     entries: Vec<(Slot, Slot)>,
-    index: HashMap<u64, Vec<usize>>,
+    /// The hash of the key of each entry.
+    hashes: Vec<u64>,
+    /// For each slot, a position in `entries` plus one, or 0 for none (a power of two of slots,
+    /// or none for an empty map).
+    table: Vec<u32>,
 }
+
+/// A large odd number: the high bits of a hash times it depend on all the bits of the hash (an
+/// int is its own hash).
+const SPREAD: u64 = 0x9e37_79b9_7f4a_7c15;
 
 fn slot_of(slot: &Slot) -> *const c_void {
     slot.as_ptr() as *const c_void
@@ -49,11 +57,54 @@ impl KojiMap {
     }
 
     fn position(&self, key: *const c_void) -> Option<usize> {
-        let positions = self.index.get(&self.hash(key))?;
-        positions
-            .iter()
-            .copied()
-            .find(|&i| unsafe { (self.key_type().equal)(slot_of(&self.entries[i].0), key) })
+        self.find(key, self.hash(key))
+    }
+
+    /// The first slot of the table to look at for `hash`.
+    fn start(&self, hash: u64) -> usize {
+        let bits = self.table.len().trailing_zeros();
+        (hash.wrapping_mul(SPREAD) >> (64 - bits)) as usize
+    }
+
+    fn find(&self, key: *const c_void, hash: u64) -> Option<usize> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let mask = self.table.len() - 1;
+        let mut slot = self.start(hash);
+        loop {
+            let position = self.table[slot] as usize;
+            if position == 0 {
+                return None;
+            }
+            let index = position - 1;
+            if self.hashes[index] == hash && unsafe { (self.key_type().equal)(slot_of(&self.entries[index].0), key) } {
+                return Some(index);
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    /// Puts the entry `index` in the table, which has room for it.
+    fn place(&mut self, index: usize) {
+        let mask = self.table.len() - 1;
+        let mut slot = self.start(self.hashes[index]);
+        while self.table[slot] != 0 {
+            slot = (slot + 1) & mask;
+        }
+        self.table[slot] = index as u32 + 1;
+    }
+
+    /// Adds an entry (its key is not in the map).
+    fn add(&mut self, key: Slot, value: Slot, hash: u64) {
+        assert!(self.entries.len() < u32::MAX as usize, "too many entries in a map");
+        self.entries.push((key, value));
+        self.hashes.push(hash);
+        if self.entries.len() * 2 > self.table.len() {
+            self.rebuild_index();
+        } else {
+            self.place(self.entries.len() - 1);
+        }
     }
 
     fn retain_entry(&self, index: usize) {
@@ -76,11 +127,16 @@ impl KojiMap {
         }
     }
 
+    /// The table again, at least twice as large as the entries.
     fn rebuild_index(&mut self) {
-        self.index.clear();
+        let mut size = 8;
+        while size < self.entries.len() * 2 {
+            size *= 2;
+        }
+        self.table.clear();
+        self.table.resize(size, 0);
         for index in 0..self.entries.len() {
-            let hash = self.hash(slot_of(&self.entries[index].0));
-            self.index.entry(hash).or_default().push(index);
+            self.place(index);
         }
     }
 
@@ -100,7 +156,8 @@ fn new_map(key: *const KojiElementType, value: *const KojiElementType) -> KojiMa
         key,
         value,
         entries: Vec::new(),
-        index: HashMap::new(),
+        hashes: Vec::new(),
+        table: Vec::new(),
     }
 }
 
@@ -111,7 +168,8 @@ fn unshare<'a>(variable: *mut *mut KojiMap) -> &'a mut KojiMap {
         if current.references.get() > 1 {
             let mut copy = new_map(current.key, current.value);
             copy.entries = current.entries.clone();
-            copy.index = current.index.clone();
+            copy.hashes = current.hashes.clone();
+            copy.table = current.table.clone();
             for index in 0..copy.entries.len() {
                 copy.retain_entry(index);
             }
@@ -200,7 +258,8 @@ pub extern "C" fn koji_map_set(variable: *mut *mut KojiMap, key: *const c_void, 
         Some(value_type) => read(value_type, value),
         None => [0, 0],
     };
-    match map.position(key) {
+    let hash = map.hash(key);
+    match map.find(key, hash) {
         Some(index) => {
             // Not borrowed from `map`: the description lives as long as the program.
             if let Some(value_type) = unsafe { map.value.as_ref() } {
@@ -215,11 +274,8 @@ pub extern "C" fn koji_map_set(variable: *mut *mut KojiMap, key: *const c_void, 
         }
         None => {
             let key_slot = read(map.key_type(), key);
-            let hash = map.hash(key);
-            map.entries.push((key_slot, value_slot));
-            let index = map.entries.len() - 1;
-            map.index.entry(hash).or_default().push(index);
-            map.retain_entry(index);
+            map.add(key_slot, value_slot, hash);
+            map.retain_entry(map.entries.len() - 1);
         }
     }
 }
@@ -233,6 +289,7 @@ pub extern "C" fn koji_map_remove(variable: *mut *mut KojiMap, key: *const c_voi
         return false;
     };
     let (key_slot, value_slot) = map.entries.remove(index);
+    map.hashes.remove(index);
     if let Some(release) = map.key_type().release {
         unsafe { release(slot_of(&key_slot)) }
     }
