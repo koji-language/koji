@@ -587,6 +587,52 @@ print(run(), saved)
 }
 
 #[test]
+fn pushes_and_comparisons_inline() {
+    // A push writes in place when the list has room and is not shared (a bool or a char fills
+    // its word with zeros); a comparison with a variant built on the spot checks its tag and
+    // its fields, or asks the runtime (a decimal).
+    assert_same(
+        "inline",
+        "\
+type Token = {
+    Word(text: string)
+    Number(value: int, exact: boolean)
+    Mark(c: char)
+    Amount(value: decimal)
+    End
+}
+
+mut flags: boolean[] = []
+mut letters: char[] = []
+mut amounts: decimal[] = []
+mut words: string[] = []
+
+for i in range(10) {
+    flags.push(i % 3 == 0)
+    letters.push('a')
+    amounts.push(1.5)
+    words.push(string(i))
+}
+
+immut before = words
+words.push('x')
+
+function kind(token: Token): string {
+    if (token == Word('if')) { return 'if' }
+    if (token != Number(1, true)) { if (token == Mark('+')) { return 'plus' } }
+    if (token == Amount(2.50)) { return 'amount' }
+    if (token == End) { return 'end' }
+    return 'other'
+}
+
+print(flags, letters.length(), amounts[9], words.length(), before.length(), flags == [true, false, false, true, false, false, true, false, false, true])
+print(kind(Word('if')), kind(Word('of')), kind(Number(1, true)), kind(Mark('+')), kind(Amount(2.5)), kind(End))
+",
+        "[true, false, false, true, false, false, true, false, false, true] 10 1.5 11 10 true\nif other other plus amount end\n",
+    );
+}
+
+#[test]
 fn values_moved_at_their_last_use() {
     // `text += c` adds in place only when no one else sees the string: a copy keeps its value.
     assert_same(

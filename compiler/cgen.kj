@@ -824,6 +824,21 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                         _ => expression = self.binary(op, operand(left), operand(right), line)
                     }
                 }
+                // Against a record on the stack, whose variant is known: its tag, then its fields.
+                name if (operation(name).name == 'RecordCompare' and operation(name).comparison in ['Equal', 'NotEqual']) => {
+                    immut inline = match (left) {
+                        LocalOp(local) if (self.stack.has(local)) => self.stackEqual(routine, operand(right), local)
+                        _ => match (right) {
+                            LocalOp(local) if (self.stack.has(local)) => self.stackEqual(routine, operand(left), local)
+                            _ => None
+                        }
+                    }
+
+                    expression = match (inline) {
+                        Some(test) => if (operation(op).comparison == 'NotEqual') { `!${test}` } else { test }
+                        None => self.binary(op, operand(left), operand(right), line)
+                    }
+                }
                 _ => expression = self.binary(op, operand(left), operand(right), line)
             }
 
@@ -937,9 +952,19 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             immut ty = self.operandType(routine, value)
             self.withAddress(ty, value, `koji_list_set(${self.target(list, line)}, ${operand(index)}, VALUE, ${self.location(line)})`)
         }
+        // In place when the list is not shared and has room; the runtime grows it otherwise.
         ListPushIns(list, value, line) => {
             immut ty = self.operandType(routine, value)
-            self.withAddress(ty, value, `koji_list_push(${self.target(list, line)}, VALUE)`)
+            immut c = cType(ty)
+            self.line(`    { ${c} fresh = ${share(ty, operand(value))}; KojiList **variable = ${self.target(list, line)}; KojiList *items = *variable;`)
+            // A bool or a char does not fill its word: the rest is zero, as the runtime writes it.
+            immut clear = if (ty == BoolTy or ty == CharTy) { 'items->items[items->length] = 0; ' } else { '' }
+            self.line(`    if (items->references == 1 && (items->length + 1) * ${words(ty)} <= items->capacity) { ${clear}*(${c} *)&items->items[items->length * ${words(ty)}] = fresh; items->length++; }`)
+
+            match (release(ty)) {
+                Some(name) => self.line(`    else { koji_list_push(variable, &fresh); ${name}(fresh); } }`)
+                None => self.line('    else koji_list_push(variable, &fresh); }')
+            }
         }
         ListInsertIns(list, index, value, line) => {
             immut ty = self.operandType(routine, value)
@@ -1251,6 +1276,34 @@ function Generator.movable(self, routine: IrFunction, value: Operand): Option[in
     if (self.live[self.block][self.position].has(local)) { return None }
 
     return Some(local)
+}
+
+// `other == local`, for a record on the stack: the same tag, and fields equal one by one, when
+// they are ints, bools, chars or strings (None otherwise: the runtime compares them).
+function Generator.stackEqual(self, routine: IrFunction, other: string, local: int): Option[string] {
+    immut variant = self.stack[local]
+    immut fields = self.program.records[recordId(routine.locals[local].ty)].variants[variant].fields
+    mut tests = [`(${other})->tag == ${variant}`]
+    mut word = 0
+
+    for field in fields {
+        immut c = cType(field.ty)
+        immut mine = `*(${c} *)&l${local}->words[${word}]`
+        immut theirs = `*(${c} *)&(${other})->words[${word}]`
+
+        match (field.ty) {
+            IntTy => tests.push(`${mine} == ${theirs}`)
+            BoolTy => tests.push(`${mine} == ${theirs}`)
+            CharTy => tests.push(`${mine} == ${theirs}`)
+            StrTy => tests.push(`koji_string_equal(${mine}, ${theirs})`)
+            VoidTy => {}
+            _ => return None
+        }
+
+        word += words(field.ty)
+    }
+
+    return Some(`(${tests.join(' && ')})`)
 }
 
 // Releases the fields of the record on the stack in `local`, if it was built.
