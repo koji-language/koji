@@ -3,7 +3,7 @@
 
 import { Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
 import { preludeLines } from 'prelude.kj'
-import { borrowedParams } from 'borrow.kj'
+import { borrowedParams, borrowedLocals } from 'borrow.kj'
 import { liveAfter } from 'liveness.kj'
 
 type Generator = {
@@ -14,7 +14,8 @@ type Generator = {
     file: string
     // For each function, which parameters are borrowed (borrow.kj).
     borrowed: boolean[][]
-    // Those of the function being generated.
+    // The borrowed locals of the function being generated: its borrowed parameters, and the
+    // locals that only read their fields (borrow.kj).
     current: boolean[]
     // The locals read after each instruction of the function being generated (liveness.kj), and
     // the position of the instruction being generated.
@@ -324,7 +325,7 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
     // A parameter the function only reads is borrowed: the caller keeps it alive (borrow.kj).
     // Another one gets a reference of its own, since the function changes it or moves it out. A
     // `mut` parameter is given its own reference by the caller (see `CallIns`).
-    self.current = self.borrowed[id]
+    self.current = borrowedLocals(routine, self.borrowed[id])
 
     for param in range(routine.params) {
         if (param < routine.writeback.length() and routine.writeback[param]) { continue }
@@ -864,6 +865,13 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
         FieldGetIns(dest, record, field) => {
             immut ty = routine.locals[dest].ty
             immut value = `*(${cType(ty)} const *)koji_record_get(${operand(record)}, ${field})`
+
+            // Borrowed: the record keeps the value alive (borrow.kj).
+            if (self.current[dest]) {
+                self.line(`    l${dest} = ${value};`)
+                return
+            }
+
             self.set(`l${dest}`, ty, share(ty, value))
         }
         // In place: the record is copied first only when it is shared; the new value is written,
@@ -1096,11 +1104,10 @@ function Generator.movable(self, routine: IrFunction, value: Operand): Option[in
 
     if (not isManaged(routine.locals[local].ty)) { return None }
 
-    if (local < routine.params) {
-        if (self.current[local]) { return None }
+    // A borrowed local is not the function's to give away.
+    if (self.current[local]) { return None }
 
-        if (local < routine.writeback.length() and routine.writeback[local]) { return None }
-    }
+    if (local < routine.writeback.length() and routine.writeback[local]) { return None }
 
     if (self.live[self.block][self.position].has(local)) { return None }
 
@@ -1109,8 +1116,8 @@ function Generator.movable(self, routine: IrFunction, value: Operand): Option[in
 
 function Generator.releaseLocals(mut self, routine: IrFunction) {
     for id in range(routine.locals.length()) {
-        // A borrowed parameter is not the function's to release.
-        if (id < self.current.length() and self.current[id]) { continue }
+        // A borrowed local is not the function's to release.
+        if (self.current[id]) { continue }
 
         match (release(routine.locals[id].ty)) {
             Some(name) => self.line(`    ${name}(l${id});`)
@@ -1137,7 +1144,7 @@ function Generator.terminator(mut self, routine: IrFunction, terminator: Termina
                 Some(returned) => {
                     // A local returned moves out of the function, which ends.
                     immut owned = match (returned) {
-                        LocalOp(local) => isManaged(routine.locals[local].ty) and not (local < routine.params and (self.current[local] or (local < routine.writeback.length() and routine.writeback[local])))
+                        LocalOp(local) => isManaged(routine.locals[local].ty) and not self.current[local] and not (local < routine.writeback.length() and routine.writeback[local])
                         _ => false
                     }
 

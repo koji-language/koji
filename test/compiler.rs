@@ -459,6 +459,42 @@ print(longest(['ab', 'abc'], ''), longest([], 'none'))
 }
 
 #[test]
+fn borrowed_fields() {
+    // A field of a borrowed parameter is read without a reference of its own: the parameter keeps
+    // it alive, even when the call changes the global it came from; a copy changed is its own.
+    assert_same(
+        "borrowed fields",
+        "\
+type Inner = { words: string[] }
+type Outer = { inner: Inner, name: string }
+
+mut current: Outer = { inner: { words: ['a', 'b'] }, name: 'first' }
+
+function reset() {
+    current = { inner: { words: [] }, name: 'second' }
+}
+
+function words(outer: Outer): string[] {
+    immut list = outer.inner.words
+    reset()
+    mut more = list
+    more.push(outer.name)
+    return [list.join(','), more.join(',')]
+}
+
+function last(outer: Outer): string {
+    immut list = outer.inner.words
+    return list[list.length() - 1]
+}
+
+print(words(current), current.name)
+print(last({ inner: { words: ['x', 'y'] }, name: 'z' }))
+",
+        "['a,b', 'a,b,first'] second\ny\n",
+    );
+}
+
+#[test]
 fn values_moved_at_their_last_use() {
     // `text += c` adds in place only when no one else sees the string: a copy keeps its value.
     assert_same(

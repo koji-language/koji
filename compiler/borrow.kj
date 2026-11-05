@@ -2,6 +2,10 @@
 // which keeps it alive during the call, so the function neither retains nor releases it. Only the
 // value of a global could die during the call (the function may change the global): the caller
 // keeps a reference of its own to a global it passes (see `CallIns` in cgen.kj).
+//
+// A local is borrowed the same way when it is only given the value of a field of a borrowed
+// parameter (or of such a local): the parameter does not change during the call, so its field
+// keeps the value alive (see `FieldGetIns` in cgen.kj).
 
 import { Ty, Operand, Place, Target, Instruction, IrFunction, IrProgram, isManaged } from 'ir.kj'
 
@@ -44,6 +48,69 @@ export function borrowedParams(program: IrProgram): boolean[][] {
     }
 
     return result
+}
+
+// For each local of the function, whether it is borrowed: the borrowed parameters `params`, and
+// the locals that only read a field of a borrowed one.
+export function borrowedLocals(routine: IrFunction, params: boolean[]): boolean[] {
+    mut flags: boolean[] = []
+
+    for local in range(routine.locals.length()) {
+        flags.push(local < params.length() and params[local])
+    }
+
+    // The instructions that change each local, and whether each one reads a field.
+    mut writes: int[] = []
+    mut fieldReads: int[] = []
+    mut sources: int[][] = []
+
+    for local in range(routine.locals.length()) {
+        writes.push(0)
+        fieldReads.push(0)
+        sources.push([])
+    }
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            for local in changes(instruction) {
+                writes[local] += 1
+            }
+
+            match (instruction) {
+                FieldGetIns(dest, LocalOp(record), _) => {
+                    fieldReads[dest] += 1
+                    sources[dest].push(record)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Until nothing changes: a local whose every source is borrowed is borrowed.
+    mut changed = true
+
+    while (changed) {
+        changed = false
+
+        for local in range(routine.params, routine.locals.length()) {
+            if (flags[local] or not isManaged(routine.locals[local].ty)) { continue }
+
+            if (fieldReads[local] == 0 or writes[local] != fieldReads[local]) { continue }
+
+            mut all = true
+
+            for source in sources[local] {
+                if (not flags[source]) { all = false }
+            }
+
+            if (all) {
+                flags[local] = true
+                changed = true
+            }
+        }
+    }
+
+    return flags
 }
 
 function owned(count: int): boolean[] {
