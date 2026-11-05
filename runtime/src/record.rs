@@ -46,6 +46,10 @@ pub struct KojiRecordType {
     pub name: *const c_char,
     pub variant_count: usize,
     pub variants: *const KojiVariantType,
+    /// Releases the fields of a record of the type and gives its memory back, generated for the
+    /// type (the prelude calls it inline). Not read here: `koji_record_free` does the same for any
+    /// type.
+    pub free: Option<unsafe extern "C" fn(*mut KojiRecord)>,
 }
 
 /// A record, laid out for C (the prelude reads its fields and counts its references inline): the

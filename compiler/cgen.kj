@@ -228,6 +228,7 @@ function Generator.records(mut self) {
     // Declared first: a field can be of a record declared later.
     for id in range(records.length()) {
         self.line(`static const KojiRecordType koji_record_${id};`)
+        self.line(`static void koji_free_${id}(KojiRecord *record);`)
     }
 
     for id in range(records.length()) {
@@ -292,8 +293,51 @@ function Generator.records(mut self) {
         self.line(`static const KojiVariantType koji_record_${id}_variants[] = { ${variants.join(', ')} };`)
         // The name without type arguments (`Result`, `MathError`).
         immut base = record.name.split('[')[0]
-        self.line(`static const KojiRecordType koji_record_${id} = { ${cString(base)}, ${record.variants.length()}, koji_record_${id}_variants };`)
+        self.line(`static const KojiRecordType koji_record_${id} = { ${cString(base)}, ${record.variants.length()}, koji_record_${id}_variants, koji_free_${id} };`)
     }
+
+    for id in range(records.length()) {
+        self.freeFunction(id)
+    }
+}
+
+// The function that frees a record of type `id`: it releases each field where its variant puts
+// it, and gives the memory back.
+function Generator.freeFunction(mut self, id: int) {
+    immut variants = self.program.records[id].variants
+    self.line(`static void koji_free_${id}(KojiRecord *record) {`)
+    self.line('    switch (record->tag) {')
+
+    for index in range(variants.length()) {
+        self.line(`    case ${index}:`)
+        mut word = 0
+
+        for field in variants[index].fields {
+            match (release(field.ty)) {
+                Some(name) => self.line(`        ${name}(*(${cType(field.ty)} *)&record->words[${word}]);`)
+                None => {}
+            }
+
+            word += words(field.ty)
+        }
+
+        self.line(`        koji_pool_give(record, ${3 + word});`)
+        self.line('        return;')
+    }
+
+    self.line('    }')
+    self.line('}')
+}
+
+// The words the fields of a variant take.
+function variantWords(fields: IrField[]): int {
+    mut total = 0
+
+    for field in fields {
+        total += words(field.ty)
+    }
+
+    return total
 }
 
 function signature(id: int, routine: IrFunction): string {
@@ -829,8 +873,8 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
         RecordNewIns(dest, variant, fields) => {
             immut ty = routine.locals[dest].ty
             immut record = recordId(ty)
-            self.set(`l${dest}`, ty, `koji_record_new(&koji_record_${record}, ${variant})`)
             immut fieldTypes = self.program.records[record].variants[variant].fields
+            self.set(`l${dest}`, ty, `koji_record_make(&koji_record_${record}, ${variant}, ${variantWords(fieldTypes)})`)
             // Each field is written in place, at the word the variant puts it; a value read for the
             // last time (and by one field only) moves into it.
             mut word = 0
