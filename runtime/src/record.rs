@@ -3,6 +3,7 @@
 //! is changed. Each field takes one 8-byte word, or two for a decimal, described by a
 //! `KojiElementType`.
 
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::cell::Cell;
 use std::ffi::{c_char, c_void, CStr};
 
@@ -48,15 +49,45 @@ pub struct KojiRecordType {
     pub variants: *const KojiVariantType,
 }
 
+/// A record, laid out for C (the prelude reads its fields and counts its references inline): the
+/// words of its fields follow it, in the same allocation (see `KojiVariantType::field_offsets`).
+#[repr(C)]
 pub struct KojiRecord {
     references: Cell<usize>,
     ty: *const KojiRecordType,
     tag: usize,
-    /// The words of the fields (see `KojiVariantType::field_offsets`).
-    fields: Vec<u64>,
+    fields: [u64; 0],
+}
+
+fn layout(words: usize) -> Layout {
+    Layout::from_size_align(std::mem::size_of::<KojiRecord>() + words * 8, std::mem::align_of::<KojiRecord>())
+        .expect("the size of a record")
+}
+
+/// A new record of variant `tag`, with one reference and its fields zero.
+fn allocate(ty: *const KojiRecordType, tag: usize) -> *mut KojiRecord {
+    let words = unsafe { (*(*ty).variants.add(tag)).word_count() };
+    unsafe {
+        let record = alloc_zeroed(layout(words)) as *mut KojiRecord;
+        if record.is_null() {
+            std::alloc::handle_alloc_error(layout(words));
+        }
+        record.write(KojiRecord { references: Cell::new(1), ty, tag, fields: [] });
+        record
+    }
 }
 
 impl KojiRecord {
+    /// The words of the fields.
+    fn words(&self) -> &[u64] {
+        unsafe { std::slice::from_raw_parts(self.fields.as_ptr(), self.variant().word_count()) }
+    }
+
+    fn words_mut(&mut self) -> &mut [u64] {
+        let count = self.variant().word_count();
+        unsafe { std::slice::from_raw_parts_mut(self.fields.as_mut_ptr(), count) }
+    }
+
     fn variant(&self) -> &KojiVariantType {
         unsafe { &*(*self.ty).variants.add(self.tag) }
     }
@@ -72,7 +103,7 @@ impl KojiRecord {
     }
 
     fn slot(&self, index: usize) -> *const c_void {
-        &self.fields[self.variant().offset(index)] as *const u64 as *const c_void
+        unsafe { self.fields.as_ptr().add(self.variant().offset(index)) as *const c_void }
     }
 
     fn field_count(&self) -> usize {
@@ -107,13 +138,7 @@ fn record<'a>(record: *const KojiRecord) -> &'a KojiRecord {
 /// each one with `koji_record_init`.
 #[no_mangle]
 pub extern "C" fn koji_record_new(ty: *const KojiRecordType, tag: usize) -> *mut KojiRecord {
-    let count = unsafe { (*(*ty).variants.add(tag)).word_count() };
-    Box::into_raw(Box::new(KojiRecord {
-        references: Cell::new(1),
-        ty,
-        tag,
-        fields: vec![0; count],
-    }))
+    allocate(ty, tag)
 }
 
 /// Sets a field of a new record (keeping its own reference to the value).
@@ -132,6 +157,7 @@ pub extern "C" fn koji_record_retain(record: *const KojiRecord) {
 }
 
 /// Removes a reference; at zero, releases the fields and frees the record. `NULL` is ignored.
+/// (The prelude does the same inline, and calls `koji_record_free` at zero.)
 #[no_mangle]
 pub extern "C" fn koji_record_release(record: *mut KojiRecord) {
     let Some(reference) = (unsafe { record.as_ref() }) else {
@@ -142,10 +168,18 @@ pub extern "C" fn koji_record_release(record: *mut KojiRecord) {
         reference.references.set(references);
         return;
     }
+    koji_record_free(record);
+}
+
+/// Releases the fields of a record without references and frees it.
+#[no_mangle]
+pub extern "C" fn koji_record_free(record: *mut KojiRecord) {
+    let reference = unsafe { &*record };
     for index in 0..reference.field_count() {
         reference.release_field(index);
     }
-    drop(unsafe { Box::from_raw(record) });
+    let words = reference.variant().word_count();
+    unsafe { dealloc(record as *mut u8, layout(words)) };
 }
 
 /// The variant of a value of a sum type (its position in the declaration).
@@ -165,17 +199,13 @@ fn unshare<'a>(variable: *mut *mut KojiRecord) -> &'a mut KojiRecord {
     unsafe {
         let current = &**variable;
         if current.references.get() > 1 {
-            let copy = KojiRecord {
-                references: Cell::new(1),
-                ty: current.ty,
-                tag: current.tag,
-                fields: current.fields.clone(),
-            };
-            for index in 0..copy.field_count() {
-                copy.retain_field(index);
+            let copy = allocate(current.ty, current.tag);
+            (*copy).words_mut().copy_from_slice(current.words());
+            for index in 0..(*copy).field_count() {
+                (*copy).retain_field(index);
             }
             current.references.set(current.references.get() - 1);
-            *variable = Box::into_raw(Box::new(copy));
+            *variable = copy;
         }
         &mut **variable
     }
@@ -219,7 +249,7 @@ pub extern "C" fn koji_record_repr(record: *const KojiRecord) -> *mut KojiString
     let record = self::record(record);
     // A `DateTime` is shown as a date: `2026-01-31 12:00:00`.
     if type_name(record) == "DateTime" && record.field_count() == 6 {
-        let f = |index: usize| record.fields[index] as i64;
+        let f = |index: usize| record.words()[index] as i64;
         let date = crate::datetime::DateTime { year: f(0), month: f(1), day: f(2), hour: f(3), minute: f(4), second: f(5) };
         return new_string(date.to_string());
     }
@@ -300,7 +330,7 @@ pub(crate) fn field_record(ty: *const KojiRecordType, variant: &str, field: usiz
 /// for a decimal).
 pub(crate) fn make(ty: *const KojiRecordType, name: &str, fields: &[u64]) -> *mut KojiRecord {
     let record = koji_record_new(ty, variant_index(ty, name));
-    unsafe { (*record).fields.copy_from_slice(fields) };
+    unsafe { (*record).words_mut().copy_from_slice(fields) };
     record
 }
 
@@ -349,5 +379,5 @@ pub(crate) fn record_variant(record: *const KojiRecord) -> String {
 
 /// The slots of the fields of a record.
 pub(crate) fn record_slots(record: *const KojiRecord) -> Vec<u64> {
-    self::record(record).fields.clone()
+    self::record(record).words().to_vec()
 }

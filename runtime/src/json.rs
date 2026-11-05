@@ -403,7 +403,7 @@ fn stringify(value: *const KojiRecord, out: &mut String) {
         "Array" => {
             let list = unsafe { &*(slots[0] as usize as *const KojiList) };
             out.push('[');
-            for (index, item) in list.items.iter().enumerate() {
+            for (index, item) in list.words().iter().enumerate() {
                 if index > 0 {
                     out.push(',');
                 }

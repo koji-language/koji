@@ -184,11 +184,13 @@ Steps:
 
 Profiles of the compiled checker (callgrind) show most of the time in reference counting (`retain` and `release`), `malloc`/`free` and tiny calls: `Lexer.at`, which only reads `self.chars[i]`, costs about 100 instructions (it retains and releases `self`, calls `koji_record_get` and `koji_list_get` in the Rust library, which C cannot inline, and retains then releases the item it read). Koji has value semantics and explicit `mut`, so the compiler knows who can see each value: the same model as Koka, whose Perceus reference counting is the reference for most of these. In order of benefit for their cost:
 
-1.  **Inline runtime accessors**: `koji_record_get`, `koji_list_get`, `retain` and `release` as `static inline` C (or link-time optimization across C and Rust). A change of the runtime only, possible at any time.
+1.  **Inline runtime accessors**: `koji_record_get`, `koji_list_get`, `retain` and `release` as `static inline` C (or link-time optimization across C and Rust). A change of the runtime only, possible at any time. Done: records and lists have a C layout (a record and its fields in one allocation), and reading a field, an item or a length, the tag, and counting references are inline in the prelude; only the last release calls the runtime. The runtime still exports the same functions, so a seed that calls them keeps working. `check` of the compiler went from 4.37 to 2.64 billion instructions (0.72 to 0.35 s), `dump c` from 1.65 to 1.02 s. `malloc` and `free` are now the largest cost (about a third), for steps 2 and 3.
 2.  **Borrowed parameters**: the caller keeps the value alive during the call, so the function does not retain and release its parameters (except values read from a global, which the call may change).
 3.  **Reference counting elision and reuse** (the rest of Perceus): read a field without retaining it when it is only inspected; move instead of copying at the last use of a variable; reuse the memory of a value that dies to build the next one (`substitute`, `namedParts`).
 4.  **Inlining of small functions** in the IR (`Lexer.at`, `Parser.isSymbol`): the call and the reference counting of its parameters disappear. A panic location is the function's file and the instruction's line, so an instruction inlined from another module must carry its own file.
 5.  **Escape analysis** to put records that never leave their function on the stack, without `malloc` or reference counting. Less useful than the others, and storing such a value elsewhere must copy it to the heap.
+
+The benchmark is `bench/compiler.sh`: the compiler checking and generating its own source, the best of five runs of each stage, and the instructions of `check` (exact) when valgrind is installed.
 
 Before them, measured: a `mut` parameter changing a local variable's value in place (it copied the whole value at each call), and caches in the checker written in Koji (`isMoveOnly`).
 

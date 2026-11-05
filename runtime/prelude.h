@@ -49,11 +49,38 @@ typedef struct {
     KojiString *(*display)(const void *slot);
 } KojiElementType;
 
+/* A list (runtime/src/list.rs): `items` holds `length` items of `stride` 8-byte words each. Its
+   items, its length and its references are read here, inline; the runtime does the rest. */
+struct KojiList {
+    size_t references;
+    const KojiElementType *element;
+    size_t stride;
+    uint64_t *items;
+    size_t length;
+    size_t capacity;
+};
+
 KojiList *koji_list_new(const KojiElementType *element, size_t capacity);
-void koji_list_retain(const KojiList *list);
-void koji_list_release(KojiList *list);
-int64_t koji_list_length(const KojiList *list);
-const void *koji_list_get(const KojiList *list, int64_t index, const char *location);
+void koji_list_free(KojiList *list);
+_Noreturn void koji_list_index_panic(int64_t index, int64_t length, const char *location);
+
+static inline void koji_list_retain(const KojiList *list) {
+    if (list) ((KojiList *)list)->references++;
+}
+
+/* At the last reference, the runtime releases the items and frees the list. NULL is ignored. */
+static inline void koji_list_release(KojiList *list) {
+    if (list && --list->references == 0) koji_list_free(list);
+}
+
+static inline int64_t koji_list_length(const KojiList *list) { return (int64_t)list->length; }
+
+/* The slot of the item at `index`, to read it. */
+static inline const void *koji_list_get(const KojiList *list, int64_t index, const char *location) {
+    if ((uint64_t)index >= list->length) koji_list_index_panic(index, (int64_t)list->length, location);
+    return &list->items[(size_t)index * list->stride];
+}
+
 void *koji_list_slot(KojiList **variable, int64_t index, const char *location);
 void koji_list_set(KojiList **variable, int64_t index, const void *value, const char *location);
 void koji_list_push(KojiList **variable, const void *value);
@@ -95,12 +122,36 @@ struct KojiRecordType {
     const KojiVariantType *variants;
 };
 
+/* A record (runtime/src/record.rs): the words of its fields follow it, in the same allocation, at
+   the offsets of its variant. Its fields, its tag and its references are read here, inline. */
+struct KojiRecord {
+    size_t references;
+    const KojiRecordType *type;
+    size_t tag;
+    uint64_t words[];
+};
+
 KojiRecord *koji_record_new(const KojiRecordType *type, size_t tag);
 void koji_record_init(KojiRecord *record, size_t index, const void *value);
-void koji_record_retain(const KojiRecord *record);
-void koji_record_release(KojiRecord *record);
-int64_t koji_record_tag(const KojiRecord *record);
-const void *koji_record_get(const KojiRecord *record, size_t index);
+void koji_record_free(KojiRecord *record);
+
+static inline void koji_record_retain(const KojiRecord *record) {
+    if (record) ((KojiRecord *)record)->references++;
+}
+
+/* At the last reference, the runtime releases the fields and frees the record. NULL is ignored. */
+static inline void koji_record_release(KojiRecord *record) {
+    if (record && --record->references == 0) koji_record_free(record);
+}
+
+static inline int64_t koji_record_tag(const KojiRecord *record) { return (int64_t)record->tag; }
+
+/* The slot of a field, to read it. */
+static inline const void *koji_record_get(const KojiRecord *record, size_t index) {
+    const size_t *offsets = record->type->variants[record->tag].field_offsets;
+    return &record->words[offsets ? offsets[index] : index];
+}
+
 void *koji_record_slot(KojiRecord **variable, size_t index);
 void koji_record_set(KojiRecord **variable, size_t index, const void *value);
 bool koji_record_equal(const KojiRecord *a, const KojiRecord *b);

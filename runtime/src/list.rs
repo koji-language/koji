@@ -36,12 +36,17 @@ pub struct KojiElementType {
     pub display: Option<unsafe extern "C" fn(*const c_void) -> *mut KojiString>,
 }
 
+/// A list, laid out for C (the prelude reads its items and length, and counts its references,
+/// inline): `items` points to `length * stride` words, in a buffer of `capacity` words that Rust
+/// allocated as a `Vec<u64>`.
+#[repr(C)]
 pub struct KojiList {
     references: Cell<usize>,
     element: *const KojiElementType,
-    /// The words of the items, `stride` for each one.
-    pub(crate) items: Vec<u64>,
     stride: usize,
+    items: *mut u64,
+    length: usize,
+    capacity: usize,
 }
 
 /// The words a value of this type takes: 1, or 2 for a decimal.
@@ -67,26 +72,59 @@ impl KojiList {
         unsafe { &*self.element }
     }
 
+    /// The words of the items.
+    pub(crate) fn words(&self) -> &[u64] {
+        unsafe { std::slice::from_raw_parts(self.items, self.length * self.stride) }
+    }
+
+    fn words_mut(&mut self) -> &mut [u64] {
+        unsafe { std::slice::from_raw_parts_mut(self.items, self.length * self.stride) }
+    }
+
+    /// The buffer of the items as a `Vec`, which the list no longer holds.
+    fn take(&mut self) -> Vec<u64> {
+        let items = unsafe { Vec::from_raw_parts(self.items, self.length * self.stride, self.capacity) };
+        self.put(Vec::new());
+        items
+    }
+
+    /// Holds `items` (their words) as the buffer of the list.
+    fn put(&mut self, items: Vec<u64>) {
+        let mut items = std::mem::ManuallyDrop::new(items);
+        self.items = items.as_mut_ptr();
+        self.length = items.len() / self.stride;
+        self.capacity = items.capacity();
+    }
+
+    /// Changes the words of the items as a `Vec`.
+    fn edit<R>(&mut self, change: impl FnOnce(&mut Vec<u64>) -> R) -> R {
+        let mut items = self.take();
+        let result = change(&mut items);
+        self.put(items);
+        result
+    }
+
     pub(crate) fn slot(&self, index: usize) -> *const c_void {
-        &self.items[index * self.stride] as *const u64 as *const c_void
+        unsafe { self.items.add(index * self.stride) as *const c_void }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.items.len() / self.stride
+        self.length
     }
 
     /// The words of the item at `index`.
     fn words_at(&self, index: usize) -> &[u64] {
-        &self.items[index * self.stride..(index + 1) * self.stride]
+        &self.words()[index * self.stride..(index + 1) * self.stride]
     }
 
     /// Puts the order of `order` (positions of items) in place.
     pub(crate) fn reorder(&mut self, order: &[usize]) {
-        let mut items = Vec::with_capacity(self.items.len());
+        let mut items = Vec::with_capacity(self.words().len());
         for &index in order {
             items.extend_from_slice(self.words_at(index));
         }
-        self.items = items;
+        drop(self.take());
+        self.put(items);
     }
 
     fn retain_item(&self, index: usize) {
@@ -115,12 +153,9 @@ impl KojiList {
 /// A list of `items`: their words, `words(element)` for each one.
 pub(crate) fn new_list(element: *const KojiElementType, items: Vec<u64>) -> *mut KojiList {
     let stride = words(unsafe { &*element });
-    Box::into_raw(Box::new(KojiList {
-        references: Cell::new(1),
-        element,
-        items,
-        stride,
-    }))
+    let mut list = KojiList { references: Cell::new(1), element, stride, items: std::ptr::NonNull::dangling().as_ptr(), length: 0, capacity: 0 };
+    list.put(items);
+    Box::into_raw(Box::new(list))
 }
 
 fn list<'a>(list: *const KojiList) -> &'a KojiList {
@@ -129,7 +164,7 @@ fn list<'a>(list: *const KojiList) -> &'a KojiList {
 
 /// A copy of `source`'s items, each with a new reference.
 fn copy_items(source: &KojiList) -> Vec<u64> {
-    let items = source.items.clone();
+    let items = source.words().to_vec();
     for index in 0..source.len() {
         source.retain_item(index);
     }
@@ -182,10 +217,23 @@ pub extern "C" fn koji_list_release(list: *mut KojiList) {
         reference.references.set(references);
         return;
     }
-    for index in 0..reference.len() {
-        reference.release_item(index);
+    koji_list_free(list);
+}
+
+/// Releases the items of a list without references and frees it.
+#[no_mangle]
+pub extern "C" fn koji_list_free(list: *mut KojiList) {
+    let mut list = unsafe { Box::from_raw(list) };
+    for index in 0..list.len() {
+        list.release_item(index);
     }
-    drop(unsafe { Box::from_raw(list) });
+    drop(list.take());
+}
+
+/// The panic of an index out of range (`koji_list_get` of the prelude).
+#[no_mangle]
+pub extern "C" fn koji_list_index_panic(index: i64, length: i64, location: *const c_char) -> ! {
+    panic_at(location, &format!("index {} out of range (length {})", index, length))
 }
 
 #[no_mangle]
@@ -217,7 +265,7 @@ pub extern "C" fn koji_list_set(variable: *mut *mut KojiList, index: i64, value:
     let slot = list.read(value);
     list.release_item(index);
     let stride = list.stride;
-    list.items[index * stride..(index + 1) * stride].copy_from_slice(&slot[..stride]);
+    list.words_mut()[index * stride..(index + 1) * stride].copy_from_slice(&slot[..stride]);
     list.retain_item(index);
 }
 
@@ -227,7 +275,7 @@ pub extern "C" fn koji_list_push(variable: *mut *mut KojiList, value: *const c_v
     let list = unshare(variable);
     let slot = list.read(value);
     let stride = list.stride;
-    list.items.extend_from_slice(&slot[..stride]);
+    list.edit(|items| items.extend_from_slice(&slot[..stride]));
     list.retain_item(list.len() - 1);
 }
 
@@ -243,7 +291,9 @@ pub extern "C" fn koji_list_insert(
     let index = position(index, list.len(), true, location);
     let slot = list.read(value);
     let stride = list.stride;
-    list.items.splice(index * stride..index * stride, slot[..stride].iter().copied());
+    list.edit(|items| {
+        items.splice(index * stride..index * stride, slot[..stride].iter().copied());
+    });
     list.retain_item(index);
 }
 
@@ -288,7 +338,7 @@ pub extern "C" fn koji_list_slice(
     if start < 0 || end > length || start > end {
         panic_at(location, &format!("slice {}..{} out of range (length {})", start, end, length));
     }
-    let items = list.items[start as usize * list.stride..end as usize * list.stride].to_vec();
+    let items = list.words()[start as usize * list.stride..end as usize * list.stride].to_vec();
     for index in start as usize..end as usize {
         list.retain_item(index);
     }
@@ -335,7 +385,7 @@ pub extern "C" fn koji_list_join(list: *const KojiList, separator: *const KojiSt
     let list = self::list(list);
     let separator = string_text(separator);
     let mut text = String::new();
-    for (index, slot) in list.items.iter().enumerate() {
+    for (index, slot) in list.words().iter().enumerate() {
         if index > 0 {
             text.push_str(separator);
         }
@@ -354,7 +404,8 @@ pub extern "C" fn koji_list_pop(variable: *mut *mut KojiList, out: *mut c_void) 
     }
     let last = list.len() - 1;
     list.copy_out(last, out);
-    list.items.truncate(last * list.stride);
+    let stride = list.stride;
+    list.edit(|items| items.truncate(last * stride));
     true
 }
 
@@ -368,7 +419,10 @@ pub extern "C" fn koji_list_remove(variable: *mut *mut KojiList, index: i64, out
     }
     let index = index as usize;
     list.copy_out(index, out);
-    list.items.drain(index * list.stride..(index + 1) * list.stride);
+    let stride = list.stride;
+    list.edit(|items| {
+        items.drain(index * stride..(index + 1) * stride);
+    });
     true
 }
 

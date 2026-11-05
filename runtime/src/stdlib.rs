@@ -524,7 +524,7 @@ pub extern "C" fn koji_std_system_exit(code: i64) -> ! {
 /// The texts of a list of strings.
 fn texts(list: *const KojiList) -> Vec<String> {
     let list = unsafe { &*list };
-    list.items.iter().map(|item| text(*item as usize as *const KojiString).to_string()).collect()
+    list.words().iter().map(|item| text(*item as usize as *const KojiString).to_string()).collect()
 }
 
 /// `Err(SystemError)` for a program that could not be run.
