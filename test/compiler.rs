@@ -658,6 +658,42 @@ print(text, kept, other, copies, text.length())
 }
 
 #[test]
+fn values_released_at_their_last_use() {
+    // `self.ids.get(name)` no longer holds the map when `self.ids[name] = id` changes it, which
+    // is then done in place; a copy keeps its value.
+    assert_same(
+        "last use",
+        "\
+type Table = { ids: Map[string, int], names: string[] }
+
+function Table.add(mut self, name: string): int {
+    match (self.ids.get(name)) {
+        Some(id) => return id
+        None => {}
+    }
+
+    self.names.push(name)
+    immut id = self.names.length() - 1
+    self.ids[name] = id
+    return id
+}
+
+mut table: Table = { ids: [:], names: [] }
+mut found: int[] = []
+
+for name in ['a', 'b', 'a', 'c'] {
+    found.push(table.add(name))
+}
+
+immut before = table
+table.add('d')
+print(found, table.names, before.names, before.ids.length(), table.ids['d'])
+",
+        "[0, 1, 0, 2] ['a', 'b', 'c', 'd'] ['a', 'b', 'c'] 3 3\n",
+    );
+}
+
+#[test]
 fn values_moved_at_their_last_use() {
     // `text += c` adds in place only when no one else sees the string: a copy keeps its value.
     assert_same(

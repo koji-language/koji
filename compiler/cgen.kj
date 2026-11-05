@@ -464,6 +464,7 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
         for position in range(routine.blocks[block].instructions.length()) {
             self.position = position
             self.instruction(routine, routine.blocks[block].instructions[position])
+            self.dropDead(routine)
         }
 
         self.terminator(routine, routine.blocks[block].terminator)
@@ -1279,6 +1280,23 @@ function targetReads(target: Target, local: int): boolean {
     }
 
     return false
+}
+
+// Releases the values the current instruction read for the last time, instead of at the end of
+// the function: a list or a map no one else sees can then change in place (`self.ids[key] = id`
+// after `self.ids.get(key)`). Not a borrowed local, a record on the stack (its fields are
+// released with it), or a `mut` parameter, which goes back to the caller.
+function Generator.dropDead(mut self, routine: IrFunction) {
+    for local in self.live[self.block][self.position] {
+        if (self.current[local] or self.stack.has(local)) { continue }
+
+        if (local < routine.writeback.length() and routine.writeback[local]) { continue }
+
+        match (release(routine.locals[local].ty)) {
+            Some(name) => self.line(`    ${name}(l${local}); l${local} = NULL;`)
+            None => {}
+        }
+    }
 }
 
 // Whether the instruction after the current one appends the string `local` (read for the last
