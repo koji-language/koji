@@ -10,33 +10,60 @@ use std::cmp::Ordering;
 
 use crate::numbers::format_float;
 
+/// A string, laid out for C (the prelude counts its references inline): its UTF-8 bytes follow
+/// it, in the same allocation, from the pool for a short one.
+#[repr(C)]
 pub struct KojiString {
     references: Cell<usize>,
-    text: String,
+    length: usize,
+    bytes: [u8; 0],
 }
 
 impl KojiString {
     pub fn as_str(&self) -> &str {
-        &self.text
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.bytes.as_ptr(), self.length)) }
+    }
+}
+
+/// The 8-byte words of a string of `length` bytes.
+fn block_words(length: usize) -> usize {
+    std::mem::size_of::<KojiString>() / 8 + length.div_ceil(8)
+}
+
+/// A new string of `length` bytes that `fill` writes (they must be UTF-8).
+fn allocate(length: usize, fill: impl FnOnce(&mut [u8])) -> *mut KojiString {
+    unsafe {
+        let string = crate::pool::take(block_words(length)) as *mut KojiString;
+        string.write(KojiString { references: Cell::new(1), length, bytes: [] });
+        fill(std::slice::from_raw_parts_mut((*string).bytes.as_mut_ptr(), length));
+        string
     }
 }
 
 pub(crate) fn new_string(text: String) -> *mut KojiString {
-    Box::into_raw(Box::new(KojiString {
-        references: Cell::new(1),
-        text,
-    }))
+    from_str(&text)
+}
+
+fn from_str(text: &str) -> *mut KojiString {
+    allocate(text.len(), |bytes| bytes.copy_from_slice(text.as_bytes()))
 }
 
 pub(crate) fn string_text<'a>(string: *const KojiString) -> &'a str {
-    unsafe { &(*string).text }
+    unsafe { (*string).as_str() }
 }
 
 /// A new string with the UTF-8 bytes `bytes[..length]`.
 #[no_mangle]
 pub extern "C" fn koji_string_new(bytes: *const u8, length: usize) -> *mut KojiString {
     let bytes = unsafe { std::slice::from_raw_parts(bytes, length) };
-    new_string(String::from_utf8_lossy(bytes).into_owned())
+    from_str(&String::from_utf8_lossy(bytes))
+}
+
+/// Frees a string without references (the prelude releases strings inline).
+#[no_mangle]
+pub extern "C" fn koji_string_free(string: *mut KojiString) {
+    let length = unsafe { (*string).length };
+    crate::pool::give(string as *mut u8, block_words(length));
 }
 
 #[no_mangle]
@@ -52,7 +79,7 @@ pub extern "C" fn koji_string_release(string: *mut KojiString) {
     if let Some(reference) = unsafe { string.as_ref() } {
         let references = reference.references.get() - 1;
         if references == 0 {
-            drop(unsafe { Box::from_raw(string) });
+            koji_string_free(string);
         } else {
             reference.references.set(references);
         }
@@ -62,10 +89,10 @@ pub extern "C" fn koji_string_release(string: *mut KojiString) {
 #[no_mangle]
 pub extern "C" fn koji_string_concat(a: *const KojiString, b: *const KojiString) -> *mut KojiString {
     let (a, b) = (string_text(a), string_text(b));
-    let mut result = String::with_capacity(a.len() + b.len());
-    result.push_str(a);
-    result.push_str(b);
-    new_string(result)
+    allocate(a.len() + b.len(), |bytes| {
+        bytes[..a.len()].copy_from_slice(a.as_bytes());
+        bytes[a.len()..].copy_from_slice(b.as_bytes());
+    })
 }
 
 /// `text * count` (an empty string for a count below 1).
@@ -154,7 +181,10 @@ fn char_of(code: u32) -> char {
 /// The text of a char (`print`).
 #[no_mangle]
 pub extern "C" fn koji_string_from_char(code: u32) -> *mut KojiString {
-    new_string(char_of(code).to_string())
+    let c = char_of(code);
+    allocate(c.len_utf8(), |bytes| {
+        c.encode_utf8(bytes);
+    })
 }
 
 /// A char as written in code: `'a'`, `'\n'`.

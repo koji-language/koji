@@ -18,6 +18,7 @@ mod regex;
 mod stdlib;
 mod numbers;
 mod output;
+mod pool;
 mod string;
 
 pub use numbers::{float_pow, format_float, int_pow, parse_hex_float, PowFailure};

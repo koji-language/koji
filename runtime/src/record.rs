@@ -3,7 +3,6 @@
 //! is changed. Each field takes one 8-byte word, or two for a decimal, described by a
 //! `KojiElementType`.
 
-use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::cell::Cell;
 use std::ffi::{c_char, c_void, CStr};
 
@@ -59,20 +58,19 @@ pub struct KojiRecord {
     fields: [u64; 0],
 }
 
-fn layout(words: usize) -> Layout {
-    Layout::from_size_align(std::mem::size_of::<KojiRecord>() + words * 8, std::mem::align_of::<KojiRecord>())
-        .expect("the size of a record")
+
+/// The 8-byte words of a record with `fields` words of fields.
+fn block_words(fields: usize) -> usize {
+    std::mem::size_of::<KojiRecord>() / 8 + fields
 }
 
 /// A new record of variant `tag`, with one reference and its fields zero.
 fn allocate(ty: *const KojiRecordType, tag: usize) -> *mut KojiRecord {
     let words = unsafe { (*(*ty).variants.add(tag)).word_count() };
     unsafe {
-        let record = alloc_zeroed(layout(words)) as *mut KojiRecord;
-        if record.is_null() {
-            std::alloc::handle_alloc_error(layout(words));
-        }
+        let record = crate::pool::take(block_words(words)) as *mut KojiRecord;
         record.write(KojiRecord { references: Cell::new(1), ty, tag, fields: [] });
+        std::ptr::write_bytes((*record).fields.as_mut_ptr(), 0, words);
         record
     }
 }
@@ -179,7 +177,7 @@ pub extern "C" fn koji_record_free(record: *mut KojiRecord) {
         reference.release_field(index);
     }
     let words = reference.variant().word_count();
-    unsafe { dealloc(record as *mut u8, layout(words)) };
+    crate::pool::give(record as *mut u8, block_words(words));
 }
 
 /// The variant of a value of a sum type (its position in the declaration).
