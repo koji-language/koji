@@ -502,6 +502,39 @@ print(names)
 }
 
 #[test]
+fn fields_written_in_place() {
+    // A field is written in the record itself, unless someone else sees the record; the value
+    // assigned is taken first, so `r.next = Some(r)` keeps the record as it was.
+    assert_same(
+        "fields",
+        "\
+type Node = { name: string, next: Option[Node], items: string[] }
+
+function named(name: string): Node {
+    immut items = [name]
+    return { name: name, next: None, items: items }
+}
+
+mut r = named('a')
+r.next = Some(r)
+mut copy = r
+copy.name = 'b' + copy.name
+r.items.push('y')
+mut nodes: Map[string, Node] = [:]
+immut key = 'key'
+nodes[key] = r
+nodes[key].name = key
+print(r)
+print(copy)
+print(nodes)
+",
+        "{ name: 'a', next: Some({ name: 'a', next: None, items: ['a'] }), items: ['a', 'y'] }\n\
+{ name: 'ba', next: Some({ name: 'a', next: None, items: ['a'] }), items: ['a'] }\n\
+['key': { name: 'key', next: Some({ name: 'a', next: None, items: ['a'] }), items: ['a', 'y'] }]\n",
+    );
+}
+
+#[test]
 fn compound_assignments() {
     assert_same(
         "compound",

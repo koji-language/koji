@@ -192,6 +192,13 @@ pub extern "C" fn koji_record_get(record: *const KojiRecord, index: usize) -> *c
     self::record(record).slot(index)
 }
 
+/// Makes the record in `variable` its own, for the generated code that changes a field in place
+/// (it calls this only when the record is shared).
+#[no_mangle]
+pub extern "C" fn koji_record_unshare(variable: *mut *mut KojiRecord) {
+    unshare(variable);
+}
+
 /// Makes the record in `variable` its own (copying it if it is shared) and returns it.
 fn unshare<'a>(variable: *mut *mut KojiRecord) -> &'a mut KojiRecord {
     unsafe {

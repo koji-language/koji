@@ -830,15 +830,35 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             immut record = recordId(ty)
             self.set(`l${dest}`, ty, `koji_record_new(&koji_record_${record}, ${variant})`)
             immut fieldTypes = self.program.records[record].variants[variant].fields
+            // Each field is written in place, at the word the variant puts it; a value read for the
+            // last time (and by one field only) moves into it.
+            mut word = 0
 
             for index in range(fields.length()) {
                 if (index >= fieldTypes.length()) { break }
 
                 immut fieldType = fieldTypes[index].ty
+                immut offset = word
+                word += words(fieldType)
 
                 if (fieldType == VoidTy) { continue }
 
-                self.withAddress(fieldType, fields[index], `koji_record_init(l${dest}, ${index}, VALUE)`)
+                immut value = fields[index]
+                mut count = 0
+
+                for other in fields {
+                    if (other == value) { count += 1 }
+                }
+
+                immut slot = `*(${cType(fieldType)} *)&l${dest}->words[${offset}]`
+
+                match (self.movable(routine, value)) {
+                    Some(local) if (count == 1 and local != dest) => {
+                        self.line(`    ${slot} = l${local};`)
+                        self.line(`    l${local} = NULL;`)
+                    }
+                    _ => self.line(`    ${slot} = ${share(fieldType, operand(value))};`)
+                }
             }
         }
         FieldGetIns(dest, record, field) => {
@@ -846,9 +866,37 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             immut value = `*(${cType(ty)} const *)koji_record_get(${operand(record)}, ${field})`
             self.set(`l${dest}`, ty, share(ty, value))
         }
+        // In place: the record is copied first only when it is shared; the new value is written,
+        // then the old one released (the new one may be computed from it).
         FieldSetIns(record, field, value, line) => {
             immut ty = self.operandType(routine, value)
-            self.withAddress(ty, value, `koji_record_set((KojiRecord **)${self.path(record, line)}, ${field}, VALUE)`)
+            immut c = cType(ty)
+            // The value is taken before the record is unshared: `r.next = r` keeps the old record.
+            immut moved = match (self.movable(routine, value)) {
+                Some(local) if (not targetReads(record, local)) => Some(local)
+                _ => None
+            }
+            immut fresh = match (moved) {
+                Some(local) => `l${local}`
+                None => share(ty, operand(value))
+            }
+            self.line(`    { ${c} fresh = ${fresh};`)
+
+            match (moved) {
+                Some(local) => self.line(`    l${local} = NULL;`)
+                None => {}
+            }
+
+            self.line(`    KojiRecord **variable = (KojiRecord **)${self.path(record, line)};`)
+            self.line(`    if ((*variable)->references > 1) koji_record_unshare(variable);`)
+            self.line(`    ${c} *slot = (${c} *)koji_record_get(*variable, ${field});`)
+            self.line(`    ${c} old = *slot;`)
+            self.line(`    *slot = fresh;`)
+
+            match (release(ty)) {
+                Some(name) => self.line(`    ${name}(old); }`)
+                None => self.line('    (void)old; }')
+            }
         }
         ListRemoveIns(dest, list, index, line) => {
             immut option = recordId(routine.locals[dest].ty)
@@ -1020,6 +1068,26 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
 // Releases the values the function owns (before it returns).
 // The local of `value` when this instruction reads it for the last time and owns it (not a
 // borrowed or a `mut` parameter, of a managed type): its reference can move.
+// The target is reached through the local (its root, or a key or index of its path).
+function targetReads(target: Target, local: int): boolean {
+    match (target.root) {
+        LocalPlace(id) => if (id == local) { return true }
+        GlobalPlace(_) => {}
+    }
+
+    for part in target.path {
+        immut step = match (part) {
+            IndexStep(index) => index
+            KeyStep(key) => key
+            FieldStep(_) => continue
+        }
+
+        if (step == LocalOp(local)) { return true }
+    }
+
+    return false
+}
+
 function Generator.movable(self, routine: IrFunction, value: Operand): Option[int] {
     immut local = match (value) {
         LocalOp(id) => id

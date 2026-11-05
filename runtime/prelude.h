@@ -6,6 +6,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* The small functions below are inlined where they are called. Left to its heuristics, gcc spends
+   most of its time (20 minutes for the compiler) weighing them in the large functions kojic
+   generates. */
+#define KOJI_INLINE static inline __attribute__((always_inline))
+
 typedef struct KojiString KojiString;
 
 /* A decimal (runtime/src/decimal.rs): 34 significant digits in two words, passed in registers.
@@ -28,12 +33,12 @@ struct KojiString {
 KojiString *koji_string_new(const char *bytes, size_t length);
 void koji_string_free(KojiString *string);
 
-static inline void koji_string_retain(const KojiString *string) {
+KOJI_INLINE void koji_string_retain(const KojiString *string) {
     if (string) ((KojiString *)string)->references++;
 }
 
 /* At the last reference, the runtime frees the string. NULL is ignored. */
-static inline void koji_string_release(KojiString *string) {
+KOJI_INLINE void koji_string_release(KojiString *string) {
     if (string && --string->references == 0) koji_string_free(string);
 }
 KojiString *koji_string_concat(const KojiString *a, const KojiString *b);
@@ -83,19 +88,19 @@ KojiList *koji_list_new(const KojiElementType *element, size_t capacity);
 void koji_list_free(KojiList *list);
 _Noreturn void koji_list_index_panic(int64_t index, int64_t length, const char *location);
 
-static inline void koji_list_retain(const KojiList *list) {
+KOJI_INLINE void koji_list_retain(const KojiList *list) {
     if (list) ((KojiList *)list)->references++;
 }
 
 /* At the last reference, the runtime releases the items and frees the list. NULL is ignored. */
-static inline void koji_list_release(KojiList *list) {
+KOJI_INLINE void koji_list_release(KojiList *list) {
     if (list && --list->references == 0) koji_list_free(list);
 }
 
-static inline int64_t koji_list_length(const KojiList *list) { return (int64_t)list->length; }
+KOJI_INLINE int64_t koji_list_length(const KojiList *list) { return (int64_t)list->length; }
 
 /* The slot of the item at `index`, to read it. */
-static inline const void *koji_list_get(const KojiList *list, int64_t index, const char *location) {
+KOJI_INLINE const void *koji_list_get(const KojiList *list, int64_t index, const char *location) {
     if ((uint64_t)index >= list->length) koji_list_index_panic(index, (int64_t)list->length, location);
     return &list->items[(size_t)index * list->stride];
 }
@@ -153,20 +158,22 @@ struct KojiRecord {
 KojiRecord *koji_record_new(const KojiRecordType *type, size_t tag);
 void koji_record_init(KojiRecord *record, size_t index, const void *value);
 void koji_record_free(KojiRecord *record);
+/* Copies the record in `variable` when it is shared, so that it can be changed in place. */
+void koji_record_unshare(KojiRecord **variable);
 
-static inline void koji_record_retain(const KojiRecord *record) {
+KOJI_INLINE void koji_record_retain(const KojiRecord *record) {
     if (record) ((KojiRecord *)record)->references++;
 }
 
 /* At the last reference, the runtime releases the fields and frees the record. NULL is ignored. */
-static inline void koji_record_release(KojiRecord *record) {
+KOJI_INLINE void koji_record_release(KojiRecord *record) {
     if (record && --record->references == 0) koji_record_free(record);
 }
 
-static inline int64_t koji_record_tag(const KojiRecord *record) { return (int64_t)record->tag; }
+KOJI_INLINE int64_t koji_record_tag(const KojiRecord *record) { return (int64_t)record->tag; }
 
 /* The slot of a field, to read it. */
-static inline const void *koji_record_get(const KojiRecord *record, size_t index) {
+KOJI_INLINE const void *koji_record_get(const KojiRecord *record, size_t index) {
     const size_t *offsets = record->type->variants[record->tag].field_offsets;
     return &record->words[offsets ? offsets[index] : index];
 }
@@ -324,7 +331,7 @@ double koji_decimal_to_float(KojiDecimal value, const char *location);
 int64_t koji_decimal_to_int(KojiDecimal value, int32_t mode, const char *location);
 
 /* A decimal constant: coefficient = high * 10^17 + low, with the exponent the compiler chose. */
-static inline KojiDecimal koji_decimal_literal(bool negative, int64_t high, int64_t low, int32_t exponent) {
+KOJI_INLINE KojiDecimal koji_decimal_literal(bool negative, int64_t high, int64_t low, int32_t exponent) {
     unsigned __int128 coefficient = (unsigned __int128)high * UINT64_C(100000000000000000) + (uint64_t)low;
     KojiDecimal value = { (uint64_t)coefficient,
                           (uint64_t)(coefficient >> 64) | (uint64_t)(exponent + 6176) << 49 | (uint64_t)negative << 63 };
@@ -333,7 +340,7 @@ static inline KojiDecimal koji_decimal_literal(bool negative, int64_t high, int6
 
 /* `a + b`: in C when both have the same exponent and sign and the sum keeps 34 digits (amounts
    of money, measures), otherwise in the runtime. */
-static inline KojiDecimal koji_decimal_plus(KojiDecimal a, KojiDecimal b, const char *location) {
+KOJI_INLINE KojiDecimal koji_decimal_plus(KojiDecimal a, KojiDecimal b, const char *location) {
     const uint64_t mask = (UINT64_C(1) << 49) - 1;
     if ((a.hi & ~mask) == (b.hi & ~mask)) {
         unsigned __int128 x = (unsigned __int128)(a.hi & mask) << 64 | a.lo;
@@ -349,80 +356,80 @@ static inline KojiDecimal koji_decimal_plus(KojiDecimal a, KojiDecimal b, const 
 }
 
 /* Writes a string variable: the new value is already owned, the old one is released. */
-static inline void koji_string_set(KojiString **variable, KojiString *value) {
+KOJI_INLINE void koji_string_set(KojiString **variable, KojiString *value) {
     KojiString *old = *variable;
     *variable = value;
     koji_string_release(old);
 }
 
 /* A new reference to a string that is still owned elsewhere. */
-static inline KojiString *koji_string_share(KojiString *string) {
+KOJI_INLINE KojiString *koji_string_share(KojiString *string) {
     koji_string_retain(string);
     return string;
 }
 
-static inline void koji_list_set_variable(KojiList **variable, KojiList *value) {
+KOJI_INLINE void koji_list_set_variable(KojiList **variable, KojiList *value) {
     KojiList *old = *variable;
     *variable = value;
     koji_list_release(old);
 }
 
-static inline KojiList *koji_list_share(KojiList *list) {
+KOJI_INLINE KojiList *koji_list_share(KojiList *list) {
     koji_list_retain(list);
     return list;
 }
 
-static inline void koji_record_set_variable(KojiRecord **variable, KojiRecord *value) {
+KOJI_INLINE void koji_record_set_variable(KojiRecord **variable, KojiRecord *value) {
     KojiRecord *old = *variable;
     *variable = value;
     koji_record_release(old);
 }
 
-static inline KojiRecord *koji_record_share(KojiRecord *record) {
+KOJI_INLINE KojiRecord *koji_record_share(KojiRecord *record) {
     koji_record_retain(record);
     return record;
 }
 
-static inline void koji_map_set_variable(KojiMap **variable, KojiMap *value) {
+KOJI_INLINE void koji_map_set_variable(KojiMap **variable, KojiMap *value) {
     KojiMap *old = *variable;
     *variable = value;
     koji_map_release(old);
 }
 
-static inline KojiMap *koji_map_share(KojiMap *map) {
+KOJI_INLINE KojiMap *koji_map_share(KojiMap *map) {
     koji_map_retain(map);
     return map;
 }
 
-static inline void koji_file_set_variable(KojiFile **variable, KojiFile *value) {
+KOJI_INLINE void koji_file_set_variable(KojiFile **variable, KojiFile *value) {
     KojiFile *old = *variable;
     *variable = value;
     koji_file_release(old);
 }
 
-static inline KojiFile *koji_file_share(KojiFile *file) {
+KOJI_INLINE KojiFile *koji_file_share(KojiFile *file) {
     koji_file_retain(file);
     return file;
 }
 
-static inline void koji_regex_set_variable(KojiRegex **variable, KojiRegex *value) {
+KOJI_INLINE void koji_regex_set_variable(KojiRegex **variable, KojiRegex *value) {
     KojiRegex *old = *variable;
     *variable = value;
     koji_regex_release(old);
 }
 
-static inline KojiRegex *koji_regex_share(KojiRegex *regex) {
+KOJI_INLINE KojiRegex *koji_regex_share(KojiRegex *regex) {
     koji_regex_retain(regex);
     return regex;
 }
 
-static inline void koji_closure_set_variable(KojiClosure **variable, KojiClosure *value) {
+KOJI_INLINE void koji_closure_set_variable(KojiClosure **variable, KojiClosure *value) {
     KojiClosure *old = *variable;
     *variable = value;
     koji_closure_release(old);
 }
 
-static inline KojiClosure *koji_closure_share(KojiClosure *closure) {
+KOJI_INLINE KojiClosure *koji_closure_share(KojiClosure *closure) {
     koji_closure_retain(closure);
     return closure;
 }
@@ -587,71 +594,71 @@ KOJI_BEFORE(record, KojiRecord *)
 KOJI_BEFORE(map, KojiMap *)
 KOJI_BEFORE(closure, KojiClosure *)
 
-static inline int64_t koji_int_add(int64_t a, int64_t b, const char *location) {
+KOJI_INLINE int64_t koji_int_add(int64_t a, int64_t b, const char *location) {
     int64_t result;
     if (__builtin_add_overflow(a, b, &result)) koji_panic(location, "integer overflow");
     return result;
 }
 
-static inline int64_t koji_int_sub(int64_t a, int64_t b, const char *location) {
+KOJI_INLINE int64_t koji_int_sub(int64_t a, int64_t b, const char *location) {
     int64_t result;
     if (__builtin_sub_overflow(a, b, &result)) koji_panic(location, "integer overflow");
     return result;
 }
 
-static inline int64_t koji_int_mul(int64_t a, int64_t b, const char *location) {
+KOJI_INLINE int64_t koji_int_mul(int64_t a, int64_t b, const char *location) {
     int64_t result;
     if (__builtin_mul_overflow(a, b, &result)) koji_panic(location, "integer overflow");
     return result;
 }
 
 /* Truncates toward zero, like Go and Rust. */
-static inline int64_t koji_int_div(int64_t a, int64_t b, const char *location) {
+KOJI_INLINE int64_t koji_int_div(int64_t a, int64_t b, const char *location) {
     if (b == 0) koji_panic(location, "division by zero");
     if (a == INT64_MIN && b == -1) koji_panic(location, "integer overflow");
     return a / b;
 }
 
 /* The remainder has the sign of the dividend. */
-static inline int64_t koji_int_rem(int64_t a, int64_t b, const char *location) {
+KOJI_INLINE int64_t koji_int_rem(int64_t a, int64_t b, const char *location) {
     if (b == 0) koji_panic(location, "division by zero");
     if (a == INT64_MIN && b == -1) koji_panic(location, "integer overflow");
     return a % b;
 }
 
-static inline int64_t koji_int_neg(int64_t a, const char *location) {
+KOJI_INLINE int64_t koji_int_neg(int64_t a, const char *location) {
     if (a == INT64_MIN) koji_panic(location, "integer overflow");
     return -a;
 }
 
-static inline int64_t koji_shift_left(int64_t a, int64_t b, const char *location) {
+KOJI_INLINE int64_t koji_shift_left(int64_t a, int64_t b, const char *location) {
     if (b < 0 || b >= 64) koji_panic_shift(location, b);
     return (int64_t)((uint64_t)a << b);
 }
 
-static inline int64_t koji_shift_right(int64_t a, int64_t b, const char *location) {
+KOJI_INLINE int64_t koji_shift_right(int64_t a, int64_t b, const char *location) {
     if (b < 0 || b >= 64) koji_panic_shift(location, b);
     return a >> b;
 }
 
 /* float has no infinity: a result that does not fit is a representation limit. */
-static inline double koji_float_check(double result, const char *location) {
+KOJI_INLINE double koji_float_check(double result, const char *location) {
     if (!isfinite(result)) koji_panic(location, "float overflow");
     return result;
 }
 
-static inline double koji_float_div(double a, double b, const char *location) {
+KOJI_INLINE double koji_float_div(double a, double b, const char *location) {
     if (b == 0.0) koji_panic(location, "division by zero");
     return koji_float_check(a / b, location);
 }
 
-static inline double koji_float_rem(double a, double b, const char *location) {
+KOJI_INLINE double koji_float_rem(double a, double b, const char *location) {
     if (b == 0.0) koji_panic(location, "division by zero");
     return koji_float_check(fmod(a, b), location);
 }
 
 /* One step of `for i in range(...)`. */
-static inline bool koji_range_next(int64_t *next, int64_t end, int64_t step, bool *done,
+KOJI_INLINE bool koji_range_next(int64_t *next, int64_t end, int64_t step, bool *done,
                                    int64_t *value) {
     int64_t i = *next;
     if (*done || !((step > 0 && i < end) || (step < 0 && i > end))) return false;
