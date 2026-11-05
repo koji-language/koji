@@ -17,6 +17,8 @@ type Generator = {
     // they have their value (borrow.kj).
     borrowed: boolean[][]
     constants: boolean[]
+    // The functions always inlined.
+    smalls: boolean[]
     // The borrowed locals of the function being generated: its borrowed parameters, and the
     // locals that only read their fields (borrow.kj).
     current: boolean[]
@@ -184,7 +186,7 @@ function Generator.line(mut self, text: string) {
 
 // The C source of `program`, line by line.
 export function generate(program: IrProgram): string[] {
-    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), constants: constantGlobals(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [], charLocal: -1, charValue: '' }
+    mut generator: Generator = { program: program, out: [], file: '', borrowed: borrowedParams(program), constants: constantGlobals(program), smalls: smallFunctions(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [], charLocal: -1, charValue: '' }
     generator.generateProgram()
     return generator.out
 }
@@ -212,7 +214,7 @@ function Generator.generateProgram(mut self) {
     immut functions = self.program.functions
 
     for id in range(functions.length()) {
-        self.line(`${signature(id, functions[id])};`)
+        self.line(`${signature(id, functions[id], self.smalls[id])};`)
     }
 
     for id in range(functions.length()) {
@@ -352,7 +354,7 @@ function variantWords(fields: IrField[]): int {
     return total
 }
 
-function signature(id: int, routine: IrFunction): string {
+function signature(id: int, routine: IrFunction, inlined: boolean): string {
     mut params: string[] = []
 
     for param in range(routine.params) {
@@ -365,14 +367,52 @@ function signature(id: int, routine: IrFunction): string {
     }
 
     immut list = if (params.length() == 0) { 'void' } else { params.join(', ') }
-    immut inline = if (small(routine)) { 'KOJI_INLINE' } else { 'static' }
+    immut inline = if (inlined) { 'KOJI_INLINE' } else { 'static' }
     return `${inline} ${cType(routine.returns)} ${functionName(id)}(${list}) /* ${routine.name} */`
 }
 
-// A function of a few instructions that calls no other one (`Lexer.at`): inlined where it is
-// called. The C compiler does not always do it by itself, in the large functions of a program.
-function small(routine: IrFunction): boolean {
-    if (routine.blocks.length() > 4) { return false }
+// The functions of a few instructions that call no other ones but such functions (`Lexer.at`,
+// `Lexer.advance`): inlined where they are called. The C compiler does not always do it by itself,
+// in the large functions of a program. A function's size counts the instructions of the small
+// ones it calls, so inlining stays bounded. Until nothing changes, so a recursive function is
+// never one of them.
+function smallFunctions(program: IrProgram): boolean[] {
+    mut sizes: int[] = []
+
+    for routine in program.functions {
+        sizes.push(-1)
+    }
+
+    mut changed = true
+
+    while (changed) {
+        changed = false
+
+        for id in range(program.functions.length()) {
+            if (sizes[id] >= 0) { continue }
+
+            immut size = inlinedSize(program.functions[id], sizes)
+
+            if (size >= 0) {
+                sizes[id] = size
+                changed = true
+            }
+        }
+    }
+
+    mut smalls: boolean[] = []
+
+    for size in sizes {
+        smalls.push(size >= 0)
+    }
+
+    return smalls
+}
+
+// The instructions of the function with those of the small functions it calls, or -1 when it is
+// not small (`sizes`: those of the small functions found so far, -1 for the others).
+function inlinedSize(routine: IrFunction, sizes: int[]): int {
+    if (routine.blocks.length() > 4) { return -1 }
 
     mut count = 0
 
@@ -381,14 +421,18 @@ function small(routine: IrFunction): boolean {
             count += 1
 
             match (instruction) {
-                CallIns(_, _, _, _, _) => return false
-                CallClosureIns(_, _, _, _) => return false
+                CallIns(_, callee, _, _, _) => {
+                    if (sizes[callee] < 0) { return -1 }
+
+                    count += sizes[callee]
+                }
+                CallClosureIns(_, _, _, _) => return -1
                 _ => {}
             }
         }
     }
 
-    return count <= 12
+    return if (count <= 16) { count } else { -1 }
 }
 
 function Generator.location(self, line: int): string {
@@ -399,7 +443,7 @@ function Generator.location(self, line: int): string {
 
 function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
     self.file = routine.file
-    self.line(`${signature(id, routine)} {`)
+    self.line(`${signature(id, routine, self.smalls[id])} {`)
 
     // A parameter the function only reads is borrowed: the caller keeps it alive (borrow.kj).
     // Another one gets a reference of its own, since the function changes it or moves it out. A

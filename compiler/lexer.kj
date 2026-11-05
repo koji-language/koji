@@ -329,6 +329,9 @@ function Lexer.template(mut self): Token {
 // The characters of each long symbol.
 immut longSymbolChars = symbolChars()
 
+// The characters a long symbol starts with.
+immut longSymbolStarts = '*<>=-!+%/&|^.'
+
 function symbolChars(): char[][] {
     mut result: char[][] = []
 
@@ -349,13 +352,18 @@ function Lexer.startsWith(self, parts: char[]): boolean {
 }
 
 function Lexer.symbol(mut self): Token {
-    for i in range(longSymbols.length()) {
-        if (self.startsWith(longSymbolChars[i])) {
-            for each in longSymbolChars[i] {
-                self.advance()
-            }
+    immut first = self.at(0)
 
-            return Symbol(longSymbols[i])
+    // Only some characters start a long symbol (`(` and `,` do not).
+    if (first in longSymbolStarts) {
+        for i in range(longSymbols.length()) {
+            if (longSymbolChars[i][0] == first and self.startsWith(longSymbolChars[i])) {
+                for each in longSymbolChars[i] {
+                    self.advance()
+                }
+
+                return Symbol(longSymbols[i])
+            }
         }
     }
 
