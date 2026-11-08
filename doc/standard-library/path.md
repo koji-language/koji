@@ -1,6 +1,6 @@
 # path
 
-The `path` module works with paths as text: it never accesses the disk. To see what exists on the disk, use [`file.exists` and `file.list`](file.md#directories).
+The `path` module works with paths as text: it never accesses the disk. It is written in Koji: `std/path.kj`. To see what exists on the disk, use [`file.exists` and `file.list`](file.md#directories).
 
 ## Functions
 

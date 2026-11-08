@@ -1,5 +1,5 @@
 //! The standard library for compiled programs: the built-in functions (`input`, `int`,
-//! `float`), the methods of strings and the modules `math`, `time`, `path` and `system`.
+//! `float`), the methods of strings and the modules `math`, `time` and `system`.
 //!
 //! A function that gives a value of a declared type (`Option`, `Result`, an error) receives
 //! its description from the generated code and builds it with `record::make`. The messages
@@ -438,39 +438,6 @@ pub extern "C" fn koji_std_time_now() -> crate::decimal::KojiDecimal {
 #[no_mangle]
 pub extern "C" fn koji_std_time_monotonic() -> crate::decimal::KojiDecimal {
     seconds(STARTED.get_or_init(Instant::now).elapsed())
-}
-
-// path
-
-#[no_mangle]
-pub extern "C" fn koji_std_path_join(base: *const KojiString, part: *const KojiString) -> *mut KojiString {
-    new_string(std::path::Path::new(text(base)).join(text(part)).to_string_lossy().into_owned())
-}
-
-/// `path.parent`, `path.name`, `path.stem` and `path.extension`: `part` is 0, 1, 2 or 3.
-#[no_mangle]
-pub extern "C" fn koji_std_path_part(path: *const KojiString, part: i32, option: *const KojiRecordType) -> *mut KojiRecord {
-    let path = std::path::Path::new(text(path));
-    let text = |part: Option<&std::ffi::OsStr>| part.map(|part| part.to_string_lossy().into_owned());
-    let value = match part {
-        // The parent of 'main.kj' is '.'; '/' has none.
-        0 => path.parent().map(|parent| {
-            if parent.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                parent.to_string_lossy().into_owned()
-            }
-        }),
-        1 => text(path.file_name()),
-        2 => text(path.file_stem()),
-        _ => text(path.extension()),
-    };
-    some_string(option, value)
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_path_is_absolute(path: *const KojiString) -> bool {
-    std::path::Path::new(text(path)).is_absolute()
 }
 
 // system

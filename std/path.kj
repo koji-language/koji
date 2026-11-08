@@ -1,0 +1,122 @@
+// The `path` module: paths as text, without the disk (see doc/standard-library/path.md). A path is
+// a sequence of parts separated by `/`; repeated separators and `.` after the first part count for
+// nothing (`a//b/./c` is `a/b/c`), and a path that starts with `/` starts at the root.
+
+// `base` followed by `part`, with a separator between them; an absolute `part` replaces `base`.
+export function join(base: string, part: string): string {
+    if (part.startsWith('/')) { return part }
+
+    if (base == '' or base.endsWith('/')) { return base + part }
+
+    return `${base}/${part}`
+}
+
+// The directory that contains `path`: `.` for a name alone; the root has none.
+export function parent(path: string): Option[string] {
+    immut chars = path.chars()
+    immut end = trimmedEnd(chars, chars.length())
+
+    if (end == 0 or (end == 1 and chars[0] == '/')) { return None }
+
+    immut start = partStart(chars, end)
+    immut before = trimmedEnd(chars, start)
+
+    if (before == 0) { return Some('.') }
+
+    return Some(path[..before])
+}
+
+// The last part of `path`, if it is a name (not the root, `.` or `..`).
+export function name(path: string): Option[string] {
+    immut chars = path.chars()
+    immut end = trimmedEnd(chars, chars.length())
+
+    if (end == 0 or (end == 1 and chars[0] == '/')) { return None }
+
+    immut start = partStart(chars, end)
+    immut last = path[start..end]
+
+    if (last == '.' or last == '..') { return None }
+
+    return Some(last)
+}
+
+// The name without its extension (`.bashrc` has none).
+export function stem(path: string): Option[string] {
+    return match (name(path)) {
+        Some(found) => {
+            immut dot = lastDot(found)
+
+            if (dot <= 0) { return Some(found) }
+
+            Some(found[..dot])
+        }
+        None => None
+    }
+}
+
+// The extension of the name, without the dot (`''` for `a.`).
+export function extension(path: string): Option[string] {
+    return match (name(path)) {
+        Some(found) => {
+            immut dot = lastDot(found)
+
+            if (dot <= 0) { return None }
+
+            Some(found[dot + 1..])
+        }
+        None => None
+    }
+}
+
+// Whether `path` starts at the root.
+export function isAbsolute(path: string): boolean {
+    return path.startsWith('/')
+}
+
+// The end of `chars[..end]` without the separators and the `.` parts that end it (but the root,
+// and a `.` that starts the path).
+function trimmedEnd(chars: char[], end: int): int {
+    mut at = end
+
+    while (at > 0) {
+        if (chars[at - 1] == '/' and at > 1) {
+            at -= 1
+            continue
+        }
+
+        if (chars[at - 1] == '.' and at > 1 and chars[at - 2] == '/') {
+            at -= 1
+            continue
+        }
+
+        break
+    }
+
+    return at
+}
+
+// Where the part that ends at `end` starts: after the separator before it.
+function partStart(chars: char[], end: int): int {
+    mut at = end
+
+    while (at > 0 and chars[at - 1] != '/') {
+        at -= 1
+    }
+
+    return at
+}
+
+// The position of the last `.` of `text`, or -1.
+function lastDot(text: string): int {
+    mut found = -1
+    mut position = 0
+
+    for c in text {
+        if (c == '.') { found = position }
+
+        position += 1
+    }
+
+    return found
+}

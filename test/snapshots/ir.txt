@@ -1244,28 +1244,33 @@ function f4 drop List(Record(0))(l0: List(Record(0))): Void
   b3:
     return
 ==== test/ir/cases.txt #17
-string s0 = " "
-string s1 = "a"
-string s2 = "b"
-string s3 = "a/b"
-record r0 MathError
+string s0 = "/"
+string s1 = ""
+string s2 = "."
+string s3 = ".."
+string s4 = " "
+string s5 = "a"
+string s6 = "b"
+string s7 = "a/b"
+record r0 Option[string]
+    Some (value: Str)
+    None ()
+record r1 MathError
     Complex ()
     Indeterminate ()
     Infinite ()
-record r1 Result[decimal, MathError]
+record r2 Result[decimal, MathError]
     Ok (value: Decimal)
-    Err (error: Record(0))
-record r2 Option[string]
-    Some (value: Str)
-    None ()
+    Err (error: Record(1))
+global g0: Bool // path initialized
 
 function f0 main(): Void
     local l0: Decimal
-    local l1: Record(1)
+    local l1: Record(2)
     local l2: Str
     local l3: Decimal
     local l4: Decimal
-    local l5: Record(1)
+    local l5: Record(2)
     local l6: Str
     local l7: Str
     local l8: Str
@@ -1289,46 +1294,482 @@ function f0 main(): Void
     local l26: Str
     local l27: Str
     local l28: Str
-    local l29: Record(2)
+    local l29: Record(0)
     local l30: Str
     local l31: Str
     local l32: Str
   b0:
+    call f1()
     l0 = IntToDecimal 2
-    l1 = koji_std_math_sqrt_decimal([Value(Local(0)), Record(1)])
+    l1 = koji_std_math_sqrt_decimal([Value(Local(0)), Record(2)])
     l2 = RecordToStr l1
     l3 = IntToDecimal 2
     l4 = IntToDecimal 3
-    l5 = koji_std_math_pow_decimal([Value(Local(3)), Value(Local(4)), Record(1), Location(4)])
+    l5 = koji_std_math_pow_decimal([Value(Local(3)), Value(Local(4)), Record(2), Location(4)])
     l6 = RecordToStr l5
-    l7 = StrConcat l2, s0
+    l7 = StrConcat l2, s4
     l8 = StrConcat l7, l6
     l9 = koji_decimal_to_int([Value(Decimal(15e-1)), Mode(0), Location(4)])
     l10 = IntToStr l9
-    l11 = StrConcat l8, s0
+    l11 = StrConcat l8, s4
     l12 = StrConcat l11, l10
     l13 = IntNeg 1
     l14 = koji_std_math_abs_int([Value(Local(13)), Location(4)])
     l15 = IntToStr l14
-    l16 = StrConcat l12, s0
+    l16 = StrConcat l12, s4
     l17 = StrConcat l16, l15
     l18 = DecimalToStr 3141592653589793238462643383279503e-33
-    l19 = StrConcat l17, s0
+    l19 = StrConcat l17, s4
     l20 = StrConcat l19, l18
     l21 = koji_std_time_now([])
     l22 = DecimalCompare(Greater) l21, 0e-6176
     l23 = BoolToStr l22
-    l24 = StrConcat l20, s0
+    l24 = StrConcat l20, s4
     l25 = StrConcat l24, l23
-    l26 = koji_std_path_join([Value(Str(1)), Value(Str(2))])
-    l27 = StrConcat l25, s0
+    l26 = call f2(s5, s6)
+    l27 = StrConcat l25, s4
     l28 = StrConcat l27, l26
-    l29 = koji_std_path_part([Value(Str(3)), Mode(0), Record(2)])
+    l29 = call f3(s7)
     l30 = RecordToStr l29
-    l31 = StrConcat l28, s0
+    l31 = StrConcat l28, s4
     l32 = StrConcat l31, l30
     print l32
     return
+
+function f1 path (module)(): Void
+  b0:
+    branch g0, b1, b2
+  b1:
+    return
+  b2:
+    g0 = true
+    return
+
+function f2 join(l0: Str, l1: Str): Str
+    local l2: Bool
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Str
+    local l7: Str
+    local l8: Str
+  b0:
+    l2 = koji_std_string_starts_with([Value(Local(1)), Value(Str(0))])
+    branch l2, b1, b2
+  b1:
+    return l1
+  b2:
+    l4 = StrCompare(Equal) l0, s1
+    l3 = l4
+    branch l3, b4, b3
+  b3:
+    l5 = koji_std_string_ends_with([Value(Local(0)), Value(Str(0))])
+    l3 = l5
+    goto b4
+  b4:
+    branch l3, b5, b6
+  b5:
+    l6 = StrConcat l0, l1
+    return l6
+  b6:
+    l7 = StrConcat l0, s0
+    l8 = StrConcat l7, l1
+    return l8
+
+function f3 parent(l0: Str): Record(0)
+    local l1: List(Char)
+    local l2: List(Char) // chars
+    local l3: Int
+    local l4: Int
+    local l5: Int // end
+    local l6: Bool
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Char
+    local l11: Bool
+    local l12: Record(0)
+    local l13: Int
+    local l14: Int // start
+    local l15: Int
+    local l16: Int // before
+    local l17: Bool
+    local l18: Record(0)
+    local l19: Int
+    local l20: Str
+    local l21: Record(0)
+  b0:
+    l1 = koji_std_string_chars([Value(Local(0)), Element(Char)])
+    l2 = l1
+    l3 = ListLength l2
+    l4 = call f8(l2, l3)
+    l5 = l4
+    l7 = IntCompare(Equal) l5, 0
+    l6 = l7
+    branch l6, b2, b1
+  b1:
+    l9 = IntCompare(Equal) l5, 1
+    l8 = l9
+    branch l8, b3, b4
+  b2:
+    branch l6, b5, b6
+  b3:
+    l10 = l2[0]
+    l11 = CharCompare(Equal) l10, '/'
+    l8 = l11
+    goto b4
+  b4:
+    l6 = l8
+    goto b2
+  b5:
+    l12 = record variant 1 ()
+    return l12
+  b6:
+    l13 = call f9(l2, l5)
+    l14 = l13
+    l15 = call f8(l2, l14)
+    l16 = l15
+    l17 = IntCompare(Equal) l16, 0
+    branch l17, b7, b8
+  b7:
+    l18 = record variant 0 (s2)
+    return l18
+  b8:
+    l19 = l16
+    l20 = koji_std_string_slice([Value(Local(0)), Mode(0), Value(Int(0)), Mode(1), Value(Local(19)), Location(26)])
+    l21 = record variant 0 (l20)
+    return l21
+
+function f4 name(l0: Str): Record(0)
+    local l1: List(Char)
+    local l2: List(Char) // chars
+    local l3: Int
+    local l4: Int
+    local l5: Int // end
+    local l6: Bool
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Char
+    local l11: Bool
+    local l12: Record(0)
+    local l13: Int
+    local l14: Int // start
+    local l15: Int
+    local l16: Int
+    local l17: Str
+    local l18: Str // last
+    local l19: Bool
+    local l20: Bool
+    local l21: Bool
+    local l22: Record(0)
+    local l23: Record(0)
+  b0:
+    l1 = koji_std_string_chars([Value(Local(0)), Element(Char)])
+    l2 = l1
+    l3 = ListLength l2
+    l4 = call f8(l2, l3)
+    l5 = l4
+    l7 = IntCompare(Equal) l5, 0
+    l6 = l7
+    branch l6, b2, b1
+  b1:
+    l9 = IntCompare(Equal) l5, 1
+    l8 = l9
+    branch l8, b3, b4
+  b2:
+    branch l6, b5, b6
+  b3:
+    l10 = l2[0]
+    l11 = CharCompare(Equal) l10, '/'
+    l8 = l11
+    goto b4
+  b4:
+    l6 = l8
+    goto b2
+  b5:
+    l12 = record variant 1 ()
+    return l12
+  b6:
+    l13 = call f9(l2, l5)
+    l14 = l13
+    l15 = l14
+    l16 = l5
+    l17 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(15)), Mode(1), Value(Local(16)), Location(37)])
+    l18 = l17
+    l20 = StrCompare(Equal) l18, s2
+    l19 = l20
+    branch l19, b8, b7
+  b7:
+    l21 = StrCompare(Equal) l18, s3
+    l19 = l21
+    goto b8
+  b8:
+    branch l19, b9, b10
+  b9:
+    l22 = record variant 1 ()
+    return l22
+  b10:
+    l23 = record variant 0 (l18)
+    return l23
+
+function f5 stem(l0: Str): Record(0)
+    local l1: Record(0)
+    local l2: Record(0)
+    local l3: Record(0)
+    local l4: Int
+    local l5: Bool
+    local l6: Str
+    local l7: Str // found
+    local l8: Int
+    local l9: Int // dot
+    local l10: Bool
+    local l11: Record(0)
+    local l12: Int
+    local l13: Str
+    local l14: Record(0)
+    local l15: Int
+    local l16: Bool
+    local l17: Record(0)
+  b0:
+    l2 = call f4(l0)
+    l3 = l2
+    l4 = RecordTag l3
+    l5 = IntCompare(Equal) l4, 0
+    branch l5, b3, b2
+  b1:
+    return l1
+  b2:
+    l15 = RecordTag l3
+    l16 = IntCompare(Equal) l15, 1
+    branch l16, b7, b6
+  b3:
+    l6 = l3.0
+    l7 = l6
+    l8 = call f10(l7)
+    l9 = l8
+    l10 = IntCompare(LessEqual) l9, 0
+    branch l10, b4, b5
+  b4:
+    l11 = record variant 0 (l7)
+    return l11
+  b5:
+    l12 = l9
+    l13 = koji_std_string_slice([Value(Local(7)), Mode(0), Value(Int(0)), Mode(1), Value(Local(12)), Location(52)])
+    l14 = record variant 0 (l13)
+    l1 = l14
+    goto b1
+  b6:
+    unreachable
+  b7:
+    l17 = record variant 1 ()
+    l1 = l17
+    goto b1
+
+function f6 extension(l0: Str): Record(0)
+    local l1: Record(0)
+    local l2: Record(0)
+    local l3: Record(0)
+    local l4: Int
+    local l5: Bool
+    local l6: Str
+    local l7: Str // found
+    local l8: Int
+    local l9: Int // dot
+    local l10: Bool
+    local l11: Record(0)
+    local l12: Int
+    local l13: Int
+    local l14: Str
+    local l15: Record(0)
+    local l16: Int
+    local l17: Bool
+    local l18: Record(0)
+  b0:
+    l2 = call f4(l0)
+    l3 = l2
+    l4 = RecordTag l3
+    l5 = IntCompare(Equal) l4, 0
+    branch l5, b3, b2
+  b1:
+    return l1
+  b2:
+    l16 = RecordTag l3
+    l17 = IntCompare(Equal) l16, 1
+    branch l17, b7, b6
+  b3:
+    l6 = l3.0
+    l7 = l6
+    l8 = call f10(l7)
+    l9 = l8
+    l10 = IntCompare(LessEqual) l9, 0
+    branch l10, b4, b5
+  b4:
+    l11 = record variant 1 ()
+    return l11
+  b5:
+    l12 = IntAdd l9, 1
+    l13 = l12
+    l14 = koji_std_string_slice([Value(Local(7)), Mode(1), Value(Local(13)), Mode(0), Value(Int(0)), Location(66)])
+    l15 = record variant 0 (l14)
+    l1 = l15
+    goto b1
+  b6:
+    unreachable
+  b7:
+    l18 = record variant 1 ()
+    l1 = l18
+    goto b1
+
+function f7 isAbsolute(l0: Str): Bool
+    local l1: Bool
+  b0:
+    l1 = koji_std_string_starts_with([Value(Local(0)), Value(Str(0))])
+    return l1
+
+function f8 trimmedEnd(l0: List(Char), l1: Int): Int
+    local l2: Int // at
+    local l3: Bool
+    local l4: Bool
+    local l5: Int
+    local l6: Char
+    local l7: Bool
+    local l8: Bool
+    local l9: Int
+    local l10: Bool
+    local l11: Bool
+    local l12: Int
+    local l13: Char
+    local l14: Bool
+    local l15: Bool
+    local l16: Int
+    local l17: Char
+    local l18: Bool
+    local l19: Int
+  b0:
+    l2 = l1
+    goto b1
+  b1:
+    l3 = IntCompare(Greater) l2, 0
+    branch l3, b2, b3
+  b2:
+    l5 = IntSub l2, 1
+    l6 = l0[l5]
+    l7 = CharCompare(Equal) l6, '/'
+    l4 = l7
+    branch l4, b4, b5
+  b3:
+    return l2
+  b4:
+    l8 = IntCompare(Greater) l2, 1
+    l4 = l8
+    goto b5
+  b5:
+    branch l4, b6, b7
+  b6:
+    l9 = IntSub l2, 1
+    l2 = l9
+    goto b1
+  b7:
+    l12 = IntSub l2, 1
+    l13 = l0[l12]
+    l14 = CharCompare(Equal) l13, '.'
+    l11 = l14
+    branch l11, b8, b9
+  b8:
+    l15 = IntCompare(Greater) l2, 1
+    l11 = l15
+    goto b9
+  b9:
+    l10 = l11
+    branch l10, b10, b11
+  b10:
+    l16 = IntSub l2, 2
+    l17 = l0[l16]
+    l18 = CharCompare(Equal) l17, '/'
+    l10 = l18
+    goto b11
+  b11:
+    branch l10, b12, b13
+  b12:
+    l19 = IntSub l2, 1
+    l2 = l19
+    goto b1
+  b13:
+    goto b3
+
+function f9 partStart(l0: List(Char), l1: Int): Int
+    local l2: Int // at
+    local l3: Bool
+    local l4: Bool
+    local l5: Int
+    local l6: Char
+    local l7: Bool
+    local l8: Int
+  b0:
+    l2 = l1
+    goto b1
+  b1:
+    l4 = IntCompare(Greater) l2, 0
+    l3 = l4
+    branch l3, b4, b5
+  b2:
+    l8 = IntSub l2, 1
+    l2 = l8
+    goto b1
+  b3:
+    return l2
+  b4:
+    l5 = IntSub l2, 1
+    l6 = l0[l5]
+    l7 = CharCompare(NotEqual) l6, '/'
+    l3 = l7
+    goto b5
+  b5:
+    branch l3, b2, b3
+
+function f10 lastDot(l0: Str): Int
+    local l1: Int
+    local l2: Int // found
+    local l3: Int // position
+    local l4: List(Char)
+    local l5: List(Char)
+    local l6: Int
+    local l7: Int
+    local l8: Bool
+    local l9: Int
+    local l10: Char // c
+    local l11: Bool
+    local l12: Int
+  b0:
+    l1 = IntNeg 1
+    l2 = l1
+    l3 = 0
+    l4 = koji_std_string_chars([Value(Local(0)), Element(Char)])
+    l5 = l4
+    l6 = ListLength l5
+    l7 = 0
+    goto b1
+  b1:
+    l8 = IntCompare(Less) l7, l6
+    branch l8, b2, b4
+  b2:
+    l10 = l5[l7]
+    l11 = CharCompare(Equal) l10, '.'
+    branch l11, b5, b6
+  b3:
+    l9 = IntAdd l7, 1
+    l7 = l9
+    goto b1
+  b4:
+    return l2
+  b5:
+    l2 = l3
+    goto b6
+  b6:
+    l12 = IntAdd l3, 1
+    l3 = l12
+    goto b3
 ==== test/ir/cases.txt #18
 string s0 = "invalid JSON at line "
 string s1 = ", column "

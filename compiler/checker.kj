@@ -8,7 +8,7 @@ import { decimalLiteral } from 'decimal.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
-immut stdlibModules = ['time', 'file', 'path', 'datetime', 'math', 'http', 'regex', 'system']
+immut stdlibModules = ['time', 'file', 'datetime', 'math', 'http', 'regex', 'system']
 
 type SymbolKind = {
     ValueSymbol
@@ -360,7 +360,6 @@ function stdlibFunctions(module: string): string[] {
     return match (module) {
         'time' => ['sleep', 'now', 'monotonic']
         'file' => ['open', 'list', 'exists', 'createDir', 'remove']
-        'path' => ['join', 'parent', 'name', 'stem', 'extension', 'isAbsolute']
         'datetime' => ['now', 'today', 'format', 'parse']
         'math' => ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
         'http' => ['get', 'post', 'put', 'delete']
@@ -4666,18 +4665,6 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
         other if (other == 'file.createDir' or other == 'file.remove') => {
             self.checkExactly(name, types, [s])?
             return Ok(self.resultWith(VoidType, b.fileError))
-        }
-        'path.join' => {
-            self.checkExactly(name, types, [s, s])?
-            return Ok(StringType)
-        }
-        other if (other in ['path.parent', 'path.name', 'path.stem', 'path.extension']) => {
-            self.checkExactly(name, types, [s])?
-            return Ok(self.optionOf(StringType))
-        }
-        'path.isAbsolute' => {
-            self.checkExactly(name, types, [s])?
-            return Ok(BooleanType)
         }
         'datetime.now' => {
             self.checkExactly(name, types, [])?

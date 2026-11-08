@@ -3686,20 +3686,6 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
         }
         'time.now' => runner = 'koji_std_time_now'
         'time.monotonic' => runner = 'koji_std_time_monotonic'
-        'path.join' => {
-            runner = 'koji_std_path_join'
-            immut first = self.stdValue(mut builder, args, 0, StrTy)?
-            arguments = [first, self.stdValue(mut builder, args, 1, StrTy)?]
-        }
-        other if (other in ['path.parent', 'path.name', 'path.stem', 'path.extension']) => {
-            runner = 'koji_std_path_part'
-            immut text = self.stdValue(mut builder, args, 0, StrTy)?
-            arguments = [text, ModeArg(position(['parent', 'name', 'stem', 'extension'], name)), self.stdResult(builder, call)?]
-        }
-        'path.isAbsolute' => {
-            runner = 'koji_std_path_is_absolute'
-            arguments = [self.stdValue(mut builder, args, 0, StrTy)?]
-        }
         other if (other in ['http.get', 'http.delete', 'http.post', 'http.put']) => {
             runner = 'koji_std_http_request'
             immut method = position(['get', 'delete', 'post', 'put'], name)
