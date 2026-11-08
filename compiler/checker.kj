@@ -227,6 +227,9 @@ export type Tables = {
     templateDisplays: Map[int, Option[MethodRef]]
     // The variant `?` wraps the error in.
     wraps: Map[int, TryWrap]
+    // The opaque types (`export opaque type`), by id: the path of the module that declares them,
+    // the only one that sees their structure.
+    opaque: Map[int, string]
 }
 
 function emptyTables(): Tables {
@@ -234,7 +237,7 @@ function emptyTables(): Tables {
         types: [:], moves: Set.from([]), declares: Set.from([]), replaces: Set.from([]), temporaries: Set.from([]),
         owningMatches: Set.from([]), drops: [:], charLiterals: Set.from([]), mutatingCalls: Set.from([]),
         dropMethods: [:], functionTypes: [:], typeArgs: [:], fieldOrders: [:], toFloat: Set.from([]), toDecimal: Set.from([]),
-        variableTypes: [:], methods: [:], displays: [:], templateDisplays: [:], wraps: [:]
+        variableTypes: [:], methods: [:], displays: [:], templateDisplays: [:], wraps: [:], opaque: [:]
     }
 }
 
@@ -629,7 +632,7 @@ function Checker.stdlibModule(mut self, name: string): int {
 function unlocated(node: Node): Node {
     return match (node.kind) {
         Located(_, statement) => unlocated(statement)
-        Export(declaration) => unlocated(declaration)
+        Export(declaration, _) => unlocated(declaration)
         _ => node
     }
 }
@@ -639,11 +642,20 @@ function nodeId(node: Node): int {
     return unlocated(node).id
 }
 
+// Whether this top-level statement is `export opaque type`.
+function isOpaque(node: Node): boolean {
+    return match (node.kind) {
+        Located(_, statement) => isOpaque(statement)
+        Export(_, opaque) => opaque
+        _ => false
+    }
+}
+
 // Whether this top-level statement is marked with `export`.
 function isExported(node: Node): boolean {
     return match (node.kind) {
         Located(_, statement) => isExported(statement)
-        Export(_) => true
+        Export(_, _) => true
         _ => false
     }
 }
@@ -1022,6 +1034,12 @@ function Checker.moduleExports(mut self, program: Node[], scope: Scope, display:
                         KnownType(NamedType(id, _)) => {
                             exportedIds.add(id)
 
+                            // Its variants stay inside the module: others cannot build or match them.
+                            if (isOpaque(statement)) {
+                                self.tables.opaque[id] = self.state.path
+                                continue
+                            }
+
                             match (variantsOf(self.table, id)) {
                                 Some(variants) => {
                                     for each in variants {
@@ -1079,7 +1097,8 @@ function Checker.moduleExports(mut self, program: Node[], scope: Scope, display:
         }
         mut types: Type[] = []
 
-        if (module.types.has(name)) {
+        // The structure of an opaque type is not public: it may use private types.
+        if (module.types.has(name) and not isOpaque(statement)) {
             match (scope.types.get(name)) {
                 Some(KnownType(NamedType(id, args))) => {
                     match (self.table[id].kind) {
@@ -1232,7 +1251,7 @@ function Checker.checkImport(mut self, names: Option[string[]], moduleName: stri
 
                 // Importing a sum type also imports its constructors.
                 match (typeRef) {
-                    KnownType(NamedType(id, _)) if (variantsOf(self.table, id) is Some) => self.declareConstructors(id)
+                    KnownType(NamedType(id, _)) if (variantsOf(self.table, id) is Some and not self.tables.opaque.has(id)) => self.declareConstructors(id)
                     _ => {}
                 }
 
@@ -2336,7 +2355,7 @@ function Checker.checkStatement(mut self, node: Node, expected: Option[Type]): R
             self.state.line = line
             return self.checkStatement(statement, expected)
         }
-        Export(declaration) => return self.checkStatement(declaration, expected)
+        Export(declaration, _) => return self.checkStatement(declaration, expected)
         VarDecl(name, annotation, value, isImmut) => {
             mut declared: Option[Type] = None
 
@@ -2641,6 +2660,11 @@ function Checker.checkAssign(mut self, node: Node, target: Node, op: string, val
                 VariantType(_, _, _) => return Err(self.failure(`variant fields cannot be modified ('${name}')`))
                 NamedType(id, _) if (self.isBuiltinObject(id)) => return Err(self.failure(`'${name}' is read-only`))
                 other => {
+                    match (self.hiddenType(other)) {
+                        Some(typeName) => return Err(self.failure(`${typeName} is opaque: its fields are not visible outside its module`))
+                        None => {}
+                    }
+
                     match (fieldsOf(self.table, other)) {
                         Some(fields) => {
                             match (findField(fields, name)) {
@@ -3701,7 +3725,29 @@ function Checker.checkIdentifier(mut self, name: string, expected: Option[Type])
     return Ok(symbol.ty)
 }
 
+// The name of `ty` if it is an opaque type declared in another module: its fields cannot be read
+// or written here, and it cannot be built with a literal.
+function Checker.hiddenType(self, ty: Type): Option[string] {
+    return match (ty) {
+        NamedType(id, _) => match (self.tables.opaque.get(id)) {
+            Some(home) if (home != self.state.path) => Some(self.table[id].name)
+            _ => None
+        }
+        _ => None
+    }
+}
+
 function Checker.checkObject(mut self, entries: ObjectEntry[], expected: Option[Type]): Result[Type, string] {
+    match (expected) {
+        Some(ty) => {
+            match (self.hiddenType(ty)) {
+                Some(name) => return Err(self.failure(`${name} is opaque: it is built by the functions of its module, not with a literal`))
+                None => {}
+            }
+        }
+        None => {}
+    }
+
     match (expected) {
         Some(NamedType(id, args)) => {
             immut ty = NamedType(id, args)
@@ -3798,6 +3844,11 @@ function Checker.checkMember(mut self, object: Node, name: string): Result[Type,
         StringType => return Err(self.failure(`method '${name}' must be called: '${name}()'`))
         ListType(_) => return Err(self.failure(`method '${name}' must be called: '${name}()'`))
         other => {
+            match (self.hiddenType(other)) {
+                Some(typeName) => return Err(self.failure(`${typeName} is opaque: its fields are not visible outside its module`))
+                None => {}
+            }
+
             match (fieldsOf(self.table, other)) {
                 Some(fields) => {
                     return match (findField(fields, name)) {
@@ -4979,12 +5030,23 @@ function Checker.isConstructorName(self, name: string): boolean {
     }
 }
 
+// The variants of an opaque type are matched only in its module.
+function Checker.ensureVisibleVariants(self, ty: Type): Result[void, string] {
+    return match (self.hiddenType(ty)) {
+        Some(name) => Err(self.failure(`${name} is opaque: its variants are not visible outside its module`))
+        None => Ok()
+    }
+}
+
 function Checker.checkPattern(mut self, pattern: Pattern, ty: Type): Result[void, string] {
     match (pattern) {
         Wildcard => return Ok()
         Bind(name) => {
             match (self.variantOf(ty, name)) {
                 Some(found) => {
+                    self.ensureVisibleVariants(ty)?
+
+
                     if (found.info.fields.length() > 0) {
                         return Err(self.failure(`variant '${name}' has fields; use '${name}(...)' in the pattern`))
                     }
@@ -5021,6 +5083,7 @@ function Checker.checkPattern(mut self, pattern: Pattern, ty: Type): Result[void
                 return Ok()
             }
 
+            self.ensureVisibleVariants(ty)?
             immut found = match (self.variantOf(ty, name)) {
                 Some(found) => found
                 None => return Err(self.failure(`'${name}' is not a variant of ${self.show(ty)}`))

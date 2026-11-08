@@ -288,4 +288,4 @@ print(ana.debug()) // { name: 'Ana', age: 30 }
 
 -   Every value has `display()` (the text `print` shows) and `debug()` (the structure of the value, as written in code). Without a `display` method, both show the structure, except for strings and standard library errors, whose `display()` is readable (`'abc' is not a valid number`).
 -   Inside a list or another value, the structure is shown: `print([ana])` gives `[{ name: 'Ana', age: 30 }]`.
--   `debug` cannot be declared: it always shows the structure.
+-   `debug` cannot be declared: it always shows the structure. (An [opaque type](modules-and-imports.md#opaque-types), which hides its structure, is shown by its `display` method there too.)

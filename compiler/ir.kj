@@ -95,6 +95,10 @@ export type IrVariant = {
 export type IrRecord = {
     name: string
     variants: IrVariant[]
+    // An opaque type hides its structure: the runtime shows its values with the function of its
+    // `display` method, inside other values too, or as `<Name>` without one.
+    opaque: boolean
+    display: Option[int]
 }
 
 // An argument of a function of the standard library.

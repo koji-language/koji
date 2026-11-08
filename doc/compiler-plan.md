@@ -238,5 +238,5 @@ Decided:
 -   **Lists**: `push`, `pop`, `insert`, `removeAt`, `sort` (orderable items) and `sortBy(comparison)` change the list like `mut self`; slices `items[1..3]` work on lists and strings.
 -   **`system` module**: `args()`, `env(name)`, `exit(code)` and `run(command, args)`, with `SystemError`.
 -   **No string builder**: text is built with `+=` (appending in place when the string is not shared, as in Swift) and `list.join(separator)`.
--   **Opaque types** (a type that other modules can use but not build with a literal) are postponed until they are needed.
+-   **Opaque types**: `export opaque type` (see [Opaque Types](modules-and-imports.md#opaque-types)): other modules use the type, but not its fields, literals or variants; it is shown by its `display` method, also inside other values, or by its name.
 -   **No anonymous objects**: an object literal needs a known type (see [No `interface`](design.md#nominal-types-no-interface-no-anonymous-objects)). Values are built with a literal or with an associated function (`Person.create(...)`); the language has no special constructors.

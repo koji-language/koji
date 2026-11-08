@@ -99,3 +99,44 @@ type Helper = {
 
 export function make(): Helper { ... } // Error! 'make' is exported, but its type uses the private type 'Helper'
 ```
+
+## Opaque Types
+
+`export opaque type` exports a type without its structure. Other modules use its values (they pass them, store them, call its methods), but they cannot read or change its fields, build it with a literal, or build or match its variants: only its module does, and the functions it exports are the way to get one.
+
+```koji
+// file: counter.kj
+
+export opaque type Counter = {
+    name: string
+    count: int
+}
+
+export function counter(name: string): Counter {
+    return { name: name, count: 0 }
+}
+
+function Counter.add(mut self) {
+    self.count += 1
+}
+
+function Counter.display(self): string {
+    return `<counter ${self.name}=${self.count}>`
+}
+```
+
+```koji
+// file: main.kj
+
+import { Counter, counter } from 'counter.kj'
+
+mut clicks = counter('clicks')
+clicks.add()
+
+print(clicks) // <counter clicks=1>
+print([clicks]) // [<counter clicks=1>]
+print(clicks.count) // Error! Counter is opaque: its fields are not visible outside its module
+immut other: Counter = { name: 'x', count: 0 } // Error! Counter is opaque: it is built by the functions of its module, not with a literal
+```
+
+Since its structure is hidden, an opaque value is always shown by its type's `display` method, also inside other values and by `debug()`; without one, by its name (`<Counter>`). The structure of an opaque type may use the private types of its module. The `Regex` of the standard library is an opaque type.

@@ -114,7 +114,8 @@ export type NodeKind = {
     ImportModule(name: string, path: string)
     ImportNames(names: string[], path: string)
     Try(value: Node)
-    Export(declaration: Node)
+    // `opaque`: other modules use the type, but do not see its structure.
+    Export(declaration: Node, opaque: boolean)
     Located(line: int, statement: Node)
 }
 
@@ -663,6 +664,11 @@ function Parser.lambda(mut self): Result[Node, string] {
 function Parser.export(mut self): Result[Node, string] {
     immut line = self.currentLine()
     self.advance()
+    // `export opaque type`: `opaque` is a name anywhere else.
+    immut opaque = self.current() == Identifier('opaque') and self.peek() == Keyword('type')
+
+    if (opaque) { self.advance() }
+
     immut next = self.current()
     immut declares = next == Keyword('function') or next == Keyword('mut') or next == Keyword('immut') or next == Keyword('type')
 
@@ -670,7 +676,7 @@ function Parser.export(mut self): Result[Node, string] {
         return Err(self.failure(`expected 'function', 'mut', 'immut' or 'type' after 'export', found ${describe(next)}`))
     }
 
-    immut declaration = self.node(Export(self.statement()?))
+    immut declaration = self.node(Export(self.statement()?, opaque))
 
     if (line == 0) { return Ok(declaration) }
 
@@ -1593,7 +1599,7 @@ export function dump(node: Node): string {
 export function annotated(node: Node, a: (Node) => string): string {
     return match (node.kind) {
         Located(line, statement) => `(at ${line} ${annotated(statement, a)})`
-        Export(declaration) => `(export ${annotated(declaration, a)})`
+        Export(declaration, opaque) => `(export ${if (opaque) { 'opaque ' } else { '' }}${annotated(declaration, a)})`
         _ => `${plain(node, a)}${a(node)}`
     }
 }
@@ -1666,7 +1672,7 @@ function plain(node: Node, a: (Node) => string): string {
         ImportModule(name, path) => return `(import ${name} ${path.debug()})`
         ImportNames(names, path) => return `(import (${names.join(' ')}) ${path.debug()})`
         Try(value) => return `(try ${annotated(value, a)})`
-        Export(declaration) => return `(export ${annotated(declaration, a)})`
+        Export(declaration, opaque) => return `(export ${if (opaque) { 'opaque ' } else { '' }}${annotated(declaration, a)})`
         Located(line, statement) => return `(at ${line} ${annotated(statement, a)})`
     }
 }

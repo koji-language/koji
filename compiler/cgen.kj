@@ -228,6 +228,21 @@ function Generator.generateProgram(mut self) {
         self.line(`${signature(id, functions[id], self.smalls[id])};`)
     }
 
+    // How the runtime shows a value of an opaque type: with its `display` method, or by its name.
+    for id in range(self.program.records.length()) {
+        immut record = self.program.records[id]
+
+        if (not record.opaque) { continue }
+
+        match (record.display) {
+            Some(code) => self.line(`static KojiString *koji_display_${id}(const KojiRecord *record) { return ${functionName(code)}((KojiRecord *)record); }`)
+            None => {
+                immut text = `<${record.name}>`
+                self.line(`static KojiString *koji_display_${id}(const KojiRecord *record) { (void)record; return koji_string_new(${cString(text)}, ${byteLength(text)}); }`)
+            }
+        }
+    }
+
     for id in range(functions.length()) {
         self.line('')
         self.emitFunction(id, functions[id])
@@ -254,6 +269,8 @@ function Generator.records(mut self) {
     for id in range(records.length()) {
         self.line(`static const KojiRecordType koji_record_${id};`)
         self.line(`static void koji_free_${id}(KojiRecord *record);`)
+
+        if (records[id].opaque) { self.line(`static KojiString *koji_display_${id}(const KojiRecord *record);`) }
     }
 
     for id in range(records.length()) {
@@ -318,7 +335,8 @@ function Generator.records(mut self) {
         self.line(`static const KojiVariantType koji_record_${id}_variants[] = { ${variants.join(', ')} };`)
         // The name without type arguments (`Result`, `MathError`).
         immut base = record.name.split('[')[0]
-        self.line(`static const KojiRecordType koji_record_${id} = { ${cString(base)}, ${record.variants.length()}, koji_record_${id}_variants, koji_free_${id} };`)
+        immut shown = if (record.opaque) { `koji_display_${id}` } else { 'NULL' }
+        self.line(`static const KojiRecordType koji_record_${id} = { ${cString(base)}, ${record.variants.length()}, koji_record_${id}_variants, koji_free_${id}, ${shown} };`)
     }
 
     for id in range(records.length()) {

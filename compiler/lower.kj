@@ -245,7 +245,7 @@ type Lowerer = {
 function unlocated(node: Node): Node {
     return match (node.kind) {
         Located(_, statement) => unlocated(statement)
-        Export(declaration) => unlocated(declaration)
+        Export(declaration, _) => unlocated(declaration)
         _ => node
     }
 }
@@ -379,7 +379,7 @@ function Lowerer.record(mut self, id: int, args: Type[]): Result[int, string] {
 
     // Registered before its fields: a type can contain itself (`tail: List`).
     immut record = self.records.length()
-    self.records.push({ name: display(self.table, NamedType(id, args)), variants: [] })
+    self.records.push({ name: display(self.table, NamedType(id, args)), variants: [], opaque: false, display: None })
     self.recordTypes[record] = { id: id, args: argTypes }
     self.recordIds[key] = record
     mut variants: IrVariant[] = []
@@ -395,7 +395,43 @@ function Lowerer.record(mut self, id: int, args: Type[]): Result[int, string] {
     }
 
     self.records[record].variants = variants
+
     return Ok(record)
+}
+
+// A record of an opaque type is shown by its type's `display` method, also inside other values
+// (once every module has declared its functions).
+function Lowerer.opaqueDisplays(mut self): Result[void, string] {
+    for record in range(self.records.length()) {
+        if (self.records[record].display is Some) { continue }
+
+        immut recordType = match (self.recordTypes.get(record)) {
+            Some(found) => found
+            None => continue
+        }
+        immut path = match (self.tables.opaque.get(recordType.id)) {
+            Some(found) => found
+            None => continue
+        }
+        self.records[record].opaque = true
+        immut module = match (self.moduleIds.get(path)) {
+            Some(found) => found
+            None => continue
+        }
+        immut key = `${module}:${self.table[recordType.id].name}.display`
+
+        if (self.genericFunctions.has(key)) {
+            self.records[record].display = Some(self.callee(key, recordType.args)?.id)
+            continue
+        }
+
+        match (self.signatures.get(key)) {
+            Some(signature) => self.records[record].display = Some(signature.id)
+            None => {}
+        }
+    }
+
+    return Ok()
 }
 
 function Lowerer.typeNameIndex(self, name: string): Option[int] {
@@ -1495,7 +1531,7 @@ function Lowerer.environment(mut self, fields: IrField[]): int {
         }
     }
 
-    self.records.push({ name: 'environment', variants: [{ name: None, fields: fields }] })
+    self.records.push({ name: 'environment', variants: [{ name: None, fields: fields }], opaque: false, display: None })
     immut id = self.records.length() - 1
 
     if (fields.length() == 0) { self.emptyEnvironment = Some(id) }
@@ -1726,7 +1762,7 @@ function Lowerer.statement(mut self, mut builder: Builder, node: Node): Result[v
             self.line = line
             return self.statement(mut builder, statement)
         }
-        Export(declaration) => return self.statement(mut builder, declaration)
+        Export(declaration, _) => return self.statement(mut builder, declaration)
         FunctionDecl(name, owner, typeParams, params, _, body) => {
             if (self.atTopLevel(builder)) { return Ok() }
 
@@ -4483,7 +4519,7 @@ function identifiers(node: Node, mut out: string[]) {
         }
         MutArg(inner) => identifiers(inner, mut out)
         Try(inner) => identifiers(inner, mut out)
-        Export(inner) => identifiers(inner, mut out)
+        Export(inner, _) => identifiers(inner, mut out)
         Located(_, inner) => identifiers(inner, mut out)
         IndexNode(target, index) => {
             identifiers(target, mut out)
@@ -4589,7 +4625,15 @@ export function lower(program: Program): Result[IrProgram, string] {
         module -= 1
     }
 
-    lowerer.lowerInstances()?
+    // The `display` methods of opaque types, and the instances they need, until no record is new.
+    mut known = -1
+
+    while (known != lowerer.records.length()) {
+        known = lowerer.records.length()
+        lowerer.opaqueDisplays()?
+        lowerer.lowerInstances()?
+    }
+
     mut functions: IrFunction[] = []
 
     for each in lowerer.functions {

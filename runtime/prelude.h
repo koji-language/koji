@@ -172,6 +172,9 @@ struct KojiRecordType {
     /* Releases the fields of a record of the type and gives its memory back (generated for each
        type, which knows where its fields are). */
     void (*free)(KojiRecord *record);
+    /* For an opaque type, the text of a value (its `display` method), which shows it inside other
+       values too; NULL for the others. */
+    KojiString *(*display)(const KojiRecord *record);
 };
 
 /* A record (runtime/src/record.rs): the words of its fields follow it, in the same allocation, at

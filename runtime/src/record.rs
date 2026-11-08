@@ -50,6 +50,9 @@ pub struct KojiRecordType {
     /// type (the prelude calls it inline). Not read here: `koji_record_free` does the same for any
     /// type.
     pub free: Option<unsafe extern "C" fn(*mut KojiRecord)>,
+    /// For an opaque type, the text of a value (its `display` method): the type hides its fields,
+    /// so a value is shown so inside other values and by `debug()` too. `NULL` for other types.
+    pub display: Option<unsafe extern "C" fn(*const KojiRecord) -> *mut KojiString>,
 }
 
 /// A record, laid out for C (the prelude reads its fields and counts its references inline): the
@@ -256,6 +259,9 @@ fn is_identifier(name: &str) -> bool {
 #[no_mangle]
 pub extern "C" fn koji_record_repr(record: *const KojiRecord) -> *mut KojiString {
     let record = self::record(record);
+    if let Some(display) = unsafe { (*record.ty).display } {
+        return unsafe { display(record) };
+    }
     // A `DateTime` is shown as a date: `2026-01-31 12:00:00`.
     if type_name(record) == "DateTime" && record.field_count() == 6 {
         let f = |index: usize| record.words()[index] as i64;
@@ -356,6 +362,9 @@ fn type_name(record: &KojiRecord) -> String {
 #[no_mangle]
 pub extern "C" fn koji_record_display(record: *const KojiRecord) -> *mut KojiString {
     let value = self::record(record);
+    if let Some(display) = unsafe { (*value.ty).display } {
+        return unsafe { display(value) };
+    }
     if let Some(variant) = unsafe { value.variant().name.as_ref() } {
         let variant = unsafe { CStr::from_ptr(variant) }.to_string_lossy();
         let texts: Vec<String> = (0..value.field_count())

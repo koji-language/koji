@@ -1197,6 +1197,81 @@ fn errors_files_and_the_operating_system_are_checked() {
 }
 
 #[test]
+fn opaque_types() {
+    // Other modules use an opaque type, but do not see its structure: no fields, no literal, no
+    // variants. It is shown by its `display` method, or by its name, inside other values too.
+    let dir = temp_dir("opaque");
+    std::fs::write(dir.join("counter.kj"), r#"
+export opaque type Counter = {
+    name: string
+    count: int
+}
+
+export opaque type Shape = {
+    Circle(radius: int)
+    Square(side: int)
+}
+
+export function counter(name: string): Counter {
+    return { name: name, count: 0 }
+}
+
+function Counter.display(self): string {
+    return `<counter ${self.name}=${self.count}>`
+}
+
+function Counter.add(mut self) {
+    self.count += 1
+}
+
+function Counter.total(self): int {
+    return self.count
+}
+
+export function circle(radius: int): Shape {
+    return Circle(radius)
+}
+
+function Shape.area(self): int {
+    return match (self) {
+        Circle(radius) => 3 * radius * radius
+        Square(side) => side * side
+    }
+}
+"#)
+    .unwrap();
+    let source = r#"
+import { Counter, Shape, counter, circle } from 'counter.kj'
+
+mut c = counter('clicks')
+c.add()
+c.add()
+immut list: Counter[] = [c, counter('other')]
+print(c, c.total(), list, Some(c).debug(), `${c}`)
+immut s = circle(2)
+print(s.area(), [s], s)
+"#;
+    let (output, result) = execute(source, "", &dir.join("main.kj"));
+    result.unwrap();
+    assert_eq!(
+        output,
+        "<counter clicks=2> 2 [<counter clicks=2>, <counter other=0>] Some(<counter clicks=2>) <counter clicks=2>\n12 [<Shape>] <Shape>\n"
+    );
+
+    let fails = |body: &str, fragment: &str| {
+        let source = format!("import {{ Counter, Shape, counter, circle }} from 'counter.kj'\nmut c = counter('a')\nimmut s = circle(1)\n{}\n", body);
+        let (_, result) = execute(&source, "", &dir.join("main.kj"));
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains(fragment), "expected {:?} in {:?}", fragment, error);
+    };
+    fails("print(c.count)", "Counter is opaque: its fields are not visible outside its module");
+    fails("c.count = 3", "Counter is opaque: its fields are not visible outside its module");
+    fails("immut d: Counter = { name: 'x', count: 1 }", "Counter is opaque: it is built by the functions of its module, not with a literal");
+    fails("immut q = Circle(1)", "undefined variable 'Circle'");
+    fails("match (s) {\n    Circle(r) => print(r)\n    _ => {}\n}", "Shape is opaque: its variants are not visible outside its module");
+}
+
+#[test]
 fn modules_and_imports() {
     let dir = temp_dir("modules");
     std::fs::write(
