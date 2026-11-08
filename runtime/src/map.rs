@@ -417,8 +417,3 @@ pub extern "C" fn koji_map_repr(map: *const KojiMap) -> *mut KojiString {
     }
     new_string(text)
 }
-
-/// The entries (key and value slots), in the order their keys were added.
-pub(crate) fn map_entries(map: *const KojiMap) -> Vec<(Slot, Slot)> {
-    self::map(map).entries.clone()
-}

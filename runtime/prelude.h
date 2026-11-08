@@ -344,12 +344,6 @@ KojiString *koji_std_regex_replace(const KojiRegex *regex, const KojiString *inp
                                    bool all);
 KojiList *koji_std_regex_split(const KojiRegex *regex, const KojiString *input, const KojiElementType *element);
 
-KojiRecord *koji_std_json_parse(const KojiString *text, const KojiRecordType *result, const KojiElementType *string,
-                                const KojiElementType *item);
-KojiString *koji_std_json_stringify(const KojiRecord *value);
-KojiRecord *koji_std_json_get(const KojiRecord *value, const KojiString *key, const KojiRecordType *option);
-KojiRecord *koji_std_json_as(const KojiRecord *value, int32_t kind, const KojiRecordType *option);
-
 KojiRecord *koji_std_http_request(int32_t method, const KojiString *url, const KojiString *body,
                                   const KojiRecordType *result);
 

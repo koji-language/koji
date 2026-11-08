@@ -6,6 +6,7 @@ import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, substitute, display }
 import { MethodRef, TryWrap, LoadedModule, Tables, Program, parentDir, resolvePath } from 'checker.kj'
 import { Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
 import { decimalLiteral } from 'decimal.kj'
+import { kojiModules } from 'stdlib.kj'
 
 // What a name of a module refers to.
 type Item = {
@@ -614,6 +615,14 @@ function importOf(node: Node): Option[Import] {
 
 // Declarations
 
+// The key of an imported module: `std:json` for a module of the standard library written in Koji
+// (as the checker names it), the resolved path of a file otherwise.
+function modulePath(directory: string, path: string): string {
+    if (path in kojiModules) { return `std:${path}` }
+
+    return resolvePath(directory, path)
+}
+
 // Adds the module at `path` and the modules it imports (each once).
 function Lowerer.loadModule(mut self, path: string, isEntry: boolean): Result[int, string] {
     match (self.moduleIds.get(path)) {
@@ -660,14 +669,14 @@ function Lowerer.loadModule(mut self, path: string, isEntry: boolean): Result[in
 
         match (importOf(statement)) {
             Some(found) => {
-                // The standard library is in the runtime.
-                if (not found.path.endsWith('.kj')) {
+                // The standard library is in the runtime, but the modules written in Koji (std/).
+                if (not found.path.endsWith('.kj') and not (found.path in kojiModules)) {
                     imports.push(-1)
                     self.importTargets[nodeId(statement)] = -1
                     continue
                 }
 
-                immut module = self.loadModule(resolvePath(directory, found.path), false)?
+                immut module = self.loadModule(modulePath(directory, found.path), false)?
                 self.importTargets[nodeId(statement)] = module
                 imports.push(module)
             }
@@ -692,8 +701,8 @@ function Lowerer.loadModule(mut self, path: string, isEntry: boolean): Result[in
         }
         mut module = -1
 
-        if (found.path.endsWith('.kj')) {
-            module = self.loadModule(resolvePath(directory, found.path), false)?
+        if (found.path.endsWith('.kj') or found.path in kojiModules) {
+            module = self.loadModule(modulePath(directory, found.path), false)?
             modules.push(module)
         }
 
@@ -3698,32 +3707,6 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             immut body = if (method >= 2) { self.stdValue(mut builder, args, 1, StrTy)? } else { NullArg }
             arguments = [ModeArg(method), url, body, self.stdResult(builder, call)?]
         }
-        'json.parse' => {
-            runner = 'koji_std_json_parse'
-            immut text = self.stdValue(mut builder, args, 0, StrTy)?
-            immut result = self.recordOf(builder, call)?
-            immut ok = self.variantIndex(result, 'Ok')?
-            immut json = self.records[result].variants[ok].fields[0].ty
-            arguments = [text, RecordArg(result), ElementArg(StrTy), ElementArg(json)]
-        }
-        'json.stringify' => {
-            runner = 'koji_std_json_stringify'
-            immut json = self.typeIn(builder, args[0])?
-            arguments = [self.stdValue(mut builder, args, 0, json)?]
-        }
-        'json.get' => {
-            runner = 'koji_std_json_get'
-            immut json = self.typeIn(builder, args[0])?
-            immut value = self.stdValue(mut builder, args, 0, json)?
-            immut key = self.stdValue(mut builder, args, 1, StrTy)?
-            arguments = [value, key, self.stdResult(builder, call)?]
-        }
-        other if (other in ['json.asString', 'json.asInt', 'json.asDecimal', 'json.asBool']) => {
-            runner = 'koji_std_json_as'
-            immut json = self.typeIn(builder, args[0])?
-            immut value = self.stdValue(mut builder, args, 0, json)?
-            arguments = [value, ModeArg(position(['asString', 'asInt', 'asDecimal', 'asBool'], name)), self.stdResult(builder, call)?]
-        }
         'regex.compile' => {
             runner = 'koji_std_regex_compile'
             arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
@@ -3792,7 +3775,7 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             immut arguments2 = self.stdValue(mut builder, args, 1, ListTy(StrTy))?
             arguments = [command, arguments2, self.stdResult(builder, call)?]
         }
-        // `json.Array([...])`: a variant of a type of the module.
+        // `file.Write`: a variant of a type of the module.
         _ => {
             match (self.typeIn(builder, call)?) {
                 RecordTy(record) => {

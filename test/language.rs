@@ -1958,8 +1958,8 @@ fn mut_parameters() {
     assert_error("function f(items: int[]) { items[0] = 1 }", "parameters can only be modified");
     assert_error(&format!("{}immut c = 1\nf(mut c)", f), "cannot pass 'c' as 'mut': it is immut");
     assert_error(&format!("{}immut c = [1]\nf(mut c[0])", f), "it is immut");
-    assert_error(&format!("{}mut c = 1\nf(c)", f), "argument 1 is a 'mut' parameter");
-    assert_error("function f(x: int) {}\nmut c = 1\nf(mut c)", "argument 1 is not a 'mut' parameter");
+    assert_error(&format!("{}mut c = 1\nf(c)", f), "argument 1 of 'f' is a 'mut' parameter");
+    assert_error("function f(x: int) {}\nmut c = 1\nf(mut c)", "argument 1 of 'f' is not a 'mut' parameter");
     assert_error("function f(mut x: float) {}\nmut c = 1\nf(mut c)", "must be exactly float, found int");
     assert_error(&format!("{}immut g = f", f), "can only be called, not used as a value");
     assert_error("immut g = (mut x: int) => x", "anonymous functions cannot have 'mut' parameters");
@@ -2564,7 +2564,7 @@ fn generic_errors() {
         ("function eq[T](a: T, b: T): boolean { return a == b }", "operator '==' needs 'T' to be equatable: declare it as '[T: equatable]'"),
         ("function f[T](a: T): int { return a.length }", "a value of type T has no field 'length'"),
         ("function id[T](a: T): T { return a }\nimmut g = id", "the type arguments of 'id' are not known here"),
-        ("function id[T](a: T): T { return a }\nimmut x: int = id('a')", "argument 1 must be int, found string"),
+        ("function id[T](a: T): T { return a }\nimmut x: int = id('a')", "argument 1 of 'id' must be int, found string"),
         ("type Box[T] = { value: T }\nimmut b: Box = { value: 1 }", "type 'Box' needs 1 type argument(s)"),
         ("type Box[T] = { value: T }\nimmut b: Box[int, int] = { value: 1 }", "expects 1 type argument(s), found 2"),
         ("import file\ntype Box[T] = { value: T }\nfunction f(b: Box[file.File]) {}", "type parameters cannot be move-only values yet"),

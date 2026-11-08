@@ -164,6 +164,46 @@ fn prelude_in_koji() -> String {
     text
 }
 
+/// `compiler/stdlib.kj` as it must be: the sources of the modules of the standard library written
+/// in Koji (`std/*.kj`), which the compiler carries.
+fn stdlib_in_koji() -> String {
+    let mut names: Vec<String> = std::fs::read_dir("std")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "kj"))
+        .map(|path| path.file_stem().unwrap().to_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    let mut text = String::from(
+        "// The modules of the standard library written in Koji (std/), which the compiler carries: `import\n\
+         // json` compiles std/json.kj. Generated: test/stages.rs checks that it is up to date, and rewrites\n\
+         // it when run with KOJI_UPDATE_STDLIB=1.\n\n",
+    );
+    let quoted: Vec<String> = names.iter().map(|name| format!("'{}'", name)).collect();
+    text.push_str(&format!("export immut kojiModules = [{}]\n\n", quoted.join(", ")));
+    text.push_str("// The source of the module `name` of the standard library.\nexport function stdSource(name: string): Option[string] {\n");
+    for name in &names {
+        let source = std::fs::read_to_string(format!("std/{}.kj", name)).unwrap();
+        text.push_str(&format!("    if (name == '{}') {{\n        return Some([\n", name));
+        for line in source.lines() {
+            text.push_str(&format!("            '{}',\n", line.replace('\\', "\\\\").replace('\'', "\\'")));
+        }
+        text.push_str("        ].join('\\n'))\n    }\n\n");
+    }
+    text.push_str("    return None\n}\n");
+    text
+}
+
+#[test]
+fn the_standard_library_is_up_to_date() {
+    let expected = stdlib_in_koji();
+    if std::env::var("KOJI_UPDATE_STDLIB").is_ok() {
+        std::fs::write("compiler/stdlib.kj", &expected).unwrap();
+    }
+    let found = std::fs::read_to_string("compiler/stdlib.kj").unwrap_or_default();
+    assert!(found == expected, "compiler/stdlib.kj is out of date: run the tests with KOJI_UPDATE_STDLIB=1");
+}
+
 #[test]
 fn the_c_prelude_is_up_to_date() {
     let expected = prelude_in_koji();

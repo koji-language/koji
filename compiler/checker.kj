@@ -5,9 +5,10 @@ import file
 import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Part, Entry, ObjectEntry, ParsedFile, parseFrom, annotated } from 'parser.kj'
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, MethodSignature, NamedParts, unconstrained, equatable, orderable, constraintName, isNumeric, mixesFloatAndDecimal, containsUnknown, anyUnknown, fillUnknown, substitute, substituteAll, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, substituteFields, variantsOf, findField } from 'types.kj'
 import { decimalLiteral } from 'decimal.kj'
+import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
-immut stdlibModules = ['time', 'file', 'path', 'datetime', 'math', 'http', 'json', 'regex', 'system']
+immut stdlibModules = ['time', 'file', 'path', 'datetime', 'math', 'http', 'regex', 'system']
 
 type SymbolKind = {
     ValueSymbol
@@ -123,12 +124,10 @@ type Builtins = {
     fileError: int
     fileMode: int
     httpError: int
-    json: int
     map: int
     output: int
     systemError: int
     set: int
-    jsonError: int
     dateError: int
     file: int
     datetime: int
@@ -331,21 +330,6 @@ function builtinSums(): BuiltinSum[] {
             ]
         },
         {
-            name: 'JsonError', module: Some('json'), params: 0,
-            variants: [
-                variant('Syntax', [field('message', 'string'), field('line', 'int'), field('column', 'int')]),
-                variant('NumberOutOfRange', [field('text', 'string'), field('line', 'int'), field('column', 'int')])
-            ]
-        },
-        {
-            name: 'Json', module: Some('json'), params: 0,
-            variants: [
-                variant('Null', []), variant('Bool', [field('value', 'boolean')]), variant('Int', [field('value', 'int')]),
-                variant('Decimal', [field('value', 'decimal')]), variant('String', [field('value', 'string')]),
-                variant('Array', [field('items', 'Json[]')]), variant('Object', [field('fields', 'JsonObject')])
-            ]
-        },
-        {
             name: 'DateError', module: Some('datetime'), params: 0,
             variants: [variant('PatternMismatch', [field('text', 'string'), field('pattern', 'string')]), variant('InvalidDate', text)]
         },
@@ -380,7 +364,6 @@ function stdlibFunctions(module: string): string[] {
         'datetime' => ['now', 'today', 'format', 'parse']
         'math' => ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
         'http' => ['get', 'post', 'put', 'delete']
-        'json' => ['parse', 'stringify', 'get', 'asString', 'asInt', 'asDecimal', 'asBool']
         'regex' => ['compile']
         'system' => ['args', 'env', 'executable', 'exit', 'run', 'capture']
         _ => []
@@ -413,13 +396,11 @@ function Checker.create(): Checker {
         ids[sum.name] = addType(mut table, sum.name, sum.params, Pending)
     }
 
-    immut json = sumId(ids, 'Json')
     // `Map[K: equatable, V]` and `Set[T: equatable]`.
     immut map = addType(mut table, 'Map', 2, MapKind(ParamType(0), ParamType(1)))
     table[map].constraints = [equatable, unconstrained]
     immut set = addType(mut table, 'Set', 1, SetKind(ParamType(0)))
     table[set].constraints = [equatable]
-    immut jsonObject = NamedType(map, [StringType, named(json)])
 
     for sum in builtinSums() {
         mut variants: VariantInfo[] = []
@@ -435,9 +416,7 @@ function Checker.create(): Checker {
                     'int' => IntType
                     'float' => FloatType
                     'decimal' => DecimalType
-                    'boolean' => BooleanType
-                    'Json[]' => ListType(named(json))
-                    _ => jsonObject
+                    _ => BooleanType
                 }
                 fields.push({ name: builtin.name, ty: ty })
             }
@@ -481,8 +460,8 @@ function Checker.create(): Checker {
     immut builtins: Builtins = {
         option: sumId(ids, 'Option'), result: result, parseError: sumId(ids, 'ParseError'),
         mathError: sumId(ids, 'MathError'), fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
-        httpError: sumId(ids, 'HttpError'), json: json, map: map, output: output, systemError: sumId(ids, 'SystemError'),
-        set: set, jsonError: sumId(ids, 'JsonError'), dateError: sumId(ids, 'DateError'), file: file,
+        httpError: sumId(ids, 'HttpError'), map: map, output: output, systemError: sumId(ids, 'SystemError'),
+        set: set, dateError: sumId(ids, 'DateError'), file: file,
         datetime: datetime, response: response, regexMatch: regexMatch, regex: regex, regexError: sumId(ids, 'RegexError'),
         operatingSystem: sumId(ids, 'OperatingSystem')
     }
@@ -504,8 +483,6 @@ function Checker.builtinSumId(self, name: string): int {
         'FileError' => b.fileError
         'Mode' => b.fileMode
         'HttpError' => b.httpError
-        'Json' => b.json
-        'JsonError' => b.jsonError
         'DateError' => b.dateError
         'SystemError' => b.systemError
         'OperatingSystem' => b.operatingSystem
@@ -628,9 +605,6 @@ function Checker.stdlibModule(mut self, name: string): int {
         }
         _ => {}
     }
-
-    // `json.JsonObject` is `Map[string, Json]`.
-    if (name == 'json') { module.types['JsonObject'] = KnownType(NamedType(b.map, [StringType, named(b.json)])) }
 
     // The sum types of the module (`FileError`, `Json`...), with their constructors.
     for sum in builtinSums() {
@@ -1195,29 +1169,46 @@ function findInTypes(types: Type[], ids: Set[int]): Option[int] {
     return None
 }
 
-function Checker.checkImport(mut self, names: Option[string[]], moduleName: string, path: string): Result[void, string] {
-    mut moduleId = 0
+// The module `path` names: one of the standard library in the runtime, one written in Koji that
+// the compiler carries (std/), or a file, checked the first time.
+function Checker.importedModule(mut self, path: string): Result[int, string] {
+    if (path in stdlibModules) { return Ok(self.stdlibModule(path)) }
 
-    if (path in stdlibModules) {
-        moduleId = self.stdlibModule(path)
-    } else {
-        immut resolved = resolvePath(self.state.dir, path)
+    if (path in kojiModules) {
+        immut key = `std:${path}`
 
-        match (self.moduleByPath.get(resolved)) {
-            Some(id) => moduleId = id
-            None => {
-                if (resolved in self.loading) { return Err(self.failure(`circular import of '${path}'`)) }
-
-                immut source = match (readSource(resolved)) {
-                    Ok(source) => source
-                    Err(error) => return Err(self.failure(`cannot import '${path}': ${ioMessage(error)}`))
-                }
-
-                moduleId = self.checkModule(resolved, path, source)?
-            }
+        match (self.moduleByPath.get(key)) {
+            Some(id) => return Ok(id)
+            None => {}
         }
+
+        immut source = match (stdSource(path)) {
+            Some(text) => text
+            None => return Err(self.failure(`cannot import '${path}'`))
+        }
+
+        return self.checkModule(key, path, source)
     }
 
+    immut resolved = resolvePath(self.state.dir, path)
+
+    match (self.moduleByPath.get(resolved)) {
+        Some(id) => return Ok(id)
+        None => {}
+    }
+
+    if (resolved in self.loading) { return Err(self.failure(`circular import of '${path}'`)) }
+
+    immut source = match (readSource(resolved)) {
+        Ok(source) => source
+        Err(error) => return Err(self.failure(`cannot import '${path}': ${ioMessage(error)}`))
+    }
+
+    return self.checkModule(resolved, path, source)
+}
+
+function Checker.checkImport(mut self, names: Option[string[]], moduleName: string, path: string): Result[void, string] {
+    immut moduleId = self.importedModule(path)?
     immut wanted = match (names) {
         Some(wanted) => wanted
         None => return self.declare(moduleName, valueSymbol(ModuleType(moduleId), true))
@@ -1982,7 +1973,7 @@ function Checker.checkGenericCall(mut self, signature: Type, initial: Type[], co
     immut params = parts.params
 
     if (params.length() != args.length()) {
-        return Err(self.failure(`expected ${params.length()} argument(s), found ${args.length()}`))
+        return Err(self.failure(argumentCount(what, params.length(), args.length())))
     }
 
     // `immut nothing: Option[int] = first([])`: the expected type tells `T`.
@@ -2000,13 +1991,13 @@ function Checker.checkGenericCall(mut self, signature: Type, initial: Type[], co
 
         match (unlocated(arg).kind) {
             MutArg(place) => {
-                if (mode != 'mut') { return Err(self.failure(`argument ${i + 1} is not a 'mut' parameter: remove 'mut'`)) }
+                if (mode != 'mut') { return Err(self.failure(`${argumentOf(what, i)} is not a 'mut' parameter: remove 'mut'`)) }
 
                 actual = self.checkMutPlace(place, None)?
             }
             _ => {
                 if (mode == 'mut') {
-                    return Err(self.failure(`argument ${i + 1} is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')`))
+                    return Err(self.failure(`${argumentOf(what, i)} is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')`))
                 }
 
                 actual = self.checkValue(arg, Some(wanted))?
@@ -2019,7 +2010,7 @@ function Checker.checkGenericCall(mut self, signature: Type, initial: Type[], co
         self.noteConversion(arg, target, actual)
 
         if (not assignable(target, actual)) {
-            return Err(self.failure(`argument ${i + 1} must be ${self.show(target)}, found ${self.show(actual)}`))
+            return Err(self.failure(`${argumentOf(what, i)} must be ${self.show(target)}, found ${self.show(actual)}`))
         }
 
         if (mode == 'take') { self.consume(arg, actual)? }
@@ -3847,7 +3838,7 @@ function Checker.checkCall(mut self, node: Node, callee: Node, args: Node[], exp
                                 return self.checkGenericCall(symbol.ty, unknowns(symbol.generics), symbol.constraints, symbol.modes, name, args, expected)
                             }
 
-                            if (symbol.modes.length() > 0) { return self.checkFunctionCallMut(symbol.ty, symbol.modes, args) }
+                            if (symbol.modes.length() > 0) { return self.checkFunctionCallMut(symbol.ty, symbol.modes, args, name) }
                         }
                     }
                 }
@@ -3919,7 +3910,12 @@ function Checker.checkCall(mut self, node: Node, callee: Node, args: Node[], exp
     }
 
     immut calleeType = self.checkValue(callee, None)?
-    return self.checkFunctionCall(calleeType, args)
+    // `f(...)` names the function in the messages; a value called otherwise has no name.
+    immut calleeName = match (target.kind) {
+        Name(name) => name
+        _ => ''
+    }
+    return self.checkFunctionCallMut(calleeType, [], args, calleeName)
 }
 
 // The ownership rules for the value a method is called on.
@@ -4021,7 +4017,7 @@ function Checker.checkAssociatedCall(mut self, node: Node, id: int, name: string
         return self.checkGenericCall(info.ty, unknowns(info.generics), info.constraints, info.modes, full, args, expected)
     }
 
-    return self.checkFunctionCallMut(info.ty, info.modes, args)
+    return self.checkFunctionCallMut(info.ty, info.modes, args, full)
 }
 
 // `person.greet()`
@@ -4059,18 +4055,18 @@ function Checker.checkMethod(mut self, node: Node, object: Node, id: int, receiv
         return self.checkGenericCall(ty, generic[..info.generics], info.constraints, modes, full, args, expected)
     }
 
-    return self.checkFunctionCallMut(ty, modes, args)
+    return self.checkFunctionCallMut(ty, modes, args, full)
 }
 
 function Checker.checkFunctionCall(mut self, calleeType: Type, args: Node[]): Result[Type, string] {
-    return self.checkFunctionCallMut(calleeType, [], args)
+    return self.checkFunctionCallMut(calleeType, [], args, '')
 }
 
 // A call of a function whose parameters are passed as `modes` (borrowed when empty).
-function Checker.checkFunctionCallMut(mut self, calleeType: Type, modes: string[], args: Node[]): Result[Type, string] {
+function Checker.checkFunctionCallMut(mut self, calleeType: Type, modes: string[], args: Node[], callee: string): Result[Type, string] {
     match (calleeType) {
         FunctionType(params, returns) => {
-            self.checkArgsMut(params, modes, args)?
+            self.checkArgsMut(params, modes, args, callee)?
             return Ok(returns)
         }
         UnknownType => {
@@ -4084,13 +4080,33 @@ function Checker.checkFunctionCallMut(mut self, calleeType: Type, modes: string[
     }
 }
 
-function Checker.checkArgs(mut self, params: Type[], args: Node[]): Result[Type[], string] {
-    return self.checkArgsMut(params, [], args)
+// `argument 2 of 'f'` in a message (`argument 2` when the function has no name: a value called).
+function argumentOf(callee: string, index: int): string {
+    if (callee == '') { return `argument ${index + 1}` }
+
+    return `argument ${index + 1} of '${callee}'`
 }
 
-function Checker.checkArgsMut(mut self, params: Type[], modes: string[], args: Node[]): Result[Type[], string] {
+function argumentCount(callee: string, expected: int, found: int): string {
+    if (callee == '') { return `expected ${expected} argument(s), found ${found}` }
+
+    return `'${callee}' expects ${expected} argument(s), found ${found}`
+}
+
+// A member of a module in a message: `json.parse` for the standard library, `add` for a file.
+function moduleMember(display: string, name: string): string {
+    if (display.endsWith('.kj')) { return name }
+
+    return `${display}.${name}`
+}
+
+function Checker.checkArgs(mut self, params: Type[], args: Node[]): Result[Type[], string] {
+    return self.checkArgsMut(params, [], args, '')
+}
+
+function Checker.checkArgsMut(mut self, params: Type[], modes: string[], args: Node[], callee: string): Result[Type[], string] {
     if (params.length() != args.length()) {
-        return Err(self.failure(`expected ${params.length()} argument(s), found ${args.length()}`))
+        return Err(self.failure(argumentCount(callee, params.length(), args.length())))
     }
 
     mut types: Type[] = []
@@ -4103,14 +4119,14 @@ function Checker.checkArgsMut(mut self, params: Type[], modes: string[], args: N
 
         match (unlocated(arg).kind) {
             MutArg(place) => {
-                if (not isMut) { return Err(self.failure(`argument ${i + 1} is not a 'mut' parameter: remove 'mut'`)) }
+                if (not isMut) { return Err(self.failure(`${argumentOf(callee, i)} is not a 'mut' parameter: remove 'mut'`)) }
 
                 immut ty = self.checkMutPlace(place, None)?
 
                 // The function may store any value of the parameter type in the variable, so the
                 // types must be the same.
                 if (not assignable(param, ty) or not assignable(ty, param)) {
-                    return Err(self.failure(`argument ${i + 1} is 'mut' and must be exactly ${self.show(param)}, found ${self.show(ty)}`))
+                    return Err(self.failure(`${argumentOf(callee, i)} is 'mut' and must be exactly ${self.show(param)}, found ${self.show(ty)}`))
                 }
 
                 types.push(ty)
@@ -4118,7 +4134,7 @@ function Checker.checkArgsMut(mut self, params: Type[], modes: string[], args: N
             }
             _ => {
                 if (isMut) {
-                    return Err(self.failure(`argument ${i + 1} is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')`))
+                    return Err(self.failure(`${argumentOf(callee, i)} is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')`))
                 }
             }
         }
@@ -4152,7 +4168,7 @@ function Checker.checkArgsMut(mut self, params: Type[], modes: string[], args: N
                 _ => {}
             }
 
-            return Err(self.failure(`argument ${i + 1} must be ${self.show(param)}, found ${self.show(ty)}${hint}`))
+            return Err(self.failure(`${argumentOf(callee, i)} must be ${self.show(param)}, found ${self.show(ty)}${hint}`))
         }
 
         types.push(ty)
@@ -4585,7 +4601,6 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
     self.lastArgTypes = types
     immut b = self.builtins
     immut s = StringType
-    immut json = named(b.json)
 
     match (name) {
         'print' => return Ok(VoidType)
@@ -4748,28 +4763,6 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
             self.checkExactly(name, types, [s, s])?
             return Ok(self.resultWith(named(b.response), b.httpError))
         }
-        'json.parse' => {
-            self.checkExactly(name, types, [s])?
-            return Ok(self.resultWith(json, b.jsonError))
-        }
-        'json.stringify' => {
-            self.checkExactly(name, types, [json])?
-            return Ok(StringType)
-        }
-        'json.get' => {
-            self.checkExactly(name, types, [json, s])?
-            return Ok(self.optionOf(json))
-        }
-        other if (other in ['json.asString', 'json.asInt', 'json.asDecimal', 'json.asBool']) => {
-            self.checkExactly(name, types, [json])?
-            immut value = match (other) {
-                'json.asString' => StringType
-                'json.asInt' => IntType
-                'json.asDecimal' => DecimalType
-                _ => BooleanType
-            }
-            return Ok(self.optionOf(value))
-        }
         'regex.compile' => {
             self.checkExactly(name, types, [s])?
             return Ok(self.resultWith(named(b.regex), b.regexError))
@@ -4809,7 +4802,7 @@ function Checker.checkMethodCall(mut self, objectType: Type, name: string, args:
                         return self.checkGenericCall(symbol.ty, unknowns(symbol.generics), symbol.constraints, symbol.modes, name, args, expected)
                     }
 
-                    return self.checkFunctionCallMut(symbol.ty, symbol.modes, args)
+                    return self.checkFunctionCallMut(symbol.ty, symbol.modes, args, moduleMember(self.modules[id].display, name))
                 }
             }
         }

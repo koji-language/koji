@@ -289,6 +289,14 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 
 **Alternatives**: keeping the compiler in Rust, a second implementation to maintain along with the one in Koji; a chain of earlier compilers to build from (like Go, which needs an earlier Go), which needs an executable for each system; a seed in the intermediate representation, which would need an interpreter of it.
 
+### A runtime of its own, written in Koji
+
+**Decision**: the runtime and the standard library are written in Koji, not in another language. What Koji cannot express yet (raw memory, calls to the operating system) comes from an internal module, `koji:unsafe`, with an address type, reads and writes of bytes and words, and `extern function` declarations of C functions of the system's library; only the standard library imports it at first. Its modules are in `std/`, and the compiler carries them (`compiler/stdlib.kj`, generated from `std/`): `import json` compiles `std/json.kj` like any module. HTTPS uses a TLS written in Koji. What stays outside Koji: the system's C library, as for nearly every language, and the C that the compiler generates (its target, not code written by hand); if a small part can only be written in another language, it is Rust. The runtime in Rust shrinks as modules move to Koji, each one with the same behavior, the same tests, and no loss of speed.
+
+**Why**: a serious language should not need another one to run its programs: the standard library is then Koji's to read, change and optimize, and Koji is tested on it. The low-level part stays small and out of the users' sight, as `unsafe` does in Go, so the language stays safe.
+
+**Alternatives**: the runtime in Rust (as it was), which needs cargo and libraries of others; the runtime in C, which is not Koji either; TLS from the system (OpenSSL), as Python or Node do, which depends on a library in C.
+
 ### Messages name files as they were written
 
 **Decision**: type errors and panics name the main file as it was given on the command line, and a module as its `import` wrote it (`lib/math.kj:3: division by zero`).

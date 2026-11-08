@@ -1,6 +1,6 @@
 # json
 
-The `json` module provides functions to encode and decode data in JSON format.
+The `json` module provides functions to encode and decode data in JSON format. It is written in Koji: `std/json.kj`.
 
 ## The `Json` Type
 
