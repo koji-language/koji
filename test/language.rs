@@ -1578,6 +1578,9 @@ fn stdlib_math() {
     assert_error("import math\n\nprint(math.abs(-9223372036854775807 - 1))", "panic: test.kj:3: integer overflow");
     assert_error("import math\n\nprint(math.pow(float(10), float(400)))", "panic: test.kj:3: float overflow");
     assert_error("import math\n\nprint(math.floor(1e30))", "panic: test.kj:3: integer overflow: 1000000000000000000000000000000 does not fit in an int");
+    // The messages are the `display` of `math.MathError`: a type of the program with its name shows
+    // as any other.
+    assert_eq!(run("import math\ntype MathError = { Complex }\nprint(Complex, math.Complex)"), "Complex the result is not a real number (it is complex)\n");
     // `sqrt` imported by name is the one of `math`, not the C function that std/math.kj calls.
     assert_eq!(
         run("import { abs, sqrt, pow } from 'math'\nprint(abs(float(-2.5)), sqrt(16), sqrt(float(-1)), pow(2, 10))"),

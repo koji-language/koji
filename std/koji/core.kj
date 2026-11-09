@@ -177,3 +177,98 @@ function isSpace(code: int): boolean {
 
     return code == 0x1680 or code == 0x2028 or code == 0x2029 or code == 0x202F or code == 0x205F or code == 0x3000
 }
+
+// A string of bytes that may not be UTF-8 (from the system): each invalid sequence becomes
+// U+FFFD, as long as the longest start of a valid one (as Unicode recommends).
+export function textOf(bytes: Address, size: int): string {
+    mut out = ''
+    mut start = 0
+    mut at = 0
+
+    while (at < size) {
+        immut valid = validAt(bytes, at, size)
+
+        if (valid > 0) {
+            at += valid
+            continue
+        }
+
+        // `-valid` bytes are not a character.
+        if (at > start) { out += newString(offset(bytes, start), at - start) }
+
+        out += '�'
+        at -= valid
+        start = at
+    }
+
+    if (start == 0) { return newString(bytes, size) }
+
+    if (at > start) { out += newString(offset(bytes, start), at - start) }
+
+    return out
+}
+
+// Whether the bytes are UTF-8.
+export function isUtf8(bytes: Address, size: int): boolean {
+    mut at = 0
+
+    while (at < size) {
+        immut valid = validAt(bytes, at, size)
+
+        if (valid < 0) { return false }
+
+        at += valid
+    }
+
+    return true
+}
+
+// The bytes of the valid character at `at`, or minus those of the longest start of one there
+// (at least one byte).
+function validAt(bytes: Address, at: int, size: int): int {
+    immut first = byteAt(bytes, at, size)
+
+    if (first < 0x80) { return 1 }
+
+    // The second byte, with its range for the first one (no overlong forms, no surrogates, nothing
+    // beyond U+10FFFF).
+    mut width = 0
+    mut low = 0x80
+    mut high = 0xBF
+
+    if (first >= 0xC2 and first <= 0xDF) { width = 2 }
+
+    if (first >= 0xE0 and first <= 0xEF) { width = 3 }
+
+    if (first >= 0xF0 and first <= 0xF4) { width = 4 }
+
+    if (width == 0) { return -1 }
+
+    if (first == 0xE0) { low = 0xA0 }
+
+    if (first == 0xED) { high = 0x9F }
+
+    if (first == 0xF0) { low = 0x90 }
+
+    if (first == 0xF4) { high = 0x8F }
+
+    immut second = byteAt(bytes, at + 1, size)
+
+    if (second < low or second > high) { return -1 }
+
+    for i in range(2, width) {
+        immut next = byteAt(bytes, at + i, size)
+
+        if (next < 0x80 or next > 0xBF) { return -i }
+    }
+
+    return width
+}
+
+// The byte at `at`, or -1 past the end.
+function byteAt(bytes: Address, at: int, size: int): int {
+    if (at >= size) { return -1 }
+
+    immut b: byte = read(bytes, at)
+    return int(b)
+}

@@ -734,9 +734,14 @@ function Lowerer.externNamed(self, name: string): Option[IrExtern] {
 // The key of an imported module: `std:json` for a module of the standard library written in Koji
 // (as the checker names it), the resolved path of a file otherwise.
 function modulePath(directory: string, path: string): string {
-    if (path in kojiModules) { return `std:${path}` }
+    if (isKojiModule(path)) { return if (path == 'koji:core') { 'std:core' } else { `std:${path}` } }
 
     return resolvePath(directory, path)
+}
+
+// A module of the standard library written in Koji (`json`), or the internal `koji:core`.
+function isKojiModule(path: string): boolean {
+    return path in kojiModules or path == 'koji:core'
 }
 
 // Adds the module at `path` and the modules it imports (each once).
@@ -786,7 +791,7 @@ function Lowerer.loadModule(mut self, path: string, isEntry: boolean): Result[in
         match (importOf(statement)) {
             Some(found) => {
                 // The standard library is in the runtime, but the modules written in Koji (std/).
-                if (not found.path.endsWith('.kj') and not (found.path in kojiModules)) {
+                if (not found.path.endsWith('.kj') and not isKojiModule(found.path)) {
                     imports.push(-1)
                     self.importTargets[nodeId(statement)] = -1
                     continue
@@ -817,7 +822,7 @@ function Lowerer.loadModule(mut self, path: string, isEntry: boolean): Result[in
         }
         mut module = -1
 
-        if (found.path.endsWith('.kj') or found.path in kojiModules) {
+        if (found.path.endsWith('.kj') or isKojiModule(found.path)) {
             module = self.loadModule(modulePath(directory, found.path), false)?
             modules.push(module)
         }
@@ -858,9 +863,12 @@ function Lowerer.enterImports(mut self, mut builder: Builder, statements: Node[]
                     if (module == -1) {
                         names[name] = StdFunctionItem(found.path, name)
                     } else {
-                        if (self.isMath(module, name)) {
-                            names[name] = StdFunctionItem('math', name)
-                            continue
+                        match (self.builtinOf(module, name)) {
+                            Some(path) => {
+                                names[name] = StdFunctionItem(path, name)
+                                continue
+                            }
+                            None => {}
                         }
 
                         match (self.modules[module].names.get(name)) {
@@ -1053,9 +1061,12 @@ function Lowerer.bindImports(mut self): Result[void, string] {
                     }
 
                     // `sqrt` of `math` is not the `sqrt` of C that std/math.kj declares.
-                    if (self.isMath(module, name)) {
-                        self.modules[self.module].names[name] = StdFunctionItem('math', name)
-                        continue
+                    match (self.builtinOf(module, name)) {
+                        Some(path) => {
+                            self.modules[self.module].names[name] = StdFunctionItem(path, name)
+                            continue
+                        }
+                        None => {}
                     }
 
                     match (self.modules[module].names.get(name)) {
@@ -2831,14 +2842,6 @@ function Lowerer.expression(mut self, mut builder: Builder, node: Node): Result[
 function Lowerer.member(mut self, mut builder: Builder, node: Node, object: Node, name: string): Result[Option[Operand], string] {
     match (self.stdModuleOf(builder, object)) {
         Some(module) => {
-            // `system.os`: the variant for the system the program runs on.
-            if (module == 'system' and name == 'os') {
-                return match (self.typeIn(builder, node)?) {
-                    RecordTy(record) => self.std(mut builder, node, 'koji_std_system_os', [RecordArg(record)])
-                    _ => Err(self.unsupported("'system.os'"))
-                }
-            }
-
             return match (self.typeIn(builder, node)?) {
                 // `file.Read`: a variant of a type of the module.
                 RecordTy(record) => Ok(Some(self.construct(mut builder, record, name, [])?))
@@ -3412,7 +3415,10 @@ function Lowerer.moduleOf(self, builder: Builder, node: Node): Option[int] {
 
 // `calc.add(1, 2)`, or `shapes.Circle(2.0)`.
 function Lowerer.moduleCall(mut self, mut builder: Builder, call: Node, module: int, name: string, args: Node[]): Result[Option[Operand], string] {
-    if (self.isMath(module, name)) { return self.mathCall(mut builder, name, args) }
+    match (self.builtinOf(module, name)) {
+        Some(path) => return self.stdCall(mut builder, call, path, name, args)
+        None => {}
+    }
 
     match (self.modules[module].names.get(name)) {
         Some(FunctionItem(key)) => {
@@ -3449,7 +3455,13 @@ function Lowerer.moduleCall(mut self, mut builder: Builder, call: Node, module: 
 // A method written in Koji (`text.trim()`): the function of `koji:core` of its name, given the
 // values and, when it takes one more, the place of the call.
 function Lowerer.coreCall(mut self, mut builder: Builder, name: string, args: Node[]): Result[Option[Operand], string] {
-    immut module = match (self.moduleIds.get('std:core')) {
+    return self.kojiCall(mut builder, 'std:core', name, args)
+}
+
+// A call of the function `name` of the module `path` of the standard library, which the checker
+// checked.
+function Lowerer.kojiCall(mut self, mut builder: Builder, path: string, name: string, args: Node[]): Result[Option[Operand], string] {
+    immut module = match (self.moduleIds.get(path)) {
         Some(id) => id
         None => return Err(self.unsupported(`'${name}'`))
     }
@@ -3477,9 +3489,16 @@ function Lowerer.callWithPlace(mut self, mut builder: Builder, key: string, args
     return Ok(localOperand(dest))
 }
 
-// Whether `name` of `module` is `math.abs` or another function of `math` for several types.
-function Lowerer.isMath(self, module: int, name: string): boolean {
-    return self.modules[module].path == 'std:math' and name in mathOverloads
+// The module of `name` of `module` (`math`) when the checker checks it (`math.abs` and the other
+// functions of `math` for several types, `system.exit`).
+function Lowerer.builtinOf(self, module: int, name: string): Option[string] {
+    immut path = self.modules[module].path
+
+    if (path == 'std:math' and name in mathOverloads) { return Some('math') }
+
+    if (path == 'std:system' and name == 'exit') { return Some('system') }
+
+    return None
 }
 
 // `math.abs(-2)`: the function of std/math.kj for the type of the arguments (`absInt`), given the
@@ -3905,6 +3924,11 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             }
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
         }
+        'koji:unsafe.nullAddress' => return Ok(Some(IntOp(0)))
+        'koji:unsafe.isNull' => {
+            immut address = self.valueOf(mut builder, args[0], IntTy)?
+            return Ok(Some(self.binary(mut builder, 'IntCompare(Equal)', address, IntOp(0), BoolTy)))
+        }
         other if (other == 'koji:unsafe.stringBytes' or other == 'koji:unsafe.stringSize') => {
             runner = if (name == 'stringBytes') { 'koji_unsafe_string_bytes' } else { 'koji_unsafe_string_size' }
             arguments = [self.stdValue(mut builder, args, 0, StrTy)?]
@@ -3961,29 +3985,11 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             runner = 'koji_std_file_create_dir'
             arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
         }
-        'system.args' => {
-            runner = 'koji_std_system_args'
-            arguments = [ElementArg(StrTy)]
-        }
-        'system.env' => {
-            runner = 'koji_std_system_env'
-            arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
-        }
-        'system.executable' => {
-            runner = 'koji_std_system_executable'
-            arguments = [self.stdResult(builder, call)?]
-        }
+        // It never returns: `leave` of std/system.kj ends the program.
         'system.exit' => {
-            immut code = self.stdValue(mut builder, args, 0, IntTy)?
-            builder.emit(StdCallIns(None, 'koji_std_system_exit', [code]))
+            self.kojiCall(mut builder, 'std:system', 'leave', args)?
             builder.terminate(UnreachableT)
             return Ok(None)
-        }
-        other if (other == 'system.run' or other == 'system.capture') => {
-            runner = if (name == 'run') { 'koji_std_system_run' } else { 'koji_std_system_capture' }
-            immut command = self.stdValue(mut builder, args, 0, StrTy)?
-            immut arguments2 = self.stdValue(mut builder, args, 1, ListTy(StrTy))?
-            arguments = [command, arguments2, self.stdResult(builder, call)?]
         }
         // `file.Write`: a variant of a type of the module.
         _ => {

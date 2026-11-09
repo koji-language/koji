@@ -217,8 +217,10 @@ function Generator.generateProgram(mut self) {
     self.line('')
     immut strings = self.program.strings
 
+    // `used`: gcc keeps the constant of a function it removed, so that the string it holds is not
+    // lost.
     for id in range(strings.length()) {
-        self.line(`static KojiString *koji_s${id}; // ${stringDebug(strings[id])}`)
+        self.line(`static KojiString *koji_s${id} __attribute__((used)); // ${stringDebug(strings[id])}`)
     }
 
     // The C functions that `extern` declarations name.

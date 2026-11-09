@@ -8,7 +8,7 @@ import { decimalLiteral } from 'decimal.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
-immut stdlibModules = ['file', 'http', 'system']
+immut stdlibModules = ['file', 'http']
 
 // The methods of strings written in Koji, in std/koji/core.kj: the compiler calls its function of
 // the same name, with the string first.
@@ -134,12 +134,9 @@ type Builtins = {
     // `Location` of `koji:unsafe`: the place of a call, for the panics of the function it calls.
     location: int
     map: int
-    output: int
-    systemError: int
     set: int
     file: int
     response: int
-    operatingSystem: int
 }
 
 // The checking state of a module.
@@ -331,17 +328,6 @@ function builtinSums(): BuiltinSum[] {
                 variant('InvalidUrl', url), variant('ConnectionFailed', urlMessage), variant('Timeout', url),
                 variant('Tls', urlMessage), variant('InvalidResponse', urlMessage)
             ]
-        },
-        {
-            name: 'SystemError', module: Some('system'), params: 0,
-            variants: [
-                variant('NotFound', [field('command', 'string')]), variant('PermissionDenied', [field('command', 'string')]),
-                variant('Io', [field('command', 'string'), field('message', 'string')])
-            ]
-        },
-        {
-            name: 'OperatingSystem', module: Some('system'), params: 0,
-            variants: [variant('Linux', []), variant('MacOS', []), variant('Windows', []), variant('Other', [field('name', 'string')])]
         }
     ]
 }
@@ -351,7 +337,6 @@ function stdlibFunctions(module: string): string[] {
     return match (module) {
         'file' => ['open', 'list', 'exists', 'createDir', 'remove']
         'http' => ['get', 'post', 'put', 'delete']
-        'system' => ['args', 'env', 'executable', 'exit', 'run', 'capture']
         _ => []
     }
 }
@@ -421,17 +406,12 @@ function Checker.create(): Checker {
         { name: 'close', params: [], returns: VoidType }
     ]))
     immut response = addType(mut table, 'Response', 0, BuiltinKind([{ name: 'status', ty: IntType }, { name: 'body', ty: StringType }], []))
-    immut output = addType(mut table, 'Output', 0, BuiltinKind([
-        { name: 'status', ty: IntType }, { name: 'stdout', ty: StringType }, { name: 'stderr', ty: StringType }
-    ], []))
     immut address = addType(mut table, 'Address', 0, BuiltinKind([], []))
     immut location = addType(mut table, 'Location', 0, BuiltinKind([], []))
     immut builtins: Builtins = {
         address: address, location: location, option: sumId(ids, 'Option'), result: result,
         parseError: sumId(ids, 'ParseError'), mathError: -1, fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
-        httpError: sumId(ids, 'HttpError'), map: map, output: output, systemError: sumId(ids, 'SystemError'),
-        set: set, file: file, response: response,
-        operatingSystem: sumId(ids, 'OperatingSystem')
+        httpError: sumId(ids, 'HttpError'), map: map, set: set, file: file, response: response
     }
     return {
         table: table, builtins: builtins, modules: [], moduleByPath: [:], stdlib: [:], loading: [], loaded: [],
@@ -449,9 +429,7 @@ function Checker.builtinSumId(self, name: string): int {
         'ParseError' => b.parseError
         'FileError' => b.fileError
         'Mode' => b.fileMode
-        'HttpError' => b.httpError
-        'SystemError' => b.systemError
-        _ => b.operatingSystem
+        _ => b.httpError
     }
 }
 
@@ -553,12 +531,9 @@ function Checker.stdlibModule(mut self, name: string): int {
     immut b = self.builtins
 
     // `system.os`: the operating system the program runs on.
-    if (name == 'system') { module.members['os'] = valueSymbol(named(b.operatingSystem), true) }
-
     match (name) {
         'file' => module.types['File'] = KnownType(named(b.file))
         'http' => module.types['Response'] = KnownType(named(b.response))
-        'system' => module.types['Output'] = KnownType(named(b.output))
         _ => {}
     }
 
@@ -1175,7 +1150,7 @@ function Checker.importedModule(mut self, path: string): Result[int, string] {
 
         immut id = self.checkModule(key, path, source)?
 
-        if (path == 'math') { self.overloadMath(id) }
+        self.addBuiltins(path, id)
 
         return Ok(id)
     }
@@ -1611,11 +1586,18 @@ function Checker.coreModule(mut self): Result[int, string] {
     return self.checkModule('std:core', 'koji:core', source)
 }
 
-// `math.abs` and the other functions of `math` for several types of numbers: the compiler checks
-// their arguments and calls the function of std/math.kj for their type (`absInt`...).
-function Checker.overloadMath(mut self, id: int) {
-    for member in ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round'] {
-        self.modules[id].members[member] = builtinSymbol(`math.${member}`)
+// The functions of modules written in Koji that the compiler checks: `math.abs` and the others of
+// `math` for several types of numbers (it calls the function of std/math.kj for their type,
+// `absInt`...), and `system.exit`, which never returns.
+function Checker.addBuiltins(mut self, path: string, id: int) {
+    immut members = match (path) {
+        'math' => ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
+        'system' => ['exit']
+        _ => return
+    }
+
+    for member in members {
+        self.modules[id].members[member] = builtinSymbol(`${path}.${member}`)
     }
 
     match (self.modules[id].types.get('MathError')) {
@@ -1633,7 +1615,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -4870,6 +4852,15 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.checkExactly(name, types, [named(b.address)])?
             return Ok(VoidType)
         }
+        // The address 0, which C calls NULL.
+        'unsafe.nullAddress' => {
+            self.checkExactly(name, types, [])?
+            return Ok(named(b.address))
+        }
+        'unsafe.isNull' => {
+            self.checkExactly(name, types, [named(b.address)])?
+            return Ok(BooleanType)
+        }
         // `offset(address, 8)`: the address 8 bytes further.
         'unsafe.offset' => {
             self.checkExactly(name, types, [named(b.address), IntType])?
@@ -4924,33 +4915,9 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.expectNumberArg(name, 0, types[0])?
             return Ok(IntType)
         }
-        'system.args' => {
-            self.checkExactly(name, types, [])?
-            return Ok(ListType(StringType))
-        }
-        'system.env' => {
-            self.checkExactly(name, types, [s])?
-            return Ok(self.optionOf(StringType))
-        }
-        // The path of the executable of this program.
-        'system.executable' => {
-            self.checkExactly(name, types, [])?
-            return Ok(self.optionOf(StringType))
-        }
-        // Ends the program: the code after it does not run.
         'system.exit' => {
             self.checkExactly(name, types, [IntType])?
             return Ok(NeverType)
-        }
-        // With the terminal of this program: its exit code.
-        'system.run' => {
-            self.checkExactly(name, types, [s, ListType(StringType)])?
-            return Ok(self.resultWith(IntType, b.systemError))
-        }
-        // What it printed.
-        'system.capture' => {
-            self.checkExactly(name, types, [s, ListType(StringType)])?
-            return Ok(self.resultWith(named(b.output), b.systemError))
         }
         other if (other == 'http.get' or other == 'http.delete') => {
             self.checkExactly(name, types, [s])?

@@ -1,30 +1,23 @@
 //! The standard library for compiled programs: the built-in functions (`input`, `int`,
-//! `float`), the methods of strings and the module `system`.
+//! `float`) and the methods of strings that are not written in Koji.
 //!
 //! A function that gives a value of a declared type (`Option`, `Result`, an error) receives
 //! its description from the generated code and builds it with `record::make`. The messages
 //! of errors and the conversions of text come first.
 
-use std::ffi::{c_char, CStr};
+use std::ffi::c_char;
 use std::io::{BufRead, Write};
-use std::sync::OnceLock;
 
 use crate::list::{new_list, KojiElementType, KojiList};
 use crate::output::panic_at;
 use crate::record::{field_record, make, KojiRecord, KojiRecordType};
 use crate::string::{new_string, string_text, KojiString};
 
-/// The program's command-line arguments, after the program itself.
-static ARGS: OnceLock<Vec<String>> = OnceLock::new();
-
 /// Called by `main` before anything else.
 #[no_mangle]
 pub extern "C" fn koji_init(argc: i32, argv: *const *const c_char) {
     crate::pool::adopt();
-    let args = (1..argc.max(1) as usize)
-        .map(|index| unsafe { CStr::from_ptr(*argv.add(index)) }.to_string_lossy().into_owned())
-        .collect();
-    let _ = ARGS.set(args);
+    crate::system::keep_arguments(argc, argv);
 }
 
 // The messages of errors and the conversions of text.
@@ -34,28 +27,16 @@ pub extern "C" fn koji_init(argc: i32, argv: *const *const c_char) {
 pub fn error_message(type_name: &str, variant: &str, texts: &[String]) -> Option<String> {
     const ERROR_TYPES: &[&str] = &[
         "ParseError",
-        "MathError",
         "FileError",
         "HttpError",
-        "SystemError",
     ];
     if !ERROR_TYPES.contains(&type_name) {
         return None;
     }
     let text = |i: usize| texts.get(i).cloned().unwrap_or_default();
-    if type_name == "SystemError" {
-        return Some(match variant {
-            "NotFound" => format!("command '{}' not found", text(0)),
-            "PermissionDenied" => format!("permission denied to run '{}'", text(0)),
-            _ => format!("cannot run '{}': {}", text(0), text(1)),
-        });
-    }
     Some(match variant {
         "InvalidNumber" => format!("'{}' is not a valid number", text(0)),
         "OutOfRange" => format!("'{}' is out of range", text(0)),
-        "Complex" => "the result is not a real number (it is complex)".to_string(),
-        "Indeterminate" => "the result is indeterminate".to_string(),
-        "Infinite" => "the result is infinite".to_string(),
         "NotFound" => format!("file '{}' not found", text(0)),
         "PermissionDenied" => format!("permission denied for '{}'", text(0)),
         "IsDirectory" => format!("'{}' is a directory", text(0)),
@@ -168,10 +149,6 @@ fn error_with_text(result: *const KojiRecordType, variant: &str, text: &str) -> 
     make(result, "Err", &[error as usize as u64])
 }
 
-fn strings(element: *const KojiElementType, items: impl Iterator<Item = String>) -> *mut KojiList {
-    new_list(element, items.map(|item| slot(new_string(item))).collect())
-}
-
 // Built-in functions.
 
 /// `input(prompt)`: a line of the standard input, without its line break, or `None` at the
@@ -264,107 +241,6 @@ pub extern "C" fn koji_std_string_is(string: *const KojiString, test: i32) -> bo
         4 => has_cased && !s.chars().any(char::is_lowercase),
         5 => has_cased && !s.chars().any(char::is_uppercase),
         _ => is_title(s),
-    }
-}
-
-// system
-
-#[no_mangle]
-pub extern "C" fn koji_std_system_args(element: *const KojiElementType) -> *mut KojiList {
-    strings(element, ARGS.get().cloned().unwrap_or_default().into_iter())
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_system_env(name: *const KojiString, option: *const KojiRecordType) -> *mut KojiRecord {
-    some_string(option, std::env::var(text(name)).ok())
-}
-
-/// `system.executable()`: the path of the executable of this program, or `None` where the system
-/// cannot tell it.
-#[no_mangle]
-pub extern "C" fn koji_std_system_executable(option: *const KojiRecordType) -> *mut KojiRecord {
-    let path = std::env::current_exe().ok().map(|path| path.to_string_lossy().into_owned());
-    some_string(option, path)
-}
-
-/// The variant of `OperatingSystem` for the system the program runs on (`Linux`, `MacOS` or
-/// `Windows`), or, for another one, its name for `Other(name)`.
-pub fn operating_system() -> Result<&'static str, &'static str> {
-    match std::env::consts::OS {
-        "linux" => Ok("Linux"),
-        "macos" => Ok("MacOS"),
-        "windows" => Ok("Windows"),
-        other => Err(other),
-    }
-}
-
-/// `system.os`, a value of the `OperatingSystem` record `os`.
-#[no_mangle]
-pub extern "C" fn koji_std_system_os(os: *const KojiRecordType) -> *mut KojiRecord {
-    match operating_system() {
-        Ok(variant) => make(os, variant, &[]),
-        Err(name) => make(os, "Other", &[slot(new_string(name.to_string()))]),
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_system_exit(code: i64) -> ! {
-    let _ = std::io::stdout().flush();
-    std::process::exit(code.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
-}
-
-/// The texts of a list of strings.
-fn texts(list: *const KojiList) -> Vec<String> {
-    let list = unsafe { &*list };
-    list.words().iter().map(|item| text(*item as usize as *const KojiString).to_string()).collect()
-}
-
-/// `Err(SystemError)` for a program that could not be run.
-fn system_error(result: *const KojiRecordType, command: &str, error: &std::io::Error) -> *mut KojiRecord {
-    use std::io::ErrorKind;
-    let error_type = field_record(result, "Err", 0);
-    let name = slot(new_string(command.to_string()));
-    let error = match error.kind() {
-        ErrorKind::NotFound => make(error_type, "NotFound", &[name]),
-        ErrorKind::PermissionDenied => make(error_type, "PermissionDenied", &[name]),
-        _ => make(error_type, "Io", &[name, slot(new_string(error.to_string()))]),
-    };
-    make(result, "Err", &[error as usize as u64])
-}
-
-/// `system.run(command, arguments)`, with the terminal of this program: `Ok` of its exit code
-/// (`-1` if a signal stopped it) or `Err(SystemError)`.
-#[no_mangle]
-pub extern "C" fn koji_std_system_run(command: *const KojiString, arguments: *const KojiList, result: *const KojiRecordType) -> *mut KojiRecord {
-    let command = text(command).to_string();
-    let _ = std::io::stdout().flush();
-    match std::process::Command::new(&command).args(texts(arguments)).status() {
-        Ok(status) => make(result, "Ok", &[status.code().unwrap_or(-1) as i64 as u64]),
-        Err(error) => system_error(result, &command, &error),
-    }
-}
-
-/// `system.capture(command, arguments)`: `Ok(Output)`, with what it printed, or `Err(SystemError)`.
-#[no_mangle]
-pub extern "C" fn koji_std_system_capture(command: *const KojiString, arguments: *const KojiList, result: *const KojiRecordType) -> *mut KojiRecord {
-    let command = text(command).to_string();
-    let arguments = texts(arguments);
-    let _ = std::io::stdout().flush();
-    match std::process::Command::new(&command).args(&arguments).output() {
-        Ok(output) => {
-            let output_type = field_record(result, "Ok", 0);
-            let value = make(
-                output_type,
-                "",
-                &[
-                    output.status.code().unwrap_or(-1) as i64 as u64,
-                    slot(new_string(String::from_utf8_lossy(&output.stdout).into_owned())),
-                    slot(new_string(String::from_utf8_lossy(&output.stderr).into_owned())),
-                ],
-            );
-            make(result, "Ok", &[value as usize as u64])
-        }
-        Err(error) => system_error(result, &command, &error),
     }
 }
 

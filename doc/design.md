@@ -315,7 +315,7 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 
 ### `koji:unsafe`: the lowest level of the standard library
 
-**Decision**: a module of the standard library may import `koji:unsafe`, which has `Address` (a place in memory, of its own type), `CInt` (the 32-bit `int` of C, for `extern` declarations only: an `int` in Koji), `CSize` (the `size_t` of C, likewise), `Location` (the place of a call, `main.kj:12`, for panics), `offset` and `distance` (arithmetic of addresses), `stringBytes`, `stringSize` and `newString` (the UTF-8 bytes of a string, and a string from bytes), `allocate`, `free`, `read` and `write` (of an `int`, a `float`, a `boolean`, a `char`, a `byte` or an `Address`, with its size: `immut n: int = read(address, 8)`, the type read being the one expected) and `panicAt(here, message)` (a panic at that place); and it may declare `extern function name(...): type`, a function of the system's C library or of the runtime, with `int`, `CInt`, `float`, `decimal`, `boolean`, `Address` and `Location` values only. Other programs can use neither.
+**Decision**: a module of the standard library may import `koji:unsafe`, which has `Address` (a place in memory, of its own type), `CInt` (the 32-bit `int` of C, for `extern` declarations only: an `int` in Koji), `CSize` (the `size_t` of C, likewise), `Location` (the place of a call, `main.kj:12`, for panics), `offset`, `distance`, `nullAddress` and `isNull` (arithmetic of addresses, and the address 0), `stringBytes`, `stringSize` and `newString` (the UTF-8 bytes of a string, and a string from bytes), `allocate`, `free`, `read` and `write` (of an `int`, a `float`, a `boolean`, a `char`, a `byte` or an `Address`, with its size: `immut n: int = read(address, 8)`, the type read being the one expected) and `panicAt(here, message)` (a panic at that place); and it may declare `extern function name(...): type`, a function of the system's C library or of the runtime, with `int`, `CInt`, `float`, `decimal`, `boolean`, `Address` and `Location` values only. Other programs can use neither.
 
 **Why**: the standard library is written in Koji, but some of it must reach the system (clocks, files, processes) or memory; this keeps that part small, visible and out of the users' sight, as `unsafe` does in Go.
 
@@ -325,6 +325,8 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 
 **Decision**: `abs`, `sqrt`, `pow`, `floor`, `ceil` and `round` of `math` take an `int`, a `decimal` or a `float` (as they always did). `math` is written in Koji (`std/math.kj`), with a private function for each type (`absInt`, `absDecimal`, `absFloat`...); the compiler checks a call by the rules of the function (the same types and messages as before: `math.pow` does not mix a float and a decimal) and calls the function for the types of its arguments, with the `Location` of the call as its last argument, so that its panics name the line of the program (`main.kj:3: integer overflow`), not one of `std/math.kj`.
 
+`system.exit` is checked by the compiler in the same way, since a function of Koji cannot say that it never returns: it calls `leave` of `std/system.kj`, and the code after it is unreachable.
+
 **Why**: the module moves to Koji without changing for its users, and overloading stays out of the language: six functions do not justify it.
 
 **Alternatives**: overloading of functions in the language (rules for choosing, for errors and for functions as values, for six functions); generic functions with a constraint for numbers, which Koji does not have; one function for each type in the API (`math.absFloat`), heavier for every user.
@@ -332,6 +334,8 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 ### Built-in methods written in Koji: `koji:core`
 
 **Decision**: methods of the built-in types can be written in Koji, in the internal module `koji:core` (`std/koji/core.kj`), which programs cannot import. The checker keeps their signatures; a call (`text.trim()`) is one of the function of the same name, with the value first (`trim(text)`) and, for a method that may panic, the `Location` of the call last. The module is checked only when a program uses one of them, and it has no top-level variables (it is never initialized). First the methods of strings that need no table of Unicode: `trim`, `split`, `replace`, `startsWith`, `endsWith` and `indexOf`, on the bytes of the string (`stringBytes`, `stringSize` and `newString` in `koji:unsafe`), with `memcmp` and `memmem` of the C library (linear searches).
+
+The modules of the standard library may import `koji:core` too (`system` uses `textOf`, which reads bytes from the system as UTF-8, each invalid sequence becoming U+FFFD as Rust's `from_utf8_lossy` does).
 
 **Why**: the runtime moves to Koji one function at a time, without changing the language or its messages: the same mechanism as `math`, for methods.
 

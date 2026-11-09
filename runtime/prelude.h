@@ -311,13 +311,6 @@ KojiRecord *koji_std_decimal_from_string(const KojiString *string, const KojiRec
 KojiString *koji_std_string_upper(const KojiString *string);
 KojiString *koji_std_string_lower(const KojiString *string);
 bool koji_std_string_is(const KojiString *string, int32_t test);
-KojiList *koji_std_system_args(const KojiElementType *element);
-KojiRecord *koji_std_system_env(const KojiString *name, const KojiRecordType *option);
-KojiRecord *koji_std_system_executable(const KojiRecordType *option);
-_Noreturn void koji_std_system_exit(int64_t code);
-KojiRecord *koji_std_system_os(const KojiRecordType *os);
-KojiRecord *koji_std_system_run(const KojiString *command, const KojiList *arguments, const KojiRecordType *result);
-KojiRecord *koji_std_system_capture(const KojiString *command, const KojiList *arguments, const KojiRecordType *result);
 
 KojiRecord *koji_std_char(int64_t code, const KojiRecordType *option);
 KojiList *koji_std_string_chars(const KojiString *string, const KojiElementType *element);

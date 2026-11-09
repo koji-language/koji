@@ -1,6 +1,6 @@
 # system
 
-The `system` module gives access to the command line, the environment, the exit code, other programs and the operating system.
+The `system` module gives access to the command line, the environment, the exit code, other programs and the operating system. It is written in Koji (`std/system.kj`), on the C library of the system (`posix_spawnp`, `waitpid`, `poll`, `getenv`, `uname`).
 
 ## Functions
 

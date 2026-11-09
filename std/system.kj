@@ -1,0 +1,368 @@
+// The `system` module: the command line, the environment, the exit code, other programs and the
+// operating system (see doc/standard-library/system.md). `exit` is checked by the compiler, which
+// calls `leave` here (a function of Koji cannot say that it never returns).
+
+import { Address, CInt, CSize, allocate, free, isNull, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
+import { isUtf8, textOf } from 'koji:core'
+
+// The C library.
+extern function strlen(text: Address): CSize
+extern function strerror(code: CInt): Address
+extern function getenv(name: Address): Address
+extern function uname(name: Address): CInt
+extern function exit(code: CInt)
+extern function posix_spawnp(pid: Address, file: Address, actions: Address, attributes: Address, arguments: Address, environment: Address): CInt
+extern function posix_spawn_file_actions_init(actions: Address): CInt
+extern function posix_spawn_file_actions_destroy(actions: Address): CInt
+extern function posix_spawn_file_actions_adddup2(actions: Address, fd: CInt, target: CInt): CInt
+extern function posix_spawn_file_actions_addclose(actions: Address, fd: CInt): CInt
+extern function posix_spawn_file_actions_addopen(actions: Address, fd: CInt, path: Address, flags: CInt, mode: CInt): CInt
+extern function waitpid(pid: CInt, status: Address, options: CInt): CInt
+extern function pipe(fds: Address): CInt
+extern function close(fd: CInt): CInt
+// `read` of C, with one buffer (`read` is that of `koji:unsafe` here).
+extern function readv(fd: CInt, buffers: Address, count: CInt): int
+extern function poll(fds: Address, count: CSize, timeout: CInt): CInt
+extern function realloc(memory: Address, size: CSize): Address
+
+// The runtime (runtime/src/system.rs).
+extern function koji_system_argument_count(): int
+extern function koji_system_argument(index: int): Address
+extern function koji_system_errno(): CInt
+extern function koji_system_environment(): Address
+extern function koji_system_executable(): Address
+
+export type OperatingSystem = {
+    Linux
+    MacOS
+    Windows
+    // Another system, by its name: 'freebsd'.
+    Other(name: string)
+}
+
+export type SystemError = {
+    // There is no such program.
+    NotFound(command: string)
+    // It cannot be run.
+    PermissionDenied(command: string)
+    // Any other failure of the operating system.
+    Io(command: string, message: string)
+}
+
+function SystemError.display(self): string {
+    return match (self) {
+        NotFound(command) => `command '${command}' not found`
+        PermissionDenied(command) => `permission denied to run '${command}'`
+        Io(command, message) => `cannot run '${command}': ${message}`
+    }
+}
+
+// What a program printed, and its exit code (-1 if a signal stopped it).
+export type Output = {
+    status: int
+    stdout: string
+    stderr: string
+}
+
+// The operating system the program runs on.
+export immut os = systemNamed()
+
+// The command-line arguments of the program, after the program itself.
+export function args(): string[] {
+    mut found: string[] = []
+
+    for i in range(koji_system_argument_count()) {
+        found.push(cText(koji_system_argument(i)))
+    }
+
+    return found
+}
+
+// The value of the environment variable `name` (`None` if it is not set, or not UTF-8).
+export function env(name: string): Option[string] {
+    if (hasNul(name)) { return None }
+
+    immut cName = cString(name)
+    immut value = getenv(cName)
+    free(cName)
+
+    if (isNull(value)) { return None }
+
+    immut size = strlen(value)
+
+    if (not isUtf8(value, size)) { return None }
+
+    return Some(newString(value, size))
+}
+
+// The path of the executable of this program, or `None` where the system cannot tell it.
+export function executable(): Option[string] {
+    immut path = koji_system_executable()
+
+    if (isNull(path)) { return None }
+
+    return Some(cText(path))
+}
+
+// `system.exit(code)`: ends the program (a code beyond those of C is the nearest one).
+function leave(code: int) {
+    immut clamped = if (code > 2147483647) { 2147483647 } else { if (code < -2147483648) { -2147483648 } else { code } }
+    exit(clamped)
+}
+
+// Runs `command` with the terminal of this program and waits for it: its exit code.
+export function run(command: string, args: string[]): Result[int, SystemError] {
+    immut started = spawn(command, args, false)?
+    return Ok(wait(started.pid))
+}
+
+// Runs `command` and keeps what it prints (it reads nothing).
+export function capture(command: string, args: string[]): Result[Output, SystemError] {
+    immut started = spawn(command, args, true)?
+    immut printed = readBoth(started.stdout, started.stderr)
+    immut status = wait(started.pid)
+    return Ok({ status: status, stdout: printed[0], stderr: printed[1] })
+}
+
+// A program started, with the pipes of its outputs when they are kept.
+type Started = {
+    pid: int
+    stdout: int
+    stderr: int
+}
+
+function spawn(command: string, args: string[], captured: boolean): Result[Started, SystemError] {
+    if (hasNul(command)) { return Err(Io(command, 'nul byte found in provided data')) }
+
+    for arg in args {
+        if (hasNul(arg)) { return Err(Io(command, 'nul byte found in provided data')) }
+    }
+
+    // The arguments of C: the program, then `args`, then NULL.
+    immut argv = allocate((args.length() + 2) * 8)
+    write(argv, 0, cString(command))
+
+    for i in range(args.length()) {
+        write(argv, (i + 1) * 8, cString(args[i]))
+    }
+
+    write(argv, (args.length() + 1) * 8, nullAddress())
+
+    // The actions of the child: its outputs to the pipes, its input from /dev/null.
+    immut actions = allocate(256)
+    posix_spawn_file_actions_init(actions)
+    immut pipes = allocate(16)
+    mut stdout = -1
+    mut stderr = -1
+
+    if (captured) {
+        pipe(pipes)
+        pipe(offset(pipes, 8))
+        stdout = readInt32(pipes, 0)
+        stderr = readInt32(pipes, 8)
+        immut stdoutEnd = readInt32(pipes, 4)
+        immut stderrEnd = readInt32(pipes, 12)
+        immut devNull = cString('/dev/null')
+        posix_spawn_file_actions_addopen(actions, 0, devNull, 0, 0)
+        free(devNull)
+        posix_spawn_file_actions_adddup2(actions, stdoutEnd, 1)
+        posix_spawn_file_actions_adddup2(actions, stderrEnd, 2)
+
+        for fd in [stdout, stderr, stdoutEnd, stderrEnd] {
+            posix_spawn_file_actions_addclose(actions, fd)
+        }
+    }
+
+    immut pid = allocate(8)
+    immut program: Address = read(argv, 0)
+    immut code = posix_spawnp(pid, program, actions, nullAddress(), argv, koji_system_environment())
+    posix_spawn_file_actions_destroy(actions)
+    free(actions)
+
+    for i in range(args.length() + 1) {
+        immut each: Address = read(argv, i * 8)
+        free(each)
+    }
+
+    free(argv)
+    immut started = readInt32(pid, 0)
+    free(pid)
+
+    if (captured) {
+        close(readInt32(pipes, 4))
+        close(readInt32(pipes, 12))
+    }
+
+    free(pipes)
+
+    if (code != 0) {
+        if (captured) {
+            close(stdout)
+            close(stderr)
+        }
+
+        return Err(failure(command, code))
+    }
+
+    return Ok({ pid: started, stdout: stdout, stderr: stderr })
+}
+
+// The error of a program that could not start, from the error of the system.
+function failure(command: string, code: int): SystemError {
+    // ENOENT; EPERM and EACCES.
+    if (code == 2) { return NotFound(command) }
+
+    if (code == 1 or code == 13) { return PermissionDenied(command) }
+
+    return Io(command, `${cText(strerror(code))} (os error ${code})`)
+}
+
+// Waits for the program `pid` to end: its exit code, or -1 if a signal stopped it.
+function wait(pid: int): int {
+    immut status = allocate(8)
+
+    // EINTR: a signal interrupted the wait.
+    while (waitpid(pid, status, 0) < 0 and koji_system_errno() == 4) {}
+
+    immut code = readInt32(status, 0)
+    free(status)
+
+    if ((code & 0x7F) != 0) { return -1 }
+
+    return (code >> 8) & 0xFF
+}
+
+// What the two pipes give until both end, read as they fill (a program blocks on a full pipe).
+function readBoth(stdout: int, stderr: int): string[] {
+    immut fds = allocate(16)
+    mut buffers = [allocate(4096), allocate(4096)]
+    mut sizes = [0, 0]
+    mut capacities = [4096, 4096]
+    mut open = [true, true]
+    immut pipes = [stdout, stderr]
+
+    while (open[0] or open[1]) {
+        // A `struct pollfd` for each open pipe: its fd, POLLIN and the events that happened.
+        mut count = 0
+        mut which: int[] = []
+
+        for i in range(2) {
+            if (not open[i]) { continue }
+
+            writeInt32(fds, count * 8, pipes[i])
+            writeInt32(fds, count * 8 + 4, 1)
+            which.push(i)
+            count += 1
+        }
+
+        if (poll(fds, count, -1) < 0) {
+            if (koji_system_errno() == 4) { continue }
+
+            break
+        }
+
+        for slot in range(count) {
+            // revents: 16 bits after `events`.
+            if (readInt32(fds, slot * 8 + 4) >> 16 == 0) { continue }
+
+            immut i = which[slot]
+
+            if (capacities[i] - sizes[i] < 4096) {
+                capacities[i] *= 2
+                buffers[i] = realloc(buffers[i], capacities[i])
+            }
+
+            // A `struct iovec`: where to read, and how much.
+            immut vector = allocate(16)
+            write(vector, 0, offset(buffers[i], sizes[i]))
+            write(vector, 8, capacities[i] - sizes[i])
+            immut got = readv(pipes[i], vector, 1)
+            free(vector)
+
+            if (got < 0 and koji_system_errno() == 4) { continue }
+
+            if (got <= 0) {
+                open[i] = false
+                close(pipes[i])
+                continue
+            }
+
+            sizes[i] += got
+        }
+    }
+
+    free(fds)
+    mut texts: string[] = []
+
+    for i in range(2) {
+        texts.push(textOf(buffers[i], sizes[i]))
+        free(buffers[i])
+    }
+
+    return texts
+}
+
+// The system, from the name `uname` gives (the first field of its record, on every system).
+function systemNamed(): OperatingSystem {
+    immut buffer = allocate(4096)
+    uname(buffer)
+    immut name = cText(buffer)
+    free(buffer)
+
+    return match (name) {
+        'Linux' => Linux
+        'Darwin' => MacOS
+        _ => Other(name.lower())
+    }
+}
+
+// A copy of `text` as a string of C (it has no NUL), to free.
+function cString(text: string): Address {
+    immut size = stringSize(text)
+    immut copy = allocate(size + 1)
+    immut bytes = stringBytes(text)
+
+    for i in range(size) {
+        immut b: byte = read(bytes, i)
+        write(copy, i, b)
+    }
+
+    immut end: byte = 0
+    write(copy, size, end)
+    return copy
+}
+
+// A string of C, as text (invalid UTF-8 becomes U+FFFD).
+function cText(address: Address): string {
+    return textOf(address, strlen(address))
+}
+
+function hasNul(text: string): boolean {
+    immut bytes = stringBytes(text)
+
+    for i in range(stringSize(text)) {
+        immut b: byte = read(bytes, i)
+
+        if (b == 0) { return true }
+    }
+
+    return false
+}
+
+// The int of 32 bits of C at `address + at` (both systems are little-endian).
+function readInt32(address: Address, at: int): int {
+    mut value = 0
+
+    for i in range(4) {
+        immut b: byte = read(address, at + 3 - i)
+        value = (value << 8) | int(b)
+    }
+
+    return if (value >= 0x80000000) { value - 0x100000000 } else { value }
+}
+
+function writeInt32(address: Address, at: int, value: int) {
+    for i in range(4) {
+        write(address, at + i, byte((value >> (8 * i)) & 0xFF))
+    }
+}

@@ -34,6 +34,14 @@ export type MathError = {
     Infinite
 }
 
+function MathError.display(self): string {
+    return match (self) {
+        Complex => 'the result is not a real number (it is complex)'
+        Indeterminate => 'the result is indeterminate'
+        Infinite => 'the result is infinite'
+    }
+}
+
 // The largest float, beyond which a result does not fit.
 immut largestFloat = float(1.7976931348623157e308)
 
