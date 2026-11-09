@@ -341,6 +341,14 @@ The modules of the standard library may import `koji:core` too (`system` uses `t
 
 **Alternatives**: functions of Koji compiled under the C names of the runtime, which the generated code would call as it calls the runtime (the conventions of references of the runtime and of Koji would have to match at that border); a module of Koji imported by every program (compiled for each program, even one that never uses it).
 
+### The library of the runtime written in Koji
+
+**Decision**: the part of the runtime written in Koji that C calls (the prelude, the runtime in Rust, the generated code) is a library: the internal modules of `std/koji/` but `koji:core`, compiled once (`kojic dump library` gives their C, kept in `bootstrap/libkoji.c.gz` next to the seed) into the same archive as the runtime in Rust, which every program links. Its functions are declared `extern function name(...) { ... }`: a function of Koji, given to C under its name (with values of C only, as for `extern` declarations). The library has no `main`: `koji_library_init` runs its modules, and the runtime calls it first. A program cannot import its modules: it calls their functions by their names of C. `test/stages.rs` checks that `bootstrap/libkoji.c.gz` is up to date (`KOJI_UPDATE_LIBRARY=1` writes it again). First `koji_decimal_neg`, `koji_decimal_abs` and `koji_decimal_from_int`; the rest of the decimals follow.
+
+**Why**: as the runtime of other languages, it is compiled once, not with each program, and the prelude and the runtime in Rust call it as they call each other. Its C is in `bootstrap/` for the same reason as the seed: building Koji needs no Koji compiler.
+
+**Alternatives**: the functions compiled into each program (as `koji:core`), which makes every compilation slower as the runtime moves; a library built by the tests and `bootstrap/build.sh` with the compiler just built (the seed would need a library before the compiler that makes it).
+
 ### Messages name files as they were written
 
 **Decision**: type errors and panics name the main file as it was given on the command line, and a module as its `import` wrote it (`lib/math.kj:3: division by zero`).

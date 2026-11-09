@@ -226,3 +226,27 @@ fn the_c_prelude_is_up_to_date() {
     let found = std::fs::read_to_string("compiler/prelude.kj").unwrap_or_default();
     assert!(found == expected, "compiler/prelude.kj is out of date: run the tests with KOJI_UPDATE_PRELUDE=1");
 }
+
+/// The library of the runtime written in Koji (std/koji/, but `koji:core`): bootstrap/libkoji.c.gz
+/// is the C that the compiler generates for it, which build.rs compiles into the runtime library.
+#[test]
+fn the_library_written_in_koji_is_up_to_date() {
+    let generated = koji::finish(&mut koji::kojic().args(["dump", "library"]), "");
+    assert_eq!(generated.code, Some(0), "{}", generated.stderr);
+    let expected = generated.stdout;
+    if std::env::var("KOJI_UPDATE_LIBRARY").is_ok() {
+        let mut gzip = std::process::Command::new("gzip")
+            .args(["-n", "-9"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        gzip.stdin.take().unwrap().write_all(expected.as_bytes()).unwrap();
+        let packed = gzip.wait_with_output().unwrap();
+        std::fs::write("bootstrap/libkoji.c.gz", packed.stdout).unwrap();
+    }
+    let unpacked = std::process::Command::new("gzip").args(["-dc", "bootstrap/libkoji.c.gz"]).output().unwrap();
+    let found = String::from_utf8_lossy(&unpacked.stdout);
+    assert!(found == expected, "bootstrap/libkoji.c.gz is out of date: run the tests with KOJI_UPDATE_LIBRARY=1 (and then the tests again)");
+}

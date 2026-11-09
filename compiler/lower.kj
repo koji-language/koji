@@ -3,8 +3,8 @@
 
 import { Node, NodeKind, Pattern, TypeExpr, Param, TypeParam, Arm, Part, Entry, ObjectEntry } from 'parser.kj'
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, substitute, display } from 'types.kj'
-import { MethodRef, TryWrap, LoadedModule, Tables, Program, coreStringMethods, parentDir, resolvePath } from 'checker.kj'
-import { IrExtern, Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
+import { MethodRef, TryWrap, LoadedModule, Tables, Program, coreStringMethods, libraryModules, parentDir, resolvePath } from 'checker.kj'
+import { IrExtern, IrForC, Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
 import { decimalLiteral } from 'decimal.kj'
 import { kojiModules } from 'stdlib.kj'
 
@@ -205,6 +205,8 @@ type Instance = {
 type Lowerer = {
     // The C functions of the `extern` declarations.
     externs: IrExtern[]
+    // The functions C calls by their names (`extern function name(...) { ... }`).
+    forC: IrForC[]
     table: TypeInfo[]
     tables: Tables
     records: IrRecord[]
@@ -254,6 +256,7 @@ function unlocated(node: Node): Node {
     return match (node.kind) {
         Located(_, statement) => unlocated(statement)
         Export(declaration, _) => unlocated(declaration)
+        ForC(declaration) => unlocated(declaration)
         _ => node
     }
 }
@@ -687,6 +690,7 @@ function cTypeOf(written: Option[TypeExpr]): string {
         Some(Named('Address')) => 'void *'
         Some(Named('decimal')) => 'KojiDecimal'
         Some(Named('Location')) => 'const char *'
+        Some(Named('U128')) => 'KojiU128'
         _ => 'int64_t'
     }
 }
@@ -697,6 +701,7 @@ function externTy(written: string): Ty {
         'double' => FloatTy
         'bool' => BoolTy
         'KojiDecimal' => DecimalTy
+        'KojiU128' => U128Ty
         _ => IntTy
     }
 }
@@ -734,14 +739,14 @@ function Lowerer.externNamed(self, name: string): Option[IrExtern] {
 // The key of an imported module: `std:json` for a module of the standard library written in Koji
 // (as the checker names it), the resolved path of a file otherwise.
 function modulePath(directory: string, path: string): string {
-    if (isKojiModule(path)) { return if (path == 'koji:core') { 'std:core' } else { `std:${path}` } }
+    if (isKojiModule(path)) { return if (path.startsWith('koji:')) { `std:${path[5..]}` } else { `std:${path}` } }
 
     return resolvePath(directory, path)
 }
 
 // A module of the standard library written in Koji (`json`), or the internal `koji:core`.
 function isKojiModule(path: string): boolean {
-    return path in kojiModules or path == 'koji:core'
+    return path in kojiModules or path == 'koji:core' or path in libraryModules
 }
 
 // Adds the module at `path` and the modules it imports (each once).
@@ -962,6 +967,15 @@ function Lowerer.setLine(mut self, statement: Node) {
     }
 }
 
+// Whether a top-level statement is `extern function name(...) { ... }`.
+function isForC(node: Node): boolean {
+    return match (node.kind) {
+        Located(_, statement) => isForC(statement)
+        ForC(_) => true
+        _ => false
+    }
+}
+
 // Gives every top-level function an id first: functions can be called before they are declared.
 function Lowerer.declareFunctions(mut self): Result[void, string] {
     immut statements = self.modules[self.module].statements
@@ -988,6 +1002,24 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
 
                 self.functions.push(None)
                 self.signatures[key] = self.signature(declaration, self.functions.length() - 1)?
+
+                if (isForC(statement)) {
+                    immut params = match (declaration.kind) {
+                        FunctionDecl(_, _, _, written, _, _) => written
+                        _ => []
+                    }
+                    mut types: string[] = []
+
+                    for param in params {
+                        types.push(cTypeOf(param.annotation))
+                    }
+
+                    immut returned = match (declaration.kind) {
+                        FunctionDecl(_, _, _, _, Some(written), _) => cTypeOf(Some(written))
+                        _ => 'void'
+                    }
+                    self.forC.push({ name: name, function: self.functions.length() - 1, params: types, returns: returned })
+                }
             }
             ExternDecl(name, params, returns) => {
                 self.modules[self.module].names[name] = ExternItem(name)
@@ -1881,6 +1913,7 @@ function Lowerer.statement(mut self, mut builder: Builder, node: Node): Result[v
             return self.statement(mut builder, statement)
         }
         Export(declaration, _) => return self.statement(mut builder, declaration)
+        ForC(declaration) => return self.statement(mut builder, declaration)
         // Declared with the module's functions.
         ExternDecl(_, _, _) => return Ok()
         FunctionDecl(name, owner, typeParams, params, _, body) => {
@@ -4703,6 +4736,7 @@ function identifiers(node: Node, mut out: string[]) {
         MutArg(inner) => identifiers(inner, mut out)
         Try(inner) => identifiers(inner, mut out)
         Export(inner, _) => identifiers(inner, mut out)
+        ForC(inner) => identifiers(inner, mut out)
         Located(_, inner) => identifiers(inner, mut out)
         IndexNode(target, index) => {
             identifiers(target, mut out)
@@ -4780,7 +4814,7 @@ export function lower(program: Program): Result[IrProgram, string] {
         table: program.table, tables: program.tables, records: [], recordIds: [:], file: entry.display, line: 0,
         functions: [], signatures: [:], globals: [], strings: [], stringIds: [:], emptyEnvironment: None, wrappers: [:],
         genericFunctions: [:], instances: [:], pending: [], substitution: [], typeNames: [], recordTypes: [:],
-        externs: [], dropFunctions: [:], modules: [], moduleIds: [:], module: 0, owningMatch: false, importTargets: [:], blockItems: [],
+        externs: [], forC: [], dropFunctions: [:], modules: [], moduleIds: [:], module: 0, owningMatch: false, importTargets: [:], blockItems: [],
         checked: checked
     }
     // The top-level statements of the main file are function 0.
@@ -4831,6 +4865,6 @@ export function lower(program: Program): Result[IrProgram, string] {
 
     return Ok({
         file: entry.display, functions: functions, main: 0, globals: lowerer.globals, strings: lowerer.strings,
-        records: lowerer.records, externs: lowerer.externs
+        records: lowerer.records, externs: lowerer.externs, forC: lowerer.forC, library: entry.path == 'std:library'
     })
 }

@@ -209,6 +209,18 @@ export type IrProgram = {
     records: IrRecord[]
     // The C functions that `extern` declarations name, called by `StdCallIns`.
     externs: IrExtern[]
+    // The functions C calls by their names, with the C types of their values.
+    forC: IrForC[]
+    // The library of the runtime written in Koji (`kojic dump library`): no `main`, but
+    // `koji_library_init`, which the runtime calls first.
+    library: boolean
+}
+
+export type IrForC = {
+    name: string
+    function: int
+    params: string[]
+    returns: string
 }
 
 // A C function, with the C types of its parameters and result (`void *` for an `Address`).

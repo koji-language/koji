@@ -1,0 +1,40 @@
+// `koji:decimal`: the decimals of the runtime (see doc/design.md and runtime/src/decimal.rs, where
+// the rest still is), in the library of the runtime written in Koji: C calls these functions by
+// their names.
+//
+// A value is `coefficient * 10^exponent`, with a coefficient below 10^34 and an exponent from
+// -6176 to 6111, in two words of 64 bits: the low one holds the low 64 bits of the coefficient; the
+// high one its 49 high bits, then 14 bits of exponent (plus 6176), then the sign. Zero is all zero
+// bits.
+
+import { U128, decimalHigh, decimalLow, decimalOf, lowWord, wide } from 'koji:unsafe'
+
+// The bits of the sign, and of the coefficient in the high word.
+immut signBit = -9223372036854775807 - 1
+immut coefficientBits = (1 << 49) - 1
+// The exponent 0, in the high word.
+immut exponentZero = 6176 << 49
+
+extern function koji_decimal_neg(value: decimal): decimal {
+    // Zero has no sign.
+    if (isZero(value)) { return value }
+
+    return decimalOf(decimalLow(value), decimalHigh(value) ^ signBit)
+}
+
+extern function koji_decimal_abs(value: decimal): decimal {
+    return decimalOf(decimalLow(value), decimalHigh(value) & ~signBit)
+}
+
+extern function koji_decimal_from_int(value: int): decimal {
+    if (value >= 0) { return decimalOf(value, exponentZero) }
+
+    // The magnitude of a negative int, `int.min` too, in 64 bits.
+    immut zero: U128 = 0
+    immut magnitude = zero - wide(value, -1)
+    return decimalOf(lowWord(magnitude), exponentZero | signBit)
+}
+
+function isZero(value: decimal): boolean {
+    return decimalLow(value) == 0 and (decimalHigh(value) & coefficientBits) == 0
+}

@@ -1228,21 +1228,10 @@ pub extern "C" fn koji_decimal_power(base: KojiDecimal, exponent: KojiDecimal, l
     }
 }
 
-/// The absolute value (`math.abs`).
-#[no_mangle]
-pub extern "C" fn koji_decimal_abs(value: KojiDecimal) -> KojiDecimal {
-    to_c(Decimal { negative: false, ..from_c(value) })
-}
-
 /// The square root, correctly rounded, of a number that is not negative (`math.sqrt`).
 #[no_mangle]
 pub extern "C" fn koji_decimal_sqrt(value: KojiDecimal) -> KojiDecimal {
     to_c(from_c(value).sqrt().unwrap_or(ZERO))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_decimal_neg(value: KojiDecimal) -> KojiDecimal {
-    to_c(from_c(value).negate())
 }
 
 /// A hash that agrees with equality (`1.5` and `1.50` are equal).
@@ -1276,11 +1265,6 @@ pub extern "C" fn koji_decimal_to_int(value: KojiDecimal, mode: i32, location: *
 #[no_mangle]
 pub extern "C" fn koji_decimal_compare(a: KojiDecimal, b: KojiDecimal) -> i32 {
     from_c(a).compare(from_c(b)) as i32
-}
-
-#[no_mangle]
-pub extern "C" fn koji_decimal_from_int(value: i64) -> KojiDecimal {
-    to_c(Decimal::from_int(value))
 }
 
 /// A constant: `coefficient * 10^exponent` (for the benchmark and the tests).

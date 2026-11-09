@@ -273,17 +273,54 @@ function Generator.generateProgram(mut self) {
         self.emitFunction(id, functions[id])
     }
 
+    // The functions C calls by their names: they give their values to those of Koji.
+    for found in self.program.forC {
+        mut params: string[] = []
+        mut values: string[] = []
+
+        for i in range(found.params.length()) {
+            params.push(`${found.params[i]} p${i}`)
+            values.push(fromC(found.params[i], `p${i}`))
+        }
+
+        immut list = if (params.length() == 0) { 'void' } else { params.join(', ') }
+        immut call = `${functionName(found.function)}(${values.join(', ')})`
+        immut body = if (found.returns == 'void') { `${call};` } else { `return ${toC(found.returns, call)};` }
+        self.line('')
+        self.line(`${found.returns} ${found.name}(${list}) { ${body} }`)
+    }
+
     self.line('')
-    self.line('int main(int argc, char **argv) {')
-    self.line('    koji_init(argc, (const char *const *)argv);')
+
+    if (self.program.library) {
+        self.line('void koji_library_init(void) {')
+    } else {
+        self.line('int main(int argc, char **argv) {')
+        self.line('    koji_init(argc, (const char *const *)argv);')
+    }
 
     for id in range(strings.length()) {
         self.line(`    koji_s${id} = koji_string_new(${cString(strings[id])}, ${byteLength(strings[id])});`)
     }
 
     self.line(`    ${functionName(self.program.main)}();`)
-    self.line('    return 0;')
+
+    if (not self.program.library) { self.line('    return 0;') }
+
     self.line('}')
+}
+
+// A value of C as Koji has it: an address or a `Location` is an int.
+function fromC(written: string, value: string): string {
+    if (written == 'void *' or written == 'const char *') { return `(int64_t)(intptr_t)${value}` }
+
+    return value
+}
+
+function toC(written: string, value: string): string {
+    if (written == 'void *' or written == 'const char *') { return `(${written})(intptr_t)${value}` }
+
+    return value
 }
 
 // The descriptions of the declared types, for the runtime.

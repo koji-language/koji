@@ -14,6 +14,12 @@ immut stdlibModules = ['http']
 // the same name, with the string first.
 export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'endsWith', 'indexOf']
 
+// The internal modules (std/koji/): `koji:core`, compiled with the programs that use it, and those
+// of the library of the runtime written in Koji, compiled once (`kojic dump library`) and linked
+// into every program.
+immut internalModules = ['koji:core', 'koji:decimal']
+export immut libraryModules = ['koji:decimal']
+
 type SymbolKind = {
     ValueSymbol
     // A built-in function, by its qualified name (`print`, `math.sqrt`).
@@ -539,6 +545,7 @@ function unlocated(node: Node): Node {
     return match (node.kind) {
         Located(_, statement) => unlocated(statement)
         Export(declaration, _) => unlocated(declaration)
+        ForC(declaration) => unlocated(declaration)
         _ => node
     }
 }
@@ -1100,10 +1107,14 @@ function findInTypes(types: Type[], ids: Set[int]): Option[int] {
 function Checker.importedModule(mut self, path: string): Result[int, string] {
     if (path in stdlibModules) { return Ok(self.stdlibModule(path)) }
 
-    if (path == 'koji:core') {
-        if (not self.state.path.startsWith('std:')) { return Err(self.failure("'koji:core' is only for the standard library")) }
+    if (path in internalModules) {
+        if (not self.state.path.startsWith('std:')) { return Err(self.failure(`'${path}' is only for the standard library`)) }
 
-        return self.coreModule()
+        if (path in libraryModules and self.state.path != 'std:library') {
+            return Err(self.failure(`'${path}' is in the library of the runtime: its functions are called by their names of C ('extern function')`))
+        }
+
+        return self.internalModule(path)
     }
 
     if (path == 'koji:unsafe') {
@@ -1521,6 +1532,36 @@ function Checker.declareExtern(mut self, name: string, params: Param[], returns:
     return self.declare(name, valueSymbol(ty, true))
 }
 
+// `extern function name(...) { ... }`: only in the standard library, and with values C has.
+function Checker.checkForC(mut self, declaration: Node): Result[void, string] {
+    immut name = match (unlocated(declaration).kind) {
+        FunctionDecl(name, _, _, _, _, _) => name
+        _ => return Ok()
+    }
+
+    if (not self.state.path.startsWith('std:')) { return Err(self.failure("'extern' functions are only for the standard library")) }
+
+    immut ty = match (self.lookup(name)) {
+        Some(symbol) => symbol.ty
+        None => return Ok()
+    }
+
+    match (ty) {
+        FunctionType(paramTypes, returned) => {
+            for each in paramTypes {
+                if (not self.isCValue(each) and each != U128Type) { return Err(self.failure(`'${name}' is for C: its parameters must be int, CInt, float, decimal, boolean, U128, Address or Location, found ${self.show(each)}`)) }
+            }
+
+            if (returned != VoidType and not self.isCValue(returned) and returned != U128Type) {
+                return Err(self.failure(`'${name}' is for C: it must return int, CInt, float, decimal, boolean, U128, Address or nothing, found ${self.show(returned)}`))
+            }
+        }
+        _ => {}
+    }
+
+    return Ok()
+}
+
 // The values `read` and `write` take from memory and put there, with their sizes.
 function Checker.isMemoryValue(self, ty: Type): boolean {
     return match (ty) {
@@ -1550,17 +1591,24 @@ function Checker.isCValue(self, ty: Type): boolean {
 // The internal module of the functions that some built-in methods are (std/koji/core.kj, see
 // `coreMethods`): checked the first time one of them is used.
 function Checker.coreModule(mut self): Result[int, string] {
-    match (self.moduleByPath.get('std:core')) {
+    return self.internalModule('koji:core')
+}
+
+// An internal module of the standard library (std/koji/): `koji:core` is `std:core`.
+function Checker.internalModule(mut self, path: string): Result[int, string] {
+    immut key = `std:${path[5..]}`
+
+    match (self.moduleByPath.get(key)) {
         Some(id) => return Ok(id)
         None => {}
     }
 
-    immut source = match (stdSource('koji:core')) {
+    immut source = match (stdSource(path)) {
         Some(text) => text
-        None => return Err(self.failure("cannot find 'koji:core'"))
+        None => return Err(self.failure(`cannot find '${path}'`))
     }
 
-    return self.checkModule('std:core', 'koji:core', source)
+    return self.checkModule(key, path, source)
 }
 
 // The functions of modules written in Koji that the compiler checks: `math.abs` and the others of
@@ -2398,6 +2446,10 @@ function Checker.checkStatement(mut self, node: Node, expected: Option[Type]): R
             return self.checkStatement(statement, expected)
         }
         Export(declaration, _) => return self.checkStatement(declaration, expected)
+        ForC(declaration) => {
+            self.checkForC(declaration)?
+            return self.checkStatement(declaration, expected)
+        }
         VarDecl(name, annotation, value, isImmut) => {
             mut declared: Option[Type] = None
 
@@ -5478,6 +5530,19 @@ function Checker.missingPattern(self, types: Type[], rows: Pattern[][]): Option[
 // Programs
 
 // Checks the file at `path` and every module it imports.
+// The library of the runtime written in Koji: its modules, imported by a module of its own.
+export function checkLibrary(): Result[Program, string] {
+    mut lines: string[] = []
+
+    for i in range(libraryModules.length()) {
+        lines.push(`import library${i} from '${libraryModules[i]}'`)
+    }
+
+    mut checker = Checker.create()
+    checker.checkModule('std:library', 'koji:library', lines.join('\n'))?
+    return Ok({ modules: checker.loaded, table: checker.table, tables: checker.tables })
+}
+
 export function check(path: string): Result[Program, string] {
     immut source = match (readSource(path)) {
         Ok(source) => source

@@ -119,6 +119,9 @@ export type NodeKind = {
     Try(value: Node)
     // `opaque`: other modules use the type, but do not see its structure.
     Export(declaration: Node, opaque: boolean)
+    // `extern function name(...) { ... }`: a function of Koji that C calls by its name (the library
+    // of the runtime written in Koji, std/koji/).
+    ForC(declaration: Node)
     Located(line: int, statement: Node)
 }
 
@@ -638,6 +641,12 @@ function Parser.externDeclaration(mut self): Result[Node, string] {
     immut name = self.expectIdentifier('function name')?
     immut params = self.params()?
     immut returns = self.optionalReturnType()?
+
+    if (self.isSymbol('{')) {
+        immut body = self.functionBody(true)?
+        return Ok(self.node(ForC(self.node(FunctionDecl(name, None, [], params, returns, body)))))
+    }
+
     return Ok(self.node(ExternDecl(name, params, returns)))
 }
 
@@ -1615,6 +1624,7 @@ export function annotated(node: Node, a: (Node) => string): string {
     return match (node.kind) {
         Located(line, statement) => `(at ${line} ${annotated(statement, a)})`
         Export(declaration, opaque) => `(export ${if (opaque) { 'opaque ' } else { '' }}${annotated(declaration, a)})`
+        ForC(declaration) => `(for-c ${annotated(declaration, a)})`
         _ => `${plain(node, a)}${a(node)}`
     }
 }
@@ -1689,6 +1699,7 @@ function plain(node: Node, a: (Node) => string): string {
         ImportNames(names, path) => return `(import (${names.join(' ')}) ${path.debug()})`
         Try(value) => return `(try ${annotated(value, a)})`
         Export(declaration, opaque) => return `(export ${if (opaque) { 'opaque ' } else { '' }}${annotated(declaration, a)})`
+        ForC(declaration) => return `(for-c ${annotated(declaration, a)})`
         Located(line, statement) => return `(at ${line} ${annotated(statement, a)})`
     }
 }
