@@ -396,6 +396,19 @@ fn string_methods() {
         run(source),
         "3 hi HELLO hello\ntrue true true true\ntrue true true false false\n['a', 'b'] hi\n"
     );
+    // Written in Koji (std/koji/core.kj), on the bytes of UTF-8: positions are in characters,
+    // white space is Unicode's.
+    let source = r#"
+        print('　 ção \t'.trim().debug(), 'ção, é, '.split(', '), ',,'.split(','), ''.split(','))
+        print('éaéa'.replace('a', 'ã'), 'abc'.replace('x', 'y'), 'aaa'.replace('aa', 'b'))
+        print('ção😀x'.indexOf('x'), 'ção'.indexOf(''), 'ção'.indexOf('z'), 'ção'.startsWith('çã'), 'ção'.endsWith('ão'), 'a'.endsWith('ba'))
+    "#;
+    assert_eq!(
+        run(source),
+        "'ção' ['ção', 'é', ''] ['', '', ''] ['']\néãéã abc ba\nSome(4) Some(0) None true true false\n"
+    );
+    assert_error("print('a'.split(''))", "panic: test.kj:1: split() separator cannot be empty");
+    assert_error("print('a'.replace('', 'b'))", "panic: test.kj:1: replace() needs a non-empty text to replace");
 }
 
 // ---------------------------------------------------------------------------
@@ -1441,6 +1454,7 @@ fn unsafe_is_for_the_standard_library() {
     // `koji:unsafe` and `extern` functions are the lowest level of the standard library: other
     // programs cannot use them.
     assert_error("import { allocate } from 'koji:unsafe'\nprint(allocate(8))", "'koji:unsafe' is only for the standard library");
+    assert_error("import { trim } from 'koji:core'\nprint(trim(' a '))", "'koji:core' is only for the standard library");
     assert_error("extern function abs(x: int): int\nprint(abs(-1))", "'extern' functions are only for the standard library");
 }
 

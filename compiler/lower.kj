@@ -3,7 +3,7 @@
 
 import { Node, NodeKind, Pattern, TypeExpr, Param, TypeParam, Arm, Part, Entry, ObjectEntry } from 'parser.kj'
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, substitute, display } from 'types.kj'
-import { MethodRef, TryWrap, LoadedModule, Tables, Program, parentDir, resolvePath } from 'checker.kj'
+import { MethodRef, TryWrap, LoadedModule, Tables, Program, coreStringMethods, parentDir, resolvePath } from 'checker.kj'
 import { IrExtern, Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
 import { decimalLiteral } from 'decimal.kj'
 import { kojiModules } from 'stdlib.kj'
@@ -681,6 +681,7 @@ function memoryName(ty: Ty): string {
 function cTypeOf(written: Option[TypeExpr]): string {
     return match (written) {
         Some(Named('CInt')) => 'int'
+        Some(Named('CSize')) => 'size_t'
         Some(Named('float')) => 'double'
         Some(Named('boolean')) => 'bool'
         Some(Named('Address')) => 'void *'
@@ -985,7 +986,10 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
                 mut types: string[] = []
 
                 for param in params {
-                    types.push(cTypeOf(param.annotation))
+                    // An address is a `const void *` for C, as the functions of its library that
+                    // only read memory declare it (`memcmp`): declared otherwise, gcc warns.
+                    immut written = cTypeOf(param.annotation)
+                    types.push(if (written == 'void *') { 'const void *' } else { written })
                 }
 
                 immut returned = match (returns) {
@@ -3442,6 +3446,37 @@ function Lowerer.moduleCall(mut self, mut builder: Builder, call: Node, module: 
     }
 }
 
+// A method written in Koji (`text.trim()`): the function of `koji:core` of its name, given the
+// values and, when it takes one more, the place of the call.
+function Lowerer.coreCall(mut self, mut builder: Builder, name: string, args: Node[]): Result[Option[Operand], string] {
+    immut module = match (self.moduleIds.get('std:core')) {
+        Some(id) => id
+        None => return Err(self.unsupported(`'${name}'`))
+    }
+    immut key = match (self.modules[module].names.get(name)) {
+        Some(FunctionItem(key)) => key
+        _ => return Err(self.unsupported(`'${name}'`))
+    }
+
+    return self.callWithPlace(mut builder, key, args)
+}
+
+// A call of the function `key` with `args`, and the place of the call when it takes one more.
+function Lowerer.callWithPlace(mut self, mut builder: Builder, key: string, args: Node[]): Result[Option[Operand], string] {
+    immut signature = self.callee(key, [])?
+    mut values: Operand[] = []
+
+    for i in range(args.length()) {
+        values.push(self.valueOf(mut builder, args[i], signature.params[i])?)
+    }
+
+    if (signature.params.length() > args.length()) { values.push(LocationOp(`${self.file}:${self.line}`)) }
+
+    immut dest = if (signature.returns != VoidTy) { Some(builder.local(signature.returns, None)) } else { None }
+    builder.emit(CallIns(dest, signature.id, values, [], self.line))
+    return Ok(localOperand(dest))
+}
+
 // Whether `name` of `module` is `math.abs` or another function of `math` for several types.
 function Lowerer.isMath(self, module: int, name: string): boolean {
     return self.modules[module].path == 'std:math' and name in mathOverloads
@@ -3470,17 +3505,7 @@ function Lowerer.mathCall(mut self, mut builder: Builder, name: string, args: No
         Some(FunctionItem(key)) => key
         _ => return Err(self.unsupported(`'math.${name}'`))
     }
-    immut signature = self.callee(key, [])?
-    mut values: Operand[] = []
-
-    for i in range(args.length()) {
-        values.push(self.valueOf(mut builder, args[i], signature.params[i])?)
-    }
-
-    values.push(LocationOp(`${self.file}:${self.line}`))
-    immut dest = builder.local(signature.returns, None)
-    builder.emit(CallIns(Some(dest), signature.id, values, [], self.line))
-    return Ok(Some(LocalOp(dest)))
+    return self.callWithPlace(mut builder, key, args)
 }
 
 // Calls
@@ -3872,6 +3897,18 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             runner = 'koji_unsafe_free'
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?]
         }
+        other if (other in ['koji:unsafe.offset', 'koji:unsafe.distance', 'koji:unsafe.newString']) => {
+            runner = match (name) {
+                'offset' => 'koji_unsafe_offset'
+                'distance' => 'koji_unsafe_distance'
+                _ => 'koji_unsafe_new_string'
+            }
+            arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
+        }
+        other if (other == 'koji:unsafe.stringBytes' or other == 'koji:unsafe.stringSize') => {
+            runner = if (name == 'stringBytes') { 'koji_unsafe_string_bytes' } else { 'koji_unsafe_string_size' }
+            arguments = [self.stdValue(mut builder, args, 0, StrTy)?]
+        }
         'koji:unsafe.panicAt' => {
             immut place = self.valueOf(mut builder, args[0], IntTy)?
             immut message = self.valueOf(mut builder, args[1], StrTy)?
@@ -4032,7 +4069,7 @@ function Lowerer.builtinMethod(mut self, mut builder: Builder, call: Node, objec
         }
         StrTy => {
             match (name) {
-                text if (text in ['trim', 'upper', 'lower']) => {
+                text if (text == 'upper' or text == 'lower') => {
                     immut value = self.value(mut builder, object)?
                     return self.std(mut builder, call, `koji_std_string_${name}`, [ValueArg(value)])
                 }
@@ -4041,28 +4078,14 @@ function Lowerer.builtinMethod(mut self, mut builder: Builder, call: Node, objec
                     immut mode = position(['isSpace', 'isNumeric', 'isAlpha', 'isAlphaNumeric', 'isUpper', 'isLower', 'isTitle'], name)
                     return self.std(mut builder, call, 'koji_std_string_is', [ValueArg(value), ModeArg(mode)])
                 }
-                'split' => {
-                    immut value = self.value(mut builder, object)?
-                    immut separator = self.valueOf(mut builder, args[0], StrTy)?
-                    return self.std(mut builder, call, 'koji_std_string_split', [ValueArg(value), ValueArg(separator), ElementArg(StrTy), LocationArg(line)])
-                }
-                'replace' => {
-                    immut value = self.value(mut builder, object)?
-                    immut old = self.valueOf(mut builder, args[0], StrTy)?
-                    immut new = self.valueOf(mut builder, args[1], StrTy)?
-                    return self.std(mut builder, call, 'koji_std_string_replace', [ValueArg(value), ValueArg(old), ValueArg(new), LocationArg(line)])
-                }
-                part if (part in ['startsWith', 'endsWith', 'indexOf']) => {
-                    immut value = self.value(mut builder, object)?
-                    immut wanted = self.valueOf(mut builder, args[0], StrTy)?
-                    mut arguments = [ValueArg(value), ValueArg(wanted)]
+                method if (method in coreStringMethods) => {
+                    mut all = [object]
 
-                    if (name == 'startsWith') { return self.std(mut builder, call, 'koji_std_string_starts_with', arguments) }
+                    for arg in args {
+                        all.push(arg)
+                    }
 
-                    if (name == 'endsWith') { return self.std(mut builder, call, 'koji_std_string_ends_with', arguments) }
-
-                    arguments.push(RecordArg(self.recordOf(builder, call)?))
-                    return self.std(mut builder, call, 'koji_std_string_index_of', arguments)
+                    return self.coreCall(mut builder, name, all)
                 }
                 'chars' => {
                     immut value = self.value(mut builder, object)?
@@ -4717,6 +4740,9 @@ export function lower(program: Program): Result[IrProgram, string] {
     // The top-level statements of the main file are function 0.
     lowerer.functions.push(None)
     lowerer.loadModule(entry.path, true)?
+
+    // The functions of `koji:core` the checker found used (it has nothing to initialize).
+    if (checked.has('std:core')) { lowerer.loadModule('std:core', false)? }
 
     for module in range(lowerer.modules.length()) {
         lowerer.enter(module)

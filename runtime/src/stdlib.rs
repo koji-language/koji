@@ -240,11 +240,6 @@ pub extern "C" fn koji_std_float_to_int(value: f64, location: *const c_char) -> 
 // Methods of strings.
 
 #[no_mangle]
-pub extern "C" fn koji_std_string_trim(string: *const KojiString) -> *mut KojiString {
-    new_string(text(string).trim().to_string())
-}
-
-#[no_mangle]
 pub extern "C" fn koji_std_string_upper(string: *const KojiString) -> *mut KojiString {
     new_string(text(string).to_uppercase())
 }
@@ -269,53 +264,6 @@ pub extern "C" fn koji_std_string_is(string: *const KojiString, test: i32) -> bo
         4 => has_cased && !s.chars().any(char::is_lowercase),
         5 => has_cased && !s.chars().any(char::is_uppercase),
         _ => is_title(s),
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_string_split(
-    string: *const KojiString,
-    separator: *const KojiString,
-    element: *const KojiElementType,
-    location: *const c_char,
-) -> *mut KojiList {
-    let separator = text(separator);
-    if separator.is_empty() {
-        panic_at(location, "split() separator cannot be empty");
-    }
-    strings(element, text(string).split(separator).map(str::to_string))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_string_replace(
-    string: *const KojiString,
-    old: *const KojiString,
-    new: *const KojiString,
-    location: *const c_char,
-) -> *mut KojiString {
-    if text(old).is_empty() {
-        panic_at(location, "replace() needs a non-empty text to replace");
-    }
-    new_string(text(string).replace(text(old), text(new)))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_string_starts_with(string: *const KojiString, prefix: *const KojiString) -> bool {
-    text(string).starts_with(text(prefix))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_string_ends_with(string: *const KojiString, suffix: *const KojiString) -> bool {
-    text(string).ends_with(text(suffix))
-}
-
-/// A position in characters, like indexing and `length()`.
-#[no_mangle]
-pub extern "C" fn koji_std_string_index_of(string: *const KojiString, part: *const KojiString, option: *const KojiRecordType) -> *mut KojiRecord {
-    let s = text(string);
-    match s.find(text(part)) {
-        Some(byte) => some(option, s[..byte].chars().count() as u64),
-        None => none(option),
     }
 }
 

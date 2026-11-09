@@ -1271,7 +1271,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                     for i in range(values.length()) {
                         if (i >= found.params.length()) { continue }
 
-                        if (found.params[i] == 'void *') { values[i] = `(void *)(intptr_t)${values[i]}` }
+                        if (found.params[i] == 'const void *') { values[i] = `(const void *)(intptr_t)${values[i]}` }
 
                         if (found.params[i] == 'const char *') { values[i] = `(const char *)(intptr_t)${values[i]}` }
                     }

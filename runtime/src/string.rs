@@ -68,6 +68,12 @@ pub extern "C" fn koji_string_new(bytes: *const u8, length: usize) -> *mut KojiS
     from_str(&String::from_utf8_lossy(bytes))
 }
 
+/// A new string with the bytes `bytes[..length]`, which are UTF-8 (`koji:unsafe`).
+#[no_mangle]
+pub extern "C" fn koji_string_from_utf8(bytes: *const u8, length: usize) -> *mut KojiString {
+    allocate(length, |target| target.copy_from_slice(unsafe { std::slice::from_raw_parts(bytes, length) }))
+}
+
 /// Frees a string without references (the prelude releases strings inline).
 #[no_mangle]
 pub extern "C" fn koji_string_free(string: *mut KojiString) {

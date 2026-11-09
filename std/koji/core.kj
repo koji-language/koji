@@ -1,0 +1,179 @@
+// `koji:core`: methods of strings written in Koji. The compiler calls the function of a method's
+// name with the string first (`text.trim()` is `trim(text)`), and the `Location` of the call last
+// when it may panic. Programs cannot import it. It has no top-level variables: it is never
+// initialized.
+
+import { Address, CInt, CSize, Location, distance, newString, offset, panicAt, read, stringBytes, stringSize } from 'koji:unsafe'
+
+// The C library: `memcmp` compares bytes, `memmem` finds bytes among others (the address of the
+// first match, or 0).
+extern function memcmp(a: Address, b: Address, size: CSize): CInt
+extern function memmem(haystack: Address, haystackSize: CSize, needle: Address, needleSize: CSize): Address
+
+// Without the white space at both ends (as Unicode defines white space).
+function trim(text: string): string {
+    immut bytes = stringBytes(text)
+    immut size = stringSize(text)
+    mut start = 0
+
+    while (start < size) {
+        immut width = widthAt(bytes, start)
+
+        if (not isSpace(codeAt(bytes, start, width))) { break }
+
+        start += width
+    }
+
+    mut end = size
+
+    while (end > start) {
+        mut last = end - 1
+
+        while (isContinuation(bytes, last)) {
+            last -= 1
+        }
+
+        if (not isSpace(codeAt(bytes, last, end - last))) { break }
+
+        end = last
+    }
+
+    if (start == 0 and end == size) { return text }
+
+    return newString(offset(bytes, start), end - start)
+}
+
+function startsWith(text: string, prefix: string): boolean {
+    immut size = stringSize(prefix)
+
+    if (size > stringSize(text)) { return false }
+
+    return memcmp(stringBytes(text), stringBytes(prefix), size) == 0
+}
+
+function endsWith(text: string, suffix: string): boolean {
+    immut size = stringSize(suffix)
+    immut start = stringSize(text) - size
+
+    if (start < 0) { return false }
+
+    return memcmp(offset(stringBytes(text), start), stringBytes(suffix), size) == 0
+}
+
+// The position of the first `part`, in characters (like indexing and `length()`).
+function indexOf(text: string, part: string): Option[int] {
+    immut bytes = stringBytes(text)
+    immut found = find(text, part, 0)
+
+    if (found < 0) { return None }
+
+    mut characters = 0
+
+    for i in range(found) {
+        if (not isContinuation(bytes, i)) { characters += 1 }
+    }
+
+    return Some(characters)
+}
+
+// The parts of `text` between the separators.
+function split(text: string, separator: string, here: Location): string[] {
+    if (stringSize(separator) == 0) { panicAt(here, 'split() separator cannot be empty') }
+
+    immut bytes = stringBytes(text)
+    mut parts: string[] = []
+    mut start = 0
+
+    while (true) {
+        immut found = find(text, separator, start)
+
+        if (found < 0) { break }
+
+        parts.push(newString(offset(bytes, start), found - start))
+        start = found + stringSize(separator)
+    }
+
+    parts.push(newString(offset(bytes, start), stringSize(text) - start))
+    return parts
+}
+
+// `text` with `new` in the place of each `old`.
+function replace(text: string, old: string, new: string, here: Location): string {
+    if (stringSize(old) == 0) { panicAt(here, 'replace() needs a non-empty text to replace') }
+
+    mut found = find(text, old, 0)
+
+    if (found < 0) { return text }
+
+    immut bytes = stringBytes(text)
+    mut replaced = ''
+    mut start = 0
+
+    while (found >= 0) {
+        replaced += newString(offset(bytes, start), found - start)
+        replaced += new
+        start = found + stringSize(old)
+        found = find(text, old, start)
+    }
+
+    replaced += newString(offset(bytes, start), stringSize(text) - start)
+    return replaced
+}
+
+// The byte where `part` first is in `text`, from the byte `start`, or -1.
+function find(text: string, part: string, start: int): int {
+    immut bytes = stringBytes(text)
+    immut found = memmem(offset(bytes, start), stringSize(text) - start, stringBytes(part), stringSize(part))
+
+    // Not found: the address 0, before the bytes.
+    immut position = distance(bytes, found)
+    return if (position < 0) { -1 } else { position }
+}
+
+// The bytes of UTF-8 that continue a character (`10xxxxxx`).
+function isContinuation(bytes: Address, at: int): boolean {
+    immut b: byte = read(bytes, at)
+    return (b & 0xC0) == 0x80
+}
+
+// The bytes of the character that starts at `at`.
+function widthAt(bytes: Address, at: int): int {
+    immut b: byte = read(bytes, at)
+
+    if (b < 0x80) { return 1 }
+
+    if (b < 0xE0) { return 2 }
+
+    if (b < 0xF0) { return 3 }
+
+    return 4
+}
+
+// The code of the character of `width` bytes at `at`.
+function codeAt(bytes: Address, at: int, width: int): int {
+    immut first: byte = read(bytes, at)
+
+    if (width == 1) { return int(first) }
+
+    mut code = int(first & (0x7F >> byte(width)))
+
+    for i in range(1, width) {
+        immut next: byte = read(bytes, at + i)
+        code = (code << 6) | int(next & 0x3F)
+    }
+
+    return code
+}
+
+// White space, as Unicode defines it (`White_Space`).
+function isSpace(code: int): boolean {
+    if (code <= 0x20) { return code == 0x20 or (code >= 0x09 and code <= 0x0D) }
+
+    if (code < 0x85) { return false }
+
+    if (code < 0x1680) { return code == 0x85 or code == 0xA0 }
+
+    if (code >= 0x2000 and code <= 0x200A) { return true }
+
+    return code == 0x1680 or code == 0x2028 or code == 0x2029 or code == 0x202F or code == 0x205F or code == 0x3000
+}

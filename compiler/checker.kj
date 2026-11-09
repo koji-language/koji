@@ -10,6 +10,10 @@ import { kojiModules, stdSource } from 'stdlib.kj'
 // Names of the standard library modules (`import math`).
 immut stdlibModules = ['file', 'http', 'system']
 
+// The methods of strings written in Koji, in std/koji/core.kj: the compiler calls its function of
+// the same name, with the string first.
+export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'endsWith', 'indexOf']
+
 type SymbolKind = {
     ValueSymbol
     // A built-in function, by its qualified name (`print`, `math.sqrt`).
@@ -1144,6 +1148,12 @@ function findInTypes(types: Type[], ids: Set[int]): Option[int] {
 function Checker.importedModule(mut self, path: string): Result[int, string] {
     if (path in stdlibModules) { return Ok(self.stdlibModule(path)) }
 
+    if (path == 'koji:core') {
+        if (not self.state.path.startsWith('std:')) { return Err(self.failure("'koji:core' is only for the standard library")) }
+
+        return self.coreModule()
+    }
+
     if (path == 'koji:unsafe') {
         if (not self.state.path.startsWith('std:')) { return Err(self.failure("'koji:unsafe' is only for the standard library")) }
 
@@ -1585,6 +1595,22 @@ function Checker.isCValue(self, ty: Type): boolean {
     }
 }
 
+// The internal module of the functions that some built-in methods are (std/koji/core.kj, see
+// `coreMethods`): checked the first time one of them is used.
+function Checker.coreModule(mut self): Result[int, string] {
+    match (self.moduleByPath.get('std:core')) {
+        Some(id) => return Ok(id)
+        None => {}
+    }
+
+    immut source = match (stdSource('koji:core')) {
+        Some(text) => text
+        None => return Err(self.failure("cannot find 'koji:core'"))
+    }
+
+    return self.checkModule('std:core', 'koji:core', source)
+}
+
 // `math.abs` and the other functions of `math` for several types of numbers: the compiler checks
 // their arguments and calls the function of std/math.kj for their type (`absInt`...).
 function Checker.overloadMath(mut self, id: int) {
@@ -1607,7 +1633,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -1615,6 +1641,8 @@ function Checker.unsafeModule(mut self): int {
     module.types['Location'] = KnownType(named(self.builtins.location))
     // The `int` of C (32 bits), in `extern` declarations: an `int` in Koji.
     module.types['CInt'] = KnownType(IntType)
+    // The `size_t` of C (unsigned, 64 bits), in `extern` declarations: an `int` in Koji.
+    module.types['CSize'] = KnownType(IntType)
     self.modules.push(module)
     immut id = self.modules.length() - 1
     self.stdlib['koji:unsafe'] = id
@@ -4842,6 +4870,30 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.checkExactly(name, types, [named(b.address)])?
             return Ok(VoidType)
         }
+        // `offset(address, 8)`: the address 8 bytes further.
+        'unsafe.offset' => {
+            self.checkExactly(name, types, [named(b.address), IntType])?
+            return Ok(named(b.address))
+        }
+        // `distance(from, to)`: the bytes from one address to the other.
+        'unsafe.distance' => {
+            self.checkExactly(name, types, [named(b.address), named(b.address)])?
+            return Ok(IntType)
+        }
+        // The UTF-8 bytes of a string, valid while the string lives, and their number.
+        'unsafe.stringBytes' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(named(b.address))
+        }
+        'unsafe.stringSize' => {
+            self.checkExactly(name, types, [s])?
+            return Ok(IntType)
+        }
+        // A new string with a copy of the bytes, which must be UTF-8.
+        'unsafe.newString' => {
+            self.checkExactly(name, types, [named(b.address), IntType])?
+            return Ok(StringType)
+        }
         // A panic at the place of a call, which the function was given.
         'unsafe.panicAt' => {
             self.checkExactly(name, types, [named(b.location), s])?
@@ -4958,6 +5010,8 @@ function Checker.checkMethodCall(mut self, objectType: Type, name: string, args:
 
     match (objectType) {
         StringType => {
+            if (name in coreStringMethods) { self.coreModule()? }
+
             match (name) {
                 'length' => signature = Some({ params: [], returns: IntType })
                 other if (other in ['trim', 'upper', 'lower']) => signature = Some({ params: [], returns: StringType })

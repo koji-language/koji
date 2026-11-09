@@ -157,6 +157,16 @@ void free(void *pointer);
 
 KOJI_INLINE int64_t koji_unsafe_allocate(int64_t bytes) { return (int64_t)(intptr_t)malloc((size_t)bytes); }
 KOJI_INLINE void koji_unsafe_free(int64_t address) { free((void *)(intptr_t)address); }
+KOJI_INLINE int64_t koji_unsafe_offset(int64_t address, int64_t bytes) { return address + bytes; }
+KOJI_INLINE int64_t koji_unsafe_distance(int64_t from, int64_t to) { return to - from; }
+
+/* The bytes of a string, and a new string with a copy of UTF-8 bytes. */
+KOJI_INLINE int64_t koji_unsafe_string_bytes(const KojiString *string) { return (int64_t)(intptr_t)string->bytes; }
+KOJI_INLINE int64_t koji_unsafe_string_size(const KojiString *string) { return (int64_t)string->length; }
+KojiString *koji_string_from_utf8(const char *bytes, size_t length);
+KOJI_INLINE KojiString *koji_unsafe_new_string(int64_t address, int64_t length) {
+    return koji_string_from_utf8((const char *)(intptr_t)address, (size_t)length);
+}
 
 /* `read` and `write` of each type, at `address + offset`: an int or an Address takes 8 bytes, a
    float 8, a boolean 1, a char 4 and a byte 1. */
@@ -298,17 +308,9 @@ KojiRecord *koji_std_int_from_string(const KojiString *string, const KojiRecordT
 KojiRecord *koji_std_float_from_string(const KojiString *string, const KojiRecordType *result);
 int64_t koji_std_float_to_int(double value, const char *location);
 KojiRecord *koji_std_decimal_from_string(const KojiString *string, const KojiRecordType *result);
-KojiString *koji_std_string_trim(const KojiString *string);
 KojiString *koji_std_string_upper(const KojiString *string);
 KojiString *koji_std_string_lower(const KojiString *string);
 bool koji_std_string_is(const KojiString *string, int32_t test);
-KojiList *koji_std_string_split(const KojiString *string, const KojiString *separator,
-                                const KojiElementType *element, const char *location);
-KojiString *koji_std_string_replace(const KojiString *string, const KojiString *old, const KojiString *new_text,
-                                    const char *location);
-bool koji_std_string_starts_with(const KojiString *string, const KojiString *prefix);
-bool koji_std_string_ends_with(const KojiString *string, const KojiString *suffix);
-KojiRecord *koji_std_string_index_of(const KojiString *string, const KojiString *part, const KojiRecordType *option);
 KojiList *koji_std_system_args(const KojiElementType *element);
 KojiRecord *koji_std_system_env(const KojiString *name, const KojiRecordType *option);
 KojiRecord *koji_std_system_executable(const KojiRecordType *option);

@@ -181,9 +181,22 @@ fn stdlib_in_koji() -> String {
     );
     let quoted: Vec<String> = names.iter().map(|name| format!("'{}'", name)).collect();
     text.push_str(&format!("export immut kojiModules = [{}]\n\n", quoted.join(", ")));
-    text.push_str("// The source of the module `name` of the standard library.\nexport function stdSource(name: string): Option[string] {\n");
-    for name in &names {
-        let source = std::fs::read_to_string(format!("std/{}.kj", name)).unwrap();
+    // The internal modules (std/koji/), which programs cannot import: `koji:core` is
+    // std/koji/core.kj, which the compiler calls for some built-in methods.
+    let mut internal: Vec<String> = std::fs::read_dir("std/koji")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "kj"))
+        .map(|path| format!("koji:{}", path.file_stem().unwrap().to_str().unwrap()))
+        .collect();
+    internal.sort();
+    text.push_str("// The source of the module `name` of the standard library (`koji:core` for an internal one).\nexport function stdSource(name: string): Option[string] {\n");
+    for name in names.iter().chain(internal.iter()) {
+        let file = match name.strip_prefix("koji:") {
+            Some(stem) => format!("std/koji/{}.kj", stem),
+            None => format!("std/{}.kj", name),
+        };
+        let source = std::fs::read_to_string(file).unwrap();
         text.push_str(&format!("    if (name == '{}') {{\n        return Some([\n", name));
         for line in source.lines() {
             text.push_str(&format!("            '{}',\n", line.replace('\\', "\\\\").replace('\'', "\\'")));
