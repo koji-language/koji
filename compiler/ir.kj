@@ -19,8 +19,6 @@ export type Ty = {
     RecordTy(id: int)
     MapTy(key: Ty, value: Ty)
     SetTy(item: Ty)
-    // A file of the `file` module.
-    FileTy
     // A closure: its code takes the environment (a record) as a first, hidden argument.
     FunctionTy(params: Ty[], returns: Ty)
     VoidTy
@@ -35,7 +33,6 @@ export function isManaged(ty: Ty): boolean {
         MapTy(_, _) => true
         SetTy(_) => true
         FunctionTy(_, _) => true
-        FileTy => true
         _ => false
     }
 }
@@ -235,7 +232,6 @@ export function tyText(ty: Ty): string {
         RecordTy(id) => `Record(${id})`
         MapTy(key, value) => `Map(${tyText(key)}, ${tyText(value)})`
         SetTy(item) => `Set(${tyText(item)})`
-        FileTy => 'File'
         FunctionTy(params, returns) => `Function([${tysText(params)}], ${tyText(returns)})`
         VoidTy => 'Void'
     }

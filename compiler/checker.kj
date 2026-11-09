@@ -8,7 +8,7 @@ import { decimalLiteral } from 'decimal.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
-immut stdlibModules = ['file', 'http']
+immut stdlibModules = ['http']
 
 // The methods of strings written in Koji, in std/koji/core.kj: the compiler calls its function of
 // the same name, with the string first.
@@ -126,8 +126,6 @@ type Builtins = {
     parseError: int
     // `MathError` of `math` (std/math.kj), once it is imported.
     mathError: int
-    fileError: int
-    fileMode: int
     httpError: int
     // `Address` of `koji:unsafe`: a place in memory.
     address: int
@@ -135,7 +133,6 @@ type Builtins = {
     location: int
     map: int
     set: int
-    file: int
     response: int
 }
 
@@ -303,8 +300,6 @@ function field(name: string, ty: string): BuiltinField {
 
 function builtinSums(): BuiltinSum[] {
     immut text = [field('text', 'string')]
-    immut pathOnly = [field('path', 'string')]
-    immut pathMessage = [field('path', 'string'), field('message', 'string')]
     immut url = [field('url', 'string')]
     immut urlMessage = [field('url', 'string'), field('message', 'string')]
     return [
@@ -314,14 +309,6 @@ function builtinSums(): BuiltinSum[] {
             variants: [variant('Ok', [field('value', 'T0')]), variant('Err', [field('error', 'T1')])]
         },
         { name: 'ParseError', module: None, params: 0, variants: [variant('InvalidNumber', text), variant('OutOfRange', text)] },
-        { name: 'Mode', module: Some('file'), params: 0, variants: [variant('Read', []), variant('Write', []), variant('Append', [])] },
-        {
-            name: 'FileError', module: Some('file'), params: 0,
-            variants: [
-                variant('NotFound', pathOnly), variant('PermissionDenied', pathOnly), variant('IsDirectory', pathOnly),
-                variant('InvalidUtf8', pathOnly), variant('Io', pathMessage)
-            ]
-        },
         {
             name: 'HttpError', module: Some('http'), params: 0,
             variants: [
@@ -335,7 +322,6 @@ function builtinSums(): BuiltinSum[] {
 // The functions of each standard library module.
 function stdlibFunctions(module: string): string[] {
     return match (module) {
-        'file' => ['open', 'list', 'exists', 'createDir', 'remove']
         'http' => ['get', 'post', 'put', 'delete']
         _ => []
     }
@@ -398,20 +384,14 @@ function Checker.create(): Checker {
         table[sumId(ids, sum.name)].kind = SumKind(variants)
     }
 
-    immut fileError = named(sumId(ids, 'FileError'))
     immut result = sumId(ids, 'Result')
-    immut file = addType(mut table, 'File', 0, BuiltinKind([], [
-        { name: 'read', params: [], returns: NamedType(result, [StringType, fileError]) },
-        { name: 'write', params: [StringType], returns: NamedType(result, [VoidType, fileError]) },
-        { name: 'close', params: [], returns: VoidType }
-    ]))
     immut response = addType(mut table, 'Response', 0, BuiltinKind([{ name: 'status', ty: IntType }, { name: 'body', ty: StringType }], []))
     immut address = addType(mut table, 'Address', 0, BuiltinKind([], []))
     immut location = addType(mut table, 'Location', 0, BuiltinKind([], []))
     immut builtins: Builtins = {
         address: address, location: location, option: sumId(ids, 'Option'), result: result,
-        parseError: sumId(ids, 'ParseError'), mathError: -1, fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
-        httpError: sumId(ids, 'HttpError'), map: map, set: set, file: file, response: response
+        parseError: sumId(ids, 'ParseError'), mathError: -1, httpError: sumId(ids, 'HttpError'), map: map, set: set,
+        response: response
     }
     return {
         table: table, builtins: builtins, modules: [], moduleByPath: [:], stdlib: [:], loading: [], loaded: [],
@@ -427,8 +407,6 @@ function Checker.builtinSumId(self, name: string): int {
         'Option' => b.option
         'Result' => b.result
         'ParseError' => b.parseError
-        'FileError' => b.fileError
-        'Mode' => b.fileMode
         _ => b.httpError
     }
 }
@@ -532,7 +510,6 @@ function Checker.stdlibModule(mut self, name: string): int {
 
     // `system.os`: the operating system the program runs on.
     match (name) {
-        'file' => module.types['File'] = KnownType(named(b.file))
         'http' => module.types['Response'] = KnownType(named(b.response))
         _ => {}
     }
@@ -2146,7 +2123,7 @@ function Checker.moveOnlyIn(self, ty: Type, mut visited: Set[int]): boolean {
         None => return false
     }
 
-    if (parts.id == self.builtins.file or self.methods.has(`${parts.id} drop`)) { return true }
+    if (self.methods.has(`${parts.id} drop`)) { return true }
 
     for arg in parts.args {
         if (self.moveOnlyIn(arg, mut visited)) { return true }
@@ -3445,8 +3422,13 @@ function Checker.checkTry(mut self, node: Node, value: Node): Result[Type, strin
     immut kind = if (isResult) { 'a Result' } else { 'an Option' }
 
     if (self.state.returns.length() == 0) {
-        // At the top level of the main file, a failure stops the program.
-        if (self.state.isEntry) { return Ok(inner) }
+        // At the top level of the main file, a failure stops the program, which shows the error
+        // as `print` would.
+        if (self.state.isEntry) {
+            if (isResult and args.length() > 1) { self.tables.templateDisplays[nodeId(node)] = self.displayMethod(args[1]) }
+
+            return Ok(inner)
+        }
 
         return Err(self.failure("'?' at the top level is only allowed in the main file"))
     }
@@ -4085,18 +4067,6 @@ function Checker.checkReceiver(mut self, object: Node, ty: Type, name: string): 
         return Err(self.failure("'drop' cannot be called: it runs by itself when the value goes out of scope"))
     }
 
-    // `f.close()` consumes the file: `f` cannot be used afterwards.
-    if (id == self.builtins.file and name == 'close') {
-        match (unlocated(object).kind) {
-            Name(variable) => return self.moveVariable(object, variable, ty)
-            Member(_, _) => return Err(self.failure("'close' consumes the file: call it on a variable (a file in a field or a list is closed when its owner is dropped)"))
-            IndexNode(_, _) => return Err(self.failure("'close' consumes the file: call it on a variable (a file in a field or a list is closed when its owner is dropped)"))
-            _ => {
-                self.noteTemporary(object, ty)
-                return Ok()
-            }
-        }
-    }
 
     self.noteTemporary(object, ty)
     return Ok()
@@ -4260,7 +4230,13 @@ function Checker.checkArgs(mut self, params: Type[], args: Node[]): Result[Type[
     return self.checkArgsMut(params, [], args, '')
 }
 
-function Checker.checkArgsMut(mut self, params: Type[], modes: string[], args: Node[], callee: string): Result[Type[], string] {
+function Checker.checkArgsMut(mut self, given: Type[], modes: string[], args: Node[], callee: string): Result[Type[], string] {
+    // A last parameter of type `Location` (koji:unsafe) is the place of the call, which the
+    // compiler gives.
+    mut params = given
+
+    if (given.length() == args.length() + 1 and given[given.length() - 1] == named(self.builtins.location)) { params = given[..args.length()] }
+
     if (params.length() != args.length()) {
         return Err(self.failure(argumentCount(callee, params.length(), args.length())))
     }
@@ -4802,22 +4778,6 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             }
 
             return Ok(ByteType)
-        }
-        'file.open' => {
-            self.checkExactly(name, types, [s, named(b.fileMode)])?
-            return Ok(self.resultWith(named(b.file), b.fileError))
-        }
-        'file.list' => {
-            self.checkExactly(name, types, [s])?
-            return Ok(self.resultWith(ListType(StringType), b.fileError))
-        }
-        'file.exists' => {
-            self.checkExactly(name, types, [s])?
-            return Ok(BooleanType)
-        }
-        other if (other == 'file.createDir' or other == 'file.remove') => {
-            self.checkExactly(name, types, [s])?
-            return Ok(self.resultWith(VoidType, b.fileError))
         }
         'math.abs' => {
             self.arity(name, types, 1, 1)?

@@ -7,7 +7,6 @@
 
 mod closure;
 mod decimal;
-mod file;
 mod hash;
 mod http;
 mod list;

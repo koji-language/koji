@@ -3,7 +3,7 @@
 // calls `leave` here (a function of Koji cannot say that it never returns).
 
 import { Address, CInt, CSize, allocate, free, isNull, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
-import { isUtf8, textOf } from 'koji:core'
+import { cString, cText, hasNul, isUtf8, textOf } from 'koji:core'
 
 // The C library.
 extern function strlen(text: Address): CSize
@@ -314,39 +314,6 @@ function systemNamed(): OperatingSystem {
         'Darwin' => MacOS
         _ => Other(name.lower())
     }
-}
-
-// A copy of `text` as a string of C (it has no NUL), to free.
-function cString(text: string): Address {
-    immut size = stringSize(text)
-    immut copy = allocate(size + 1)
-    immut bytes = stringBytes(text)
-
-    for i in range(size) {
-        immut b: byte = read(bytes, i)
-        write(copy, i, b)
-    }
-
-    immut end: byte = 0
-    write(copy, size, end)
-    return copy
-}
-
-// A string of C, as text (invalid UTF-8 becomes U+FFFD).
-function cText(address: Address): string {
-    return textOf(address, strlen(address))
-}
-
-function hasNul(text: string): boolean {
-    immut bytes = stringBytes(text)
-
-    for i in range(stringSize(text)) {
-        immut b: byte = read(bytes, i)
-
-        if (b == 0) { return true }
-    }
-
-    return false
 }
 
 // The int of 32 bits of C at `address + at` (both systems are little-endian).

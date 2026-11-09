@@ -27,7 +27,6 @@ pub extern "C" fn koji_init(argc: i32, argv: *const *const c_char) {
 pub fn error_message(type_name: &str, variant: &str, texts: &[String]) -> Option<String> {
     const ERROR_TYPES: &[&str] = &[
         "ParseError",
-        "FileError",
         "HttpError",
     ];
     if !ERROR_TYPES.contains(&type_name) {
@@ -37,11 +36,6 @@ pub fn error_message(type_name: &str, variant: &str, texts: &[String]) -> Option
     Some(match variant {
         "InvalidNumber" => format!("'{}' is not a valid number", text(0)),
         "OutOfRange" => format!("'{}' is out of range", text(0)),
-        "NotFound" => format!("file '{}' not found", text(0)),
-        "PermissionDenied" => format!("permission denied for '{}'", text(0)),
-        "IsDirectory" => format!("'{}' is a directory", text(0)),
-        "InvalidUtf8" => format!("file '{}' is not valid UTF-8 text", text(0)),
-        "Io" => format!("cannot access '{}': {}", text(0), text(1)),
         "InvalidUrl" => format!("invalid URL '{}'", text(0)),
         "ConnectionFailed" => format!("cannot connect to '{}': {}", text(0), text(1)),
         "Timeout" => format!("the request to '{}' timed out", text(0)),

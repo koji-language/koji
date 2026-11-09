@@ -326,8 +326,6 @@ function Lowerer.isBuiltinNamed(self, id: int, name: string): boolean {
 }
 
 function Lowerer.namedTy(mut self, id: int, args: Type[]): Result[Ty, string] {
-    if (self.isBuiltinNamed(id, 'File')) { return Ok(FileTy) }
-
     // An `Address` of `koji:unsafe` is a number for the generated code.
     if (self.isBuiltinNamed(id, 'Address')) { return Ok(IntTy) }
 
@@ -1405,8 +1403,6 @@ function Lowerer.droppable(self, ty: Ty, mut visiting: Set[int]): boolean {
         ListTy(item) => return self.droppable(item, mut visiting)
         SetTy(item) => return self.droppable(item, mut visiting)
         MapTy(key, value) => return self.droppable(key, mut visiting) or self.droppable(value, mut visiting)
-        // Dropping a file closes it.
-        FileTy => return true
         _ => return false
     }
 }
@@ -1514,7 +1510,6 @@ function Lowerer.dropFunction(mut self, ty: Ty): Result[Option[int], string] {
             immut list = self.unary(mut builder, 'MapKeys', LocalOp(value), ListTy(item))
             self.dropItems(mut builder, list, item, runner)
         }
-        FileTy => builder.emit(StdCallIns(None, 'koji_std_file_close', [ValueArg(LocalOp(value))]))
         MapTy(key, item) => {
             match (self.dropFunction(key)?) {
                 Some(runner) => {
@@ -2670,7 +2665,6 @@ function Lowerer.textOf(mut self, mut builder: Builder, value: Operand, ty: Ty):
         MapTy(_, _) => 'MapToStr'
         SetTy(_) => 'MapToStr'
         FunctionTy(_, _) => 'ClosureToStr'
-        FileTy => 'FileToStr'
         VoidTy => return self.string('void')
     }
     return self.unary(mut builder, op, value, StrTy)
@@ -3637,6 +3631,9 @@ function Lowerer.callFunction(mut self, mut builder: Builder, key: string, typeA
         }
     }
 
+    // The place of the call, for a last parameter of type `Location` (the checker allowed it).
+    if (values.length() == signature.params.length() - 1) { values.push(LocationOp(`${self.file}:${self.line}`)) }
+
     immut dest = if (signature.returns != VoidTy) { Some(builder.local(signature.returns, None)) } else { None }
     builder.emit(CallIns(dest, signature.id, values, writebacks, self.line))
 
@@ -3677,6 +3674,33 @@ function Lowerer.shown(mut self, mut builder: Builder, node: Node, method: Optio
     immut ty = self.typeIn(builder, node)?
     immut value = self.value(mut builder, node)?
     return Ok(self.textOf(mut builder, value, ty))
+}
+
+// The text of `value` with the `display` method of its type, when the checker found one.
+function Lowerer.displayed(mut self, mut builder: Builder, value: Operand, ty: Ty, method: Option[Option[MethodRef]]): Result[Operand, string] {
+    immut found = match (method) {
+        Some(Some(found)) => found
+        _ => return Ok(self.textOf(mut builder, value, ty))
+    }
+    immut key = self.methodKey(found)
+    mut typeArgs: Ty[] = []
+
+    match (ty) {
+        RecordTy(record) => {
+            if (self.genericFunctions.has(key)) {
+                match (self.recordTypes.get(record)) {
+                    Some(recordType) => typeArgs = recordType.args
+                    None => {}
+                }
+            }
+        }
+        _ => {}
+    }
+
+    immut signature = self.callee(key, typeArgs)?
+    immut dest = builder.local(StrTy, None)
+    builder.emit(CallIns(Some(dest), signature.id, [value], [], self.line))
+    return Ok(LocalOp(dest))
 }
 
 function displayAt(displays: Option[MethodRef][], index: int): Option[MethodRef] {
@@ -3961,30 +3985,6 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             immut body = if (method >= 2) { self.stdValue(mut builder, args, 1, StrTy)? } else { NullArg }
             arguments = [ModeArg(method), url, body, self.stdResult(builder, call)?]
         }
-        'file.open' => {
-            runner = 'koji_std_file_open'
-            immut path = self.stdValue(mut builder, args, 0, StrTy)?
-            immut modeType = self.typeIn(builder, args[1])?
-            immut mode = self.stdValue(mut builder, args, 1, modeType)?
-            arguments = [path, mode, self.stdResult(builder, call)?]
-        }
-        'file.list' => {
-            runner = 'koji_std_file_list'
-            immut path = self.stdValue(mut builder, args, 0, StrTy)?
-            arguments = [path, ElementArg(StrTy), self.stdResult(builder, call)?]
-        }
-        'file.remove' => {
-            runner = 'koji_std_file_remove'
-            arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
-        }
-        'file.exists' => {
-            runner = 'koji_std_file_exists'
-            arguments = [self.stdValue(mut builder, args, 0, StrTy)?]
-        }
-        'file.createDir' => {
-            runner = 'koji_std_file_create_dir'
-            arguments = [self.stdValue(mut builder, args, 0, StrTy)?, self.stdResult(builder, call)?]
-        }
         // It never returns: `leave` of std/system.kj ends the program.
         'system.exit' => {
             self.kojiCall(mut builder, 'std:system', 'leave', args)?
@@ -4102,24 +4102,6 @@ function Lowerer.builtinMethod(mut self, mut builder: Builder, call: Node, objec
                     return Ok(Some(self.unary(mut builder, 'StrLength', value, IntTy)))
                 }
                 _ => {}
-            }
-        }
-        FileTy => {
-            if (name in ['read', 'write', 'close']) {
-                immut value = self.value(mut builder, object)?
-                immut fileLine = self.line
-
-                if (name == 'close') { return self.std(mut builder, call, 'koji_std_file_close', [ValueArg(value)]) }
-
-                immut result = self.recordOf(builder, call)?
-                mut arguments = [ValueArg(value)]
-
-                if (name == 'write') { arguments.push(ValueArg(self.valueOf(mut builder, args[0], StrTy)?)) }
-
-                arguments.push(RecordArg(result))
-                arguments.push(LocationArg(fileLine))
-                immut runner = if (name == 'read') { 'koji_std_file_read' } else { 'koji_std_file_write' }
-                return self.std(mut builder, call, runner, arguments)
             }
         }
         CharTy => {
@@ -4520,7 +4502,7 @@ function Lowerer.lowerTry(mut self, mut builder: Builder, node: Node, value: Nod
 
     if (builder.isMain) {
         immut message = match (error) {
-            Some(operand) => self.textOf(mut builder, operand, errorType)
+            Some(operand) => self.displayed(mut builder, operand, errorType, self.tables.templateDisplays.get(nodeId(node)))?
             None => self.string('None')
         }
         builder.emit(FailIns(message, self.line))

@@ -1,0 +1,319 @@
+// The `file` module: files and directories (see doc/standard-library/file.md). A `File` is
+// move-only: it is closed when it is dropped, and `close()` drops it.
+
+import system
+import { Address, CInt, CSize, Location, allocate, free, isNull, newString, offset, panicAt, read, stringBytes, stringSize, write } from 'koji:unsafe'
+import { cString, cText, hasNul, isUtf8, textOf } from 'koji:core'
+
+// The C library. A file is opened with `fopen` (which takes no variadic arguments, unlike
+// `open`), then read and written through its descriptor, without the buffers of `FILE`.
+extern function fopen(path: Address, mode: Address): Address
+extern function fclose(file: Address): CInt
+extern function fileno(file: Address): CInt
+// `read` and `write` of C, with one buffer (`read` and `write` are those of `koji:unsafe` here).
+extern function readv(fd: CInt, buffers: Address, count: CInt): int
+extern function writev(fd: CInt, buffers: Address, count: CInt): int
+extern function opendir(path: Address): Address
+extern function readdir(directory: Address): Address
+extern function closedir(directory: Address): CInt
+extern function access(path: Address, mode: CInt): CInt
+extern function unlink(path: Address): CInt
+extern function mkdir(path: Address, mode: CInt): CInt
+extern function strlen(text: Address): CSize
+extern function strerror(code: CInt): Address
+extern function realloc(memory: Address, size: CSize): Address
+extern function koji_system_errno(): CInt
+
+export type Mode = {
+    // Read.
+    Read
+    // Write (overwrites the content).
+    Write
+    // Write at the end.
+    Append
+}
+
+export type FileError = {
+    NotFound(path: string)
+    PermissionDenied(path: string)
+    IsDirectory(path: string)
+    // The content is not valid text.
+    InvalidUtf8(path: string)
+    // Any other failure of the operating system.
+    Io(path: string, message: string)
+}
+
+function FileError.display(self): string {
+    return match (self) {
+        NotFound(path) => `file '${path}' not found`
+        PermissionDenied(path) => `permission denied for '${path}'`
+        IsDirectory(path) => `'${path}' is a directory`
+        InvalidUtf8(path) => `file '${path}' is not valid UTF-8 text`
+        Io(path, message) => `cannot access '${path}': ${message}`
+    }
+}
+
+// An open file: its `FILE` of C, with the path and the mode it was opened with.
+export opaque type File = {
+    handle: Address
+    path: string
+    mode: Mode
+}
+
+function File.display(self): string {
+    return `<file '${self.path}'>`
+}
+
+function File.drop(mut self) {
+    fclose(self.handle)
+}
+
+// Opens the file at `path` in `mode`.
+export function open(path: string, mode: Mode): Result[File, FileError] {
+    if (hasNul(path)) { return Err(invalidPath(path)) }
+
+    immut cPath = cString(path)
+    // `e`: the descriptor is not given to the programs this one runs.
+    immut cMode = cString(match (mode) {
+        Read => 're'
+        Write => 'we'
+        Append => 'ae'
+    })
+    immut handle = fopen(cPath, cMode)
+    immut code = koji_system_errno()
+    free(cPath)
+    free(cMode)
+
+    if (isNull(handle)) { return Err(failure(path, code)) }
+
+    return Ok({ handle: handle, path: path, mode: mode })
+}
+
+// The whole content of the file, from where it is (the start, after `open`).
+function File.read(self, here: Location): Result[string, FileError] {
+    if (self.mode != Read) { panicAt(here, `file '${self.path}' was not opened for reading (Read)`) }
+
+    immut fd = fileno(self.handle)
+    mut capacity = 8192
+    mut buffer = allocate(capacity)
+    mut size = 0
+
+    while (true) {
+        if (capacity - size < 4096) {
+            capacity *= 2
+            buffer = realloc(buffer, capacity)
+        }
+
+        immut got = transfer(false, fd, offset(buffer, size), capacity - size)
+
+        if (got < 0) {
+            immut code = koji_system_errno()
+
+            // EINTR: a signal interrupted the read.
+            if (code == 4) { continue }
+
+            free(buffer)
+            return Err(failure(self.path, code))
+        }
+
+        if (got == 0) { break }
+
+        size += got
+    }
+
+    if (not isUtf8(buffer, size)) {
+        free(buffer)
+        return Err(InvalidUtf8(self.path))
+    }
+
+    immut text = newString(buffer, size)
+    free(buffer)
+    return Ok(text)
+}
+
+// Writes `text` to the file.
+function File.write(self, text: string, here: Location): Result[void, FileError] {
+    if (self.mode == Read) { panicAt(here, `file '${self.path}' was opened for reading; use Write or Append to write`) }
+
+    immut fd = fileno(self.handle)
+    immut bytes = stringBytes(text)
+    immut size = stringSize(text)
+    mut done = 0
+
+    while (done < size) {
+        immut put = transfer(true, fd, offset(bytes, done), size - done)
+
+        if (put < 0) {
+            immut code = koji_system_errno()
+
+            if (code == 4) { continue }
+
+            return Err(failure(self.path, code))
+        }
+
+        done += put
+    }
+
+    return Ok()
+}
+
+// Closes the file (dropping it closes it).
+function File.close(take self) {}
+
+// The names of the entries of the directory at `path`, sorted.
+export function list(path: string): Result[string[], FileError] {
+    if (hasNul(path)) { return Err(invalidPath(path)) }
+
+    immut cPath = cString(path)
+    immut directory = opendir(cPath)
+    immut code = koji_system_errno()
+    free(cPath)
+
+    if (isNull(directory)) { return Err(failure(path, code)) }
+
+    // Where `d_name` is in a `struct dirent`.
+    immut nameAt = match (system.os) {
+        MacOS => 21
+        _ => 19
+    }
+    mut names: string[] = []
+
+    while (true) {
+        immut entry = readdir(directory)
+
+        if (isNull(entry)) { break }
+
+        immut name = offset(entry, nameAt)
+        immut text = textOf(name, strlen(name))
+
+        if (text != '.' and text != '..') { names.push(text) }
+    }
+
+    closedir(directory)
+    names.sort()
+    return Ok(names)
+}
+
+// Whether a file or a directory is at `path`.
+export function exists(path: string): boolean {
+    if (hasNul(path)) { return false }
+
+    return reachable(path)
+}
+
+// Removes the file at `path` (not a directory).
+export function remove(path: string): Result[void, FileError] {
+    if (hasNul(path)) { return Err(invalidPath(path)) }
+
+    immut cPath = cString(path)
+    immut removed = unlink(cPath) == 0
+    immut code = koji_system_errno()
+    free(cPath)
+
+    if (not removed) { return Err(failure(path, code)) }
+
+    return Ok()
+}
+
+// Creates the directory at `path`, and the directories missing before it.
+export function createDir(path: string): Result[void, FileError] {
+    if (hasNul(path)) { return Err(invalidPath(path)) }
+
+    return createAll(path)
+}
+
+// As Rust's `create_dir_all`: a directory that already exists is no error.
+function createAll(path: string): Result[void, FileError] {
+    if (path == '') { return Ok() }
+
+    immut code = makeDirectory(path)
+
+    if (code == 0) { return Ok() }
+
+    // ENOENT: the directory before it is missing.
+    if (code != 2) {
+        if (isDirectory(path)) { return Ok() }
+
+        return Err(failure(path, code))
+    }
+
+    createAll(parentOf(path))?
+    immut again = makeDirectory(path)
+
+    if (again == 0 or isDirectory(path)) { return Ok() }
+
+    return Err(failure(path, again))
+}
+
+// `mkdir`: 0, or the error of the system.
+function makeDirectory(path: string): int {
+    immut cPath = cString(path)
+    immut made = mkdir(cPath, 0x1FF) == 0
+    immut code = koji_system_errno()
+    free(cPath)
+    return if (made) { 0 } else { code }
+}
+
+// The path without its last part (`a/b/` gives `a`, `a` gives `''` and `/a` gives `/`).
+function parentOf(path: string): string {
+    immut bytes = stringBytes(path)
+    mut end = stringSize(path)
+
+    while (end > 1 and byteAt(bytes, end - 1) == 0x2F) {
+        end -= 1
+    }
+
+    while (end > 0 and byteAt(bytes, end - 1) != 0x2F) {
+        end -= 1
+    }
+
+    while (end > 1 and byteAt(bytes, end - 1) == 0x2F) {
+        end -= 1
+    }
+
+    return newString(bytes, end)
+}
+
+function isDirectory(path: string): boolean {
+    return reachable(`${path}/.`)
+}
+
+// `access(path, F_OK)`.
+function reachable(path: string): boolean {
+    immut cPath = cString(path)
+    immut found = access(cPath, 0) == 0
+    free(cPath)
+    return found
+}
+
+// The error of the system for `path` (`errno`).
+function failure(path: string, code: int): FileError {
+    // ENOENT; EPERM and EACCES; EISDIR.
+    if (code == 2) { return NotFound(path) }
+
+    if (code == 1 or code == 13) { return PermissionDenied(path) }
+
+    if (code == 21) { return IsDirectory(path) }
+
+    return Io(path, `${cText(strerror(code))} (os error ${code})`)
+}
+
+// A path with a NUL, which the system cannot take.
+function invalidPath(path: string): FileError {
+    return Io(path, 'file name contained an unexpected NUL byte')
+}
+
+// `readv` or `writev` of one buffer: the bytes read or written, or -1.
+function transfer(writing: boolean, fd: int, at: Address, size: int): int {
+    immut vector = allocate(16)
+    write(vector, 0, at)
+    write(vector, 8, size)
+    immut done = if (writing) { writev(fd, vector, 1) } else { readv(fd, vector, 1) }
+    free(vector)
+    return done
+}
+
+function byteAt(bytes: Address, at: int): int {
+    immut b: byte = read(bytes, at)
+    return int(b)
+}

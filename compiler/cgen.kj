@@ -53,7 +53,6 @@ function cType(ty: Ty): string {
         MapTy(_, _) => 'KojiMap *'
         SetTy(_) => 'KojiMap *'
         FunctionTy(_, _) => 'KojiClosure *'
-        FileTy => 'KojiFile *'
         VoidTy => 'void'
     }
 }
@@ -67,7 +66,6 @@ function kind(ty: Ty): Option[string] {
         MapTy(_, _) => Some('map')
         SetTy(_) => Some('map')
         FunctionTy(_, _) => Some('closure')
-        FileTy => Some('file')
         _ => None
     }
 }
@@ -126,7 +124,6 @@ function elementType(ty: Ty): string {
         MapTy(_, _) => '&koji_element_map'
         SetTy(_) => '&koji_element_map'
         FunctionTy(_, _) => '&koji_element_closure'
-        FileTy => '&koji_element_file'
         VoidTy => '&koji_element_void'
     }
 }
@@ -202,6 +199,10 @@ function Generator.line(mut self, text: string) {
     self.out.push(text)
 }
 
+// The functions of directories of macOS on x86-64 whose symbols end with `$INODE64` (for the
+// `struct dirent` of 64-bit inodes, the only one on arm64).
+immut inode64 = ['opendir', 'readdir', 'closedir', 'rewinddir', 'telldir', 'seekdir']
+
 // The C source of `program`, line by line.
 export function generate(program: IrProgram): string[] {
     mut generator: Generator = { program: program, out: [], file: '', escapedFile: '', borrowed: borrowedParams(program), constants: constantGlobals(program), smalls: smallFunctions(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [], charLocal: -1, charValue: '' }
@@ -223,11 +224,17 @@ function Generator.generateProgram(mut self) {
         self.line(`static KojiString *koji_s${id} __attribute__((used)); // ${stringDebug(strings[id])}`)
     }
 
-    // The C functions that `extern` declarations name.
+    // The C functions that `extern` declarations name, with the types of Koji (an address is a
+    // `const void *`, which gcc and clang let pass for the built-in functions they know).
+    if (self.program.externs.length() > 0) { self.line('KOJI_EXTERNS_BEGIN') }
+
     for found in self.program.externs {
         immut params = if (found.params.length() == 0) { 'void' } else { found.params.join(', ') }
-        self.line(`${found.returns} ${found.name}(${params});`)
+        immut symbol = if (found.name in inode64) { ` KOJI_INODE64(${found.name})` } else { '' }
+        self.line(`${found.returns} ${found.name}(${params})${symbol};`)
     }
+
+    if (self.program.externs.length() > 0) { self.line('KOJI_EXTERNS_END') }
 
     self.records()
     immut globals = self.program.globals
@@ -709,7 +716,6 @@ function unaryExpression(op: string, value: string, location: string): string {
         'FloatToStr' => `koji_string_from_float(${value})`
         'BoolToStr' => `koji_string_from_bool(${value})`
         'CharToStr' => `koji_string_from_char(${value})`
-        'FileToStr' => `koji_file_repr(${value})`
         'CharRepr' => `koji_char_repr(${value})`
         'CharCode' => `(int64_t)${value}`
         'ListToStr' => `koji_list_repr(${value})`

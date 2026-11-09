@@ -1,6 +1,6 @@
 # file
 
-The `file` module provides functionality for working with files.
+The `file` module provides functionality for working with files. It is written in Koji (`std/file.kj`), on the C library of the system: `File` is an opaque type with a `drop` method, which closes it.
 
 ## Functions
 
