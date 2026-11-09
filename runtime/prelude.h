@@ -408,22 +408,29 @@ uint64_t koji_record_hash(const KojiRecord *record);
 
 typedef struct KojiMap KojiMap;
 
-KojiMap *koji_map_new(const KojiElementType *key, const KojiElementType *value);
-void koji_map_retain(const KojiMap *map);
-void koji_map_release(KojiMap *map);
-int64_t koji_map_length(const KojiMap *map);
-const void *koji_map_get(const KojiMap *map, const void *key, const char *location);
-const void *koji_map_find(const KojiMap *map, const void *key);
-bool koji_map_contains(const KojiMap *map, const void *key);
-void *koji_map_slot(KojiMap **variable, const void *key, const char *location);
-void koji_map_set(KojiMap **variable, const void *key, const void *value);
-bool koji_map_remove(KojiMap **variable, const void *key, void *out);
-KojiList *koji_map_keys(const KojiMap *map);
-KojiList *koji_map_values(const KojiMap *map);
-KojiMap *koji_set_from_list(const KojiList *list);
-bool koji_map_equal(const KojiMap *a, const KojiMap *b);
-uint64_t koji_map_hash(const KojiMap *map);
-KojiString *koji_map_repr(const KojiMap *map);
+/* Maps and sets (std/koji/map.kj): the count of references is the first word of a map, and the
+   number of its entries the fifth. */
+void *koji_map_new(const void *key, const void *value);
+void koji_map_free(const void *map);
+KOJI_INLINE void koji_map_retain(const KojiMap *map) {
+    if (map) ++*(size_t *)map;
+}
+KOJI_INLINE void koji_map_release(KojiMap *map) {
+    if (map && --*(size_t *)map == 0) koji_map_free(map);
+}
+KOJI_INLINE int64_t koji_map_length(const KojiMap *map) { return ((const int64_t *)map)[4]; }
+void *koji_map_get(const void *map, const void *key, const char *location);
+void *koji_map_find(const void *map, const void *key);
+bool koji_map_contains(const void *map, const void *key);
+void *koji_map_slot(const void *variable, const void *key, const char *location);
+void koji_map_set(const void *variable, const void *key, const void *value);
+bool koji_map_remove(const void *variable, const void *key, const void *out);
+void *koji_map_keys(const void *map);
+void *koji_map_values(const void *map);
+void *koji_set_from_list(const void *list);
+bool koji_map_equal(const void *a, const void *b);
+int64_t koji_map_hash(const void *map);
+KojiString *koji_map_repr(const void *map);
 
 typedef struct KojiClosure KojiClosure;
 

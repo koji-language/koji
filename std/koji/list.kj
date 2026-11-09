@@ -58,7 +58,7 @@ function slotOf(list: Address, index: int): Address {
 }
 
 // A new list without items, with room for `count` of them.
-function newList(element: Address, count: int): Address {
+export function newList(element: Address, count: int): Address {
     immut stride = if (koji_element_size(element) > 8) { 2 } else { 1 }
     immut list = koji_memory_take(listWords)
     immut words = count * stride

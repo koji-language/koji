@@ -1,4 +1,4 @@
-//! The layout of lists, for the runtime in Rust that still makes and sorts them (maps, `sortBy`):
+//! The layout of lists, for the runtime in Rust that still sorts them (`sortBy`):
 //! lists are in std/koji/list.kj. A reference-counted array shared between copies (value
 //! semantics with copy-on-write).
 //!
