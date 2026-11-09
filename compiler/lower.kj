@@ -292,6 +292,7 @@ function Lowerer.ty(mut self, ty: Type): Result[Ty, string] {
         NeverType => return Ok(VoidTy)
         ListType(item) => return Ok(ListTy(self.ty(item)?))
         CharType => return Ok(CharTy)
+        ByteType => return Ok(ByteTy)
         FunctionType(params, returns) => {
             mut types: Ty[] = []
 
@@ -457,6 +458,7 @@ function Lowerer.typeExpr(mut self, written: TypeExpr): Result[Ty, string] {
                 'boolean' => return Ok(BoolTy)
                 'string' => return Ok(StrTy)
                 'char' => return Ok(CharTy)
+                'byte' => return Ok(ByteTy)
                 'void' => return Ok(VoidTy)
                 _ => {}
             }
@@ -527,6 +529,7 @@ function Lowerer.checkedType(mut self, written: TypeExpr): Result[Type, string] 
                 'float' => return Ok(FloatType)
                 'decimal' => return Ok(DecimalType)
                 'boolean' => return Ok(BooleanType)
+                'byte' => return Ok(ByteType)
                 'string' => return Ok(StringType)
                 _ => {}
             }
@@ -659,6 +662,7 @@ function importOf(node: Node): Option[Import] {
 // The functions of the prelude that read and write a value of `ty` in memory (`koji_unsafe_read_int`).
 function memoryName(ty: Ty): string {
     return match (ty) {
+        ByteTy => 'byte'
         FloatTy => 'float'
         BoolTy => 'bool'
         CharTy => 'char'
@@ -2617,6 +2621,7 @@ function Lowerer.textOf(mut self, mut builder: Builder, value: Operand, ty: Ty):
         DecimalTy => 'DecimalToStr'
         BoolTy => 'BoolToStr'
         CharTy => 'CharToStr'
+        ByteTy => 'ByteToStr'
         ListTy(_) => 'ListToStr'
         RecordTy(_) => 'RecordToStr'
         MapTy(_, _) => 'MapToStr'
@@ -2927,7 +2932,7 @@ function Lowerer.compound(mut self, mut builder: Builder, node: Node): Result[Op
                     _ => ''
                 }
                 'not' => if (ty == BoolTy) { 'Not' } else { '' }
-                _ => if (ty == IntTy) { 'BitNot' } else { '' }
+                _ => if (ty == IntTy) { 'BitNot' } else { if (ty == ByteTy) { 'ByteNot' } else { '' } }
             }
 
             if (lowered == '') { return Err(self.unsupported('this operator')) }
@@ -3170,6 +3175,31 @@ function Lowerer.arithmetic(mut self, mut builder: Builder, op: string, left: Op
                     _ => return Err(self.unsupported(`'${op}' on decimals`))
                 }
                 resultType = DecimalTy
+            }
+        }
+
+        return Ok({ value: self.binary(mut builder, lowered, first, second, resultType), ty: resultType })
+    }
+
+    if (leftType == ByteTy and rightType == ByteTy) {
+        match (comparison) {
+            Some(name) => lowered = `ByteCompare(${name})`
+            None => {
+                lowered = match (op) {
+                    '+' => 'ByteAdd'
+                    '-' => 'ByteSub'
+                    '*' => 'ByteMul'
+                    '/' => 'ByteDiv'
+                    '%' => 'ByteRem'
+                    '**' => 'BytePow'
+                    '&' => 'ByteAnd'
+                    '|' => 'ByteOr'
+                    '^' => 'ByteXor'
+                    '<<' => 'ByteShiftLeft'
+                    '>>' => 'ByteShiftRight'
+                    _ => return Err(self.unsupported(`'${op}' on bytes`))
+                }
+                resultType = ByteTy
             }
         }
 
@@ -3597,6 +3627,17 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
 
             if ((name == 'int' and ty == IntTy) or (name == 'float' and ty == FloatTy) or (name == 'decimal' and ty == DecimalTy)) { return Ok(Some(value)) }
 
+            // A byte is an int first.
+            if (ty == ByteTy) {
+                immut number = self.unary(mut builder, 'ByteToInt', value, IntTy)
+
+                return match (name) {
+                    'int' => Ok(Some(number))
+                    'float' => Ok(Some(self.unary(mut builder, 'IntToFloat', number, FloatTy)))
+                    _ => Ok(Some(self.unary(mut builder, 'IntToDecimal', number, DecimalTy)))
+                }
+            }
+
             if (name == 'decimal' and ty == IntTy) { return Ok(Some(self.unary(mut builder, 'IntToDecimal', value, DecimalTy))) }
 
             if (name == 'decimal' and ty == FloatTy) { return Ok(Some(self.unary(mut builder, 'FloatToDecimal', value, DecimalTy))) }
@@ -3654,6 +3695,15 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
             builder.terminate(GotoT(loop.head))
             builder.switchTo(loop.exit)
             return Ok(Some(LocalOp(list)))
+        }
+        // `byte(n)`: panics outside 0 to 255.
+        'byte' if (args.length() == 1) => {
+            immut ty = self.typeIn(builder, args[0])?
+            immut value = self.value(mut builder, args[0])?
+
+            if (ty == ByteTy) { return Ok(Some(value)) }
+
+            return Ok(Some(self.unary(mut builder, 'IntToByte', value, ByteTy)))
         }
         'char' if (args.length() == 1) => {
             immut code = self.valueOf(mut builder, args[0], IntTy)?
@@ -3801,15 +3851,15 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?]
         }
         // `read` and `write`: the size is that of the type (an `Address` is an int here).
-        other if (other == 'koji:unsafe.read' or other == 'koji:unsafe.readByte') => {
+        'koji:unsafe.read' => {
             immut ty = self.typeIn(builder, call)?
-            runner = if (name == 'readByte') { 'koji_unsafe_read_byte' } else { `koji_unsafe_read_${memoryName(ty)}` }
+            runner = `koji_unsafe_read_${memoryName(ty)}`
             immut address = self.stdValue(mut builder, args, 0, IntTy)?
             arguments = [address, self.stdValue(mut builder, args, 1, IntTy)?]
         }
-        other if (other == 'koji:unsafe.write' or other == 'koji:unsafe.writeByte') => {
-            immut ty = if (name == 'writeByte') { IntTy } else { self.typeIn(builder, args[2])? }
-            runner = if (name == 'writeByte') { 'koji_unsafe_write_byte' } else { `koji_unsafe_write_${memoryName(ty)}` }
+        'koji:unsafe.write' => {
+            immut ty = self.typeIn(builder, args[2])?
+            runner = `koji_unsafe_write_${memoryName(ty)}`
             immut address = self.stdValue(mut builder, args, 0, IntTy)?
             immut offset = self.stdValue(mut builder, args, 1, IntTy)?
             arguments = [address, offset, self.stdValue(mut builder, args, 2, ty)?]

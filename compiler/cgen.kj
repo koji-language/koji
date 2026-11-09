@@ -46,6 +46,7 @@ function cType(ty: Ty): string {
         DecimalTy => 'KojiDecimal'
         BoolTy => 'bool'
         CharTy => 'uint32_t'
+        ByteTy => 'uint8_t'
         StrTy => 'KojiString *'
         ListTy(_) => 'KojiList *'
         RecordTy(_) => 'KojiRecord *'
@@ -118,6 +119,7 @@ function elementType(ty: Ty): string {
         DecimalTy => '&koji_element_decimal'
         BoolTy => '&koji_element_bool'
         CharTy => '&koji_element_char'
+        ByteTy => '&koji_element_byte'
         StrTy => '&koji_element_string'
         ListTy(_) => '&koji_element_list'
         RecordTy(_) => '&koji_element_record'
@@ -687,6 +689,10 @@ function unaryExpression(op: string, value: string, location: string): string {
         'FloatNeg' => `-(${value})`
         'Not' => `!(${value})`
         'BitNot' => `~(${value})`
+        'ByteNot' => `(uint8_t)~(${value})`
+        'ByteToInt' => `(int64_t)(${value})`
+        'IntToByte' => `koji_int_to_byte(${value}, ${location})`
+        'ByteToStr' => `koji_string_from_int((int64_t)(${value}))`
         'IntToFloat' => `(double)${value}`
         'DecimalNeg' => `koji_decimal_neg(${value})`
         'IntToDecimal' => `koji_decimal_from_int(${value})`
@@ -776,7 +782,19 @@ function Generator.binary(self, op: string, left: string, right: string, line: i
         'DecimalPow' => `koji_decimal_pow(${left}, ${right}, ${location})`
         'DecimalPower' => `koji_decimal_power(${left}, ${right}, ${location})`
         'DecimalCompare' => `(koji_decimal_compare(${left}, ${right}) ${symbol(parts.comparison)} 0)`
-        name if (name in ['IntCompare', 'FloatCompare', 'BoolCompare', 'CharCompare']) => `(${left} ${symbol(parts.comparison)} ${right})`
+        name if (name in ['IntCompare', 'FloatCompare', 'BoolCompare', 'CharCompare', 'ByteCompare']) => `(${left} ${symbol(parts.comparison)} ${right})`
+        // Bytes: the arithmetic panics outside 0 to 255; the bits stay in 8 bits.
+        'ByteAdd' => `koji_byte_add(${left}, ${right}, ${location})`
+        'ByteSub' => `koji_byte_sub(${left}, ${right}, ${location})`
+        'ByteMul' => `koji_byte_mul(${left}, ${right}, ${location})`
+        'ByteDiv' => `koji_byte_div(${left}, ${right}, ${location})`
+        'ByteRem' => `koji_byte_rem(${left}, ${right}, ${location})`
+        'BytePow' => `koji_byte_pow(${left}, ${right}, ${location})`
+        'ByteAnd' => `(uint8_t)(${left} & ${right})`
+        'ByteOr' => `(uint8_t)(${left} | ${right})`
+        'ByteXor' => `(uint8_t)(${left} ^ ${right})`
+        'ByteShiftLeft' => `koji_byte_shift_left(${left}, ${right}, ${location})`
+        'ByteShiftRight' => `koji_byte_shift_right(${left}, ${right}, ${location})`
         'StrCompare' => {
             match (parts.comparison) {
                 'Equal' => `koji_string_equal(${left}, ${right})`
@@ -1099,7 +1117,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             immut c = cType(ty)
             self.line(`    { ${c} fresh = ${share(ty, operand(value))}; KojiList **variable = ${self.target(list, line)}; KojiList *items = *variable;`)
             // A bool or a char does not fill its word: the rest is zero, as the runtime writes it.
-            immut clear = if (ty == BoolTy or ty == CharTy) { 'items->items[items->length] = 0; ' } else { '' }
+            immut clear = if (ty == BoolTy or ty == CharTy or ty == ByteTy) { 'items->items[items->length] = 0; ' } else { '' }
             self.line(`    if (items->references == 1 && (items->length + 1) * ${words(ty)} <= items->capacity) { ${clear}*(${c} *)&items->items[items->length * ${words(ty)}] = fresh; items->length++; }`)
 
             match (release(ty)) {
@@ -1317,6 +1335,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                         DecimalTy => 'decimal'
                         BoolTy => 'bool'
                         CharTy => 'char'
+                        ByteTy => 'byte'
                         StrTy => 'string'
                         ListTy(_) => 'list'
                         RecordTy(_) => 'record'
@@ -1494,6 +1513,7 @@ function Generator.stackEqual(self, routine: IrFunction, other: string, local: i
             IntTy => tests.push(`${mine} == ${theirs}`)
             BoolTy => tests.push(`${mine} == ${theirs}`)
             CharTy => tests.push(`${mine} == ${theirs}`)
+            ByteTy => tests.push(`${mine} == ${theirs}`)
             StrTy => tests.push(`koji_string_equal(${mine}, ${theirs})`)
             VoidTy => {}
             _ => return None

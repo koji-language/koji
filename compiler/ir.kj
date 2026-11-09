@@ -11,6 +11,8 @@ export type Ty = {
     BoolTy
     // A Unicode character (its code point).
     CharTy
+    // An unsigned integer of 8 bits.
+    ByteTy
     StrTy
     ListTy(item: Ty)
     // A value of a declared type (`IrProgram.records`).
@@ -222,6 +224,7 @@ export function tyText(ty: Ty): string {
         DecimalTy => 'Decimal'
         BoolTy => 'Bool'
         CharTy => 'Char'
+        ByteTy => 'Byte'
         StrTy => 'Str'
         ListTy(item) => `List(${tyText(item)})`
         RecordTy(id) => `Record(${id})`

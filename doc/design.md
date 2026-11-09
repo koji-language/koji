@@ -297,6 +297,14 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 
 **Alternatives**: the runtime in Rust (as it was), which needs cargo and libraries of others; the runtime in C, which is not Koji either; TLS from the system (OpenSSL), as Python or Node do, which depends on a library in C.
 
+### `byte`
+
+**Decision**: `byte` is a primitive type, an unsigned integer of 8 bits (0 to 255), for binary data (`byte[]`) and memory. An integer literal is a byte where a byte is expected; bytes go with bytes, and convert with `byte(n)` (which panics outside 0 to 255) and `int(b)`. Arithmetic panics when the result is not a byte, like that of ints; the bits stay in 8 bits.
+
+**Why**: binary data (files, the network, memory) is made of bytes, and Koji had no type for them: an `int` is 8 bytes. As `char` is not a number but a character, `byte` is a number of its own size.
+
+**Alternatives**: a byte as an `int` from 0 to 255 (no type: `readByte` and `writeByte` in `koji:unsafe`, and lists of ints 8 times as large); arithmetic that wraps around (`255 + 1` is `0`), which hides mistakes, as for ints.
+
 ### The epoch of Koji is 0000-01-01
 
 **Decision**: a timestamp counts the seconds since 0000-01-01 00:00:00 UTC, in the proleptic Gregorian calendar (where the year before 1 is 0, as in ISO 8601): `time.now()`, `datetime.format` and `datetime.parse` use it. A timestamp of Unix (since 1970-01-01), which files, HTTP, most APIs and other languages use, is 62,167,219,200 seconds (719,528 days) less.
@@ -307,7 +315,7 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 
 ### `koji:unsafe`: the lowest level of the standard library
 
-**Decision**: a module of the standard library may import `koji:unsafe`, which has `Address` (a place in memory, of its own type), `CInt` (the 32-bit `int` of C, for `extern` declarations only: an `int` in Koji), `allocate`, `free`, `read` and `write` (of an `int`, a `float`, a `boolean`, a `char` or an `Address`, with its size: `immut n: int = read(address, 8)`, the type read being the one expected), and `readByte` and `writeByte` (a byte has no type in Koji); and it may declare `extern function name(...): type`, a function of the system's C library, with `int`, `CInt`, `float`, `boolean` and `Address` values only. Other programs can use neither.
+**Decision**: a module of the standard library may import `koji:unsafe`, which has `Address` (a place in memory, of its own type), `CInt` (the 32-bit `int` of C, for `extern` declarations only: an `int` in Koji), `allocate`, `free`, `read` and `write` (of an `int`, a `float`, a `boolean`, a `char`, a `byte` or an `Address`, with its size: `immut n: int = read(address, 8)`, the type read being the one expected); and it may declare `extern function name(...): type`, a function of the system's C library, with `int`, `CInt`, `float`, `boolean` and `Address` values only. Other programs can use neither.
 
 **Why**: the standard library is written in Koji, but some of it must reach the system (clocks, files, processes) or memory; this keeps that part small, visible and out of the users' sight, as `unsafe` does in Go.
 

@@ -8,7 +8,7 @@ These functions are available in every file, without `import`.
 | `printError(values...)` | Like `print`, on the standard error output |
 | `input(prompt)` | Reads a line typed by the user |
 | `range(...)` | A list of consecutive integers |
-| `int(x)`, `float(x)`, `decimal(x)`, `string(x)`, `char(code)` | Conversions |
+| `int(x)`, `float(x)`, `decimal(x)`, `string(x)`, `char(code)`, `byte(n)` | Conversions |
 | `panic(message)` | Stops the program |
 
 ## `print`
@@ -66,6 +66,7 @@ In a `for` loop, the numbers are produced one at a time: `for i in range(1000000
 | `decimal(x)` | Converts to a decimal  | `decimal(2) / 4 → 0.5` |
 | `string(x)` | Converts to a string    | `string(0) → '0'` |
 | `char(code)` | The character with that code | `char(65) → Some('A')` |
+| `byte(n)` | The byte of an `int` (panics outside 0 to 255) | `byte(200) → 200` |
 
 `int` truncates toward zero. A float or a decimal too large for an `int` panics (see [Primitive Types](primitive-types.md)). `float(x)` of a text also reads a float in hexadecimal (`float('0x1.8p1')`).
 

@@ -97,6 +97,23 @@ print(name[0] == 'K') // true
 
 Characters can be compared (`<`, `>`), by their code. They are not numbers: `'a' + 1` is an error; use `c.code()` and `char(code)`.
 
+## Bytes
+
+-   `byte`: an unsigned integer of 8 bits, from 0 to 255: the unit of binary data (`byte[]`).
+
+```koji
+immut low: byte = 200 // an integer literal is a byte where a byte is expected (256 is an error)
+mut data: byte[] = [1, 2, 255]
+
+print(low + 55, low & 15, ~low) // 255 8 55
+print(byte(17), int(low) * 1000) // 17 200000
+print(data, 255 in data) // [1, 2, 255] true
+```
+
+-   Bytes go with bytes: `low + 1` is a byte (the literal takes the type of the other side), but a byte and an `int` variable do not mix; convert one with `byte(n)` or `int(b)`.
+-   Arithmetic (`+`, `-`, `*`, `/`, `%`, `**`) panics when the result is not a byte (`byte overflow`), like that of ints; the bits (`&`, `|`, `^`, `~`, `<<`, `>>`) stay in 8 bits, and a shift by more than 7 panics. A byte has no `-`.
+-   `byte(n)` converts an `int` and panics outside 0 to 255; `int(b)`, `float(b)` and `decimal(b)` convert back. A byte is shown as its number.
+
 ## Boolean
 
 -   `boolean`: logical values (`true`, `false`).

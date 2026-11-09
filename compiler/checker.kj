@@ -457,7 +457,7 @@ function Checker.builtinSumId(self, name: string): int {
 function Checker.prelude(self): Scope {
     mut scope = emptyScope()
 
-    for name in ['print', 'printError', 'input', 'range', 'int', 'float', 'decimal', 'string', 'char', 'panic'] {
+    for name in ['print', 'printError', 'input', 'range', 'int', 'float', 'decimal', 'string', 'char', 'byte', 'panic'] {
         scope.vars[name] = builtinSymbol(name)
     }
 
@@ -466,6 +466,7 @@ function Checker.prelude(self): Scope {
     scope.types['decimal'] = KnownType(DecimalType)
     scope.types['string'] = KnownType(StringType)
     scope.types['char'] = KnownType(CharType)
+    scope.types['byte'] = KnownType(ByteType)
     scope.types['boolean'] = KnownType(BooleanType)
     scope.types['bool'] = KnownType(BooleanType)
     scope.types['void'] = KnownType(VoidType)
@@ -1563,7 +1564,7 @@ function Checker.declareExtern(mut self, name: string, params: Param[], returns:
 
 // The values `read` and `write` take from memory and put there, with their sizes.
 function Checker.isMemoryValue(self, ty: Type): boolean {
-    return ty == CharType or self.isCValue(ty)
+    return ty == CharType or ty == ByteType or self.isCValue(ty)
 }
 
 function Checker.isCValue(self, ty: Type): boolean {
@@ -1585,7 +1586,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'readByte', 'writeByte'] {
+    for member in ['allocate', 'free', 'read', 'write'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -1897,6 +1898,7 @@ function Checker.satisfies(mut self, ty: Type, constraint: int): boolean {
         DecimalType => true
         StringType => true
         CharType => true
+        ByteType => true
         UnknownType => true
         NeverType => true
         NamedType(id, _) => self.table[id].kind == ParamKind(orderable)
@@ -3030,7 +3032,14 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
             self.state.line = line
             return self.checkExpression(statement, expected)
         }
-        IntLiteral(_) => return Ok(IntType)
+        // `255` is a byte where a byte is expected.
+        IntLiteral(value) => {
+            if (expected != Some(ByteType)) { return Ok(IntType) }
+
+            if (value < 0 or value > 255) { return Err(self.failure(`${value} is not a byte (0 to 255)`)) }
+
+            return Ok(ByteType)
+        }
         // `1.5` is a decimal, exactly as written; a float is converted (`float(1.5)`) or written as
         // it is stored (`0x1.8p0`).
         DecimalLiteral(text) => {
@@ -3168,6 +3177,8 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
 
             if (op == '~' and ty == IntType) { return Ok(IntType) }
 
+            if (op == '~' and ty == ByteType) { return Ok(ByteType) }
+
             return Err(self.failure(`operator '${op}' cannot be applied to ${self.show(ty)}`))
         }
         Binary(op, left, right) => return self.checkBinary(op, left, right)
@@ -3302,6 +3313,21 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
     }
 }
 
+// What `x in collection` looks for: the item of a list or a set, the key of a map.
+function Checker.containedItem(self, collection: Type): Option[Type] {
+    match (collection) {
+        ListType(item) => return Some(item)
+        _ => {}
+    }
+
+    match (self.mapParts(collection)) {
+        Some(parts) => return Some(parts.key)
+        None => {}
+    }
+
+    return self.setItem(collection)
+}
+
 function Checker.checkBinary(mut self, op: string, left: Node, right: Node): Result[Type, string] {
     if (op == 'is') {
         // Values have no identity: `is` only checks a variant.
@@ -3319,10 +3345,19 @@ function Checker.checkBinary(mut self, op: string, left: Node, right: Node): Res
         StringNode(_) => true
         _ => false
     }
+    // In `1 + b`, the literal is a byte when the other side is one.
+    immut leftIsInt = match (unlocated(left).kind) {
+        IntLiteral(_) => true
+        _ => false
+    }
 
-    if (leftIsString) {
+    if (leftIsString or leftIsInt) {
         rightType = self.checkValue(right, None)?
-        immut wanted = if (rightType == CharType) { Some(CharType) } else { None }
+        mut wanted = if (rightType == CharType or rightType == ByteType) { Some(rightType) } else { None }
+
+        // `255 in bytes`: the item of a list, a set or a map of bytes.
+        if (leftIsInt and op == 'in' and self.containedItem(rightType) == Some(ByteType)) { wanted = Some(ByteType) }
+
         leftType = self.checkValue(left, wanted)?
     } else {
         leftType = self.checkValue(left, None)?
@@ -3334,6 +3369,7 @@ function Checker.checkBinary(mut self, op: string, left: Node, right: Node): Res
         // string is not a char. In `result == Ok()`, the other side tells the type arguments.
         immut wanted = match (leftType) {
             CharType => if (op != 'in') { Some(CharType) } else { None }
+            ByteType => Some(ByteType)
             ListType(_) => if (rightIsList) { Some(leftType) } else { None }
             NamedType(_, _) => Some(leftType)
             _ => None
@@ -3587,6 +3623,8 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
     // A float and a decimal never mix: one is converted explicitly.
     immut numeric = isNumeric(left) and isNumeric(right) and not mixesFloatAndDecimal(left, right)
     immut bothInt = left == IntType and right == IntType
+    // Bytes only with bytes (a literal is one where the other side is).
+    immut bothBytes = left == ByteType and right == ByteType
     // The type of `int`, `float` and `decimal` operands together.
     immut fraction = if (left == DecimalType or right == DecimalType) { DecimalType } else { FloatType }
     // A float and a decimal are converted explicitly.
@@ -3596,6 +3634,8 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
     match (op) {
         '+' => {
             if (bothInt) { return Ok(IntType) }
+
+            if (bothBytes) { return Ok(ByteType) }
 
             if (numeric) { return Ok(fraction) }
 
@@ -3622,6 +3662,8 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
         op if (op in ['-', '*', '/', '%', '**']) => {
             if (bothInt) { return Ok(IntType) }
 
+            if (bothBytes) { return Ok(ByteType) }
+
             if (numeric) { return Ok(fraction) }
 
             if (op == '*' and ((left == StringType and right == IntType) or (left == IntType and right == StringType))) {
@@ -3631,7 +3673,7 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
             return cannot
         }
         op if (op in ['>', '>=', '<', '<=']) => {
-            if (numeric or (left == StringType and right == StringType) or (left == CharType and right == CharType)) {
+            if (numeric or bothBytes or (left == StringType and right == StringType) or (left == CharType and right == CharType)) {
                 return Ok(BooleanType)
             }
 
@@ -3695,6 +3737,8 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
         }
         _ => {
             if (bothInt) { return Ok(IntType) }
+
+            if (bothBytes) { return Ok(ByteType) }
 
             return cannot
         }
@@ -4717,6 +4761,16 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.checkExactly(name, types, [IntType])?
             return Ok(self.optionOf(CharType))
         }
+        // `byte(200)`: panics outside 0 to 255.
+        'byte' => {
+            self.arity(name, types, 1, 1)?
+
+            if (types[0] != IntType and types[0] != ByteType and types[0] != UnknownType) {
+                return Err(self.failure(`cannot convert ${self.show(types[0])} to byte (only an int)`))
+            }
+
+            return Ok(ByteType)
+        }
         'file.open' => {
             self.checkExactly(name, types, [s, named(b.fileMode)])?
             return Ok(self.resultWith(named(b.file), b.fileError))
@@ -4772,7 +4826,7 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
 
             return match (expected) {
                 Some(ty) if (self.isMemoryValue(ty)) => Ok(ty)
-                _ => Err(self.failure("'read' needs the type it reads, one of int, float, boolean, char and Address: annotate the variable ('immut n: int = read(address, 0)')"))
+                _ => Err(self.failure("'read' needs the type it reads, one of int, float, boolean, char, byte and Address: annotate the variable ('immut n: int = read(address, 0)')"))
             }
         }
         'unsafe.write' => {
@@ -4781,18 +4835,9 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.expectArg(name, 1, IntType, types[1])?
 
             if (not self.isMemoryValue(types[2])) {
-                return Err(self.failure(`argument 3 of 'write' must be int, float, boolean, char or Address, found ${self.show(types[2])}`))
+                return Err(self.failure(`argument 3 of 'write' must be int, float, boolean, char, byte or Address, found ${self.show(types[2])}`))
             }
 
-            return Ok(VoidType)
-        }
-        // A byte has no type in Koji: it is an int from 0 to 255.
-        'unsafe.readByte' => {
-            self.checkExactly(name, types, [named(b.address), IntType])?
-            return Ok(IntType)
-        }
-        'unsafe.writeByte' => {
-            self.checkExactly(name, types, [named(b.address), IntType, IntType])?
             return Ok(VoidType)
         }
         other if (other in ['math.floor', 'math.ceil', 'math.round']) => {
@@ -4846,6 +4891,7 @@ function Checker.conversion(self, name: string, types: Type[], target: Type): Re
 
     return match (types[0]) {
         IntType => Ok(target)
+        ByteType => Ok(target)
         FloatType => Ok(target)
         DecimalType => Ok(target)
         BooleanType => if (target == DecimalType) { Err(self.failure('cannot convert boolean to decimal')) } else { Ok(target) }

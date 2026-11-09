@@ -1399,6 +1399,44 @@ fn stdlib_time() {
 }
 
 #[test]
+fn bytes() {
+    // An unsigned integer of 8 bits: literals become bytes where bytes are expected, arithmetic
+    // panics outside 0 to 255, bits stay in 8 bits.
+    let source = r#"
+immut a: byte = 200
+immut b: byte = 55
+immut c = a + b
+mut data: byte[] = [1, 2, 255]
+data.push(a)
+data[0] = 7
+data.sort()
+immut counts: Map[byte, int] = [a: 1, b: 2]
+print(c, a - b, a / b, a % b, a & b, a | b, a ^ b, ~a, b << 2, a >> 3, a > b, a == 200, 3 + b)
+print(data, data.debug(), counts, counts[b], int(a) + 1000, float(a), decimal(b), byte(17), `${a}!`, string(b).length())
+mut bytes: byte[] = []
+
+for i in range(256) {
+    bytes.push(byte(i))
+}
+
+print(bytes.length(), bytes[255], 255 in bytes, byte(2) ** byte(7))
+"#;
+    assert_eq!(
+        run(source),
+        "255 145 3 35 0 255 255 55 220 25 true true 58\n\
+         [2, 7, 200, 255] [2, 7, 200, 255] [200: 1, 55: 2] 2 1200 0x1.9p7 55 17 200! 2\n\
+         256 255 true 128\n"
+    );
+    assert_error("immut x: byte = 256", "256 is not a byte (0 to 255)");
+    assert_error("immut x: byte = 1\nimmut n = 5\nprint(x + n)", "operator '+' cannot be applied to byte and int");
+    assert_error("immut x: byte = 1\nprint(-x)", "operator '-' cannot be applied to byte");
+    assert_error("print(byte(1.5))", "cannot convert decimal to byte (only an int)");
+    assert!(run_err("immut x: byte = 200\nprint(x + 100)").contains("byte overflow"));
+    assert!(run_err("print(byte(300))").contains("the value is not a byte (0 to 255)"));
+    assert!(run_err("immut x: byte = 2\nprint(x << 9)").contains("shift of a byte out of range (0 to 7)"));
+}
+
+#[test]
 fn unsafe_is_for_the_standard_library() {
     // `koji:unsafe` and `extern` functions are the lowest level of the standard library: other
     // programs cannot use them.

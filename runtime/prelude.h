@@ -159,7 +159,7 @@ KOJI_INLINE int64_t koji_unsafe_allocate(int64_t bytes) { return (int64_t)(intpt
 KOJI_INLINE void koji_unsafe_free(int64_t address) { free((void *)(intptr_t)address); }
 
 /* `read` and `write` of each type, at `address + offset`: an int or an Address takes 8 bytes, a
-   float 8, a boolean 1 and a char 4. */
+   float 8, a boolean 1, a char 4 and a byte 1. */
 #define KOJI_UNSAFE_MEMORY(name, type)                                                             \
     KOJI_INLINE type koji_unsafe_read_##name(int64_t address, int64_t offset) {                    \
         type value;                                                                                \
@@ -173,14 +173,7 @@ KOJI_UNSAFE_MEMORY(int, int64_t)
 KOJI_UNSAFE_MEMORY(float, double)
 KOJI_UNSAFE_MEMORY(bool, bool)
 KOJI_UNSAFE_MEMORY(char, uint32_t)
-
-KOJI_INLINE int64_t koji_unsafe_read_byte(int64_t address, int64_t offset) {
-    return *(const uint8_t *)(intptr_t)(address + offset);
-}
-
-KOJI_INLINE void koji_unsafe_write_byte(int64_t address, int64_t offset, int64_t value) {
-    *(uint8_t *)(intptr_t)(address + offset) = (uint8_t)value;
-}
+KOJI_UNSAFE_MEMORY(byte, uint8_t)
 
 typedef struct KojiRecord KojiRecord;
 
@@ -533,6 +526,16 @@ static const KojiElementType koji_element_char = {
     sizeof(uint32_t), NULL, NULL, koji_repr_char, koji_equal_char, koji_compare_char, koji_hash_char,
     koji_display_char};
 
+static KojiString *koji_repr_byte(const void *slot) { return koji_string_from_int(*(const uint8_t *)slot); }
+static bool koji_equal_byte(const void *a, const void *b) { return *(const uint8_t *)a == *(const uint8_t *)b; }
+static int32_t koji_compare_byte(const void *a, const void *b) {
+    uint8_t x = *(const uint8_t *)a, y = *(const uint8_t *)b;
+    return koji_order(x < y, x > y);
+}
+static uint64_t koji_hash_byte(const void *slot) { return *(const uint8_t *)slot; }
+static const KojiElementType koji_element_byte = {
+    sizeof(uint8_t), NULL, NULL, koji_repr_byte, koji_equal_byte, koji_compare_byte, koji_hash_byte, NULL};
+
 static void koji_retain_string(const void *slot) { koji_string_retain(*(KojiString *const *)slot); }
 static void koji_release_string(const void *slot) { koji_string_release(*(KojiString *const *)slot); }
 static KojiString *koji_repr_string(const void *slot) { return koji_string_repr(*(KojiString *const *)slot); }
@@ -618,6 +621,7 @@ KOJI_BEFORE(float, double)
 KOJI_BEFORE(decimal, KojiDecimal)
 KOJI_BEFORE(bool, bool)
 KOJI_BEFORE(char, uint32_t)
+KOJI_BEFORE(byte, uint8_t)
 KOJI_BEFORE(string, KojiString *)
 KOJI_BEFORE(list, KojiList *)
 KOJI_BEFORE(record, KojiRecord *)
@@ -669,6 +673,47 @@ KOJI_INLINE int64_t koji_shift_left(int64_t a, int64_t b, const char *location) 
 KOJI_INLINE int64_t koji_shift_right(int64_t a, int64_t b, const char *location) {
     if (b < 0 || b >= 64) koji_panic_shift(location, b);
     return a >> b;
+}
+
+/* Bytes: 0 to 255. Arithmetic outside of it panics, like that of ints; a shift keeps 8 bits. */
+KOJI_INLINE uint8_t koji_byte_check(int64_t result, const char *location) {
+    if (result < 0 || result > 255) koji_panic(location, "byte overflow");
+    return (uint8_t)result;
+}
+
+KOJI_INLINE uint8_t koji_int_to_byte(int64_t value, const char *location) {
+    if (value < 0 || value > 255) koji_panic(location, "the value is not a byte (0 to 255)");
+    return (uint8_t)value;
+}
+
+KOJI_INLINE uint8_t koji_byte_add(uint8_t a, uint8_t b, const char *location) { return koji_byte_check((int64_t)a + b, location); }
+KOJI_INLINE uint8_t koji_byte_sub(uint8_t a, uint8_t b, const char *location) { return koji_byte_check((int64_t)a - b, location); }
+KOJI_INLINE uint8_t koji_byte_mul(uint8_t a, uint8_t b, const char *location) { return koji_byte_check((int64_t)a * b, location); }
+
+KOJI_INLINE uint8_t koji_byte_div(uint8_t a, uint8_t b, const char *location) {
+    if (b == 0) koji_panic(location, "division by zero");
+    return a / b;
+}
+
+KOJI_INLINE uint8_t koji_byte_rem(uint8_t a, uint8_t b, const char *location) {
+    if (b == 0) koji_panic(location, "division by zero");
+    return a % b;
+}
+
+KOJI_INLINE uint8_t koji_byte_pow(uint8_t base, uint8_t exponent, const char *location) {
+    int64_t result = 1;
+    for (uint8_t i = 0; i < exponent; i++) result = koji_byte_check(result * base, location);
+    return (uint8_t)result;
+}
+
+KOJI_INLINE uint8_t koji_byte_shift_left(uint8_t a, uint8_t b, const char *location) {
+    if (b >= 8) koji_panic(location, "shift of a byte out of range (0 to 7)");
+    return (uint8_t)(a << b);
+}
+
+KOJI_INLINE uint8_t koji_byte_shift_right(uint8_t a, uint8_t b, const char *location) {
+    if (b >= 8) koji_panic(location, "shift of a byte out of range (0 to 7)");
+    return (uint8_t)(a >> b);
 }
 
 /* float has no infinity: a result that does not fit is a representation limit. */

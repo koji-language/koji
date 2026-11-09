@@ -9,6 +9,8 @@ export type Type = {
     StringType
     // A Unicode character (a code point).
     CharType
+    // An unsigned integer of 8 bits: 0 to 255.
+    ByteType
     BooleanType
     VoidType
     // Not known yet (`None`, `[]`): compatible with anything and refined on later assignments.
@@ -322,6 +324,7 @@ export function display(table: TypeInfo[], ty: Type): string {
         StringType => 'string'
         BooleanType => 'boolean'
         CharType => 'char'
+        ByteType => 'byte'
         VoidType => 'void'
         UnknownType => '?'
         NeverType => 'never'
