@@ -4,7 +4,7 @@
 
 import math
 import system
-import { Address, CInt, allocate, free, readInt, writeInt } from 'koji:unsafe'
+import { Address, CInt, allocate, free, read, write } from 'koji:unsafe'
 
 // `int clock_gettime(clockid_t clock, struct timespec *time)` and
 // `int nanosleep(const struct timespec *request, struct timespec *remaining)`: a `timespec` is two
@@ -12,7 +12,8 @@ import { Address, CInt, allocate, free, readInt, writeInt } from 'koji:unsafe'
 extern function clock_gettime(clock: CInt, time: Address): CInt
 extern function nanosleep(request: Address, remaining: Address): CInt
 
-// The seconds from 0000-01-01 to 1970-01-01, the epoch of Unix (719,528 days).
+// The seconds from 0000-01-01 to 1970-01-01, the epoch of Unix and of the clock of the system
+// (719,528 days).
 immut unixEpoch = 62167219200
 
 // The current time: the seconds since 0000-01-01 00:00:00 UTC. It follows the clock of the
@@ -31,16 +32,6 @@ export function monotonic(): decimal {
     return clock(id)
 }
 
-// The timestamp of Koji of a timestamp of Unix (seconds since 1970-01-01 00:00:00 UTC).
-export function fromUnix(seconds: decimal): decimal {
-    return seconds + unixEpoch
-}
-
-// The timestamp of Unix of a timestamp of Koji.
-export function toUnix(timestamp: decimal): decimal {
-    return timestamp - unixEpoch
-}
-
 // Pauses for `seconds` (nothing for zero or less).
 export function sleep(seconds: decimal) {
     if (seconds <= 0) { return }
@@ -49,13 +40,15 @@ export function sleep(seconds: decimal) {
     immut nanoseconds = math.floor((seconds - whole) * 1000000000)
     immut request = allocate(16)
     immut remaining = allocate(16)
-    writeInt(request, 0, whole)
-    writeInt(request, 8, nanoseconds)
+    write(request, 0, whole)
+    write(request, 8, nanoseconds)
 
     // Interrupted by a signal, it goes on with what remains.
     while (nanosleep(request, remaining) != 0) {
-        writeInt(request, 0, readInt(remaining, 0))
-        writeInt(request, 8, readInt(remaining, 8))
+        immut seconds: int = read(remaining, 0)
+        immut rest: int = read(remaining, 8)
+        write(request, 0, seconds)
+        write(request, 8, rest)
     }
 
     free(request)
@@ -66,8 +59,8 @@ export function sleep(seconds: decimal) {
 function clock(id: int): decimal {
     immut time = allocate(16)
     clock_gettime(id, time)
-    immut seconds = readInt(time, 0)
-    immut nanoseconds = readInt(time, 8)
+    immut seconds: int = read(time, 0)
+    immut nanoseconds: int = read(time, 8)
     free(time)
     return decimal(seconds) + decimal(nanoseconds) / 1000000000
 }

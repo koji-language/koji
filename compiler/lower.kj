@@ -656,6 +656,16 @@ function importOf(node: Node): Option[Import] {
 
 // Declarations
 
+// The functions of the prelude that read and write a value of `ty` in memory (`koji_unsafe_read_int`).
+function memoryName(ty: Ty): string {
+    return match (ty) {
+        FloatTy => 'float'
+        BoolTy => 'bool'
+        CharTy => 'char'
+        _ => 'int'
+    }
+}
+
 // The C type of a parameter or result of an `extern` function, from its written type.
 function cTypeOf(written: Option[TypeExpr]): string {
     return match (written) {
@@ -3790,16 +3800,19 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             runner = 'koji_unsafe_free'
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?]
         }
-        other if (other == 'koji:unsafe.readInt' or other == 'koji:unsafe.readByte') => {
-            runner = if (name == 'readInt') { 'koji_unsafe_read_int' } else { 'koji_unsafe_read_byte' }
+        // `read` and `write`: the size is that of the type (an `Address` is an int here).
+        other if (other == 'koji:unsafe.read' or other == 'koji:unsafe.readByte') => {
+            immut ty = self.typeIn(builder, call)?
+            runner = if (name == 'readByte') { 'koji_unsafe_read_byte' } else { `koji_unsafe_read_${memoryName(ty)}` }
             immut address = self.stdValue(mut builder, args, 0, IntTy)?
             arguments = [address, self.stdValue(mut builder, args, 1, IntTy)?]
         }
-        other if (other == 'koji:unsafe.writeInt' or other == 'koji:unsafe.writeByte') => {
-            runner = if (name == 'writeInt') { 'koji_unsafe_write_int' } else { 'koji_unsafe_write_byte' }
+        other if (other == 'koji:unsafe.write' or other == 'koji:unsafe.writeByte') => {
+            immut ty = if (name == 'writeByte') { IntTy } else { self.typeIn(builder, args[2])? }
+            runner = if (name == 'writeByte') { 'koji_unsafe_write_byte' } else { `koji_unsafe_write_${memoryName(ty)}` }
             immut address = self.stdValue(mut builder, args, 0, IntTy)?
             immut offset = self.stdValue(mut builder, args, 1, IntTy)?
-            arguments = [address, offset, self.stdValue(mut builder, args, 2, IntTy)?]
+            arguments = [address, offset, self.stdValue(mut builder, args, 2, ty)?]
         }
         other if (other in ['http.get', 'http.delete', 'http.post', 'http.put']) => {
             runner = 'koji_std_http_request'

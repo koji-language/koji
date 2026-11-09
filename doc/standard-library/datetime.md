@@ -41,7 +41,7 @@ The `datetime` module provides utilities to work with current date and time, and
     }
     ```
 
-Dates and times are in UTC. A timestamp counts the seconds since 0000-01-01 00:00:00 UTC, the epoch of Koji (see [time](time.md)): `format(0, 'yyyy-mm-dd')` is `0000-01-01`; `time.fromUnix` and `time.toUnix` convert the timestamps of Unix.
+Dates and times are in UTC. A timestamp counts the seconds since 0000-01-01 00:00:00 UTC, the epoch of Koji (see [time](time.md)): `format(0, 'yyyy-mm-dd')` is `0000-01-01`, and a timestamp of Unix plus `62167219200` is one of Koji.
 
 ## Example
 

@@ -158,15 +158,21 @@ void free(void *pointer);
 KOJI_INLINE int64_t koji_unsafe_allocate(int64_t bytes) { return (int64_t)(intptr_t)malloc((size_t)bytes); }
 KOJI_INLINE void koji_unsafe_free(int64_t address) { free((void *)(intptr_t)address); }
 
-KOJI_INLINE int64_t koji_unsafe_read_int(int64_t address, int64_t offset) {
-    int64_t value;
-    __builtin_memcpy(&value, (const void *)(intptr_t)(address + offset), sizeof value);
-    return value;
-}
-
-KOJI_INLINE void koji_unsafe_write_int(int64_t address, int64_t offset, int64_t value) {
-    __builtin_memcpy((void *)(intptr_t)(address + offset), &value, sizeof value);
-}
+/* `read` and `write` of each type, at `address + offset`: an int or an Address takes 8 bytes, a
+   float 8, a boolean 1 and a char 4. */
+#define KOJI_UNSAFE_MEMORY(name, type)                                                             \
+    KOJI_INLINE type koji_unsafe_read_##name(int64_t address, int64_t offset) {                    \
+        type value;                                                                                \
+        __builtin_memcpy(&value, (const void *)(intptr_t)(address + offset), sizeof value);        \
+        return value;                                                                              \
+    }                                                                                              \
+    KOJI_INLINE void koji_unsafe_write_##name(int64_t address, int64_t offset, type value) {       \
+        __builtin_memcpy((void *)(intptr_t)(address + offset), &value, sizeof value);              \
+    }
+KOJI_UNSAFE_MEMORY(int, int64_t)
+KOJI_UNSAFE_MEMORY(float, double)
+KOJI_UNSAFE_MEMORY(bool, bool)
+KOJI_UNSAFE_MEMORY(char, uint32_t)
 
 KOJI_INLINE int64_t koji_unsafe_read_byte(int64_t address, int64_t offset) {
     return *(const uint8_t *)(intptr_t)(address + offset);

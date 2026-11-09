@@ -1561,6 +1561,11 @@ function Checker.declareExtern(mut self, name: string, params: Param[], returns:
     return self.declare(name, valueSymbol(ty, true))
 }
 
+// The values `read` and `write` take from memory and put there, with their sizes.
+function Checker.isMemoryValue(self, ty: Type): boolean {
+    return ty == CharType or self.isCValue(ty)
+}
+
 function Checker.isCValue(self, ty: Type): boolean {
     return match (ty) {
         IntType => true
@@ -1580,7 +1585,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'readInt', 'writeInt', 'readByte', 'writeByte'] {
+    for member in ['allocate', 'free', 'read', 'write', 'readByte', 'writeByte'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -3906,7 +3911,7 @@ function Checker.checkCall(mut self, node: Node, callee: Node, args: Node[], exp
             match (self.lookup(name)) {
                 Some(symbol) => {
                     match (symbol.kind) {
-                        BuiltinSymbol(builtin) => return self.checkBuiltinCall(builtin, args)
+                        BuiltinSymbol(builtin) => return self.checkBuiltinCall(builtin, args, expected)
                         ConstructorSymbol(id, variantName) => return self.checkConstructor(id, variantName, args, expected)
                         ValueSymbol => {
                             if (symbol.generics > 0) {
@@ -4656,7 +4661,7 @@ function Checker.noteConversion(mut self, node: Node, wanted: Type, actual: Type
 }
 
 // Checks a call of a built-in function and returns its result type.
-function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[Type, string] {
+function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected: Option[Type]): Result[Type, string] {
     immut types = self.argTypes(args)?
 
     // `float(1e400)`: a literal too large for a float.
@@ -4761,11 +4766,32 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
             self.checkExactly(name, types, [named(b.address)])?
             return Ok(VoidType)
         }
-        other if (other == 'unsafe.readInt' or other == 'unsafe.readByte') => {
+        // `immut n: int = read(address, 8)`: the type read, and so its size, is the one expected.
+        'unsafe.read' => {
+            self.checkExactly(name, types, [named(b.address), IntType])?
+
+            return match (expected) {
+                Some(ty) if (self.isMemoryValue(ty)) => Ok(ty)
+                _ => Err(self.failure("'read' needs the type it reads, one of int, float, boolean, char and Address: annotate the variable ('immut n: int = read(address, 0)')"))
+            }
+        }
+        'unsafe.write' => {
+            self.arity(name, types, 3, 3)?
+            self.expectArg(name, 0, named(b.address), types[0])?
+            self.expectArg(name, 1, IntType, types[1])?
+
+            if (not self.isMemoryValue(types[2])) {
+                return Err(self.failure(`argument 3 of 'write' must be int, float, boolean, char or Address, found ${self.show(types[2])}`))
+            }
+
+            return Ok(VoidType)
+        }
+        // A byte has no type in Koji: it is an int from 0 to 255.
+        'unsafe.readByte' => {
             self.checkExactly(name, types, [named(b.address), IntType])?
             return Ok(IntType)
         }
-        other if (other == 'unsafe.writeInt' or other == 'unsafe.writeByte') => {
+        'unsafe.writeByte' => {
             self.checkExactly(name, types, [named(b.address), IntType, IntType])?
             return Ok(VoidType)
         }
@@ -4838,7 +4864,7 @@ function Checker.checkMethodCall(mut self, objectType: Type, name: string, args:
             }
 
             match (symbol.kind) {
-                BuiltinSymbol(builtin) => return self.checkBuiltinCall(builtin, args)
+                BuiltinSymbol(builtin) => return self.checkBuiltinCall(builtin, args, expected)
                 ConstructorSymbol(typeId, variantName) => return self.checkConstructor(typeId, variantName, args, expected)
                 ValueSymbol => {
                     if (symbol.generics > 0) {

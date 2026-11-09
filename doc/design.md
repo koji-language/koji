@@ -299,15 +299,15 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 
 ### The epoch of Koji is 0000-01-01
 
-**Decision**: a timestamp counts the seconds since 0000-01-01 00:00:00 UTC, in the proleptic Gregorian calendar (where the year before 1 is 0, as in ISO 8601): `time.now()`, `datetime.format` and `datetime.parse` use it. `time.fromUnix` and `time.toUnix` convert the timestamps of Unix (since 1970-01-01), which files, HTTP, most APIs and other languages use: the difference is 62,167,219,200 seconds (719,528 days).
+**Decision**: a timestamp counts the seconds since 0000-01-01 00:00:00 UTC, in the proleptic Gregorian calendar (where the year before 1 is 0, as in ISO 8601): `time.now()`, `datetime.format` and `datetime.parse` use it. A timestamp of Unix (since 1970-01-01), which files, HTTP, most APIs and other languages use, is 62,167,219,200 seconds (719,528 days) less.
 
 **Why**: the dates of history, from the year 0, have positive timestamps, and the epoch is the start of the calendar rather than an arbitrary date.
 
-**Alternatives**: the epoch of Unix, which nearly every system uses, so that a timestamp needs no conversion when it is exchanged (the cost of this decision: every exchange converts, explicitly); a date type without a timestamp.
+**Alternatives**: the epoch of Unix, which nearly every system uses, so that a timestamp needs no conversion when it is exchanged (the cost of this decision: every exchange adds or subtracts the difference); a date type without a timestamp.
 
 ### `koji:unsafe`: the lowest level of the standard library
 
-**Decision**: a module of the standard library may import `koji:unsafe`, which has `Address` (a place in memory, of its own type), `CInt` (the 32-bit `int` of C, for `extern` declarations only: an `int` in Koji), `allocate`, `free`, and the reads and writes of words and bytes (`readInt`, `writeInt`, `readByte`, `writeByte`); and it may declare `extern function name(...): type`, a function of the system's C library, with `int`, `CInt`, `float`, `boolean` and `Address` values only. Other programs can use neither.
+**Decision**: a module of the standard library may import `koji:unsafe`, which has `Address` (a place in memory, of its own type), `CInt` (the 32-bit `int` of C, for `extern` declarations only: an `int` in Koji), `allocate`, `free`, `read` and `write` (of an `int`, a `float`, a `boolean`, a `char` or an `Address`, with its size: `immut n: int = read(address, 8)`, the type read being the one expected), and `readByte` and `writeByte` (a byte has no type in Koji); and it may declare `extern function name(...): type`, a function of the system's C library, with `int`, `CInt`, `float`, `boolean` and `Address` values only. Other programs can use neither.
 
 **Why**: the standard library is written in Koji, but some of it must reach the system (clocks, files, processes) or memory; this keeps that part small, visible and out of the users' sight, as `unsafe` does in Go.
 
