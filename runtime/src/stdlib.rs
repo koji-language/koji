@@ -8,7 +8,6 @@
 use std::ffi::{c_char, CStr};
 use std::io::{BufRead, Write};
 use std::sync::OnceLock;
-use std::time::Instant;
 
 use crate::list::{new_list, KojiElementType, KojiList};
 use crate::output::panic_at;
@@ -17,8 +16,6 @@ use crate::string::{new_string, string_text, KojiString};
 
 /// The program's command-line arguments, after the program itself.
 static ARGS: OnceLock<Vec<String>> = OnceLock::new();
-/// When the program started (`time.monotonic()`).
-static STARTED: OnceLock<Instant> = OnceLock::new();
 
 /// Called by `main` before anything else.
 #[no_mangle]
@@ -28,7 +25,6 @@ pub extern "C" fn koji_init(argc: i32, argv: *const *const c_char) {
         .map(|index| unsafe { CStr::from_ptr(*argv.add(index)) }.to_string_lossy().into_owned())
         .collect();
     let _ = ARGS.set(args);
-    let _ = STARTED.set(Instant::now());
 }
 
 // The messages of errors and the conversions of text.
@@ -403,34 +399,6 @@ pub extern "C" fn koji_std_math_round(value: f64, mode: i32, location: *const c_
         _ => value.round(),
     };
     float_to_int(rounded).unwrap_or_else(|message| panic_at(location, &message))
-}
-
-// time
-
-#[no_mangle]
-pub extern "C" fn koji_std_time_sleep(seconds: crate::decimal::KojiDecimal) {
-    let seconds = crate::decimal::from_c(seconds).to_float().unwrap_or(f64::MAX);
-    if seconds > 0.0 {
-        let _ = std::io::stdout().flush();
-        // Longer than a Duration holds: as long as it can.
-        std::thread::sleep(std::time::Duration::try_from_secs_f64(seconds).unwrap_or(std::time::Duration::MAX));
-    }
-}
-
-/// A duration as a decimal of seconds, exact to the nanosecond.
-fn seconds(duration: std::time::Duration) -> crate::decimal::KojiDecimal {
-    let nanoseconds = duration.as_secs() as u128 * 1_000_000_000 + duration.subsec_nanos() as u128;
-    crate::decimal::to_c(crate::decimal::Decimal::new(false, nanoseconds, -9).unwrap_or(crate::decimal::Decimal::from_int(0)))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_time_now() -> crate::decimal::KojiDecimal {
-    seconds(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default())
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_time_monotonic() -> crate::decimal::KojiDecimal {
-    seconds(STARTED.get_or_init(Instant::now).elapsed())
 }
 
 // system

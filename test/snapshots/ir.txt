@@ -1255,22 +1255,29 @@ string s7 = "a/b"
 record r0 Option[string]
     Some (value: Str)
     None ()
-record r1 MathError
+record r1 OperatingSystem
+    Linux ()
+    MacOS ()
+    Windows ()
+    Other (name: Str)
+record r2 MathError
     Complex ()
     Indeterminate ()
     Infinite ()
-record r2 Result[decimal, MathError]
+record r3 Result[decimal, MathError]
     Ok (value: Decimal)
-    Err (error: Record(1))
-global g0: Bool // path initialized
+    Err (error: Record(2))
+global g0: Bool // time initialized
+global g1: Bool // path initialized
+global g2: Int // unixEpoch
 
 function f0 main(): Void
     local l0: Decimal
-    local l1: Record(2)
+    local l1: Record(3)
     local l2: Str
     local l3: Decimal
     local l4: Decimal
-    local l5: Record(2)
+    local l5: Record(3)
     local l6: Str
     local l7: Str
     local l8: Str
@@ -1300,12 +1307,13 @@ function f0 main(): Void
     local l32: Str
   b0:
     call f1()
+    call f2()
     l0 = IntToDecimal 2
-    l1 = koji_std_math_sqrt_decimal([Value(Local(0)), Record(2)])
+    l1 = koji_std_math_sqrt_decimal([Value(Local(0)), Record(3)])
     l2 = RecordToStr l1
     l3 = IntToDecimal 2
     l4 = IntToDecimal 3
-    l5 = koji_std_math_pow_decimal([Value(Local(3)), Value(Local(4)), Record(2), Location(4)])
+    l5 = koji_std_math_pow_decimal([Value(Local(3)), Value(Local(4)), Record(3), Location(4)])
     l6 = RecordToStr l5
     l7 = StrConcat l2, s4
     l8 = StrConcat l7, l6
@@ -1321,31 +1329,179 @@ function f0 main(): Void
     l18 = DecimalToStr 3141592653589793238462643383279503e-33
     l19 = StrConcat l17, s4
     l20 = StrConcat l19, l18
-    l21 = koji_std_time_now([])
+    l21 = call f3()
     l22 = DecimalCompare(Greater) l21, 0e-6176
     l23 = BoolToStr l22
     l24 = StrConcat l20, s4
     l25 = StrConcat l24, l23
-    l26 = call f2(s5, s6)
+    l26 = call f9(s5, s6)
     l27 = StrConcat l25, s4
     l28 = StrConcat l27, l26
-    l29 = call f3(s7)
+    l29 = call f10(s7)
     l30 = RecordToStr l29
     l31 = StrConcat l28, s4
     l32 = StrConcat l31, l30
     print l32
     return
 
-function f1 path (module)(): Void
+function f1 time (module)(): Void
   b0:
     branch g0, b1, b2
   b1:
     return
   b2:
     g0 = true
+    g2 = 62167219200
     return
 
-function f2 join(l0: Str, l1: Str): Str
+function f2 path (module)(): Void
+  b0:
+    branch g1, b1, b2
+  b1:
+    return
+  b2:
+    g1 = true
+    return
+
+function f3 now(): Decimal
+    local l0: Decimal
+    local l1: Decimal
+    local l2: Decimal
+  b0:
+    l0 = call f8(0)
+    l1 = IntToDecimal g2
+    l2 = DecimalAdd l0, l1
+    return l2
+
+function f4 monotonic(): Decimal
+    local l0: Int
+    local l1: Record(1)
+    local l2: Record(1)
+    local l3: Int
+    local l4: Bool
+    local l5: Int // id
+    local l6: Decimal
+  b0:
+    l1 = koji_std_system_os([Record(1)])
+    l2 = l1
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 1
+    branch l4, b3, b2
+  b1:
+    l5 = l0
+    l6 = call f8(l5)
+    return l6
+  b2:
+    l0 = 1
+    goto b1
+  b3:
+    l0 = 6
+    goto b1
+  b4:
+    unreachable
+
+function f5 fromUnix(l0: Decimal): Decimal
+    local l1: Decimal
+    local l2: Decimal
+  b0:
+    l1 = IntToDecimal g2
+    l2 = DecimalAdd l0, l1
+    return l2
+
+function f6 toUnix(l0: Decimal): Decimal
+    local l1: Decimal
+    local l2: Decimal
+  b0:
+    l1 = IntToDecimal g2
+    l2 = DecimalSub l0, l1
+    return l2
+
+function f7 sleep(l0: Decimal): Void
+    local l1: Decimal
+    local l2: Bool
+    local l3: Int
+    local l4: Int // whole
+    local l5: Decimal
+    local l6: Decimal
+    local l7: Decimal
+    local l8: Decimal
+    local l9: Int
+    local l10: Int // nanoseconds
+    local l11: Int
+    local l12: Int // request
+    local l13: Int
+    local l14: Int // remaining
+    local l15: Int
+    local l16: Bool
+    local l17: Int
+    local l18: Int
+  b0:
+    l1 = IntToDecimal 0
+    l2 = DecimalCompare(LessEqual) l0, l1
+    branch l2, b1, b2
+  b1:
+    return
+  b2:
+    l3 = koji_decimal_to_int([Value(Local(0)), Mode(0), Location(48)])
+    l4 = l3
+    l5 = IntToDecimal l4
+    l6 = DecimalSub l0, l5
+    l7 = IntToDecimal 1000000000
+    l8 = DecimalMul l6, l7
+    l9 = koji_decimal_to_int([Value(Local(8)), Mode(0), Location(49)])
+    l10 = l9
+    l11 = koji_unsafe_allocate([Value(Int(16))])
+    l12 = l11
+    l13 = koji_unsafe_allocate([Value(Int(16))])
+    l14 = l13
+    koji_unsafe_write_int([Value(Local(12)), Value(Int(0)), Value(Local(4))])
+    koji_unsafe_write_int([Value(Local(12)), Value(Int(8)), Value(Local(10))])
+    goto b3
+  b3:
+    l15 = nanosleep([Value(Local(12)), Value(Local(14))])
+    l16 = IntCompare(NotEqual) l15, 0
+    branch l16, b4, b5
+  b4:
+    l17 = koji_unsafe_read_int([Value(Local(14)), Value(Int(0))])
+    koji_unsafe_write_int([Value(Local(12)), Value(Int(0)), Value(Local(17))])
+    l18 = koji_unsafe_read_int([Value(Local(14)), Value(Int(8))])
+    koji_unsafe_write_int([Value(Local(12)), Value(Int(8)), Value(Local(18))])
+    goto b3
+  b5:
+    koji_unsafe_free([Value(Local(12))])
+    koji_unsafe_free([Value(Local(14))])
+    return
+
+function f8 clock(l0: Int): Decimal
+    local l1: Int
+    local l2: Int // time
+    local l3: Int
+    local l4: Int
+    local l5: Int // seconds
+    local l6: Int
+    local l7: Int // nanoseconds
+    local l8: Decimal
+    local l9: Decimal
+    local l10: Decimal
+    local l11: Decimal
+    local l12: Decimal
+  b0:
+    l1 = koji_unsafe_allocate([Value(Int(16))])
+    l2 = l1
+    l3 = clock_gettime([Value(Local(0)), Value(Local(2))])
+    l4 = koji_unsafe_read_int([Value(Local(2)), Value(Int(0))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(2)), Value(Int(8))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(2))])
+    l8 = IntToDecimal l5
+    l9 = IntToDecimal l7
+    l10 = IntToDecimal 1000000000
+    l11 = DecimalDiv l9, l10
+    l12 = DecimalAdd l8, l11
+    return l12
+
+function f9 join(l0: Str, l1: Str): Str
     local l2: Bool
     local l3: Bool
     local l4: Bool
@@ -1376,7 +1532,7 @@ function f2 join(l0: Str, l1: Str): Str
     l8 = StrConcat l7, l1
     return l8
 
-function f3 parent(l0: Str): Record(0)
+function f10 parent(l0: Str): Record(0)
     local l1: List(Char)
     local l2: List(Char) // chars
     local l3: Int
@@ -1402,7 +1558,7 @@ function f3 parent(l0: Str): Record(0)
     l1 = koji_std_string_chars([Value(Local(0)), Element(Char)])
     l2 = l1
     l3 = ListLength l2
-    l4 = call f8(l2, l3)
+    l4 = call f15(l2, l3)
     l5 = l4
     l7 = IntCompare(Equal) l5, 0
     l6 = l7
@@ -1425,9 +1581,9 @@ function f3 parent(l0: Str): Record(0)
     l12 = record variant 1 ()
     return l12
   b6:
-    l13 = call f9(l2, l5)
+    l13 = call f16(l2, l5)
     l14 = l13
-    l15 = call f8(l2, l14)
+    l15 = call f15(l2, l14)
     l16 = l15
     l17 = IntCompare(Equal) l16, 0
     branch l17, b7, b8
@@ -1440,7 +1596,7 @@ function f3 parent(l0: Str): Record(0)
     l21 = record variant 0 (l20)
     return l21
 
-function f4 name(l0: Str): Record(0)
+function f11 name(l0: Str): Record(0)
     local l1: List(Char)
     local l2: List(Char) // chars
     local l3: Int
@@ -1468,7 +1624,7 @@ function f4 name(l0: Str): Record(0)
     l1 = koji_std_string_chars([Value(Local(0)), Element(Char)])
     l2 = l1
     l3 = ListLength l2
-    l4 = call f8(l2, l3)
+    l4 = call f15(l2, l3)
     l5 = l4
     l7 = IntCompare(Equal) l5, 0
     l6 = l7
@@ -1491,7 +1647,7 @@ function f4 name(l0: Str): Record(0)
     l12 = record variant 1 ()
     return l12
   b6:
-    l13 = call f9(l2, l5)
+    l13 = call f16(l2, l5)
     l14 = l13
     l15 = l14
     l16 = l5
@@ -1513,7 +1669,7 @@ function f4 name(l0: Str): Record(0)
     l23 = record variant 0 (l18)
     return l23
 
-function f5 stem(l0: Str): Record(0)
+function f12 stem(l0: Str): Record(0)
     local l1: Record(0)
     local l2: Record(0)
     local l3: Record(0)
@@ -1532,7 +1688,7 @@ function f5 stem(l0: Str): Record(0)
     local l16: Bool
     local l17: Record(0)
   b0:
-    l2 = call f4(l0)
+    l2 = call f11(l0)
     l3 = l2
     l4 = RecordTag l3
     l5 = IntCompare(Equal) l4, 0
@@ -1546,7 +1702,7 @@ function f5 stem(l0: Str): Record(0)
   b3:
     l6 = l3.0
     l7 = l6
-    l8 = call f10(l7)
+    l8 = call f17(l7)
     l9 = l8
     l10 = IntCompare(LessEqual) l9, 0
     branch l10, b4, b5
@@ -1566,7 +1722,7 @@ function f5 stem(l0: Str): Record(0)
     l1 = l17
     goto b1
 
-function f6 extension(l0: Str): Record(0)
+function f13 extension(l0: Str): Record(0)
     local l1: Record(0)
     local l2: Record(0)
     local l3: Record(0)
@@ -1586,7 +1742,7 @@ function f6 extension(l0: Str): Record(0)
     local l17: Bool
     local l18: Record(0)
   b0:
-    l2 = call f4(l0)
+    l2 = call f11(l0)
     l3 = l2
     l4 = RecordTag l3
     l5 = IntCompare(Equal) l4, 0
@@ -1600,7 +1756,7 @@ function f6 extension(l0: Str): Record(0)
   b3:
     l6 = l3.0
     l7 = l6
-    l8 = call f10(l7)
+    l8 = call f17(l7)
     l9 = l8
     l10 = IntCompare(LessEqual) l9, 0
     branch l10, b4, b5
@@ -1621,13 +1777,13 @@ function f6 extension(l0: Str): Record(0)
     l1 = l18
     goto b1
 
-function f7 isAbsolute(l0: Str): Bool
+function f14 isAbsolute(l0: Str): Bool
     local l1: Bool
   b0:
     l1 = koji_std_string_starts_with([Value(Local(0)), Value(Str(0))])
     return l1
 
-function f8 trimmedEnd(l0: List(Char), l1: Int): Int
+function f15 trimmedEnd(l0: List(Char), l1: Int): Int
     local l2: Int // at
     local l3: Bool
     local l4: Bool
@@ -1698,7 +1854,7 @@ function f8 trimmedEnd(l0: List(Char), l1: Int): Int
   b13:
     goto b3
 
-function f9 partStart(l0: List(Char), l1: Int): Int
+function f16 partStart(l0: List(Char), l1: Int): Int
     local l2: Int // at
     local l3: Bool
     local l4: Bool
@@ -1728,7 +1884,7 @@ function f9 partStart(l0: List(Char), l1: Int): Int
   b5:
     branch l3, b2, b3
 
-function f10 lastDot(l0: Str): Int
+function f17 lastDot(l0: Str): Int
     local l1: Int
     local l2: Int // found
     local l3: Int // position
@@ -11500,10 +11656,18 @@ record r3 Token
     Minute ()
     Second ()
     Text (c: Char)
-record r4 Option[Token]
+record r4 OperatingSystem
+    Linux ()
+    MacOS ()
+    Windows ()
+    Other (name: Str)
+record r5 Option[Token]
     Some (value: Record(3))
     None ()
 global g0: Bool // datetime initialized
+global g1: Bool // time initialized
+global g2: Int // unixDays
+global g3: Int // unixEpoch
 
 function f0 main(): Void
     local l0: Str
@@ -11512,7 +11676,7 @@ function f0 main(): Void
     local l3: Str
   b0:
     call f1()
-    l0 = call f5()
+    l0 = call f6()
     l1 = StrLength l0
     l2 = IntCompare(Greater) l1, 0
     l3 = BoolToStr l2
@@ -11526,9 +11690,21 @@ function f1 datetime (module)(): Void
     return
   b2:
     g0 = true
+    call f2()
+    g2 = 719528
     return
 
-function f2 DateTime.display(l0: Record(0)): Str
+function f2 time (module)(): Void
+  b0:
+    branch g1, b1, b2
+  b1:
+    return
+  b2:
+    g1 = true
+    g3 = 62167219200
+    return
+
+function f3 DateTime.display(l0: Record(0)): Str
     local l1: Int
     local l2: Str
     local l3: Str
@@ -11553,30 +11729,30 @@ function f2 DateTime.display(l0: Record(0)): Str
     local l22: Str
   b0:
     l1 = l0.0
-    l2 = call f15(l1, 4)
+    l2 = call f16(l1, 4)
     l3 = StrConcat l2, s0
     l4 = l0.1
-    l5 = call f15(l4, 2)
+    l5 = call f16(l4, 2)
     l6 = StrConcat l3, l5
     l7 = StrConcat l6, s0
     l8 = l0.2
-    l9 = call f15(l8, 2)
+    l9 = call f16(l8, 2)
     l10 = StrConcat l7, l9
     l11 = StrConcat l10, s1
     l12 = l0.3
-    l13 = call f15(l12, 2)
+    l13 = call f16(l12, 2)
     l14 = StrConcat l11, l13
     l15 = StrConcat l14, s2
     l16 = l0.4
-    l17 = call f15(l16, 2)
+    l17 = call f16(l16, 2)
     l18 = StrConcat l15, l17
     l19 = StrConcat l18, s2
     l20 = l0.5
-    l21 = call f15(l20, 2)
+    l21 = call f16(l20, 2)
     l22 = StrConcat l19, l21
     return l22
 
-function f3 DateError.display(l0: Record(1)): Str
+function f4 DateError.display(l0: Record(1)): Str
     local l1: Str
     local l2: Record(1)
     local l3: Int
@@ -11627,17 +11803,17 @@ function f3 DateError.display(l0: Record(1)): Str
     l1 = l18
     goto b1
 
-function f4 now(): Record(0)
+function f5 now(): Record(0)
     local l0: Decimal
     local l1: Int
     local l2: Record(0)
   b0:
-    l0 = koji_std_time_now([])
-    l1 = koji_decimal_to_int([Value(Local(0)), Mode(0), Location(37)])
-    l2 = call f10(l1)
+    l0 = call f17()
+    l1 = koji_decimal_to_int([Value(Local(0)), Mode(0), Location(41)])
+    l2 = call f11(l1)
     return l2
 
-function f5 today(): Str
+function f6 today(): Str
     local l0: Record(0)
     local l1: Record(0) // date
     local l2: Int
@@ -11651,21 +11827,21 @@ function f5 today(): Str
     local l10: Str
     local l11: Str
   b0:
-    l0 = call f4()
+    l0 = call f5()
     l1 = l0
     l2 = l1.0
-    l3 = call f15(l2, 4)
+    l3 = call f16(l2, 4)
     l4 = StrConcat l3, s0
     l5 = l1.1
-    l6 = call f15(l5, 2)
+    l6 = call f16(l5, 2)
     l7 = StrConcat l4, l6
     l8 = StrConcat l7, s0
     l9 = l1.2
-    l10 = call f15(l9, 2)
+    l10 = call f16(l9, 2)
     l11 = StrConcat l8, l10
     return l11
 
-function f6 format(l0: Decimal, l1: Str): Str
+function f7 format(l0: Decimal, l1: Str): Str
     local l2: Int
     local l3: Record(0)
     local l4: Record(0) // date
@@ -11710,11 +11886,11 @@ function f6 format(l0: Decimal, l1: Str): Str
     local l43: Str
     local l44: Str
   b0:
-    l2 = koji_decimal_to_int([Value(Local(0)), Mode(0), Location(49)])
-    l3 = call f10(l2)
+    l2 = koji_decimal_to_int([Value(Local(0)), Mode(0), Location(53)])
+    l3 = call f11(l2)
     l4 = l3
     l5 = s6
-    l6 = call f8(l1)
+    l6 = call f9(l1)
     l7 = l6
     l8 = ListLength l7
     l9 = 0
@@ -11744,7 +11920,7 @@ function f6 format(l0: Decimal, l1: Str): Str
     branch l20, b9, b8
   b7:
     l17 = l4.0
-    l18 = call f15(l17, 4)
+    l18 = call f16(l17, 4)
     l13 = l18
     goto b5
   b8:
@@ -11753,7 +11929,7 @@ function f6 format(l0: Decimal, l1: Str): Str
     branch l24, b11, b10
   b9:
     l21 = l4.1
-    l22 = call f15(l21, 2)
+    l22 = call f16(l21, 2)
     l13 = l22
     goto b5
   b10:
@@ -11762,7 +11938,7 @@ function f6 format(l0: Decimal, l1: Str): Str
     branch l28, b13, b12
   b11:
     l25 = l4.2
-    l26 = call f15(l25, 2)
+    l26 = call f16(l25, 2)
     l13 = l26
     goto b5
   b12:
@@ -11771,7 +11947,7 @@ function f6 format(l0: Decimal, l1: Str): Str
     branch l32, b15, b14
   b13:
     l29 = l4.3
-    l30 = call f15(l29, 2)
+    l30 = call f16(l29, 2)
     l13 = l30
     goto b5
   b14:
@@ -11780,7 +11956,7 @@ function f6 format(l0: Decimal, l1: Str): Str
     branch l36, b17, b16
   b15:
     l33 = l4.4
-    l34 = call f15(l33, 2)
+    l34 = call f16(l33, 2)
     l13 = l34
     goto b5
   b16:
@@ -11789,7 +11965,7 @@ function f6 format(l0: Decimal, l1: Str): Str
     branch l40, b19, b18
   b17:
     l37 = l4.5
-    l38 = call f15(l37, 2)
+    l38 = call f16(l37, 2)
     l13 = l38
     goto b5
   b18:
@@ -11801,7 +11977,7 @@ function f6 format(l0: Decimal, l1: Str): Str
     l13 = l43
     goto b5
 
-function f7 parse(l0: Str, l1: Str): Record(2)
+function f8 parse(l0: Str, l1: Str): Record(2)
     local l2: List(Char)
     local l3: List(Char) // chars
     local l4: Int // position
@@ -11914,7 +12090,8 @@ function f7 parse(l0: Str, l1: Str): Record(2)
     local l111: Int
     local l112: Int
     local l113: Int
-    local l114: Record(2)
+    local l114: Int
+    local l115: Record(2)
   b0:
     l2 = koji_std_string_chars([Value(Local(0)), Element(Char)])
     l3 = l2
@@ -11927,7 +12104,7 @@ function f7 parse(l0: Str, l1: Str): Record(2)
     l10 = 0
     l11 = record variant 0 (l5, l6, l7, l8, l9, l10)
     l12 = l11
-    l13 = call f8(l1)
+    l13 = call f9(l1)
     l14 = l13
     l15 = ListLength l14
     l16 = 0
@@ -12102,7 +12279,7 @@ function f7 parse(l0: Str, l1: Str): Record(2)
     l86 = l12.2
     l87 = l12.0
     l88 = l12.1
-    l89 = call f13(l87, l88)
+    l89 = call f14(l87, l88)
     l90 = IntCompare(LessEqual) l86, l89
     l77 = l90
     goto b44
@@ -12142,20 +12319,21 @@ function f7 parse(l0: Str, l1: Str): Record(2)
     l101 = l12.0
     l102 = l12.1
     l103 = l12.2
-    l104 = call f12(l101, l102, l103)
-    l105 = IntMul l104, 86400
-    l106 = l12.3
-    l107 = IntMul l106, 3600
-    l108 = IntAdd l105, l107
-    l109 = l12.4
-    l110 = IntMul l109, 60
-    l111 = IntAdd l108, l110
-    l112 = l12.5
-    l113 = IntAdd l111, l112
-    l114 = record variant 0 (l113)
-    return l114
+    l104 = call f13(l101, l102, l103)
+    l105 = IntAdd l104, g2
+    l106 = IntMul l105, 86400
+    l107 = l12.3
+    l108 = IntMul l107, 3600
+    l109 = IntAdd l106, l108
+    l110 = l12.4
+    l111 = IntMul l110, 60
+    l112 = IntAdd l109, l111
+    l113 = l12.5
+    l114 = IntAdd l112, l113
+    l115 = record variant 0 (l114)
+    return l115
 
-function f8 tokens(l0: Str): List(Record(3))
+function f9 tokens(l0: Str): List(Record(3))
     local l1: List(Char)
     local l2: List(Char) // chars
     local l3: Str
@@ -12172,7 +12350,7 @@ function f8 tokens(l0: Str): List(Record(3))
     local l14: Bool
     local l15: Record(3)
     local l16: Int
-    local l17: Record(4)
+    local l17: Record(5)
     local l18: Str
     local l19: Int
     local l20: Int
@@ -12186,19 +12364,19 @@ function f8 tokens(l0: Str): List(Record(3))
     local l28: Str
     local l29: Bool
     local l30: Record(3)
-    local l31: Record(4)
+    local l31: Record(5)
     local l32: Bool
     local l33: Record(3)
-    local l34: Record(4)
+    local l34: Record(5)
     local l35: Bool
     local l36: Record(3)
-    local l37: Record(4)
+    local l37: Record(5)
     local l38: Bool
     local l39: Record(3)
-    local l40: Record(4)
-    local l41: Record(4)
-    local l42: Record(4) // two
-    local l43: Record(4)
+    local l40: Record(5)
+    local l41: Record(5)
+    local l42: Record(5) // two
+    local l43: Record(5)
     local l44: Int
     local l45: Bool
     local l46: Record(3)
@@ -12224,7 +12402,7 @@ function f8 tokens(l0: Str): List(Record(3))
     l10 = IntCompare(Less) l8, l9
     branch l10, b2, b3
   b2:
-    l11 = call f9(l5, l8, s7)
+    l11 = call f10(l5, l8, s7)
     branch l11, b4, b5
   b3:
     return l7
@@ -12235,7 +12413,7 @@ function f8 tokens(l0: Str): List(Record(3))
     l8 = l13
     goto b1
   b5:
-    l14 = call f9(l5, l8, s8)
+    l14 = call f10(l5, l8, s8)
     branch l14, b6, b7
   b6:
     l15 = record variant 4 ()
@@ -12328,7 +12506,7 @@ function f8 tokens(l0: Str): List(Record(3))
     l8 = l53
     goto b21
 
-function f9 startsWith(l0: List(Char), l1: Int, l2: Str): Bool
+function f10 startsWith(l0: List(Char), l1: Int, l2: Str): Bool
     local l3: Int // i
     local l4: List(Char)
     local l5: List(Char)
@@ -12379,16 +12557,16 @@ function f9 startsWith(l0: List(Char), l1: Int, l2: Str): Bool
     l3 = l16
     goto b3
 
-function f10 dateOf(l0: Int): Record(0)
+function f11 dateOf(l0: Int): Record(0)
     local l1: Int
-    local l2: Int // days
-    local l3: Int
+    local l2: Int
+    local l3: Int // days
     local l4: Int
-    local l5: Int // seconds
-    local l6: List(Int)
-    local l7: List(Int) // civil
-    local l8: Int
-    local l9: Int
+    local l5: Int
+    local l6: Int
+    local l7: Int // seconds
+    local l8: List(Int)
+    local l9: List(Int) // civil
     local l10: Int
     local l11: Int
     local l12: Int
@@ -12400,32 +12578,36 @@ function f10 dateOf(l0: Int): Record(0)
     local l18: Int
     local l19: Int
     local l20: Int
-    local l21: Record(0)
+    local l21: Int
+    local l22: Int
+    local l23: Record(0)
   b0:
-    l1 = call f14(l0, 86400)
-    l2 = l1
-    l3 = IntMul l2, 86400
-    l4 = IntSub l0, l3
-    l5 = l4
-    l6 = call f11(l2)
+    l1 = call f15(l0, 86400)
+    l2 = IntSub l1, g2
+    l3 = l2
+    l4 = IntAdd l3, g2
+    l5 = IntMul l4, 86400
+    l6 = IntSub l0, l5
     l7 = l6
-    l8 = l7[0]
+    l8 = call f12(l3)
     l9 = l8
-    l10 = l7[1]
+    l10 = l9[0]
     l11 = l10
-    l12 = l7[2]
+    l12 = l9[1]
     l13 = l12
-    l14 = IntDiv l5, 3600
+    l14 = l9[2]
     l15 = l14
-    l16 = IntRem l5, 3600
-    l17 = IntDiv l16, 60
-    l18 = l17
-    l19 = IntRem l5, 60
+    l16 = IntDiv l7, 3600
+    l17 = l16
+    l18 = IntRem l7, 3600
+    l19 = IntDiv l18, 60
     l20 = l19
-    l21 = record variant 0 (l9, l11, l13, l15, l18, l20)
-    return l21
+    l21 = IntRem l7, 60
+    l22 = l21
+    l23 = record variant 0 (l11, l13, l15, l17, l20, l22)
+    return l23
 
-function f11 civilFromDays(l0: Int): List(Int)
+function f12 civilFromDays(l0: Int): List(Int)
     local l1: Int
     local l2: Int // z
     local l3: Int
@@ -12473,7 +12655,7 @@ function f11 civilFromDays(l0: Int): List(Int)
   b0:
     l1 = IntAdd l0, 719468
     l2 = l1
-    l3 = call f14(l2, 146097)
+    l3 = call f15(l2, 146097)
     l4 = l3
     l5 = IntMul l4, 146097
     l6 = IntSub l2, l5
@@ -12531,7 +12713,7 @@ function f11 civilFromDays(l0: Int): List(Int)
     l44 = list [l41, l40, l35]
     return l44
 
-function f12 daysFromCivil(l0: Int, l1: Int, l2: Int): Int
+function f13 daysFromCivil(l0: Int, l1: Int, l2: Int): Int
     local l3: Int
     local l4: Bool
     local l5: Int
@@ -12572,7 +12754,7 @@ function f12 daysFromCivil(l0: Int, l1: Int, l2: Int): Int
     goto b3
   b3:
     l6 = l3
-    l7 = call f14(l6, 400)
+    l7 = call f15(l6, 400)
     l8 = l7
     l9 = IntMul l8, 400
     l10 = IntSub l6, l9
@@ -12598,7 +12780,7 @@ function f12 daysFromCivil(l0: Int, l1: Int, l2: Int): Int
     l30 = IntSub l29, 719468
     return l30
 
-function f13 daysInMonth(l0: Int, l1: Int): Int
+function f14 daysInMonth(l0: Int, l1: Int): Int
     local l2: Bool
     local l3: Bool
     local l4: Bool
@@ -12678,7 +12860,7 @@ function f13 daysInMonth(l0: Int, l1: Int): Int
   b17:
     return 31
 
-function f14 floorDiv(l0: Int, l1: Int): Int
+function f15 floorDiv(l0: Int, l1: Int): Int
     local l2: Int
     local l3: Int // quotient
     local l4: Int
@@ -12701,7 +12883,7 @@ function f14 floorDiv(l0: Int, l1: Int): Int
   b3:
     return l4
 
-function f15 padded(l0: Int, l1: Int): Str
+function f16 padded(l0: Int, l1: Int): Str
     local l2: Bool
     local l3: Int
     local l4: Int
@@ -12719,7 +12901,7 @@ function f15 padded(l0: Int, l1: Int): Str
   b1:
     l3 = IntNeg l0
     l4 = IntSub l1, 1
-    l5 = call f15(l3, l4)
+    l5 = call f16(l3, l4)
     l6 = StrConcat s0, l5
     return l6
   b2:
@@ -12729,6 +12911,144 @@ function f15 padded(l0: Int, l1: Int): Str
     l10 = IntSub l1, l9
     l11 = StrRepeat s13, l10
     l12 = StrConcat l11, l8
+    return l12
+
+function f17 now(): Decimal
+    local l0: Decimal
+    local l1: Decimal
+    local l2: Decimal
+  b0:
+    l0 = call f22(0)
+    l1 = IntToDecimal g3
+    l2 = DecimalAdd l0, l1
+    return l2
+
+function f18 monotonic(): Decimal
+    local l0: Int
+    local l1: Record(4)
+    local l2: Record(4)
+    local l3: Int
+    local l4: Bool
+    local l5: Int // id
+    local l6: Decimal
+  b0:
+    l1 = koji_std_system_os([Record(4)])
+    l2 = l1
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 1
+    branch l4, b3, b2
+  b1:
+    l5 = l0
+    l6 = call f22(l5)
+    return l6
+  b2:
+    l0 = 1
+    goto b1
+  b3:
+    l0 = 6
+    goto b1
+  b4:
+    unreachable
+
+function f19 fromUnix(l0: Decimal): Decimal
+    local l1: Decimal
+    local l2: Decimal
+  b0:
+    l1 = IntToDecimal g3
+    l2 = DecimalAdd l0, l1
+    return l2
+
+function f20 toUnix(l0: Decimal): Decimal
+    local l1: Decimal
+    local l2: Decimal
+  b0:
+    l1 = IntToDecimal g3
+    l2 = DecimalSub l0, l1
+    return l2
+
+function f21 sleep(l0: Decimal): Void
+    local l1: Decimal
+    local l2: Bool
+    local l3: Int
+    local l4: Int // whole
+    local l5: Decimal
+    local l6: Decimal
+    local l7: Decimal
+    local l8: Decimal
+    local l9: Int
+    local l10: Int // nanoseconds
+    local l11: Int
+    local l12: Int // request
+    local l13: Int
+    local l14: Int // remaining
+    local l15: Int
+    local l16: Bool
+    local l17: Int
+    local l18: Int
+  b0:
+    l1 = IntToDecimal 0
+    l2 = DecimalCompare(LessEqual) l0, l1
+    branch l2, b1, b2
+  b1:
+    return
+  b2:
+    l3 = koji_decimal_to_int([Value(Local(0)), Mode(0), Location(48)])
+    l4 = l3
+    l5 = IntToDecimal l4
+    l6 = DecimalSub l0, l5
+    l7 = IntToDecimal 1000000000
+    l8 = DecimalMul l6, l7
+    l9 = koji_decimal_to_int([Value(Local(8)), Mode(0), Location(49)])
+    l10 = l9
+    l11 = koji_unsafe_allocate([Value(Int(16))])
+    l12 = l11
+    l13 = koji_unsafe_allocate([Value(Int(16))])
+    l14 = l13
+    koji_unsafe_write_int([Value(Local(12)), Value(Int(0)), Value(Local(4))])
+    koji_unsafe_write_int([Value(Local(12)), Value(Int(8)), Value(Local(10))])
+    goto b3
+  b3:
+    l15 = nanosleep([Value(Local(12)), Value(Local(14))])
+    l16 = IntCompare(NotEqual) l15, 0
+    branch l16, b4, b5
+  b4:
+    l17 = koji_unsafe_read_int([Value(Local(14)), Value(Int(0))])
+    koji_unsafe_write_int([Value(Local(12)), Value(Int(0)), Value(Local(17))])
+    l18 = koji_unsafe_read_int([Value(Local(14)), Value(Int(8))])
+    koji_unsafe_write_int([Value(Local(12)), Value(Int(8)), Value(Local(18))])
+    goto b3
+  b5:
+    koji_unsafe_free([Value(Local(12))])
+    koji_unsafe_free([Value(Local(14))])
+    return
+
+function f22 clock(l0: Int): Decimal
+    local l1: Int
+    local l2: Int // time
+    local l3: Int
+    local l4: Int
+    local l5: Int // seconds
+    local l6: Int
+    local l7: Int // nanoseconds
+    local l8: Decimal
+    local l9: Decimal
+    local l10: Decimal
+    local l11: Decimal
+    local l12: Decimal
+  b0:
+    l1 = koji_unsafe_allocate([Value(Int(16))])
+    l2 = l1
+    l3 = clock_gettime([Value(Local(0)), Value(Local(2))])
+    l4 = koji_unsafe_read_int([Value(Local(2)), Value(Int(0))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(2)), Value(Int(8))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(2))])
+    l8 = IntToDecimal l5
+    l9 = IntToDecimal l7
+    l10 = IntToDecimal 1000000000
+    l11 = DecimalDiv l9, l10
+    l12 = DecimalAdd l8, l11
     return l12
 ==== test/ir/cases.txt #21
 string s0 = "abc"

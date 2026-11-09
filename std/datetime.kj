@@ -1,8 +1,12 @@
 // The `datetime` module: dates and times in UTC, and their text (see
-// doc/standard-library/datetime.md). A timestamp is a number of seconds since 1970-01-01 00:00:00.
+// doc/standard-library/datetime.md). A timestamp is a number of seconds since 0000-01-01 00:00:00
+// UTC, the epoch of Koji, in the proleptic Gregorian calendar (see `time`).
 
 import time
 import math
+
+// The days from 0000-01-01 to 1970-01-01, where the computations of the calendar count from.
+immut unixDays = 719528
 
 export type DateTime = {
     year: int
@@ -108,7 +112,7 @@ export function parse(text: string, pattern: string): Result[int, DateError] {
 
     if (not valid) { return Err(InvalidDate(text)) }
 
-    return Ok(daysFromCivil(date.year, date.month, date.day) * 86400 + date.hour * 3600 + date.minute * 60 + date.second)
+    return Ok((daysFromCivil(date.year, date.month, date.day) + unixDays) * 86400 + date.hour * 3600 + date.minute * 60 + date.second)
 }
 
 // The parts of a pattern.
@@ -178,8 +182,8 @@ function startsWith(chars: char[], start: int, word: string): boolean {
 
 // The date and time of `timestamp`.
 function dateOf(timestamp: int): DateTime {
-    immut days = floorDiv(timestamp, 86400)
-    immut seconds = timestamp - days * 86400
+    immut days = floorDiv(timestamp, 86400) - unixDays
+    immut seconds = timestamp - (days + unixDays) * 86400
     immut civil = civilFromDays(days)
     return { year: civil[0], month: civil[1], day: civil[2], hour: seconds / 3600, minute: seconds % 3600 / 60, second: seconds % 60 }
 }

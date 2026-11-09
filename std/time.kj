@@ -1,0 +1,73 @@
+// The `time` module: the clocks of the system, and pauses (see doc/standard-library/time.md).
+// Times are in seconds, as decimals, exact to the nanosecond. A timestamp counts the seconds since
+// 0000-01-01 00:00:00 UTC, the epoch of Koji (in the proleptic Gregorian calendar).
+
+import math
+import system
+import { Address, CInt, allocate, free, readInt, writeInt } from 'koji:unsafe'
+
+// `int clock_gettime(clockid_t clock, struct timespec *time)` and
+// `int nanosleep(const struct timespec *request, struct timespec *remaining)`: a `timespec` is two
+// 8-byte words, seconds and nanoseconds.
+extern function clock_gettime(clock: CInt, time: Address): CInt
+extern function nanosleep(request: Address, remaining: Address): CInt
+
+// The seconds from 0000-01-01 to 1970-01-01, the epoch of Unix (719,528 days).
+immut unixEpoch = 62167219200
+
+// The current time: the seconds since 0000-01-01 00:00:00 UTC. It follows the clock of the
+// system, which may be set back or forth.
+export function now(): decimal {
+    return clock(0) + unixEpoch
+}
+
+// A time that only grows, for durations: the difference of two is the time between them.
+export function monotonic(): decimal {
+    // `CLOCK_MONOTONIC` is 6 on macOS, 1 elsewhere.
+    immut id = match (system.os) {
+        MacOS => 6
+        _ => 1
+    }
+    return clock(id)
+}
+
+// The timestamp of Koji of a timestamp of Unix (seconds since 1970-01-01 00:00:00 UTC).
+export function fromUnix(seconds: decimal): decimal {
+    return seconds + unixEpoch
+}
+
+// The timestamp of Unix of a timestamp of Koji.
+export function toUnix(timestamp: decimal): decimal {
+    return timestamp - unixEpoch
+}
+
+// Pauses for `seconds` (nothing for zero or less).
+export function sleep(seconds: decimal) {
+    if (seconds <= 0) { return }
+
+    immut whole = math.floor(seconds)
+    immut nanoseconds = math.floor((seconds - whole) * 1000000000)
+    immut request = allocate(16)
+    immut remaining = allocate(16)
+    writeInt(request, 0, whole)
+    writeInt(request, 8, nanoseconds)
+
+    // Interrupted by a signal, it goes on with what remains.
+    while (nanosleep(request, remaining) != 0) {
+        writeInt(request, 0, readInt(remaining, 0))
+        writeInt(request, 8, readInt(remaining, 8))
+    }
+
+    free(request)
+    free(remaining)
+}
+
+// The time of a clock of the system, in seconds.
+function clock(id: int): decimal {
+    immut time = allocate(16)
+    clock_gettime(id, time)
+    immut seconds = readInt(time, 0)
+    immut nanoseconds = readInt(time, 8)
+    free(time)
+    return decimal(seconds) + decimal(nanoseconds) / 1000000000
+}

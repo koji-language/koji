@@ -202,6 +202,15 @@ export type IrProgram = {
     globals: IrGlobal[]
     strings: string[]
     records: IrRecord[]
+    // The C functions that `extern` declarations name, called by `StdCallIns`.
+    externs: IrExtern[]
+}
+
+// A C function, with the C types of its parameters and result (`void *` for an `Address`).
+export type IrExtern = {
+    name: string
+    params: string[]
+    returns: string
 }
 
 // Text, in the formats of Rust's `{:?}` that `kojic dump ir` uses

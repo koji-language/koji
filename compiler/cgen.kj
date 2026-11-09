@@ -1,7 +1,7 @@
 // The C code generator of the Koji compiler: turns the IR into one C file, which a C compiler
 // links with the runtime library (runtime/). `generate` gives the text of `kojic dump c`.
 
-import { Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
+import { IrExtern, Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
 import { preludeLines } from 'prelude.kj'
 import { borrowedParams, borrowedLocals, constantGlobals } from 'borrow.kj'
 import { lastUses } from 'liveness.kj'
@@ -188,6 +188,14 @@ function functionName(id: int): string {
     return `koji_f${id}`
 }
 
+function Generator.externOf(self, name: string): Option[IrExtern] {
+    for found in self.program.externs {
+        if (found.name == name) { return Some(found) }
+    }
+
+    return None
+}
+
 function Generator.line(mut self, text: string) {
     self.out.push(text)
 }
@@ -209,6 +217,12 @@ function Generator.generateProgram(mut self) {
 
     for id in range(strings.length()) {
         self.line(`static KojiString *koji_s${id}; // ${stringDebug(strings[id])}`)
+    }
+
+    // The C functions that `extern` declarations name.
+    for found in self.program.externs {
+        immut params = if (found.params.length() == 0) { 'void' } else { found.params.join(', ') }
+        self.line(`${found.returns} ${found.name}(${params});`)
     }
 
     self.records()
@@ -1227,6 +1241,20 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                     LocationArg(line) => self.location(line)
                     NullArg => 'NULL'
                 })
+            }
+
+            // A C function of an `extern` declaration: an `Address` is a `void *` for it.
+            match (self.externOf(name)) {
+                Some(found) => {
+                    for i in range(values.length()) {
+                        if (i < found.params.length() and found.params[i] == 'void *') { values[i] = `(void *)(intptr_t)${values[i]}` }
+                    }
+
+                    immut call = `${name}(${values.join(', ')})`
+                    self.result(routine, dest, if (found.returns == 'void *') { `(int64_t)(intptr_t)${call}` } else { call })
+                    return
+                }
+                None => {}
             }
 
             self.result(routine, dest, `${name}(${values.join(', ')})`)

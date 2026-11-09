@@ -8,7 +8,7 @@ import { decimalLiteral } from 'decimal.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
-immut stdlibModules = ['time', 'file', 'math', 'http', 'system']
+immut stdlibModules = ['file', 'math', 'http', 'system']
 
 type SymbolKind = {
     ValueSymbol
@@ -124,6 +124,8 @@ type Builtins = {
     fileError: int
     fileMode: int
     httpError: int
+    // `Address` of `koji:unsafe`: a place in memory.
+    address: int
     map: int
     output: int
     systemError: int
@@ -344,7 +346,6 @@ function builtinSums(): BuiltinSum[] {
 // The functions of each standard library module.
 function stdlibFunctions(module: string): string[] {
     return match (module) {
-        'time' => ['sleep', 'now', 'monotonic']
         'file' => ['open', 'list', 'exists', 'createDir', 'remove']
         'math' => ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
         'http' => ['get', 'post', 'put', 'delete']
@@ -421,8 +422,9 @@ function Checker.create(): Checker {
     immut output = addType(mut table, 'Output', 0, BuiltinKind([
         { name: 'status', ty: IntType }, { name: 'stdout', ty: StringType }, { name: 'stderr', ty: StringType }
     ], []))
+    immut address = addType(mut table, 'Address', 0, BuiltinKind([], []))
     immut builtins: Builtins = {
-        option: sumId(ids, 'Option'), result: result, parseError: sumId(ids, 'ParseError'),
+        address: address, option: sumId(ids, 'Option'), result: result, parseError: sumId(ids, 'ParseError'),
         mathError: sumId(ids, 'MathError'), fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
         httpError: sumId(ids, 'HttpError'), map: map, output: output, systemError: sumId(ids, 'SystemError'),
         set: set, file: file, response: response,
@@ -618,6 +620,7 @@ function isExported(node: Node): boolean {
 function declaredName(node: Node): Option[string] {
     return match (unlocated(node).kind) {
         FunctionDecl(name, None, _, _, _, _) => Some(name)
+        ExternDecl(name, _, _) => Some(name)
         VarDecl(name, _, _, _) => Some(name)
         TypeDecl(name, _, _) => Some(name)
         _ => None
@@ -631,6 +634,7 @@ function isStatement(node: Node): boolean {
         Assign(_, _, _) => true
         VarDecl(_, _, _, _) => true
         FunctionDecl(_, _, _, _, _, _) => true
+        ExternDecl(_, _, _) => true
         TypeDecl(_, _, _) => true
         ImportModule(_, _) => true
         ImportNames(_, _) => true
@@ -1146,6 +1150,12 @@ function findInTypes(types: Type[], ids: Set[int]): Option[int] {
 function Checker.importedModule(mut self, path: string): Result[int, string] {
     if (path in stdlibModules) { return Ok(self.stdlibModule(path)) }
 
+    if (path == 'koji:unsafe') {
+        if (not self.state.path.startsWith('std:')) { return Err(self.failure("'koji:unsafe' is only for the standard library")) }
+
+        return Ok(self.unsafeModule())
+    }
+
     if (path in kojiModules) {
         immut key = `std:${path}`
 
@@ -1516,11 +1526,71 @@ function Checker.hoist(mut self, statements: Node[]): Result[void, string] {
 
                 self.declare(name, symbol)?
             }
+            ExternDecl(name, params, returns) => self.declareExtern(name, params, returns)?
             _ => {}
         }
     }
 
     return Ok()
+}
+
+// `extern function sqrt(x: float): float`: only in the standard library, and only with values a C
+// function takes as they are (`int`, `CInt`, `float`, `boolean`, `Address`).
+function Checker.declareExtern(mut self, name: string, params: Param[], returns: Option[TypeExpr]): Result[void, string] {
+    if (not self.state.path.startsWith('std:')) { return Err(self.failure("'extern' functions are only for the standard library")) }
+
+    immut ty = self.functionSignature(name, params, returns, true)?
+
+    match (ty) {
+        FunctionType(paramTypes, returned) => {
+            for each in paramTypes {
+                if (not self.isCValue(each)) { return Err(self.failure(`'${name}' is extern: its parameters must be int, CInt, float, boolean or Address, found ${self.show(each)}`)) }
+            }
+
+            if (returned != VoidType and not self.isCValue(returned)) {
+                return Err(self.failure(`'${name}' is extern: it must return int, CInt, float, boolean, Address or nothing, found ${self.show(returned)}`))
+            }
+        }
+        _ => {}
+    }
+
+    for param in params {
+        if (modeOf(param) != 'borrow') { return Err(self.failure(`'${name}' is extern: its parameters cannot be 'mut' or 'take'`)) }
+    }
+
+    return self.declare(name, valueSymbol(ty, true))
+}
+
+function Checker.isCValue(self, ty: Type): boolean {
+    return match (ty) {
+        IntType => true
+        FloatType => true
+        BooleanType => true
+        NamedType(id, _) => id == self.builtins.address
+        _ => false
+    }
+}
+
+// The module `koji:unsafe`: memory and the types of C, for the standard library.
+function Checker.unsafeModule(mut self): int {
+    match (self.stdlib.get('koji:unsafe')) {
+        Some(id) => return id
+        None => {}
+    }
+
+    mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
+
+    for member in ['allocate', 'free', 'readInt', 'writeInt', 'readByte', 'writeByte'] {
+        module.members[member] = builtinSymbol(`unsafe.${member}`)
+    }
+
+    module.types['Address'] = KnownType(named(self.builtins.address))
+    // The `int` of C (32 bits), in `extern` declarations: an `int` in Koji.
+    module.types['CInt'] = KnownType(IntType)
+    self.modules.push(module)
+    immut id = self.modules.length() - 1
+    self.stdlib['koji:unsafe'] = id
+    return id
 }
 
 // `function Person.greet(self)` or `function Person.create(name: string)`: only at the top level
@@ -2369,6 +2439,7 @@ function Checker.checkStatement(mut self, node: Node, expected: Option[Type]): R
             self.exitTypeParams(pushed)
             return Ok(VoidType)
         }
+        ExternDecl(_, _, _) => return Ok(VoidType)
         FunctionDecl(name, None, typeParams, params, returns, body) => {
             mut signature = VoidType
 
@@ -4641,20 +4712,6 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
             self.checkExactly(name, types, [IntType])?
             return Ok(self.optionOf(CharType))
         }
-        // Seconds, as decimals.
-        'time.sleep' => {
-            self.arity(name, types, 1, 1)?
-            self.expectNumberArg(name, 0, types[0])?
-            return Ok(VoidType)
-        }
-        'time.now' => {
-            self.checkExactly(name, types, [])?
-            return Ok(DecimalType)
-        }
-        'time.monotonic' => {
-            self.checkExactly(name, types, [])?
-            return Ok(DecimalType)
-        }
         'file.open' => {
             self.checkExactly(name, types, [s, named(b.fileMode)])?
             return Ok(self.resultWith(named(b.file), b.fileError))
@@ -4695,6 +4752,22 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
 
             immut power = if (types[0] == FloatType or types[1] == FloatType) { FloatType } else { DecimalType }
             return Ok(self.resultWith(power, b.mathError))
+        }
+        'unsafe.allocate' => {
+            self.checkExactly(name, types, [IntType])?
+            return Ok(named(b.address))
+        }
+        'unsafe.free' => {
+            self.checkExactly(name, types, [named(b.address)])?
+            return Ok(VoidType)
+        }
+        other if (other == 'unsafe.readInt' or other == 'unsafe.readByte') => {
+            self.checkExactly(name, types, [named(b.address), IntType])?
+            return Ok(IntType)
+        }
+        other if (other == 'unsafe.writeInt' or other == 'unsafe.writeByte') => {
+            self.checkExactly(name, types, [named(b.address), IntType, IntType])?
+            return Ok(VoidType)
         }
         other if (other in ['math.floor', 'math.ceil', 'math.round']) => {
             self.arity(name, types, 1, 1)?

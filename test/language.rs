@@ -1384,8 +1384,26 @@ fn stdlib_time() {
         immut end = time.monotonic()
 
         print(end - start >= 0.0, time.now() > 1700000000.0)
+
+        // Timestamps count from 0000-01-01 00:00:00 UTC; those of Unix, from 1970.
+        immut unix = time.toUnix(time.now())
+        print(unix > 1700000000 and unix < 4000000000, time.fromUnix(0), time.toUnix(62167219200))
+
+        immut before = time.monotonic()
+        time.sleep(0.05)
+        print(time.monotonic() - before >= 0.05)
+        time.sleep(0)
+        time.sleep(-1)
     "#;
-    assert_eq!(run(source), "Waiting...\nDone!\ntrue true\n");
+    assert_eq!(run(source), "Waiting...\nDone!\ntrue true\ntrue 62167219200 0\ntrue\n");
+}
+
+#[test]
+fn unsafe_is_for_the_standard_library() {
+    // `koji:unsafe` and `extern` functions are the lowest level of the standard library: other
+    // programs cannot use them.
+    assert_error("import { allocate } from 'koji:unsafe'\nprint(allocate(8))", "'koji:unsafe' is only for the standard library");
+    assert_error("extern function abs(x: int): int\nprint(abs(-1))", "'extern' functions are only for the standard library");
 }
 
 #[test]
@@ -1469,7 +1487,7 @@ fn stdlib_datetime() {
     "#;
     assert_eq!(
         run(source),
-        "10\n1745107200\n20/04/2025\n2025-04-20 00:00:00\n2025-04-20 01:01:01\n\
+        "10\n63912326400\n20/04/2025\n2025-04-20 00:00:00\n2025-04-20 01:01:01\n\
          Err(InvalidDate('2025-02-30')) Err(PatternMismatch('20/04', 'YYYY-MM-DD'))\n\
          Err(PatternMismatch('2025/02/03', 'YYYY-MM-DD'))\ntrue true\n"
     );

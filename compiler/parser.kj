@@ -110,6 +110,9 @@ export type NodeKind = {
     Assign(op: string, target: Node, value: Node)
     VarDecl(name: string, annotation: Option[TypeExpr], value: Node, isImmut: boolean)
     FunctionDecl(name: string, owner: Option[string], typeParams: TypeParam[], params: Param[], returns: Option[TypeExpr], body: Node)
+    // `extern function sqrt(x: float): float`: a function of the system's C library, for the
+    // standard library (with `koji:unsafe`).
+    ExternDecl(name: string, params: Param[], returns: Option[TypeExpr])
     TypeDecl(name: string, params: TypeParam[], definition: TypeDef)
     ImportModule(name: string, path: string)
     ImportNames(names: string[], path: string)
@@ -319,6 +322,9 @@ function Parser.locatedStatement(mut self): Result[Node, string] {
 }
 
 function Parser.statement(mut self): Result[Node, string] {
+    // `extern function`: `extern` is a name anywhere else.
+    if (self.current() == Identifier('extern') and self.peek() == Keyword('function')) { return self.externDeclaration() }
+
     match (self.current()) {
         Keyword('break') => {
             self.insideLoop('break')?
@@ -624,6 +630,15 @@ function Parser.functionDeclaration(mut self): Result[Node, string] {
     immut returns = self.optionalReturnType()?
     immut body = self.functionBody(true)?
     return Ok(self.node(FunctionDecl(name, owner, typeParams, params, returns, body)))
+}
+
+function Parser.externDeclaration(mut self): Result[Node, string] {
+    self.advance()
+    self.advance()
+    immut name = self.expectIdentifier('function name')?
+    immut params = self.params()?
+    immut returns = self.optionalReturnType()?
+    return Ok(self.node(ExternDecl(name, params, returns)))
 }
 
 // Whether the `(` at `open` starts an anonymous function: `(...) =>` or `(...): type =>`.
@@ -1668,6 +1683,7 @@ function plain(node: Node, a: (Node) => string): string {
             }
             return `(function ${fullName} ${typeParametersText(typeParams)} ${paramsText(params)} ${optionalType(returns)} ${annotated(body, a)})`
         }
+        ExternDecl(name, params, returns) => return `(extern ${name} ${paramsText(params)} ${optionalType(returns)})`
         TypeDecl(name, params, definition) => return `(type ${name} ${typeParametersText(params)} ${definitionText(definition)})`
         ImportModule(name, path) => return `(import ${name} ${path.debug()})`
         ImportNames(names, path) => return `(import (${names.join(' ')}) ${path.debug()})`
