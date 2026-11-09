@@ -6,7 +6,6 @@
 //! has its lines in `compiler/prelude.kj`).
 
 mod closure;
-mod decimal;
 mod hash;
 mod http;
 mod list;

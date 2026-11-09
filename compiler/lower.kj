@@ -4083,6 +4083,10 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             }
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
         }
+        'koji:unsafe.wideToFloat' => {
+            runner = 'koji_unsafe_wide_to_float'
+            arguments = [self.stdValue(mut builder, args, 0, U128Ty)?]
+        }
         'koji:unsafe.wordProduct' => {
             runner = 'koji_unsafe_word_product'
             arguments = [self.stdValue(mut builder, args, 0, U128Ty)?, self.stdValue(mut builder, args, 1, U128Ty)?]

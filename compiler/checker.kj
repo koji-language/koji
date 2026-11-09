@@ -1549,7 +1549,7 @@ function Checker.checkForC(mut self, declaration: Node): Result[void, string] {
     match (ty) {
         FunctionType(paramTypes, returned) => {
             for each in paramTypes {
-                if (not self.isCValue(each) and each != U128Type) { return Err(self.failure(`'${name}' is for C: its parameters must be int, CInt, float, decimal, boolean, U128, Address or Location, found ${self.show(each)}`)) }
+                if (not self.isCValue(each) and each != U128Type and each != StringType) { return Err(self.failure(`'${name}' is for C: its parameters must be int, CInt, float, decimal, boolean, U128, string, Address or Location, found ${self.show(each)}`)) }
             }
 
             // A string is a new reference for C, as the runtime gives them.
@@ -1641,7 +1641,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'decimalLow', 'decimalHigh', 'decimalOf'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -4894,6 +4894,11 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         'unsafe.wide' => {
             self.checkExactly(name, types, [IntType, IntType])?
             return Ok(U128Type)
+        }
+        // The nearest float of a U128.
+        'unsafe.wideToFloat' => {
+            self.checkExactly(name, types, [U128Type])?
+            return Ok(FloatType)
         }
         // The product of the low words of two U128 (one multiplication of 64 bits by 64).
         'unsafe.wordProduct' => {

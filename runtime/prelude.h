@@ -188,6 +188,7 @@ _Noreturn void koji_panic(const char *location, const char *message);
 /* `U128`: its words, and the words of a decimal. */
 KOJI_INLINE KojiU128 koji_unsafe_wide(int64_t low, int64_t high) { return (KojiU128)(uint64_t)high << 64 | (uint64_t)low; }
 KOJI_INLINE int64_t koji_unsafe_low_word(KojiU128 value) { return (int64_t)(uint64_t)value; }
+KOJI_INLINE double koji_unsafe_wide_to_float(KojiU128 value) { return (double)value; }
 KOJI_INLINE KojiU128 koji_unsafe_word_product(KojiU128 a, KojiU128 b) { return (KojiU128)(uint64_t)a * (uint64_t)b; }
 KOJI_INLINE int64_t koji_unsafe_high_word(KojiU128 value) { return (int64_t)(uint64_t)(value >> 64); }
 KOJI_INLINE int64_t koji_unsafe_leading_zeros(KojiU128 value) {

@@ -32,6 +32,11 @@ extern "C" {
 mod without_library {
     #[no_mangle]
     extern "C" fn koji_library_init() {}
+
+    #[no_mangle]
+    extern "C" fn koji_decimal_parse(_text: *const super::KojiString, _status: *mut i64) -> super::KojiDecimal {
+        super::KojiDecimal { lo: 0, hi: 0 }
+    }
 }
 
 // The messages of errors and the conversions of text.
@@ -205,15 +210,28 @@ pub extern "C" fn koji_std_float_from_string(string: *const KojiString, result: 
     }
 }
 
+/// A decimal in C: two words (see std/koji/decimal.kj).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KojiDecimal {
+    pub lo: u64,
+    pub hi: u64,
+}
+
+extern "C" {
+    /// The decimal of a text, from the library written in Koji (std/koji/decimal.kj): `status` is
+    /// 0, or 1 for a text that is not a number, or 2 for one out of range.
+    fn koji_decimal_parse(text: *const KojiString, status: *mut i64) -> KojiDecimal;
+}
+
 #[no_mangle]
 pub extern "C" fn koji_std_decimal_from_string(string: *const KojiString, result: *const KojiRecordType) -> *mut KojiRecord {
-    match crate::decimal::parse(text(string)) {
-        Ok(n) => {
-            let (lo, hi) = n.to_bits();
-            make(result, "Ok", &[lo, hi])
-        }
-        Err(crate::decimal::ParseFailure::Invalid) => error_with_text(result, "InvalidNumber", text(string)),
-        Err(crate::decimal::ParseFailure::OutOfRange) => error_with_text(result, "OutOfRange", text(string)),
+    let mut status = 0i64;
+    let value = unsafe { koji_decimal_parse(string, &mut status) };
+    match status {
+        0 => make(result, "Ok", &[value.lo, value.hi]),
+        1 => error_with_text(result, "InvalidNumber", text(string)),
+        _ => error_with_text(result, "OutOfRange", text(string)),
     }
 }
 

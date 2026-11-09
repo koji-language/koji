@@ -285,7 +285,13 @@ function Generator.generateProgram(mut self) {
 
         immut list = if (params.length() == 0) { 'void' } else { params.join(', ') }
         immut call = `${functionName(found.function)}(${values.join(', ')})`
-        immut body = if (found.returns == 'void') { `${call};` } else { `return ${toC(found.returns, call)};` }
+        mut body = if (found.returns == 'void') { `${call};` } else { `return ${toC(found.returns, call)};` }
+
+        // C keeps its strings: a function that does not only read one gets a reference of its own.
+        for i in range(found.params.length()) {
+            if (found.params[i] == 'KojiString *' and not self.borrowed[found.function][i]) { body = `koji_string_retain(p${i}); ${body}` }
+        }
+
         self.line('')
         self.line(`${found.returns} ${found.name}(${list}) { ${body} }`)
     }

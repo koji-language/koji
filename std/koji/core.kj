@@ -12,7 +12,7 @@ extern function memmem(haystack: Address, haystackSize: CSize, needle: Address, 
 extern function strlen(text: Address): CSize
 
 // Without the white space at both ends (as Unicode defines white space).
-function trim(text: string): string {
+export function trim(text: string): string {
     immut bytes = stringBytes(text)
     immut size = stringSize(text)
     mut start = 0
