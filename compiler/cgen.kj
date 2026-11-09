@@ -968,6 +968,27 @@ function Generator.result(mut self, routine: IrFunction, dest: Option[int], expr
     }
 }
 
+// `text += more` on a top-level variable (`l = text + more`, then `text = l`): the runtime takes
+// the reference of the variable, and adds to the string in place when no one else sees it.
+function Generator.appendsToGlobal(mut self, routine: IrFunction, dest: int, left: Operand, right: Operand): boolean {
+    immut global = match (left) {
+        GlobalOp(id) if (right != left) => id
+        _ => return false
+    }
+    immut instructions = routine.blocks[self.block].instructions
+
+    if (self.position + 1 >= instructions.length()) { return false }
+
+    match (instructions[self.position + 1]) {
+        CopyIns(GlobalPlace(target), LocalOp(value)) if (target == global and value == dest) => {
+            self.setLocal(routine, dest, `koji_string_append(${operand(left)}, ${operand(right)})`)
+            self.line(`    ${operand(left)} = NULL;`)
+            return true
+        }
+        _ => return false
+    }
+}
+
 function Generator.instruction(mut self, routine: IrFunction, instruction: Instruction) {
     match (instruction) {
         CopyIns(dest, value) => {
@@ -1034,7 +1055,11 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                             self.line(`    l${local} = NULL;`)
                             return
                         }
-                        _ => expression = self.binary(op, operand(left), operand(right), line)
+                        _ => {
+                            if (self.appendsToGlobal(routine, dest, left, right)) { return }
+
+                            expression = self.binary(op, operand(left), operand(right), line)
+                        }
                     }
                 }
                 // Against a record on the stack, whose variant is known: its tag, then its fields.

@@ -4,7 +4,7 @@
 export type Type = {
     IntType
     FloatType
-    // 16 significant digits in base 10 (runtime/src/decimal.rs).
+    // 34 significant digits in base 10 (std/koji/decimal.kj).
     DecimalType
     StringType
     // A Unicode character (a code point).

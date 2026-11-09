@@ -1,6 +1,7 @@
-//! The hash of keys: fast (a multiply and a rotation for each 8 bytes), since a map hashes its key
+//! The hash of records (the same as that of the library written in Koji: `mixed` in
+//! std/koji/text.kj): fast (a multiply and a rotation for each 8 bytes), since a map hashes its key
 //! at each access. Its low bits are not mixed: a map takes the high bits of its hash times a large
-//! odd number (see `KojiMap::start` in map.rs), which depend on all of them.
+//! odd number (see `startOf` in std/koji/map.kj), which depend on all of them.
 
 use std::hash::Hasher;
 

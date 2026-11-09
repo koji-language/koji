@@ -17,8 +17,8 @@ export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'end
 // The internal modules (std/koji/): `koji:core`, compiled with the programs that use it, and those
 // of the library of the runtime written in Koji, compiled once (`kojic dump library`) and linked
 // into every program.
-immut internalModules = ['koji:core', 'koji:decimal', 'koji:list', 'koji:map', 'koji:numbers', 'koji:output', 'koji:text', 'koji:unicode']
-export immut libraryModules = ['koji:decimal', 'koji:list', 'koji:map', 'koji:numbers', 'koji:output', 'koji:text', 'koji:unicode']
+immut internalModules = ['koji:core', 'koji:decimal', 'koji:list', 'koji:map', 'koji:numbers', 'koji:output', 'koji:ryu', 'koji:text', 'koji:unicode']
+export immut libraryModules = ['koji:decimal', 'koji:list', 'koji:map', 'koji:numbers', 'koji:output', 'koji:ryu', 'koji:text', 'koji:unicode']
 
 type SymbolKind = {
     ValueSymbol
@@ -4961,7 +4961,7 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.checkExactly(name, types, [U128Type])?
             return Ok(IntType)
         }
-        // The two words of a decimal (see runtime/src/decimal.rs), and the decimal of two words.
+        // The two words of a decimal (see std/koji/decimal.kj), and the decimal of two words.
         other if (other == 'unsafe.decimalLow' or other == 'unsafe.decimalHigh') => {
             self.checkExactly(name, types, [DecimalType])?
             return Ok(IntType)

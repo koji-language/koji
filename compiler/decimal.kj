@@ -1,5 +1,5 @@
 // Decimal literals: `1.5` where a `decimal` is expected is exactly 15e-1. A decimal has 34
-// significant digits (runtime/src/decimal.rs); a literal is kept without trailing zeros, and zero
+// significant digits (std/koji/decimal.kj); a literal is kept without trailing zeros, and zero
 // is 0e-6176.
 
 // A decimal as coefficient * 10^exponent, the coefficient (up to 34 digits, more than an int

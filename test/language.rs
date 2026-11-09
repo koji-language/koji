@@ -755,6 +755,78 @@ fn shape_types() {
 }
 
 #[test]
+fn appending_to_a_top_level_string() {
+    // In place when no one else sees the string; a copy when another variable shares it.
+    let source = r#"
+        mut text = 'a'
+        immut alias = text
+        text += 'b'
+        mut keep = text
+        text += 'c'
+        text += text
+        for i in range(3) {
+            keep += `${i}`
+        }
+        print(text, alias, keep)
+    "#;
+    assert_eq!(run(source), "abcabc a ab012\n");
+}
+
+#[test]
+fn lists_of_two_words_and_shared_lists() {
+    // A decimal takes two words of a list (std/koji/list.kj); a list shared by two variables is
+    // copied before one of them changes it, down to the lists it holds.
+    let source = r#"
+        mut prices = [2.50, 0.10, 7.25]
+        immut before = prices
+        prices.insert(1, 1.75)
+        prices.insert(4, 0.10)
+        prices.sort()
+        print(prices, before, prices.indexOf(7.25), 0.10 in prices, prices[1..3])
+        print(prices.removeAt(0), prices.pop(), prices, prices + before)
+        mut grid = [[1, 2], [3]]
+        immut copy = grid
+        grid[1].push(4)
+        print(grid, copy)
+    "#;
+    assert_eq!(
+        run(source),
+        "[0.1, 0.1, 1.75, 2.5, 7.25] [2.5, 0.1, 7.25] Some(4) true [0.1, 1.75]\n\
+         Some(0.1) Some(7.25) [0.1, 1.75, 2.5] [0.1, 1.75, 2.5, 2.5, 0.1, 7.25]\n\
+         [[1, 2], [3, 4]] [[1, 2], [3]]\n"
+    );
+}
+
+#[test]
+fn maps_keep_their_order_through_removals() {
+    // Many keys in a small table: a removal takes the entry out of a run of slots (std/koji/map.kj),
+    // and the keys that follow in the run must still be found, in the order they were added.
+    let source = r#"
+        mut seed = 7
+        mut m: Map[int, int] = [:]
+        mut sum = 0
+        for step in range(3000) {
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            immut key = (seed / 16) % 64
+            if (seed % 3 == 0) {
+                m.remove(key)
+            } else {
+                m[key] = step
+            }
+            match (m.get((key * 5) % 64)) {
+                Some(v) => sum += v % 11
+                None => sum += 1
+            }
+        }
+        print(m.length(), sum, m.keys())
+    "#;
+    assert_eq!(
+        run(source),
+        "42 11081 [10, 7, 17, 34, 21, 43, 13, 27, 58, 57, 49, 15, 55, 2, 35, 48, 5, 45, 51, 6, 33, 0, 61, 44, 38, 62, 8, 11, 4, 12, 42, 22, 31, 40, 47, 25, 16, 1, 24, 26, 39, 53]\n"
+    );
+}
+
+#[test]
 fn maps_and_sets() {
     let source = r#"
         type Dictionary = Map[string, string]

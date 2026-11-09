@@ -13,7 +13,7 @@
 
 typedef struct KojiString KojiString;
 
-/* A decimal (runtime/src/decimal.rs): 34 significant digits in two words, passed in registers.
+/* A decimal (std/koji/decimal.kj): 34 significant digits in two words, passed in registers.
    `lo` is the low 64 bits of the coefficient; `hi` has its 49 high bits, then the exponent plus
    6176 (14 bits), then the sign. It is not normalized: 1.50 may be 150e-2, so equality and
    hashing go through the runtime. Zero is all zero bits. */
@@ -65,7 +65,7 @@ bool koji_string_contains(const KojiString *haystack, const KojiString *needle);
 
 typedef struct KojiList KojiList;
 
-/* How the generated code describes the items of a list (see runtime/src/list.rs). */
+/* How the generated code describes the items of a list, a map or a record (see std/koji/list.kj). */
 typedef struct {
     size_t size;
     void (*retain)(const void *slot);
@@ -102,8 +102,9 @@ KOJI_INLINE int64_t koji_element_hash(const void *element, const void *slot) {
     return (int64_t)((const KojiElementType *)element)->hash(slot);
 }
 
-/* A list (runtime/src/list.rs): `items` holds `length` items of `stride` 8-byte words each. Its
-   items, its length and its references are read here, inline; the runtime does the rest. */
+/* A list (std/koji/list.kj): `items` holds `length` items of `stride` 8-byte words each, in a block
+   of `capacity` words. Its items, its length and its references are read here, inline; the
+   library does the rest. */
 struct KojiList {
     size_t references;
     const KojiElementType *element;
@@ -251,9 +252,11 @@ KOJI_INLINE uint64_t koji_u128_divide_word(uint64_t high, uint64_t low, uint64_t
 KOJI_INLINE KojiU128 koji_u128_div(KojiU128 a, KojiU128 b, const char *location) {
     if (b == 0) koji_panic(location, "division by zero");
 #if defined(__x86_64__)
-    /* A constant divisor is the C compiler's: it may multiply instead. */
-    if (!__builtin_constant_p(b) && (uint64_t)(b >> 64) == 0) {
+    if ((uint64_t)(b >> 64) == 0) {
         uint64_t high = (uint64_t)(a >> 64), divisor = (uint64_t)b, rest;
+        /* A dividend of 64 bits: the C compiler's division (a product for a constant divisor). gcc
+           and clang call a function for a division of 128 bits, even by a constant. */
+        if (high == 0) return (uint64_t)a / divisor;
         if (high < divisor) return koji_u128_divide_word(high, (uint64_t)a, divisor, &rest);
         uint64_t top = high / divisor;
         uint64_t bottom = koji_u128_divide_word(high % divisor, (uint64_t)a, divisor, &rest);
@@ -265,8 +268,9 @@ KOJI_INLINE KojiU128 koji_u128_div(KojiU128 a, KojiU128 b, const char *location)
 KOJI_INLINE KojiU128 koji_u128_rem(KojiU128 a, KojiU128 b, const char *location) {
     if (b == 0) koji_panic(location, "division by zero");
 #if defined(__x86_64__)
-    if (!__builtin_constant_p(b) && (uint64_t)(b >> 64) == 0) {
+    if ((uint64_t)(b >> 64) == 0) {
         uint64_t high = (uint64_t)(a >> 64), divisor = (uint64_t)b, rest;
+        if (high == 0) return (uint64_t)a % divisor;
         koji_u128_divide_word(high < divisor ? high : high % divisor, (uint64_t)a, divisor, &rest);
         return rest;
     }
@@ -444,8 +448,11 @@ bool koji_closure_equal(const KojiClosure *a, const KojiClosure *b);
 void koji_list_sort_by(KojiList **variable, const KojiClosure *comparison,
                        bool (*call)(const KojiClosure *, const void *, const void *));
 
-/* The standard library (runtime/src/stdlib.rs). */
+/* The start of a program (runtime/src/stdlib.rs). */
 void koji_init(int argc, const char *const *argv);
+
+/* The standard library: `panic` (std/koji/output.kj), `int(f)` (std/koji/numbers.kj), the methods
+   of strings (std/koji/text.kj) and HTTP (runtime/src/http.rs). */
 _Noreturn void koji_std_panic(const KojiString *message, const char *location);
 int64_t koji_std_float_to_int(double value, const char *location);
 KojiString *koji_std_string_upper(const KojiString *string);
@@ -459,6 +466,7 @@ KojiString *koji_std_string_slice(const KojiString *string, bool has_start, int6
 KojiRecord *koji_std_http_request(int32_t method, const KojiString *url, const KojiString *body,
                                   const KojiRecordType *result);
 
+/* Output and panics (std/koji/output.kj), and the powers of numbers (std/koji/numbers.kj). */
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
 void koji_print_error(const KojiString *text, const char *location);

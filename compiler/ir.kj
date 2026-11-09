@@ -6,7 +6,7 @@ import { decimalText } from 'decimal.kj'
 export type Ty = {
     IntTy
     FloatTy
-    // A decimal: 16 bytes that the runtime computes with (runtime/src/decimal.rs).
+    // A decimal: 16 bytes that the library computes with (std/koji/decimal.kj).
     DecimalTy
     BoolTy
     // A Unicode character (its code point).

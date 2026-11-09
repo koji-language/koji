@@ -11,11 +11,14 @@
 //
 // Numbers of 256 bits (products, dividends) are two `U128`: `high` and `low`.
 
-import { Address, CInt, Location, U128, allocate, decimalHigh, decimalLow, decimalOf, free, highWord, leadingZeros, lowWord, nullAddress, panicAt, read, wide, wideToFloat, wordProduct, write } from 'koji:unsafe'
+import { Address, CInt, CSize, Location, U128, allocate, decimalHigh, decimalLow, decimalOf, free, highWord, isNull, leadingZeros, listItems, lowWord, nullAddress, offset, panicAt, read, reserve, setListLength, stringBytes, stringSize, wide, wideToFloat, wordProduct, write } from 'koji:unsafe'
 import { cString, trim } from 'koji:core'
+import { inversePowersOfFive, powersOfFive } from 'koji:ryu'
 
 // The C library: floats, and `strtod`, which reads a float from text correctly rounded.
 extern function sqrt(x: float): float
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function memset(target: Address, value: CInt, size: CSize): Address
 extern function log(x: float): float
 extern function log10(x: float): float
 extern function floor(x: float): float
@@ -43,12 +46,8 @@ immut largest = wide(-1, -1)
 immut widePowersHigh = widePowers(true)
 immut widePowersLow = widePowers(false)
 
-// The words of the numbers for the digits of a float (see `wideNumber`).
-immut wideWords = 20
 // 10^0 to 10^22: the powers of ten that are floats exactly.
 immut exactTens = floatTens()
-// Words of zeros, which products start from.
-immut manyZeros = zeroWords(48)
 
 // Why a result has no decimal.
 immut noLimit = 0
@@ -1040,416 +1039,206 @@ function shown(given: decimal): string {
 
 // Floats
 
+// The tables of Ryu as ints, read from their texts the first time a float needs them: two words
+// for each number of 128 bits, its high one first.
+mut fives = nullAddress()
+mut inverseFives = nullAddress()
+
 // The shortest decimal that is the same float again (at most 17 digits): exact both ways. Of the
-// shortest ones, the nearest to the float. By the algorithm of Steele and White (free format, as
-// Burger and Dybvig give it), on big integers: the digits of the float, until they leave the
-// interval of the numbers that read back as it.
+// shortest ones, the nearest to the float (half up, as Rust). By Ulf Adams' Ryu: the ends of the
+// interval of the numbers that read back as the float, and the float, times a power of 5 of 128
+// bits (std/koji/ryu.kj), then the digits removed while the ends differ.
 extern function koji_decimal_from_float(value: float): decimal {
-    immut magnitude = if (value < 0) { -value } else { value }
-
-    if (magnitude == 0) { return zero() }
-
-    // magnitude = f * 2^e, from its bits: 52 of fraction and 11 of exponent (without a leading 1
-    // below the smallest exponent).
     immut place = allocate(8)
-    write(place, 0, magnitude)
+    write(place, 0, value)
     immut bits: int = read(place, 0)
     free(place)
-    immut fractionBits = bits & ((1 << 52) - 1)
+    immut fraction = bits & ((1 << 52) - 1)
     immut exponentBits = (bits >> 52) & 0x7FF
-    immut f = if (exponentBits == 0) { fractionBits } else { fractionBits | (1 << 52) }
-    immut e = if (exponentBits == 0) { -1074 } else { exponentBits - 1075 }
-    // value = r / s; the numbers that read back as it are within m- below and m+ above (the gap
-    // below a power of two is half the one above); the ends count when f is even.
-    immut boundary = f == (1 << 52) and exponentBits > 1
-    // 10^k above the value: from a first estimate, which is at most one too small.
-    mut k = int(ceilOf(log10(magnitude) - float(0.0000000001)))
-    // The words the numbers take: their bits (r and s below), and 4 bits for each digit of 10^k,
-    // with one more word for r * 10 and sums.
-    immut bitsNeeded = maxOf(56 + maxOf(e, 0), 3 - e) + 4 * (if (k < 0) { -k } else { k })
-    immut n = minOf(bitsNeeded / 64 + 2, wideWords)
 
-    // Most floats: the numbers fit in 256 bits, in variables.
-    if (bitsNeeded < 240) { return shortestSmall(value < 0, f, e, k, boundary) }
+    if (fraction == 0 and exponentBits == 0) { return zero() }
 
-    mut r = wideNumber(u128(f))
-    mut s = wideNumber(1)
-    mut plus = wideNumber(1)
-    mut minus = wideNumber(1)
-    mut sum = wideNumber(0)
+    // value = m2 * 2^e2 (with two more bits, for the ends of the interval).
+    immut e2 = if (exponentBits == 0) { 1 - 1023 - 52 - 2 } else { exponentBits - 1023 - 52 - 2 }
+    immut m2 = if (exponentBits == 0) { fraction } else { fraction | (1 << 52) }
+    // The ends of the interval count when m2 is even.
+    immut even = (m2 & 1) == 0
+    immut mv = 4 * m2
+    // The gap below a power of two is half the one above.
+    immut mmShift = if (fraction != 0 or exponentBits <= 1) { 1 } else { 0 }
+    // vr, vp and vm: the float and the ends of its interval, times 10^-e10.
+    mut vr = 0
+    mut vp = 0
+    mut vm = 0
+    mut e10 = 0
+    mut vmTrailingZeros = false
+    mut vrTrailingZeros = false
+    powersOfFiveRead()
 
-    if (e >= 0) {
-        shiftInPlace(mut r, e + 1, n)
-        s = wideNumber(2)
-        shiftInPlace(mut plus, e, n)
-        shiftInPlace(mut minus, e, n)
+    if (e2 >= 0) {
+        immut q = maxOf(log10OfPowerOf2(e2) - (if (e2 > 3) { 1 } else { 0 }), 0)
+        e10 = q
+        immut i = -e2 + q + 125 + bitsOfPowerOf5(q) - 1
+        vr = timesPower(mv, inverseFives, q, i)
+        vp = timesPower(mv + 2, inverseFives, q, i)
+        vm = timesPower(mv - 1 - mmShift, inverseFives, q, i)
 
-        if (boundary) {
-            shiftInPlace(mut r, 1, n)
-            s = wideNumber(4)
-            shiftInPlace(mut plus, 1, n)
+        // The digits removed may be zeros only when 5^q divides the numbers.
+        if (q <= 21) {
+            if (mv % 5 == 0) {
+                vrTrailingZeros = factorsOf5(mv) >= q
+            } else {
+                if (even) {
+                    vmTrailingZeros = factorsOf5(mv - 1 - mmShift) >= q
+                } else {
+                    vp -= if (factorsOf5(mv + 2) >= q) { 1 } else { 0 }
+                }
+            }
         }
     } else {
-        shiftInPlace(mut r, 1, n)
-        shiftInPlace(mut s, 1 - e, n)
+        immut q = maxOf(log10OfPowerOf5(-e2) - (if (-e2 > 1) { 1 } else { 0 }), 0)
+        e10 = q + e2
+        immut i = -e2 - q
+        immut j = q - (bitsOfPowerOf5(i) - 125)
+        vr = timesPower(mv, fives, i, j)
+        vp = timesPower(mv + 2, fives, i, j)
+        vm = timesPower(mv - 1 - mmShift, fives, i, j)
 
-        if (boundary) {
-            shiftInPlace(mut r, 1, n)
-            shiftInPlace(mut s, 1, n)
-            plus = wideNumber(2)
-        }
-    }
+        if (q <= 1) {
+            vrTrailingZeros = true
 
-    immut even = (f & 1) == 0
-
-    if (k >= 0) {
-        timesTenInPlace(mut s, k, n)
-    } else {
-        timesTenInPlace(mut r, -k, n)
-        timesTenInPlace(mut plus, -k, n)
-        timesTenInPlace(mut minus, -k, n)
-    }
-
-    addInto(mut sum, r, plus, n)
-    immut compared = compareWide(sum, s, n)
-
-    if (compared > 0 or (even and compared == 0)) {
-        k += 1
-    } else {
-        multiplyInPlace(mut r, 10, n)
-        multiplyInPlace(mut plus, 10, n)
-        multiplyInPlace(mut minus, 10, n)
-    }
-
-    // The digits.
-    mut digitsFound: U128 = 0
-    mut count = 0
-
-    while (true) {
-        // d = r / s (a digit), r = r % s.
-        mut d = 0
-
-        while (compareWide(r, s, n) >= 0) {
-            subtractInPlace(mut r, s, n)
-            d += 1
-        }
-
-        immut low = compareWide(r, minus, n)
-        immut lowEnd = low < 0 or (even and low == 0)
-        addInto(mut sum, r, plus, n)
-        immut high = compareWide(sum, s, n)
-        immut highEnd = high > 0 or (even and high == 0)
-        count += 1
-
-        if (not lowEnd and not highEnd) {
-            digitsFound = digitsFound * 10 + u128(d)
-            multiplyInPlace(mut r, 10, n)
-            multiplyInPlace(mut plus, 10, n)
-            multiplyInPlace(mut minus, 10, n)
-            continue
-        }
-
-        // The last digit: up when only the high end is reached, or when both are and the rest is
-        // at least half.
-        mut up = highEnd
-
-        if (lowEnd and highEnd) {
-            addInto(mut sum, r, r, n)
-            up = compareWide(sum, s, n) >= 0
-        }
-
-        digitsFound = digitsFound * 10 + u128(if (up) { d + 1 } else { d })
-        break
-    }
-
-    mut exponent = k - count
-
-    // Without trailing zeros, as the shortest text has none.
-    while (digitsFound % 10 == 0) {
-        digitsFound = digitsFound / 10
-        exponent += 1
-    }
-
-    return make(value < 0, digitsFound, exponent)
-}
-
-// Numbers of 1280 bits for the digits of a float: 20 words of 64 bits (in U128, `wideWords`),
-// least significant first, changed in place.
-
-function floatTens(): float[] {
-    mut tens = [float(1)]
-
-    for i in range(22) {
-        tens.push(tens[i] * float(10))
-    }
-
-    return tens
-}
-
-function zeroWords(n: int): U128[] {
-    mut words: U128[] = []
-
-    for i in range(n) {
-        words.push(0)
-    }
-
-    return words
-}
-
-function wideNumber(value: U128): U128[] {
-    mut words = manyZeros[..wideWords]
-    words[0] = value & word
-    words[1] = value >> 64
-    return words
-}
-
-// `a * 2^shift`, on the first `n` words.
-function shiftInPlace(mut a: U128[], shift: int, n: int) {
-    immut whole = shift / 64
-    immut bits = u128(shift % 64)
-    mut i = n - 1
-
-    while (i >= 0) {
-        immut source = i - whole
-        immut high = if (source >= 0) { a[source] } else { u128(0) }
-        immut low = if (source >= 1 and bits != 0) { a[source - 1] >> (64 - bits) } else { u128(0) }
-        a[i] = ((high << bits) | low) & word
-        i -= 1
-    }
-}
-
-// `a * factor`, for a factor of 64 bits.
-function multiplyInPlace(mut a: U128[], factor: U128, n: int) {
-    mut carry: U128 = 0
-
-    for i in range(n) {
-        immut current = wordProduct(a[i], factor) + carry
-        a[i] = current & word
-        carry = current >> 64
-    }
-}
-
-// `a * 10^power`, on the first `n` words.
-function timesTenInPlace(mut a: U128[], power: int, n: int) {
-    for i in range(power / 19) {
-        multiplyInPlace(mut a, powers[19], n)
-    }
-
-    multiplyInPlace(mut a, powers[power % 19], n)
-}
-
-// `a -= b`, for `a >= b`.
-function subtractInPlace(mut a: U128[], b: U128[], n: int) {
-    mut borrow: U128 = 0
-
-    for i in range(n) {
-        immut taken = b[i] + borrow
-
-        if (a[i] >= taken) {
-            a[i] = a[i] - taken
-            borrow = 0
+            if (even) {
+                vmTrailingZeros = mmShift == 1
+            } else {
+                vp -= 1
+            }
         } else {
-            a[i] = a[i] + (u128(1) << 64) - taken
-            borrow = 1
-        }
-    }
-}
-
-// `sum = a + b`.
-function addInto(mut sum: U128[], a: U128[], b: U128[], n: int) {
-    mut carry: U128 = 0
-
-    for i in range(n) {
-        immut current = a[i] + b[i] + carry
-        sum[i] = current & word
-        carry = current >> 64
-    }
-}
-
-function compareWide(a: U128[], b: U128[], n: int): int {
-    mut i = n - 1
-
-    while (i >= 0) {
-        if (a[i] != b[i]) { return if (a[i] < b[i]) { -1 } else { 1 } }
-
-        i -= 1
-    }
-
-    return 0
-}
-
-// `koji_decimal_from_float` when its numbers fit in 256 bits: each one is two U128 (`high` and
-// `low`), changed in place.
-function shortestSmall(negative: boolean, f: int, e: int, estimate: int, boundary: boolean): decimal {
-    mut rHigh: U128 = 0
-    mut rLow = u128(f)
-    mut sHigh: U128 = 0
-    mut sLow: U128 = 1
-    mut plusHigh: U128 = 0
-    mut plusLow: U128 = 1
-    mut minusHigh: U128 = 0
-    mut minusLow: U128 = 1
-
-    if (e >= 0) {
-        shiftPair(mut rHigh, mut rLow, e + 1)
-        sLow = 2
-        shiftPair(mut plusHigh, mut plusLow, e)
-        shiftPair(mut minusHigh, mut minusLow, e)
-
-        if (boundary) {
-            shiftPair(mut rHigh, mut rLow, 1)
-            sLow = 4
-            shiftPair(mut plusHigh, mut plusLow, 1)
-        }
-    } else {
-        shiftPair(mut rHigh, mut rLow, 1)
-        shiftPair(mut sHigh, mut sLow, 1 - e)
-
-        if (boundary) {
-            shiftPair(mut rHigh, mut rLow, 1)
-            shiftPair(mut sHigh, mut sLow, 1)
-            plusLow = 2
+            if (q < 63) { vrTrailingZeros = (mv & ((1 << q) - 1)) == 0 }
         }
     }
 
-    immut even = (f & 1) == 0
-    mut k = estimate
+    // The digits removed while the ends differ; the last one decides the rounding.
+    mut removed = 0
+    mut lastRemoved = 0
+    mut output = 0
 
-    if (k >= 0) {
-        tenPowerPair(mut sHigh, mut sLow, k)
-    } else {
-        tenPowerPair(mut rHigh, mut rLow, -k)
-        tenPowerPair(mut plusHigh, mut plusLow, -k)
-        tenPowerPair(mut minusHigh, mut minusLow, -k)
-    }
+    if (vmTrailingZeros or vrTrailingZeros) {
+        while (vp / 10 > vm / 10) {
+            vmTrailingZeros = vmTrailingZeros and vm % 10 == 0
+            vrTrailingZeros = vrTrailingZeros and lastRemoved == 0
+            lastRemoved = vr % 10
+            vr = vr / 10
+            vp = vp / 10
+            vm = vm / 10
+            removed += 1
+        }
 
-    mut sumHigh = rHigh
-    mut sumLow = rLow
-    addPair(mut sumHigh, mut sumLow, plusHigh, plusLow)
-    immut compared = comparePair(sumHigh, sumLow, sHigh, sLow)
-
-    if (compared > 0 or (even and compared == 0)) {
-        k += 1
-    } else {
-        multiplyPair(mut rHigh, mut rLow, 10)
-        multiplyPair(mut plusHigh, mut plusLow, 10)
-        multiplyPair(mut minusHigh, mut minusLow, 10)
-    }
-
-    mut digitsFound: U128 = 0
-    mut count = 0
-
-    while (true) {
-        mut d = 0
-
-        if (rHigh == 0 and sHigh == 0) {
-            // One division of 128 bits.
-            immut digit = rLow / sLow
-            rLow = rLow - digit * sLow
-            d = lowWord(digit)
-        } else {
-            while (comparePair(rHigh, rLow, sHigh, sLow) >= 0) {
-                subtractPair(mut rHigh, mut rLow, sHigh, sLow)
-                d += 1
+        if (vmTrailingZeros) {
+            while (vm % 10 == 0) {
+                vrTrailingZeros = vrTrailingZeros and lastRemoved == 0
+                lastRemoved = vr % 10
+                vr = vr / 10
+                vp = vp / 10
+                vm = vm / 10
+                removed += 1
             }
         }
 
-        immut low = comparePair(rHigh, rLow, minusHigh, minusLow)
-        immut lowEnd = low < 0 or (even and low == 0)
-        sumHigh = rHigh
-        sumLow = rLow
-        addPair(mut sumHigh, mut sumLow, plusHigh, plusLow)
-        immut high = comparePair(sumHigh, sumLow, sHigh, sLow)
-        immut highEnd = high > 0 or (even and high == 0)
-        count += 1
+        // Exactly half way between two shortest decimals: up, as Rust (Ryu rounds to even).
+        immut up = lastRemoved >= 5 or (vr == vm and (not even or not vmTrailingZeros))
+        output = vr + (if (up) { 1 } else { 0 })
+    } else {
+        mut up = false
 
-        if (not lowEnd and not highEnd) {
-            digitsFound = digitsFound * 10 + u128(d)
-            multiplyPair(mut rHigh, mut rLow, 10)
-            multiplyPair(mut plusHigh, mut plusLow, 10)
-            multiplyPair(mut minusHigh, mut minusLow, 10)
-            continue
+        if (vp / 100 > vm / 100) {
+            up = vr % 100 >= 50
+            vr = vr / 100
+            vp = vp / 100
+            vm = vm / 100
+            removed += 2
         }
 
-        mut up = highEnd
-
-        if (lowEnd and highEnd) {
-            sumHigh = rHigh
-            sumLow = rLow
-            addPair(mut sumHigh, mut sumLow, rHigh, rLow)
-            up = comparePair(sumHigh, sumLow, sHigh, sLow) >= 0
+        while (vp / 10 > vm / 10) {
+            up = vr % 10 >= 5
+            vr = vr / 10
+            vp = vp / 10
+            vm = vm / 10
+            removed += 1
         }
 
-        digitsFound = digitsFound * 10 + u128(if (up) { d + 1 } else { d })
-        break
+        output = vr + (if (vr == vm or up) { 1 } else { 0 })
     }
 
-    mut exponent = k - count
+    mut exponent = e10 + removed
 
-    while (digitsFound % 10 == 0) {
-        digitsFound = digitsFound / 10
+    while (output % 10 == 0) {
+        output = output / 10
         exponent += 1
     }
 
-    return make(negative, digitsFound, exponent)
+    return make(value < 0, u128(output), exponent)
 }
 
-// Numbers of 256 bits in two U128 (`high`, `low`), changed in place.
+function powersOfFiveRead() {
+    if (not isNull(fives)) { return }
 
-function shiftPair(mut high: U128, mut low: U128, n: int) {
-    if (n >= 128) {
-        high = low << u128(n - 128)
-        low = 0
-        return
+    fives = numbersOf(powersOfFive)
+    inverseFives = numbersOf(inversePowersOfFive)
+}
+
+function numbersOf(table: string): Address {
+    immut digits = stringBytes(table)
+    immut count = stringSize(table) / 16
+    immut words = allocate(count * 8)
+
+    for i in range(count) {
+        mut value: U128 = 0
+
+        for d in range(16) {
+            immut b: byte = read(digits, i * 16 + d)
+            value = (value << 4) | wide(int(if (b <= 57) { b - 48 } else { b - 87 }), 0)
+        }
+
+        write(words, i * 8, lowWord(value))
     }
 
-    if (n == 0) { return }
-
-    immut bits = u128(n)
-    high = (high << bits) | (low >> (128 - bits))
-    low = low << bits
+    return words
 }
 
-// `* factor`, for a factor of 64 bits.
-function multiplyPair(mut high: U128, mut low: U128, factor: U128) {
-    immut bottom = wordProduct(low & word, factor)
-    immut middle = wordProduct(low >> 64, factor) + (bottom >> 64)
-    low = (middle << 64) | (bottom & word)
-    high = high * factor + (middle >> 64)
+// m times the number `index` of a table, shifted right by `shift` bits (at least 64).
+function timesPower(m: int, table: Address, index: int, shift: int): int {
+    immut high: int = read(table, index * 16)
+    immut low: int = read(table, index * 16 + 8)
+    immut lowProduct = wordProduct(wide(m, 0), wide(low, 0))
+    immut highProduct = wordProduct(wide(m, 0), wide(high, 0))
+    return lowWord(((lowProduct >> 64) + highProduct) >> u128(shift - 64))
 }
 
-function tenPowerPair(mut high: U128, mut low: U128, power: int) {
-    for i in range(power / 19) {
-        multiplyPair(mut high, mut low, powers[19])
+// The bits of 5^e (1 for e = 0), and the digits of 2^e and 5^e less one, for the exponents of
+// floats.
+function bitsOfPowerOf5(e: int): int {
+    return ((e * 1217359) >> 19) + 1
+}
+
+function log10OfPowerOf2(e: int): int {
+    return (e * 78913) >> 18
+}
+
+function log10OfPowerOf5(e: int): int {
+    return (e * 732923) >> 20
+}
+
+// How many times 5 divides `value` (not 0).
+function factorsOf5(value: int): int {
+    mut n = value
+    mut count = 0
+
+    while (n % 5 == 0) {
+        n = n / 5
+        count += 1
     }
 
-    multiplyPair(mut high, mut low, powers[power % 19])
-}
-
-function addPair(mut high: U128, mut low: U128, otherHigh: U128, otherLow: U128) {
-    immut sum = low + otherLow
-    immut carry: U128 = if (sum < low) { 1 } else { 0 }
-    low = sum
-    high = high + otherHigh + carry
-}
-
-// For a number at least the other.
-function subtractPair(mut high: U128, mut low: U128, otherHigh: U128, otherLow: U128) {
-    immut borrow: U128 = if (low < otherLow) { 1 } else { 0 }
-    low = low - otherLow
-    high = high - otherHigh - borrow
-}
-
-function comparePair(aHigh: U128, aLow: U128, bHigh: U128, bLow: U128): int {
-    if (aHigh != bHigh) { return if (aHigh < bHigh) { -1 } else { 1 } }
-
-    if (aLow != bLow) { return if (aLow < bLow) { -1 } else { 1 } }
-
-    return 0
-}
-
-function ceilOf(x: float): float {
-    return -floor(-x)
+    return count
 }
 
 // The float of a text, correctly rounded (`strtod`): an infinity when it is too large.
@@ -1458,6 +1247,17 @@ function readFloat(text: string): float {
     immut value = strtod(cText, nullAddress())
     free(cText)
     return value
+}
+
+// 10^0 to 10^22, the powers of ten that are floats exactly (`exactTens`).
+function floatTens(): float[] {
+    mut tens = [float(1)]
+
+    for i in range(22) {
+        tens.push(tens[i] * float(10))
+    }
+
+    return tens
 }
 
 // The nearest float.
@@ -1675,29 +1475,37 @@ function allDigits(chars: char[], start: int, end: int): boolean {
 // Powers with a fractional exponent: e^(y ln x), with `exp` and `ln` with 64 digits after the
 // point, in fixed point on big integers.
 
-// A big unsigned integer: words of 64 bits (in U128), least significant first, without leading
-// zeros.
-function bigFrom(n: U128): U128[] {
-    return trimmed([n & word, n >> 64])
+// Big numbers: natural numbers in limbs of base 10^19 (each below 10^19, in the low half of a U128),
+// the lowest first, without zero limbs at the end. Dividing by a power of ten drops limbs, and the
+// limbs are the digits of the text. The results are new lists of their size, which the operations
+// change through the addresses of their limbs.
+
+// 10^19, the base of the limbs (a constant for the C compiler, which multiplies instead of dividing).
+function limbBase(): U128 {
+    return wide(-8446744073709551616, 0)
 }
 
-function trimmed(words: U128[]): U128[] {
-    mut end = words.length()
-
-    while (end > 0 and words[end - 1] == 0) {
-        end -= 1
-    }
-
-    return if (end == words.length()) { words } else { words[..end] }
+function bigFrom(n: U128): U128[] {
+    immut out = zeroWords(3)
+    immut limbs = listItems(out)
+    putWord(limbs, 0, n % limbBase())
+    putWord(limbs, 1, n / limbBase() % limbBase())
+    putWord(limbs, 2, n / limbBase() / limbBase())
+    return trimmedOwn(out)
 }
 
 function bigCompare(a: U128[], b: U128[]): int {
     if (a.length() != b.length()) { return if (a.length() < b.length()) { -1 } else { 1 } }
 
+    immut first = listItems(a)
+    immut second = listItems(b)
     mut i = a.length() - 1
 
     while (i >= 0) {
-        if (a[i] != b[i]) { return if (a[i] < b[i]) { -1 } else { 1 } }
+        immut x = rawWord(first, i, a.length())
+        immut y = rawWord(second, i, b.length())
+
+        if (x != y) { return if (x < y) { -1 } else { 1 } }
 
         i -= 1
     }
@@ -1705,168 +1513,192 @@ function bigCompare(a: U128[], b: U128[]): int {
     return 0
 }
 
-function wordAt(words: U128[], i: int): U128 {
-    return if (i < words.length()) { words[i] } else { 0 }
-}
-
-// The results start as a copy of the right size, then change in place (no list grows word by
-// word).
 function bigAdd(a: U128[], b: U128[]): U128[] {
-    immut longer = a.length() >= b.length()
-    mut out = if (longer) { a } else { b }
-    immut other = if (longer) { b } else { a }
+    immut longer = maxOf(a.length(), b.length())
+    immut out = zeroWords(longer + 1)
+    immut target = listItems(out)
+    immut first = listItems(a)
+    immut second = listItems(b)
     mut carry: U128 = 0
 
-    for i in range(out.length()) {
-        immut sum = out[i] + wordAt(other, i) + carry
-        out[i] = sum & word
-        carry = sum >> 64
+    for i in range(longer) {
+        mut sum = rawWord(first, i, a.length()) + rawWord(second, i, b.length()) + carry
+        carry = 0
+
+        if (sum >= limbBase()) {
+            sum = sum - limbBase()
+            carry = 1
+        }
+
+        putWord(target, i, sum)
     }
 
-    if (carry != 0) { out.push(carry) }
-
-    return out
+    putWord(target, longer, carry)
+    return trimmedOwn(out)
 }
 
 // `a - b`, for `a >= b`.
 function bigSubtract(a: U128[], b: U128[]): U128[] {
-    mut out = a
+    immut out = zeroWords(a.length())
+    immut target = listItems(out)
+    immut first = listItems(a)
+    immut second = listItems(b)
     mut borrow: U128 = 0
 
-    for i in range(out.length()) {
-        immut taken = wordAt(b, i) + borrow
+    for i in range(a.length()) {
+        immut current = rawWord(first, i, a.length())
+        immut taken = rawWord(second, i, b.length()) + borrow
 
-        if (out[i] >= taken) {
-            out[i] = out[i] - taken
+        if (current >= taken) {
+            putWord(target, i, current - taken)
             borrow = 0
         } else {
-            out[i] = out[i] + (u128(1) << 64) - taken
+            putWord(target, i, current + limbBase() - taken)
             borrow = 1
         }
     }
 
-    return trimmed(out)
+    return trimmedOwn(out)
 }
 
 function bigMultiply(a: U128[], b: U128[]): U128[] {
-    immut size = a.length() + b.length() + 1
-    mut out = if (size <= manyZeros.length()) { manyZeros[..size] } else { [] }
-
-    while (out.length() < size) {
-        out.push(0)
-    }
+    immut out = zeroWords(a.length() + b.length() + 1)
+    immut target = listItems(out)
+    immut first = listItems(a)
+    immut second = listItems(b)
 
     for i in range(a.length()) {
+        immut factor = rawWord(first, i, a.length())
         mut carry: U128 = 0
 
         for j in range(b.length()) {
-            immut current = out[i + j] + wordProduct(a[i], b[j]) + carry
-            out[i + j] = current & word
-            carry = current >> 64
+            // Below 10^38 + 2 * 10^19: within 128 bits.
+            immut current = rawWord(target, i + j, out.length()) + wordProduct(factor, rawWord(second, j, b.length())) + carry
+            carry = current / limbBase()
+            putWord(target, i + j, current - wordProduct(carry, limbBase()))
         }
 
         mut k = i + b.length()
 
         while (carry != 0) {
-            immut current = out[k] + carry
-            out[k] = current & word
-            carry = current >> 64
+            immut current = rawWord(target, k, out.length()) + carry
+            carry = current / limbBase()
+            putWord(target, k, current - wordProduct(carry, limbBase()))
             k += 1
         }
     }
 
-    return trimmed(out)
-}
-
-// `a * factor`, for a factor of 64 bits.
-function bigMultiplySmall(a: U128[], factor: U128): U128[] {
-    if (factor == 0) { return [] }
-
-    mut out = a
-    multiplyAllInPlace(mut out, factor)
-    return out
+    return trimmedOwn(out)
 }
 
 // `a / divisor` (of 64 bits), toward zero.
 function bigDivideSmall(a: U128[], divisor: U128): U128[] {
-    mut out = a
-    divideAllInPlace(mut out, divisor)
-    return trimmed(out)
+    immut out = copied(a, 0)
+    divideLimbs(listItems(out), out.length(), divisor)
+    return trimmedOwn(out)
 }
 
-// `a /= divisor` (of 64 bits), toward zero, keeping the words of `a`.
-function divideAllInPlace(mut a: U128[], divisor: U128) {
+// The limbs from `limbs` (`count` of them) divided by `divisor` (of 64 bits), toward zero, in place.
+function divideLimbs(limbs: Address, count: int, divisor: U128) {
     mut rest: U128 = 0
-    mut i = a.length() - 1
+    mut i = count - 1
 
     while (i >= 0) {
-        immut current = (rest << 64) | a[i]
+        // Below divisor * 10^19: within 128 bits, and the quotient below 10^19.
+        immut current = wordProduct(rest, limbBase()) + rawWord(limbs, i, count)
         immut quotient = current / divisor
-        rest = current - quotient * divisor
-        a[i] = quotient
+        rest = current - wordProduct(quotient, divisor)
+        putWord(limbs, i, quotient)
         i -= 1
     }
 }
 
-// `a *= factor` (of 64 bits), with one more word when it is needed.
-function multiplyAllInPlace(mut a: U128[], factor: U128) {
+// Times 10^n: n / 19 limbs of zero first, then times 10^(n % 19).
+function bigTimesTenTo(a: U128[], n: int): U128[] {
+    immut shift = n / 19
+    immut out = zeroWords(a.length() + shift + 1)
+    immut target = listItems(out)
+    memcpy(offset(target, shift * 16), listItems(a), a.length() * 16)
+    immut factor = powers[n % 19]
     mut carry: U128 = 0
 
-    for i in range(a.length()) {
-        immut current = wordProduct(a[i], factor) + carry
-        a[i] = current & word
-        carry = current >> 64
+    for i in range(shift, out.length()) {
+        immut current = wordProduct(rawWord(target, i, out.length()), factor) + carry
+        carry = current / limbBase()
+        putWord(target, i, current - wordProduct(carry, limbBase()))
     }
 
-    if (carry != 0) { a.push(carry) }
+    return trimmedOwn(out)
 }
 
-function bigTimesTenTo(a: U128[], n: int): U128[] {
-    mut out = a
-
-    for i in range(n / 19) {
-        multiplyAllInPlace(mut out, powers[19])
-    }
-
-    multiplyAllInPlace(mut out, powers[n % 19])
-    return trimmed(out)
-}
-
-// Divided by 10^n, toward zero.
+// Divided by 10^n, toward zero: n / 19 limbs dropped, then divided by 10^(n % 19).
 function bigOverTenTo(a: U128[], n: int): U128[] {
-    mut out = a
+    immut dropped = n / 19
 
-    for i in range(n / 19) {
-        divideAllInPlace(mut out, powers[19])
-    }
+    if (dropped >= a.length()) { return [] }
 
-    divideAllInPlace(mut out, powers[n % 19])
-    return trimmed(out)
+    immut out = copied(a, dropped)
+    divideLimbs(listItems(out), out.length(), powers[n % 19])
+    return trimmedOwn(out)
 }
 
+// The digits of a big number: its highest limb, then the others in 19 digits each.
 function bigDigits(a: U128[]): string {
     if (a.length() == 0) { return '0' }
 
-    mut parts: U128[] = []
-    mut rest = a
-
-    while (rest.length() > 0) {
-        immut quotient = bigDivideSmall(rest, powers[19])
-        immut low = bigSubtract(rest, bigMultiplySmall(quotient, powers[19]))
-        parts.push(wordAt(low, 0))
-        rest = quotient
-    }
-
-    mut text = string(parts[parts.length() - 1])
-    mut i = parts.length() - 2
+    immut limbs = listItems(a)
+    mut text = string(rawWord(limbs, a.length() - 1, a.length()))
+    mut i = a.length() - 2
 
     while (i >= 0) {
-        immut part = string(parts[i])
+        immut part = string(rawWord(limbs, i, a.length()))
         text += '0' * (19 - part.length()) + part
         i -= 1
     }
 
     return text
+}
+
+// The limb `i` of the limbs at `limbs` (`count` of them), 0 beyond them.
+function rawWord(limbs: Address, i: int, count: int): U128 {
+    if (i >= count) { return 0 }
+
+    immut low: int = read(limbs, i * 16)
+    return wide(low, 0)
+}
+
+function putWord(limbs: Address, i: int, value: U128) {
+    write(limbs, i * 16, lowWord(value))
+    write(limbs, i * 16 + 8, 0)
+}
+
+// A new list with the limbs of `a` from `start`, to change.
+function copied(a: U128[], start: int): U128[] {
+    immut out = zeroWords(a.length() - start)
+    memcpy(listItems(out), offset(listItems(a), start * 16), (a.length() - start) * 16)
+    return out
+}
+
+// `limbs` (a list of its own) without the zero limbs at its end.
+function trimmedOwn(limbs: U128[]): U128[] {
+    immut items = listItems(limbs)
+    mut end = limbs.length()
+
+    while (end > 0 and rawWord(items, end - 1, end) == 0) {
+        end -= 1
+    }
+
+    setListLength(limbs, end)
+    return limbs
+}
+
+// `n` limbs of zero, in a new list.
+function zeroWords(n: int): U128[] {
+    mut words: U128[] = []
+    reserve(words, n)
+    memset(listItems(words), 0, n * 16)
+    setListLength(words, n)
+    return words
 }
 
 // A signed number with 64 digits after the point.
@@ -1877,8 +1709,13 @@ type Fixed = {
 
 immut places = 64
 
+// 1, computed the first time.
+mut oneKnown: Fixed[] = []
+
 function fixedOne(): Fixed {
-    return { negative: false, magnitude: bigTimesTenTo(bigFrom(1), places) }
+    if (oneKnown.length() == 0) { oneKnown.push({ negative: false, magnitude: bigTimesTenTo(bigFrom(1), places) }) }
+
+    return oneKnown[0]
 }
 
 function fixedFromInt(n: int): Fixed {

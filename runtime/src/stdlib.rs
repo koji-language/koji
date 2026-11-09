@@ -24,7 +24,7 @@ mod without_library {
     extern "C" fn koji_library_init() {}
 }
 
-// The messages of errors and the conversions of text.
+// The messages of errors.
 
 /// The readable message of an error of the standard library (`'x' is not a valid number`),
 /// from the texts of its fields; `None` for any other type.
