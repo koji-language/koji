@@ -1,5 +1,5 @@
 //! The standard library for compiled programs: the built-in functions (`input`, `int`,
-//! `float`), the methods of strings and the modules `math`, `time` and `system`.
+//! `float`), the methods of strings and the module `system`.
 //!
 //! A function that gives a value of a declared type (`Option`, `Result`, an error) receives
 //! its description from the generated code and builds it with `record::make`. The messages
@@ -317,88 +317,6 @@ pub extern "C" fn koji_std_string_index_of(string: *const KojiString, part: *con
         Some(byte) => some(option, s[..byte].chars().count() as u64),
         None => none(option),
     }
-}
-
-// math
-
-#[no_mangle]
-pub extern "C" fn koji_std_math_abs_int(value: i64, location: *const c_char) -> i64 {
-    value.checked_abs().unwrap_or_else(|| panic_at(location, "integer overflow"))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_math_abs_float(value: f64) -> f64 {
-    value.abs()
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_math_abs_decimal(value: crate::decimal::KojiDecimal) -> crate::decimal::KojiDecimal {
-    let decimal = crate::decimal::from_c(value);
-    crate::decimal::to_c(crate::decimal::Decimal { negative: false, ..decimal })
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_math_sqrt_decimal(value: crate::decimal::KojiDecimal, result: *const KojiRecordType) -> *mut KojiRecord {
-    match crate::decimal::from_c(value).sqrt() {
-        Some(root) => {
-            let (lo, hi) = root.to_bits();
-            make(result, "Ok", &[lo, hi])
-        }
-        None => math_error(result, "Complex"),
-    }
-}
-
-fn math_error(result: *const KojiRecordType, variant: &str) -> *mut KojiRecord {
-    let error = make(field_record(result, "Err", 0), variant, &[]);
-    make(result, "Err", &[error as usize as u64])
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_math_sqrt(value: f64, result: *const KojiRecordType) -> *mut KojiRecord {
-    if value < 0.0 {
-        return math_error(result, "Complex");
-    }
-    make(result, "Ok", &[value.sqrt().to_bits()])
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_math_pow(base: f64, exponent: f64, result: *const KojiRecordType, location: *const c_char) -> *mut KojiRecord {
-    match crate::numbers::float_pow(base, exponent) {
-        Ok(value) => make(result, "Ok", &[value.to_bits()]),
-        Err(crate::numbers::PowFailure::Complex) => math_error(result, "Complex"),
-        Err(crate::numbers::PowFailure::Infinite) => math_error(result, "Infinite"),
-        Err(crate::numbers::PowFailure::Overflow) => panic_at(location, "float overflow"),
-    }
-}
-
-/// `math.pow` of decimals: like `**`, but a result that is not a real number is an error.
-#[no_mangle]
-pub extern "C" fn koji_std_math_pow_decimal(
-    base: crate::decimal::KojiDecimal,
-    exponent: crate::decimal::KojiDecimal,
-    result: *const KojiRecordType,
-    location: *const c_char,
-) -> *mut KojiRecord {
-    match crate::decimal::from_c(base).power_of(crate::decimal::from_c(exponent)) {
-        Some(Ok(value)) => {
-            let (lo, hi) = value.to_bits();
-            make(result, "Ok", &[lo, hi])
-        }
-        Some(Err(Some(limit))) => panic_at(location, limit.message()),
-        Some(Err(None)) => math_error(result, "Complex"),
-        None => math_error(result, "Infinite"),
-    }
-}
-
-/// `math.floor`, `math.ceil` and `math.round`: `mode` is 0, 1 or 2.
-#[no_mangle]
-pub extern "C" fn koji_std_math_round(value: f64, mode: i32, location: *const c_char) -> i64 {
-    let rounded = match mode {
-        0 => value.floor(),
-        1 => value.ceil(),
-        _ => value.round(),
-    };
-    float_to_int(rounded).unwrap_or_else(|message| panic_at(location, &message))
 }
 
 // system

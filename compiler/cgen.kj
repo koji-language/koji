@@ -572,6 +572,7 @@ function operand(value: Operand): string {
         BoolOp(value) => string(value)
         CharOp(value) => `UINT32_C(${value.code()})`
         StrOp(id) => `koji_s${id}`
+        LocationOp(place) => `(int64_t)(intptr_t)"${escaped(place)}"`
     }
 }
 
@@ -662,6 +663,7 @@ function address(value: Operand): string {
         BoolOp(_) => `&(bool){ ${operand(value)} }`
         CharOp(_) => `&(uint32_t){ ${operand(value)} }`
         StrOp(_) => `&(KojiString *){ ${operand(value)} }`
+        LocationOp(_) => `&(int64_t){ ${operand(value)} }`
     }
 }
 
@@ -680,6 +682,7 @@ function Generator.operandType(self, routine: IrFunction, value: Operand): Ty {
         BoolOp(_) => BoolTy
         CharOp(_) => CharTy
         StrOp(_) => StrTy
+        LocationOp(_) => IntTy
     }
 }
 
@@ -1257,6 +1260,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                     RecordArg(record) => `&koji_record_${record}`
                     ElementArg(ty) => elementType(ty)
                     LocationArg(line) => self.location(line)
+                    PlaceArg(value) => `(const char *)(intptr_t)${operand(value)}`
                     NullArg => 'NULL'
                 })
             }
@@ -1265,7 +1269,11 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             match (self.externOf(name)) {
                 Some(found) => {
                     for i in range(values.length()) {
-                        if (i < found.params.length() and found.params[i] == 'void *') { values[i] = `(void *)(intptr_t)${values[i]}` }
+                        if (i >= found.params.length()) { continue }
+
+                        if (found.params[i] == 'void *') { values[i] = `(void *)(intptr_t)${values[i]}` }
+
+                        if (found.params[i] == 'const char *') { values[i] = `(const char *)(intptr_t)${values[i]}` }
                     }
 
                     immut call = `${name}(${values.join(', ')})`

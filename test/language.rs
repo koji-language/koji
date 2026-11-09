@@ -1560,6 +1560,15 @@ fn stdlib_math() {
     assert_error("import math\nprint(math.pow(10, 7000))", "decimal overflow");
     assert_error("import math\nprint(math.pow(float(10), 400))", "float overflow");
     assert_error("import math\nprint(math.round(1e300))", "integer overflow");
+    // The module is in Koji (std/math.kj): its panics are at the line of the call.
+    assert_error("import math\n\nprint(math.abs(-9223372036854775807 - 1))", "panic: test.kj:3: integer overflow");
+    assert_error("import math\n\nprint(math.pow(float(10), float(400)))", "panic: test.kj:3: float overflow");
+    assert_error("import math\n\nprint(math.floor(1e30))", "panic: test.kj:3: integer overflow: 1000000000000000000000000000000 does not fit in an int");
+    // `sqrt` imported by name is the one of `math`, not the C function that std/math.kj calls.
+    assert_eq!(
+        run("import { abs, sqrt, pow } from 'math'\nprint(abs(float(-2.5)), sqrt(16), sqrt(float(-1)), pow(2, 10))"),
+        "0x1.4p1 Ok(4) Err(Complex) Ok(1024)\n"
+    );
 }
 
 #[test]

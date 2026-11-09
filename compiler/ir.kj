@@ -60,6 +60,9 @@ export type Operand = {
     CharOp(value: char)
     // A string literal of the program (`IrProgram.strings`).
     StrOp(id: int)
+    // The place of a call (`main.kj:12`), for the panics of the function it calls: a `Location` of
+    // `koji:unsafe`, a string of C (as an int).
+    LocationOp(place: string)
 }
 
 // Where an instruction writes.
@@ -111,6 +114,8 @@ export type StdArg = {
     ElementArg(ty: Ty)
     // Where the call is, for its panics.
     LocationArg(line: int)
+    // A `Location` the function was given (`LocationOp`).
+    PlaceArg(value: Operand)
     NullArg
 }
 
@@ -329,6 +334,7 @@ export function operandText(operand: Operand): string {
         BoolOp(value) => string(value)
         CharOp(value) => charDebug(value)
         StrOp(id) => `s${id}`
+        LocationOp(place) => `location(${place})`
     }
 }
 
@@ -343,6 +349,7 @@ function operandDebug(operand: Operand): string {
         BoolOp(value) => `Bool(${value})`
         CharOp(value) => `Char(${charDebug(value)})`
         StrOp(id) => `Str(${id})`
+        LocationOp(place) => `Location(${place})`
     }
 }
 
@@ -353,6 +360,7 @@ function stdArgText(arg: StdArg): string {
         RecordArg(id) => `Record(${id})`
         ElementArg(ty) => `Element(${tyText(ty)})`
         LocationArg(line) => `Location(${line})`
+        PlaceArg(value) => `Place(${operandDebug(value)})`
         NullArg => 'Null'
     }
 }

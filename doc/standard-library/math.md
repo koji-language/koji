@@ -1,6 +1,6 @@
 # math
 
-The `math` module provides mathematical functions and constants.
+The `math` module provides mathematical functions and constants. It is written in Koji (`std/math.kj`): the floats with the C library, the decimals with the runtime.
 
 ## Functions
 

@@ -1228,6 +1228,18 @@ pub extern "C" fn koji_decimal_power(base: KojiDecimal, exponent: KojiDecimal, l
     }
 }
 
+/// The absolute value (`math.abs`).
+#[no_mangle]
+pub extern "C" fn koji_decimal_abs(value: KojiDecimal) -> KojiDecimal {
+    to_c(Decimal { negative: false, ..from_c(value) })
+}
+
+/// The square root, correctly rounded, of a number that is not negative (`math.sqrt`).
+#[no_mangle]
+pub extern "C" fn koji_decimal_sqrt(value: KojiDecimal) -> KojiDecimal {
+    to_c(from_c(value).sqrt().unwrap_or(ZERO))
+}
+
 #[no_mangle]
 pub extern "C" fn koji_decimal_neg(value: KojiDecimal) -> KojiDecimal {
     to_c(from_c(value).negate())

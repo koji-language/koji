@@ -1,0 +1,120 @@
+// The `math` module: mathematical functions and constants (see doc/standard-library/math.md).
+// `abs`, `sqrt`, `pow`, `floor`, `ceil` and `round` take an int, a decimal or a float: the compiler
+// checks their arguments and calls the function below for their type (`math.abs(-2)` is
+// `absInt(-2, here)`), with the place of the call, where their panics are.
+
+import { CInt, Location, panicAt } from 'koji:unsafe'
+
+// The functions of C (`libm`) for floats.
+extern function fabs(x: float): float
+extern function sqrt(x: float): float
+extern function pow(base: float, exponent: float): float
+extern function floor(x: float): float
+extern function ceil(x: float): float
+extern function round(x: float): float
+
+// The decimals of the runtime, and the conversions to an int that panic at `here`: `mode` is 0 to
+// round down, 1 up and 2 to the nearest.
+extern function koji_decimal_abs(value: decimal): decimal
+extern function koji_decimal_sqrt(value: decimal): decimal
+extern function koji_decimal_power(base: decimal, exponent: decimal, here: Location): decimal
+extern function koji_decimal_to_int(value: decimal, mode: CInt, here: Location): int
+extern function koji_std_float_to_int(value: float, here: Location): int
+
+// π and e, with 34 digits.
+export immut pi = 3.141592653589793238462643383279503
+export immut e = 2.718281828459045235360287471352662
+
+export type MathError = {
+    // The result exists only in the complex numbers: `sqrt(-1)`.
+    Complex
+    // An indeterminate form (no function returns it yet).
+    Indeterminate
+    // The result is infinite: `pow(0, -1)`.
+    Infinite
+}
+
+// The largest float, beyond which a result does not fit.
+immut largestFloat = float(1.7976931348623157e308)
+
+function absInt(value: int, here: Location): int {
+    if (value >= 0) { return value }
+
+    if (value < -9223372036854775807) { panicAt(here, 'integer overflow') }
+
+    return -value
+}
+
+function absFloat(value: float, here: Location): float {
+    return fabs(value)
+}
+
+function absDecimal(value: decimal, here: Location): decimal {
+    return koji_decimal_abs(value)
+}
+
+// The root of an int is a decimal, correctly rounded.
+function sqrtDecimal(value: decimal, here: Location): Result[decimal, MathError] {
+    if (value < 0) { return Err(Complex) }
+
+    return Ok(koji_decimal_sqrt(value))
+}
+
+function sqrtFloat(value: float, here: Location): Result[float, MathError] {
+    if (value < 0) { return Err(Complex) }
+
+    return Ok(sqrt(value))
+}
+
+// `pow(0, 0)` is 1, the value of the expression (only the limit form is indeterminate).
+function powDecimal(base: decimal, exponent: decimal, here: Location): Result[decimal, MathError] {
+    if (base == 0 and exponent < 0) { return Err(Infinite) }
+
+    if (base < 0 and not isInt(exponent)) { return Err(Complex) }
+
+    return Ok(koji_decimal_power(base, exponent, here))
+}
+
+function powFloat(base: float, exponent: float, here: Location): Result[float, MathError] {
+    if (base < 0 and floor(exponent) != exponent) { return Err(Complex) }
+
+    if (base == 0 and exponent < 0) { return Err(Infinite) }
+
+    immut power = pow(base, exponent)
+
+    if (power > largestFloat or power < -largestFloat) { panicAt(here, 'float overflow') }
+
+    return Ok(power)
+}
+
+function floorDecimal(value: decimal, here: Location): int {
+    return koji_decimal_to_int(value, 0, here)
+}
+
+function ceilDecimal(value: decimal, here: Location): int {
+    return koji_decimal_to_int(value, 1, here)
+}
+
+// Halfway cases away from zero: `round(2.5)` is 3.
+function roundDecimal(value: decimal, here: Location): int {
+    return koji_decimal_to_int(value, 2, here)
+}
+
+function floorFloat(value: float, here: Location): int {
+    return koji_std_float_to_int(floor(value), here)
+}
+
+function ceilFloat(value: float, here: Location): int {
+    return koji_std_float_to_int(ceil(value), here)
+}
+
+function roundFloat(value: float, here: Location): int {
+    return koji_std_float_to_int(round(value), here)
+}
+
+// Whether `value` is an int (an exponent that a negative base can take).
+function isInt(value: decimal): boolean {
+    if (value < -9223372036854775807 or value > 9223372036854775807) { return false }
+
+    return decimal(int(value)) == value
+}

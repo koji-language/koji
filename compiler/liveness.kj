@@ -290,6 +290,7 @@ function uses(instruction: Instruction): int[] {
             for arg in args {
                 match (arg) {
                     ValueArg(value) => operandLocal(value, mut found)
+                    PlaceArg(value) => operandLocal(value, mut found)
                     _ => {}
                 }
             }

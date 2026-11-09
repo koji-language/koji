@@ -8,7 +8,7 @@ import { decimalLiteral } from 'decimal.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
-immut stdlibModules = ['file', 'math', 'http', 'system']
+immut stdlibModules = ['file', 'http', 'system']
 
 type SymbolKind = {
     ValueSymbol
@@ -120,12 +120,15 @@ type Builtins = {
     option: int
     result: int
     parseError: int
+    // `MathError` of `math` (std/math.kj), once it is imported.
     mathError: int
     fileError: int
     fileMode: int
     httpError: int
     // `Address` of `koji:unsafe`: a place in memory.
     address: int
+    // `Location` of `koji:unsafe`: the place of a call, for the panics of the function it calls.
+    location: int
     map: int
     output: int
     systemError: int
@@ -310,10 +313,6 @@ function builtinSums(): BuiltinSum[] {
             variants: [variant('Ok', [field('value', 'T0')]), variant('Err', [field('error', 'T1')])]
         },
         { name: 'ParseError', module: None, params: 0, variants: [variant('InvalidNumber', text), variant('OutOfRange', text)] },
-        {
-            name: 'MathError', module: Some('math'), params: 0,
-            variants: [variant('Complex', []), variant('Indeterminate', []), variant('Infinite', [])]
-        },
         { name: 'Mode', module: Some('file'), params: 0, variants: [variant('Read', []), variant('Write', []), variant('Append', [])] },
         {
             name: 'FileError', module: Some('file'), params: 0,
@@ -347,7 +346,6 @@ function builtinSums(): BuiltinSum[] {
 function stdlibFunctions(module: string): string[] {
     return match (module) {
         'file' => ['open', 'list', 'exists', 'createDir', 'remove']
-        'math' => ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
         'http' => ['get', 'post', 'put', 'delete']
         'system' => ['args', 'env', 'executable', 'exit', 'run', 'capture']
         _ => []
@@ -423,9 +421,10 @@ function Checker.create(): Checker {
         { name: 'status', ty: IntType }, { name: 'stdout', ty: StringType }, { name: 'stderr', ty: StringType }
     ], []))
     immut address = addType(mut table, 'Address', 0, BuiltinKind([], []))
+    immut location = addType(mut table, 'Location', 0, BuiltinKind([], []))
     immut builtins: Builtins = {
-        address: address, option: sumId(ids, 'Option'), result: result, parseError: sumId(ids, 'ParseError'),
-        mathError: sumId(ids, 'MathError'), fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
+        address: address, location: location, option: sumId(ids, 'Option'), result: result,
+        parseError: sumId(ids, 'ParseError'), mathError: -1, fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
         httpError: sumId(ids, 'HttpError'), map: map, output: output, systemError: sumId(ids, 'SystemError'),
         set: set, file: file, response: response,
         operatingSystem: sumId(ids, 'OperatingSystem')
@@ -444,7 +443,6 @@ function Checker.builtinSumId(self, name: string): int {
         'Option' => b.option
         'Result' => b.result
         'ParseError' => b.parseError
-        'MathError' => b.mathError
         'FileError' => b.fileError
         'Mode' => b.fileMode
         'HttpError' => b.httpError
@@ -549,11 +547,6 @@ function Checker.stdlibModule(mut self, name: string): int {
     }
 
     immut b = self.builtins
-
-    if (name == 'math') {
-        module.members['pi'] = valueSymbol(DecimalType, true)
-        module.members['e'] = valueSymbol(DecimalType, true)
-    }
 
     // `system.os`: the operating system the program runs on.
     if (name == 'system') { module.members['os'] = valueSymbol(named(b.operatingSystem), true) }
@@ -1170,7 +1163,11 @@ function Checker.importedModule(mut self, path: string): Result[int, string] {
             None => return Err(self.failure(`cannot import '${path}'`))
         }
 
-        return self.checkModule(key, path, source)
+        immut id = self.checkModule(key, path, source)?
+
+        if (path == 'math') { self.overloadMath(id) }
+
+        return Ok(id)
     }
 
     immut resolved = resolvePath(self.state.dir, path)
@@ -1545,11 +1542,11 @@ function Checker.declareExtern(mut self, name: string, params: Param[], returns:
     match (ty) {
         FunctionType(paramTypes, returned) => {
             for each in paramTypes {
-                if (not self.isCValue(each)) { return Err(self.failure(`'${name}' is extern: its parameters must be int, CInt, float, boolean or Address, found ${self.show(each)}`)) }
+                if (not self.isCValue(each)) { return Err(self.failure(`'${name}' is extern: its parameters must be int, CInt, float, decimal, boolean, Address or Location, found ${self.show(each)}`)) }
             }
 
             if (returned != VoidType and not self.isCValue(returned)) {
-                return Err(self.failure(`'${name}' is extern: it must return int, CInt, float, boolean, Address or nothing, found ${self.show(returned)}`))
+                return Err(self.failure(`'${name}' is extern: it must return int, CInt, float, decimal, boolean, Address, Location or nothing, found ${self.show(returned)}`))
             }
         }
         _ => {}
@@ -1564,16 +1561,40 @@ function Checker.declareExtern(mut self, name: string, params: Param[], returns:
 
 // The values `read` and `write` take from memory and put there, with their sizes.
 function Checker.isMemoryValue(self, ty: Type): boolean {
-    return ty == CharType or ty == ByteType or self.isCValue(ty)
+    return match (ty) {
+        IntType => true
+        FloatType => true
+        BooleanType => true
+        CharType => true
+        ByteType => true
+        NamedType(id, _) => id == self.builtins.address
+        _ => false
+    }
 }
 
+// The values an `extern` function takes and gives: a decimal is the one of the runtime, a
+// `Location` a string of C.
 function Checker.isCValue(self, ty: Type): boolean {
     return match (ty) {
         IntType => true
         FloatType => true
         BooleanType => true
-        NamedType(id, _) => id == self.builtins.address
+        DecimalType => true
+        NamedType(id, _) => id == self.builtins.address or id == self.builtins.location
         _ => false
+    }
+}
+
+// `math.abs` and the other functions of `math` for several types of numbers: the compiler checks
+// their arguments and calls the function of std/math.kj for their type (`absInt`...).
+function Checker.overloadMath(mut self, id: int) {
+    for member in ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round'] {
+        self.modules[id].members[member] = builtinSymbol(`math.${member}`)
+    }
+
+    match (self.modules[id].types.get('MathError')) {
+        Some(KnownType(NamedType(found, _))) => self.builtins.mathError = found
+        _ => {}
     }
 }
 
@@ -1586,11 +1607,12 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
     module.types['Address'] = KnownType(named(self.builtins.address))
+    module.types['Location'] = KnownType(named(self.builtins.location))
     // The `int` of C (32 bits), in `extern` declarations: an `int` in Koji.
     module.types['CInt'] = KnownType(IntType)
     self.modules.push(module)
@@ -4819,6 +4841,11 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         'unsafe.free' => {
             self.checkExactly(name, types, [named(b.address)])?
             return Ok(VoidType)
+        }
+        // A panic at the place of a call, which the function was given.
+        'unsafe.panicAt' => {
+            self.checkExactly(name, types, [named(b.location), s])?
+            return Ok(NeverType)
         }
         // `immut n: int = read(address, 8)`: the type read, and so its size, is the one expected.
         'unsafe.read' => {

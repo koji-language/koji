@@ -315,11 +315,19 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 
 ### `koji:unsafe`: the lowest level of the standard library
 
-**Decision**: a module of the standard library may import `koji:unsafe`, which has `Address` (a place in memory, of its own type), `CInt` (the 32-bit `int` of C, for `extern` declarations only: an `int` in Koji), `allocate`, `free`, `read` and `write` (of an `int`, a `float`, a `boolean`, a `char`, a `byte` or an `Address`, with its size: `immut n: int = read(address, 8)`, the type read being the one expected); and it may declare `extern function name(...): type`, a function of the system's C library, with `int`, `CInt`, `float`, `boolean` and `Address` values only. Other programs can use neither.
+**Decision**: a module of the standard library may import `koji:unsafe`, which has `Address` (a place in memory, of its own type), `CInt` (the 32-bit `int` of C, for `extern` declarations only: an `int` in Koji), `Location` (the place of a call, `main.kj:12`, for panics), `allocate`, `free`, `read` and `write` (of an `int`, a `float`, a `boolean`, a `char`, a `byte` or an `Address`, with its size: `immut n: int = read(address, 8)`, the type read being the one expected) and `panicAt(here, message)` (a panic at that place); and it may declare `extern function name(...): type`, a function of the system's C library or of the runtime, with `int`, `CInt`, `float`, `decimal`, `boolean`, `Address` and `Location` values only. Other programs can use neither.
 
 **Why**: the standard library is written in Koji, but some of it must reach the system (clocks, files, processes) or memory; this keeps that part small, visible and out of the users' sight, as `unsafe` does in Go.
 
 **Alternatives**: these functions in the runtime in Rust (as they were); an FFI for every program, postponed until the language needs it.
+
+### `math.abs` of several types: the compiler chooses the function
+
+**Decision**: `abs`, `sqrt`, `pow`, `floor`, `ceil` and `round` of `math` take an `int`, a `decimal` or a `float` (as they always did). `math` is written in Koji (`std/math.kj`), with a private function for each type (`absInt`, `absDecimal`, `absFloat`...); the compiler checks a call by the rules of the function (the same types and messages as before: `math.pow` does not mix a float and a decimal) and calls the function for the types of its arguments, with the `Location` of the call as its last argument, so that its panics name the line of the program (`main.kj:3: integer overflow`), not one of `std/math.kj`.
+
+**Why**: the module moves to Koji without changing for its users, and overloading stays out of the language: six functions do not justify it.
+
+**Alternatives**: overloading of functions in the language (rules for choosing, for errors and for functions as values, for six functions); generic functions with a constraint for numbers, which Koji does not have; one function for each type in the API (`math.absFloat`), heavier for every user.
 
 ### Messages name files as they were written
 

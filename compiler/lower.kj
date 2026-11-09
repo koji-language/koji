@@ -8,6 +8,10 @@ import { IrExtern, Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecor
 import { decimalLiteral } from 'decimal.kj'
 import { kojiModules } from 'stdlib.kj'
 
+// The functions of `math` for several types of numbers: a call is one of the function of
+// std/math.kj for its arguments (see `mathCall`).
+immut mathOverloads = ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
+
 // What a name of a module refers to.
 type Item = {
     GlobalItem(id: int)
@@ -326,6 +330,9 @@ function Lowerer.namedTy(mut self, id: int, args: Type[]): Result[Ty, string] {
 
     // An `Address` of `koji:unsafe` is a number for the generated code.
     if (self.isBuiltinNamed(id, 'Address')) { return Ok(IntTy) }
+
+    // So is a `Location`: the address of a string of C.
+    if (self.isBuiltinNamed(id, 'Location')) { return Ok(IntTy) }
 
     match (self.table[id].kind) {
         // A type parameter seen from inside its generic function (`T` in the body of `first[T]`):
@@ -677,7 +684,19 @@ function cTypeOf(written: Option[TypeExpr]): string {
         Some(Named('float')) => 'double'
         Some(Named('boolean')) => 'bool'
         Some(Named('Address')) => 'void *'
+        Some(Named('decimal')) => 'KojiDecimal'
+        Some(Named('Location')) => 'const char *'
         _ => 'int64_t'
+    }
+}
+
+// The type in the IR of a value of C.
+function externTy(written: string): Ty {
+    return match (written) {
+        'double' => FloatTy
+        'bool' => BoolTy
+        'KojiDecimal' => DecimalTy
+        _ => IntTy
     }
 }
 
@@ -690,8 +709,7 @@ function Lowerer.externCall(mut self, mut builder: Builder, call: Node, name: st
     mut values: StdArg[] = []
 
     for i in range(args.length()) {
-        immut ty = if (found.params[i] == 'double') { FloatTy } else { if (found.params[i] == 'bool') { BoolTy } else { IntTy } }
-        values.push(ValueArg(self.valueOf(mut builder, args[i], ty)?))
+        values.push(ValueArg(self.valueOf(mut builder, args[i], externTy(found.params[i]))?))
     }
 
     if (found.returns == 'void') {
@@ -699,8 +717,7 @@ function Lowerer.externCall(mut self, mut builder: Builder, call: Node, name: st
         return Ok(None)
     }
 
-    immut ty = if (found.returns == 'double') { FloatTy } else { if (found.returns == 'bool') { BoolTy } else { IntTy } }
-    immut dest = builder.local(ty, None)
+    immut dest = builder.local(externTy(found.returns), None)
     builder.emit(StdCallIns(Some(dest), name, values))
     return Ok(Some(LocalOp(dest)))
 }
@@ -840,6 +857,11 @@ function Lowerer.enterImports(mut self, mut builder: Builder, statements: Node[]
                     if (module == -1) {
                         names[name] = StdFunctionItem(found.path, name)
                     } else {
+                        if (self.isMath(module, name)) {
+                            names[name] = StdFunctionItem('math', name)
+                            continue
+                        }
+
                         match (self.modules[module].names.get(name)) {
                             Some(item) => names[name] = item
                             None => {}
@@ -1023,6 +1045,12 @@ function Lowerer.bindImports(mut self): Result[void, string] {
                 for name in names {
                     if (module == -1) {
                         self.modules[self.module].names[name] = StdFunctionItem(found.path, name)
+                        continue
+                    }
+
+                    // `sqrt` of `math` is not the `sqrt` of C that std/math.kj declares.
+                    if (self.isMath(module, name)) {
+                        self.modules[self.module].names[name] = StdFunctionItem('math', name)
                         continue
                     }
 
@@ -2799,11 +2827,6 @@ function Lowerer.expression(mut self, mut builder: Builder, node: Node): Result[
 function Lowerer.member(mut self, mut builder: Builder, node: Node, object: Node, name: string): Result[Option[Operand], string] {
     match (self.stdModuleOf(builder, object)) {
         Some(module) => {
-            // With the 34 digits of a decimal.
-            if (module == 'math' and name == 'pi') { return self.decimalConstant('3.141592653589793238462643383279503') }
-
-            if (module == 'math' and name == 'e') { return self.decimalConstant('2.718281828459045235360287471352662') }
-
             // `system.os`: the variant for the system the program runs on.
             if (module == 'system' and name == 'os') {
                 return match (self.typeIn(builder, node)?) {
@@ -3385,6 +3408,8 @@ function Lowerer.moduleOf(self, builder: Builder, node: Node): Option[int] {
 
 // `calc.add(1, 2)`, or `shapes.Circle(2.0)`.
 function Lowerer.moduleCall(mut self, mut builder: Builder, call: Node, module: int, name: string, args: Node[]): Result[Option[Operand], string] {
+    if (self.isMath(module, name)) { return self.mathCall(mut builder, name, args) }
+
     match (self.modules[module].names.get(name)) {
         Some(FunctionItem(key)) => {
             immut typeArgs = self.callTypeArgs(call)?
@@ -3415,6 +3440,47 @@ function Lowerer.moduleCall(mut self, mut builder: Builder, call: Node, module: 
         RecordTy(record) => Ok(Some(self.construct(mut builder, record, name, args)?))
         _ => Err(self.unsupported(`'${name}' of this module`))
     }
+}
+
+// Whether `name` of `module` is `math.abs` or another function of `math` for several types.
+function Lowerer.isMath(self, module: int, name: string): boolean {
+    return self.modules[module].path == 'std:math' and name in mathOverloads
+}
+
+// `math.abs(-2)`: the function of std/math.kj for the type of the arguments (`absInt`), given the
+// place of the call. A float makes it the one for floats; an int is a decimal, but for `abs`.
+function Lowerer.mathCall(mut self, mut builder: Builder, name: string, args: Node[]): Result[Option[Operand], string] {
+    mut floats = false
+    mut ints = true
+
+    for arg in args {
+        immut ty = self.typeIn(builder, arg)?
+
+        if (ty == FloatTy) { floats = true }
+
+        if (ty != IntTy) { ints = false }
+    }
+
+    immut suffix = if (floats) { 'Float' } else { if (ints and name == 'abs') { 'Int' } else { 'Decimal' } }
+    immut module = match (self.moduleIds.get('std:math')) {
+        Some(id) => id
+        None => return Err(self.unsupported(`'math.${name}'`))
+    }
+    immut key = match (self.modules[module].names.get(`${name}${suffix}`)) {
+        Some(FunctionItem(key)) => key
+        _ => return Err(self.unsupported(`'math.${name}'`))
+    }
+    immut signature = self.callee(key, [])?
+    mut values: Operand[] = []
+
+    for i in range(args.length()) {
+        values.push(self.valueOf(mut builder, args[i], signature.params[i])?)
+    }
+
+    values.push(LocationOp(`${self.file}:${self.line}`))
+    immut dest = builder.local(signature.returns, None)
+    builder.emit(CallIns(Some(dest), signature.id, values, [], self.line))
+    return Ok(Some(LocalOp(dest)))
 }
 
 // Calls
@@ -3797,51 +3863,7 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
     mut arguments: StdArg[] = []
 
     match (full) {
-        'math.abs' => {
-            match (self.typeIn(builder, args[0])?) {
-                IntTy => {
-                    runner = 'koji_std_math_abs_int'
-                    arguments = [self.stdValue(mut builder, args, 0, IntTy)?, LocationArg(line)]
-                }
-                DecimalTy => {
-                    runner = 'koji_std_math_abs_decimal'
-                    arguments = [self.stdValue(mut builder, args, 0, DecimalTy)?]
-                }
-                _ => {
-                    runner = 'koji_std_math_abs_float'
-                    arguments = [self.stdValue(mut builder, args, 0, FloatTy)?]
-                }
-            }
-        }
-        // The root of an int is a decimal.
-        'math.sqrt' => {
-            if (self.typeIn(builder, args[0])? == FloatTy) {
-                runner = 'koji_std_math_sqrt'
-                arguments = [self.stdValue(mut builder, args, 0, FloatTy)?, self.stdResult(builder, call)?]
-            } else {
-                runner = 'koji_std_math_sqrt_decimal'
-                arguments = [self.stdValue(mut builder, args, 0, DecimalTy)?, self.stdResult(builder, call)?]
-            }
-        }
-        'math.pow' => {
-            immut floats = self.typeIn(builder, args[0])? == FloatTy or self.typeIn(builder, args[1])? == FloatTy
-            immut ty = if (floats) { FloatTy } else { DecimalTy }
-            runner = if (floats) { 'koji_std_math_pow' } else { 'koji_std_math_pow_decimal' }
-            immut base = self.stdValue(mut builder, args, 0, ty)?
-            immut exponent = self.stdValue(mut builder, args, 1, ty)?
-            arguments = [base, exponent, self.stdResult(builder, call)?, LocationArg(line)]
-        }
-        other if (other in ['math.floor', 'math.ceil', 'math.round']) => {
-            immut mode = ModeArg(position(['floor', 'ceil', 'round'], name))
-
-            if (self.typeIn(builder, args[0])? != FloatTy) {
-                runner = 'koji_decimal_to_int'
-                arguments = [self.stdValue(mut builder, args, 0, DecimalTy)?, mode, LocationArg(line)]
-            } else {
-                runner = 'koji_std_math_round'
-                arguments = [self.stdValue(mut builder, args, 0, FloatTy)?, mode, LocationArg(line)]
-            }
-        }
+        _ if (module == 'math' and name in mathOverloads) => return self.mathCall(mut builder, name, args)
         'koji:unsafe.allocate' => {
             runner = 'koji_unsafe_allocate'
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?]
@@ -3849,6 +3871,13 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
         'koji:unsafe.free' => {
             runner = 'koji_unsafe_free'
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?]
+        }
+        'koji:unsafe.panicAt' => {
+            immut place = self.valueOf(mut builder, args[0], IntTy)?
+            immut message = self.valueOf(mut builder, args[1], StrTy)?
+            builder.emit(StdCallIns(None, 'koji_std_panic', [ValueArg(message), PlaceArg(place)]))
+            builder.terminate(UnreachableT)
+            return Ok(None)
         }
         // `read` and `write`: the size is that of the type (an `Address` is an int here).
         'koji:unsafe.read' => {
