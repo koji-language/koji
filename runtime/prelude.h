@@ -122,7 +122,7 @@ bool koji_list_contains(const KojiList *list, const void *value);
 KojiString *koji_list_repr(const KojiList *list);
 KojiString *koji_list_join(const KojiList *list, const KojiString *separator);
 
-uint64_t koji_string_hash(const KojiString *string);
+int64_t koji_string_hash(const KojiString *string);
 uint64_t koji_list_hash(const KojiList *list);
 
 bool koji_list_pop(KojiList **variable, void *out);
@@ -249,6 +249,21 @@ KOJI_INLINE KojiU128 koji_u128_shift_right(KojiU128 a, KojiU128 b, const char *l
 KOJI_INLINE int64_t koji_unsafe_string_bytes(const KojiString *string) { return (int64_t)(intptr_t)string->bytes; }
 KOJI_INLINE int64_t koji_unsafe_string_size(const KojiString *string) { return (int64_t)string->length; }
 KojiString *koji_string_from_utf8(const char *bytes, size_t length);
+/* A new string of `length` bytes to write, in a block of the pool that holds `capacity` (the whole
+   last word too), as runtime/src/string.rs makes them. */
+KOJI_INLINE KojiString *koji_unsafe_blank_string(int64_t length, int64_t capacity) {
+    size_t room = ((size_t)(capacity > length ? capacity : length) + 7) / 8 * 8;
+    KojiString *string = (KojiString *)koji_pool_take(3 + room / 8);
+    string->references = 1;
+    string->length = (size_t)length;
+    string->capacity = room;
+    return string;
+}
+KOJI_INLINE int64_t koji_unsafe_string_references(const KojiString *string) { return (int64_t)string->references; }
+KOJI_INLINE int64_t koji_unsafe_string_capacity(const KojiString *string) { return (int64_t)string->capacity; }
+KOJI_INLINE void koji_unsafe_set_string_size(const KojiString *string, int64_t length) {
+    ((KojiString *)string)->length = (size_t)length;
+}
 KOJI_INLINE KojiString *koji_unsafe_new_string(int64_t address, int64_t length) {
     return koji_string_from_utf8((const char *)(intptr_t)address, (size_t)length);
 }

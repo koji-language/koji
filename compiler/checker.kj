@@ -17,8 +17,8 @@ export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'end
 // The internal modules (std/koji/): `koji:core`, compiled with the programs that use it, and those
 // of the library of the runtime written in Koji, compiled once (`kojic dump library`) and linked
 // into every program.
-immut internalModules = ['koji:core', 'koji:decimal']
-export immut libraryModules = ['koji:decimal']
+immut internalModules = ['koji:core', 'koji:decimal', 'koji:text']
+export immut libraryModules = ['koji:decimal', 'koji:text']
 
 type SymbolKind = {
     ValueSymbol
@@ -1584,6 +1584,8 @@ function Checker.isCValue(self, ty: Type): boolean {
         FloatType => true
         BooleanType => true
         DecimalType => true
+        CharType => true
+        ByteType => true
         NamedType(id, _) => id == self.builtins.address or id == self.builtins.location
         _ => false
     }
@@ -1641,7 +1643,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -4894,6 +4896,21 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         'unsafe.wide' => {
             self.checkExactly(name, types, [IntType, IntType])?
             return Ok(U128Type)
+        }
+        // A new string of `size` bytes to write (`stringBytes`), with room for `capacity`.
+        'unsafe.blankString' => {
+            self.checkExactly(name, types, [IntType, IntType])?
+            return Ok(StringType)
+        }
+        // The references to a string, and the bytes its block holds.
+        other if (other == 'unsafe.stringReferences' or other == 'unsafe.stringCapacity') => {
+            self.checkExactly(name, types, [s])?
+            return Ok(IntType)
+        }
+        // The size of a string that grew in its block (no other reference sees it).
+        'unsafe.setStringSize' => {
+            self.checkExactly(name, types, [s, IntType])?
+            return Ok(VoidType)
         }
         // The nearest float of a U128.
         'unsafe.wideToFloat' => {

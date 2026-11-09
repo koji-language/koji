@@ -695,6 +695,8 @@ function cTypeOf(written: Option[TypeExpr]): string {
         Some(Named('Location')) => 'const char *'
         Some(Named('U128')) => 'KojiU128'
         Some(Named('string')) => 'KojiString *'
+        Some(Named('char')) => 'uint32_t'
+        Some(Named('byte')) => 'uint8_t'
         _ => 'int64_t'
     }
 }
@@ -707,6 +709,8 @@ function externTy(written: string): Ty {
         'KojiDecimal' => DecimalTy
         'KojiU128' => U128Ty
         'KojiString *' => StrTy
+        'uint32_t' => CharTy
+        'uint8_t' => ByteTy
         _ => IntTy
     }
 }
@@ -1014,16 +1018,20 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
                         _ => []
                     }
                     mut types: string[] = []
+                    mut taken: boolean[] = []
 
                     for param in params {
-                        types.push(cTypeOf(param.annotation))
+                        immut written = cTypeOf(param.annotation)
+                        // C keeps a string it gives to read: `const`, as the prelude declares it.
+                        types.push(if (written == 'KojiString *' and not param.isTake) { 'const KojiString *' } else { written })
+                        taken.push(param.isTake)
                     }
 
                     immut returned = match (declaration.kind) {
                         FunctionDecl(_, _, _, _, Some(written), _) => cTypeOf(Some(written))
                         _ => 'void'
                     }
-                    self.forC.push({ name: name, function: self.functions.length() - 1, params: types, returns: returned })
+                    self.forC.push({ name: name, function: self.functions.length() - 1, params: types, taken: taken, returns: returned })
                 }
             }
             ExternDecl(name, params, returns) => {
@@ -4082,6 +4090,18 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
                 _ => 'koji_unsafe_new_string'
             }
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
+        }
+        'koji:unsafe.blankString' => {
+            runner = 'koji_unsafe_blank_string'
+            arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
+        }
+        other if (other == 'koji:unsafe.stringReferences' or other == 'koji:unsafe.stringCapacity') => {
+            runner = if (name == 'stringReferences') { 'koji_unsafe_string_references' } else { 'koji_unsafe_string_capacity' }
+            arguments = [self.stdValue(mut builder, args, 0, StrTy)?]
+        }
+        'koji:unsafe.setStringSize' => {
+            builder.emit(StdCallIns(None, 'koji_unsafe_set_string_size', [self.stdValue(mut builder, args, 0, StrTy)?, self.stdValue(mut builder, args, 1, IntTy)?]))
+            return Ok(None)
         }
         'koji:unsafe.wideToFloat' => {
             runner = 'koji_unsafe_wide_to_float'

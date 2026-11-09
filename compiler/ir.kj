@@ -220,6 +220,8 @@ export type IrForC = {
     name: string
     function: int
     params: string[]
+    // The parameters C gives its reference to (`take`), for a string.
+    taken: boolean[]
     returns: string
 }
 

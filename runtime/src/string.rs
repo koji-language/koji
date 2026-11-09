@@ -6,7 +6,6 @@
 //! string return a new reference.
 
 use std::cell::Cell;
-use std::cmp::Ordering;
 
 use crate::numbers::format_float;
 
@@ -68,6 +67,13 @@ pub extern "C" fn koji_string_new(bytes: *const u8, length: usize) -> *mut KojiS
     from_str(&String::from_utf8_lossy(bytes))
 }
 
+/// A new string of `length` bytes that the caller writes, in a block that holds `capacity` (the
+/// C of compilers before `koji_unsafe_blank_string` was inline calls it).
+#[no_mangle]
+pub extern "C" fn koji_string_blank(length: usize, capacity: usize) -> *mut KojiString {
+    allocate_with(length, capacity.max(length), |_| {})
+}
+
 /// A new string with the bytes `bytes[..length]`, which are UTF-8 (`koji:unsafe`).
 #[no_mangle]
 pub extern "C" fn koji_string_from_utf8(bytes: *const u8, length: usize) -> *mut KojiString {
@@ -102,97 +108,8 @@ pub extern "C" fn koji_string_release(string: *mut KojiString) {
 }
 
 #[no_mangle]
-pub extern "C" fn koji_string_concat(a: *const KojiString, b: *const KojiString) -> *mut KojiString {
-    let (a, b) = (string_text(a), string_text(b));
-    allocate(a.len() + b.len(), |bytes| {
-        bytes[..a.len()].copy_from_slice(a.as_bytes());
-        bytes[a.len()..].copy_from_slice(b.as_bytes());
-    })
-}
-
-/// `a + b`, where the caller gives its reference to `a` (it read `a` for the last time): when no
-/// one else sees `a`, `b` is added to it in place, and its block grows by doubling, so that a
-/// string built piece by piece (`text += c`) costs a constant time per piece on average.
-#[no_mangle]
-pub extern "C" fn koji_string_append(a: *mut KojiString, b: *const KojiString) -> *mut KojiString {
-    if std::ptr::eq(a, b) {
-        let result = koji_string_concat(a, b);
-        koji_string_release(a);
-        return result;
-    }
-    append_bytes(a, string_text(b).as_bytes())
-}
-
-/// `text + string(c)` where `text` is read for the last time: like `koji_string_append`, without
-/// a string for the char.
-#[no_mangle]
-pub extern "C" fn koji_string_append_char(a: *mut KojiString, code: u32) -> *mut KojiString {
-    let mut buffer = [0u8; 4];
-    append_bytes(a, char_of(code).encode_utf8(&mut buffer).as_bytes())
-}
-
-/// `a` (given up) followed by the UTF-8 bytes `more`, which are not in `a`.
-fn append_bytes(a: *mut KojiString, more: &[u8]) -> *mut KojiString {
-    let length = unsafe { (*a).length };
-    if unsafe { (*a).references.get() } != 1 {
-        let text = string_text(a);
-        let result = allocate_with(length + more.len(), length + more.len(), |bytes| {
-            bytes[..length].copy_from_slice(text.as_bytes());
-            bytes[length..].copy_from_slice(more);
-        });
-        koji_string_release(a);
-        return result;
-    }
-    unsafe {
-        if length + more.len() <= (*a).capacity {
-            std::ptr::copy_nonoverlapping(more.as_ptr(), (*a).bytes.as_mut_ptr().add(length), more.len());
-            (*a).length += more.len();
-            return a;
-        }
-    }
-    let text = string_text(a);
-    let grown = allocate_with(length + more.len(), (length + more.len()).max(2 * length), |bytes| {
-        bytes[..length].copy_from_slice(text.as_bytes());
-        bytes[length..].copy_from_slice(more);
-    });
-    koji_string_free(a);
-    grown
-}
-
-/// `text * count` (an empty string for a count below 1).
-#[no_mangle]
-pub extern "C" fn koji_string_repeat(string: *const KojiString, count: i64) -> *mut KojiString {
-    new_string(string_text(string).repeat(count.max(0) as usize))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_string_equal(a: *const KojiString, b: *const KojiString) -> bool {
-    string_text(a) == string_text(b)
-}
-
-/// -1, 0 or 1, comparing the bytes.
-#[no_mangle]
-pub extern "C" fn koji_string_compare(a: *const KojiString, b: *const KojiString) -> i32 {
-    match string_text(a).cmp(string_text(b)) {
-        Ordering::Less => -1,
-        Ordering::Equal => 0,
-        Ordering::Greater => 1,
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn koji_string_from_int(value: i64) -> *mut KojiString {
-    new_string(value.to_string())
-}
-
-#[no_mangle]
 pub extern "C" fn koji_string_from_float(value: f64) -> *mut KojiString {
     new_string(format_float(value))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_string_from_bool(value: bool) -> *mut KojiString {
-    new_string(value.to_string())
 }
 
 /// The text as written in code: in quotes, with `\\`, `\'`, `\n`, `\t` and `\r` escaped.
@@ -213,86 +130,3 @@ pub fn repr_string(text: &str) -> String {
     out
 }
 
-#[no_mangle]
-pub extern "C" fn koji_string_repr(string: *const KojiString) -> *mut KojiString {
-    new_string(repr_string(string_text(string)))
-}
-
-/// The number of characters (not bytes).
-#[no_mangle]
-pub extern "C" fn koji_string_length(string: *const KojiString) -> i64 {
-    string_text(string).chars().count() as i64
-}
-
-/// `needle in haystack`.
-#[no_mangle]
-pub extern "C" fn koji_string_contains(haystack: *const KojiString, needle: *const KojiString) -> bool {
-    string_text(haystack).contains(string_text(needle))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_string_hash(string: *const KojiString) -> u64 {
-    crate::hash::bytes(string_text(string).as_bytes())
-}
-
-fn char_of(code: u32) -> char {
-    char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER)
-}
-
-/// The text of a char (`print`).
-#[no_mangle]
-pub extern "C" fn koji_string_from_char(code: u32) -> *mut KojiString {
-    let c = char_of(code);
-    allocate(c.len_utf8(), |bytes| {
-        c.encode_utf8(bytes);
-    })
-}
-
-/// A char as written in code: `'a'`, `'\n'`.
-#[no_mangle]
-pub extern "C" fn koji_char_repr(code: u32) -> *mut KojiString {
-    let mut text = String::from("'");
-    match char_of(code) {
-        '\'' => text.push_str("\\'"),
-        '\\' => text.push_str("\\\\"),
-        '\n' => text.push_str("\\n"),
-        '\t' => text.push_str("\\t"),
-        '\r' => text.push_str("\\r"),
-        other => text.push(other),
-    }
-    text.push('\'');
-    new_string(text)
-}
-
-/// `c in text`.
-#[no_mangle]
-pub extern "C" fn koji_string_contains_char(haystack: *const KojiString, code: u32) -> bool {
-    string_text(haystack).contains(char_of(code))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn appending_in_place_only_when_no_one_else_sees_it() {
-        let piece = from_str("ab");
-        let mut text = from_str("");
-        for _ in 0..1000 {
-            text = koji_string_append(text, piece);
-        }
-        assert_eq!(string_text(text).len(), 2000);
-        assert!(string_text(text).starts_with("abab"));
-        // Shared: a new string, and the other one does not change.
-        koji_string_retain(text);
-        let more = koji_string_append(text, piece);
-        assert_eq!(string_text(text).len(), 2000);
-        assert_eq!(string_text(more).len(), 2002);
-        // The same string on both sides.
-        let twice = koji_string_append(more, more);
-        assert_eq!(string_text(twice).len(), 4004);
-        for string in [text, twice, piece] {
-            koji_string_release(string);
-        }
-    }
-}

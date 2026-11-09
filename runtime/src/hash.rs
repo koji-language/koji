@@ -41,11 +41,3 @@ impl Hasher for Fast {
         self.add(value as u64);
     }
 }
-
-/// The hash of bytes and of their length (`ab` + `c` and `a` + `bc` differ in lists of strings).
-pub(crate) fn bytes(bytes: &[u8]) -> u64 {
-    let mut hasher = Fast::default();
-    hasher.write(bytes);
-    hasher.add(bytes.len() as u64);
-    hasher.finish()
-}

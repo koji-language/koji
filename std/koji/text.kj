@@ -1,0 +1,329 @@
+// `koji:text`: the strings of the runtime, in the library of the runtime written in Koji (C calls
+// these functions by their names). A string is immutable text with a count of references, laid
+// out for C (runtime/prelude.h): the count, the length in bytes, the bytes its block holds, then
+// the UTF-8 bytes. A function gives a new reference to the string it returns; it reads the strings
+// it is given, but those it takes (`take`: the caller gives its reference).
+
+import { Address, CInt, CSize, U128, allocate, blankString, distance, free, lowWord, newString, offset, read, setStringSize, stringBytes, stringCapacity, stringReferences, stringSize, wide, wordProduct, write } from 'koji:unsafe'
+
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function memcmp(a: Address, b: Address, size: CSize): CInt
+extern function memchr(bytes: Address, value: CInt, size: CSize): Address
+extern function memmem(haystack: Address, haystackSize: CSize, needle: Address, needleSize: CSize): Address
+
+extern function koji_string_concat(a: string, b: string): string {
+    immut sizeA = stringSize(a)
+    immut sizeB = stringSize(b)
+    immut joined = blankString(sizeA + sizeB, sizeA + sizeB)
+    immut bytes = stringBytes(joined)
+    memcpy(bytes, stringBytes(a), sizeA)
+    memcpy(offset(bytes, sizeA), stringBytes(b), sizeB)
+    return joined
+}
+
+// `a + b`, where the caller gives its reference to `a` (it read `a` for the last time): when no
+// one else sees `a`, `b` is added to it in place, and its block grows by doubling, so that a
+// string built piece by piece (`text += c`) costs a constant time per piece on average.
+extern function koji_string_append(take a: string, b: string): string {
+    // The same string on both sides: `b` would change as it is copied.
+    if (distance(stringBytes(a), stringBytes(b)) == 0) { return koji_string_concat(a, b) }
+
+    return appendBytes(a, stringBytes(b), stringSize(b))
+}
+
+// `text + string(c)` where `text` is read for the last time: like `koji_string_append`, without
+// a string for the char.
+extern function koji_string_append_char(take a: string, c: char): string {
+    immut code = validCode(c.code())
+    immut size = utf8Size(code)
+    immut length = stringSize(a)
+
+    // In place, as `appendBytes`: the bytes of the char go at the end.
+    if (stringReferences(a) == 1 and length + size <= stringCapacity(a)) {
+        encode(offset(stringBytes(a), length), code)
+        setStringSize(a, length + size)
+        return a
+    }
+
+    immut capacity = if (stringReferences(a) == 1) { maxOf(length + size, 2 * length) } else { length + size }
+    immut grown = blankString(length + size, capacity)
+    memcpy(stringBytes(grown), stringBytes(a), length)
+    encode(offset(stringBytes(grown), length), code)
+    return grown
+}
+
+// `a` (given up) followed by `size` bytes of UTF-8 at `more`, which are not in `a`.
+function appendBytes(take a: string, more: Address, size: int): string {
+    immut length = stringSize(a)
+
+    if (stringReferences(a) == 1 and length + size <= stringCapacity(a)) {
+        memcpy(offset(stringBytes(a), length), more, size)
+        setStringSize(a, length + size)
+        return a
+    }
+
+    // A block of its own: twice as large when it grows in place, the exact size for a shared one.
+    immut capacity = if (stringReferences(a) == 1) { maxOf(length + size, 2 * length) } else { length + size }
+    immut grown = blankString(length + size, capacity)
+    immut bytes = stringBytes(grown)
+    memcpy(bytes, stringBytes(a), length)
+    memcpy(offset(bytes, length), more, size)
+    return grown
+}
+
+// `text * count` (an empty string for a count below 1).
+extern function koji_string_repeat(text: string, count: int): string {
+    immut size = stringSize(text)
+    immut times = maxOf(count, 0)
+    immut repeated = blankString(size * times, size * times)
+    immut bytes = stringBytes(repeated)
+
+    for i in range(times) {
+        memcpy(offset(bytes, i * size), stringBytes(text), size)
+    }
+
+    return repeated
+}
+
+extern function koji_string_equal(a: string, b: string): boolean {
+    immut size = stringSize(a)
+
+    if (size != stringSize(b)) { return false }
+
+    return memcmp(stringBytes(a), stringBytes(b), size) == 0
+}
+
+// -1, 0 or 1, comparing the bytes.
+extern function koji_string_compare(a: string, b: string): CInt {
+    immut sizeA = stringSize(a)
+    immut sizeB = stringSize(b)
+    immut order = memcmp(stringBytes(a), stringBytes(b), minOf(sizeA, sizeB))
+
+    if (order != 0) { return if (order < 0) { -1 } else { 1 } }
+
+    if (sizeA == sizeB) { return 0 }
+
+    return if (sizeA < sizeB) { -1 } else { 1 }
+}
+
+extern function koji_string_from_int(value: int): string {
+    // The magnitude, `int.min` too, and the number of its digits.
+    immut nothing: U128 = 0
+    immut magnitude = if (value < 0) { nothing - wide(value, -1) } else { wide(value, 0) }
+    mut count = 1
+    mut limit: U128 = 10
+
+    while (count < 20 and magnitude >= limit) {
+        count += 1
+        limit = limit * 10
+    }
+
+    immut sign = if (value < 0) { 1 } else { 0 }
+    immut text = blankString(count + sign, count + sign)
+    immut bytes = stringBytes(text)
+
+    if (value < 0) { write(bytes, 0, byte(45)) }
+
+    // The digits, from the last one.
+    mut rest = magnitude
+    mut at = count + sign - 1
+
+    while (at >= sign) {
+        immut quotient = rest / 10
+        write(bytes, at, byte(48 + lowWord(rest - quotient * 10)))
+        rest = quotient
+        at -= 1
+    }
+
+    return text
+}
+
+extern function koji_string_from_bool(value: boolean): string {
+    return if (value) { 'true' } else { 'false' }
+}
+
+// The text of a char (`print`): a code that is no character is U+FFFD.
+extern function koji_string_from_char(c: char): string {
+    return charText(c.code())
+}
+
+// A char as written in code: `'a'`, `'\n'`.
+extern function koji_char_repr(c: char): string {
+    immut code = c.code()
+    return `'${escaped(code, charText(code))}'`
+}
+
+function charText(given: int): string {
+    immut code = validCode(given)
+    immut size = utf8Size(code)
+    immut text = blankString(size, size)
+    encode(stringBytes(text), code)
+    return text
+}
+
+// The text as written in code: in quotes, with `\\`, `\'`, `\n`, `\t` and `\r` escaped.
+extern function koji_string_repr(text: string): string {
+    immut bytes = stringBytes(text)
+    immut size = stringSize(text)
+    mut out = '\''
+    mut start = 0
+
+    for i in range(size) {
+        immut b: byte = read(bytes, i)
+        immut escape = escapeOf(int(b))
+
+        if (escape == '') { continue }
+
+        if (i > start) { out += newString(offset(bytes, start), i - start) }
+
+        out += escape
+        start = i + 1
+    }
+
+    if (size > start) { out += newString(offset(bytes, start), size - start) }
+
+    return out + '\''
+}
+
+// The escape of a character of code below 128 (`\n`), or `''`.
+function escapeOf(code: int): string {
+    return match (code) {
+        39 => '\\\''
+        92 => '\\\\'
+        10 => '\\n'
+        9 => '\\t'
+        13 => '\\r'
+        _ => ''
+    }
+}
+
+function escaped(code: int, text: string): string {
+    immut escape = if (code < 128) { escapeOf(code) } else { '' }
+    return if (escape == '') { text } else { escape }
+}
+
+// The number of characters (not bytes).
+extern function koji_string_length(text: string): int {
+    immut bytes = stringBytes(text)
+    mut count = 0
+
+    for i in range(stringSize(text)) {
+        immut b: byte = read(bytes, i)
+
+        if ((b & 0xC0) != 0x80) { count += 1 }
+    }
+
+    return count
+}
+
+// `needle in haystack`.
+extern function koji_string_contains(haystack: string, needle: string): boolean {
+    return containsText(haystack, needle)
+}
+
+// `c in text`.
+extern function koji_string_contains_char(haystack: string, c: char): boolean {
+    immut code = validCode(c.code())
+
+    // A byte: `memchr`.
+    if (code < 0x80) { return distance(stringBytes(haystack), memchr(stringBytes(haystack), code, stringSize(haystack))) >= 0 }
+
+    return containsText(haystack, charText(code))
+}
+
+// The needle is a string, which lives while its bytes are read (the address of the bytes of a
+// string does not keep it alive: a string is dropped after its last use).
+function containsText(haystack: string, needle: string): boolean {
+    if (stringSize(needle) == 0) { return true }
+
+    immut found = memmem(stringBytes(haystack), stringSize(haystack), stringBytes(needle), stringSize(needle))
+    return distance(stringBytes(haystack), found) >= 0
+}
+
+// The hash of the bytes and of their length (`ab` + `c` and `a` + `bc` differ in lists of
+// strings): a multiply and a rotation for each 8 bytes. Its low bits are not mixed: a map takes
+// the high bits of the hash times a large odd number, which depend on all of them.
+extern function koji_string_hash(text: string): int {
+    immut bytes = stringBytes(text)
+    immut size = stringSize(text)
+    mut hash: U128 = 0
+    mut at = 0
+
+    while (at + 8 <= size) {
+        immut chunk: int = read(bytes, at)
+        hash = mixed(hash, wide(chunk, 0))
+        at += 8
+    }
+
+    if (at < size) {
+        // The last bytes, little-endian, with zeros after them.
+        mut chunk: U128 = 0
+        mut i = size - 1
+
+        while (i >= at) {
+            immut b: byte = read(bytes, i)
+            chunk = (chunk << 8) | wide(int(b), 0)
+            i -= 1
+        }
+
+        hash = mixed(hash, chunk)
+    }
+
+    return lowWord(mixed(hash, wide(size, 0)))
+}
+
+// (rotate_left(hash, 5) ^ word) * K, in 64 bits.
+function mixed(hash: U128, chunk: U128): U128 {
+    immut mask = wide(-1, 0)
+    immut rotated = ((hash << 5) | (hash >> 59)) & mask
+    return wordProduct(rotated ^ chunk, wide(0x517CC1B727220A95, 0)) & mask
+}
+
+// The code of a character: U+FFFD for a code that is none (above U+10FFFF, or a surrogate).
+function validCode(code: int): int {
+    return if (code < 0 or code > 0x10FFFF or (code >= 0xD800 and code <= 0xDFFF)) { 0xFFFD } else { code }
+}
+
+// The bytes of a character in UTF-8.
+function utf8Size(code: int): int {
+    if (code < 0x80) { return 1 }
+
+    if (code < 0x800) { return 2 }
+
+    return if (code < 0x10000) { 3 } else { 4 }
+}
+
+// The UTF-8 bytes of the character `code` (valid) at `buffer`, and their number.
+function encode(buffer: Address, code: int): int {
+    if (code < 0x80) {
+        write(buffer, 0, byte(code))
+        return 1
+    }
+
+    if (code < 0x800) {
+        write(buffer, 0, byte(0xC0 | (code >> 6)))
+        write(buffer, 1, byte(0x80 | (code & 0x3F)))
+        return 2
+    }
+
+    if (code < 0x10000) {
+        write(buffer, 0, byte(0xE0 | (code >> 12)))
+        write(buffer, 1, byte(0x80 | ((code >> 6) & 0x3F)))
+        write(buffer, 2, byte(0x80 | (code & 0x3F)))
+        return 3
+    }
+
+    write(buffer, 0, byte(0xF0 | (code >> 18)))
+    write(buffer, 1, byte(0x80 | ((code >> 12) & 0x3F)))
+    write(buffer, 2, byte(0x80 | ((code >> 6) & 0x3F)))
+    write(buffer, 3, byte(0x80 | (code & 0x3F)))
+    return 4
+}
+
+function maxOf(a: int, b: int): int {
+    return if (a > b) { a } else { b }
+}
+
+function minOf(a: int, b: int): int {
+    return if (a < b) { a } else { b }
+}

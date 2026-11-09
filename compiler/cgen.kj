@@ -285,12 +285,22 @@ function Generator.generateProgram(mut self) {
 
         immut list = if (params.length() == 0) { 'void' } else { params.join(', ') }
         immut call = `${functionName(found.function)}(${values.join(', ')})`
-        mut body = if (found.returns == 'void') { `${call};` } else { `return ${toC(found.returns, call)};` }
+        // A string C gives (`take`) is released after the call: a function of Koji only reads
+        // the strings it is given (and shares the one it returns).
+        mut releases = ''
 
-        // C keeps its strings: a function that does not only read one gets a reference of its own.
         for i in range(found.params.length()) {
-            if (found.params[i] == 'KojiString *' and not self.borrowed[found.function][i]) { body = `koji_string_retain(p${i}); ${body}` }
+            if (found.taken[i] and found.params[i] == 'KojiString *') { releases += ` koji_string_release(p${i});` }
         }
+
+        mut body = ''
+
+        if (found.returns == 'void') {
+            body = `${call};${releases}`
+        } else {
+            body = if (releases == '') { `return ${toC(found.returns, call)};` } else { `${found.returns} result = ${toC(found.returns, call)};${releases} return result;` }
+        }
+
 
         self.line('')
         self.line(`${found.returns} ${found.name}(${list}) { ${body} }`)
@@ -319,6 +329,8 @@ function Generator.generateProgram(mut self) {
 // A value of C as Koji has it: an address or a `Location` is an int.
 function fromC(written: string, value: string): string {
     if (written == 'void *' or written == 'const char *') { return `(int64_t)(intptr_t)${value}` }
+
+    if (written == 'const KojiString *') { return `(KojiString *)${value}` }
 
     return value
 }
