@@ -693,6 +693,8 @@ function cTypeOf(written: Option[TypeExpr]): string {
         Some(Named('Address')) => 'void *'
         Some(Named('decimal')) => 'KojiDecimal'
         Some(Named('Location')) => 'const char *'
+        // Not a type of C: a function that does not return (`void` for C).
+        Some(Named('Never')) => 'never'
         Some(Named('U128')) => 'KojiU128'
         Some(Named('string')) => 'KojiString *'
         Some(Named('char')) => 'uint32_t'
@@ -730,6 +732,12 @@ function Lowerer.externCall(mut self, mut builder: Builder, call: Node, name: st
 
     if (found.returns == 'void') {
         builder.emit(StdCallIns(None, name, values))
+        return Ok(None)
+    }
+
+    if (found.returns == 'never') {
+        builder.emit(StdCallIns(None, name, values))
+        builder.terminate(UnreachableT)
         return Ok(None)
     }
 
@@ -3973,15 +3981,7 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
             return Ok(Some(self.unary(mut builder, 'IntToByte', value, ByteTy)))
         }
         'char' if (args.length() == 1) => return self.coreCall(mut builder, 'charOf', args)
-        'input' => {
-            mut prompt = NullArg
-
-            if (args.length() > 0) { prompt = ValueArg(self.shown(mut builder, args[0], displayAt(displays, 0))?) }
-
-            immut option = self.recordOf(builder, call)?
-            immut line = self.line
-            return self.std(mut builder, call, 'koji_std_input', [prompt, RecordArg(option), LocationArg(line)])
-        }
+        'input' => return self.coreCall(mut builder, if (args.length() == 0) { 'readLine' } else { 'readLineAfter' }, args)
         'panic' if (args.length() == 1) => {
             immut message = self.valueOf(mut builder, args[0], StrTy)?
             immut line = self.line
@@ -4140,6 +4140,8 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
         }
         'koji:unsafe.nullAddress' => return Ok(Some(IntOp(0)))
+        // A `Location` is the address of its text already.
+        'koji:unsafe.locationAddress' => return Ok(Some(self.valueOf(mut builder, args[0], IntTy)?))
         'koji:unsafe.isNull' => {
             immut address = self.valueOf(mut builder, args[0], IntTy)?
             return Ok(Some(self.binary(mut builder, 'IntCompare(Equal)', address, IntOp(0), BoolTy)))

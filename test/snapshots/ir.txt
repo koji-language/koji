@@ -155,14 +155,37 @@ function f0 main(): Void
     print g0
     return
 ==== examples/input.kj
-string s0 = "What's your name?"
-string s1 = "Hello, "
-string s2 = "!"
-string s3 = "No input"
+string s0 = "split() separator cannot be empty"
+string s1 = "replace() needs a non-empty text to replace"
+string s2 = ""
+string s3 = "�"
+string s4 = "What's your name?"
+string s5 = "Hello, "
+string s6 = "!"
+string s7 = "No input"
 record r0 Option[string]
     Some (value: Str)
     None ()
-global g0: Record(0) // name
+record r1 Option[int]
+    Some (value: Int)
+    None ()
+record r2 Option[char]
+    Some (value: Char)
+    None ()
+record r3 ParseError
+    InvalidNumber (text: Str)
+    OutOfRange (text: Str)
+record r4 Result[int, ParseError]
+    Ok (value: Int)
+    Err (error: Record(3))
+record r5 Result[float, ParseError]
+    Ok (value: Float)
+    Err (error: Record(3))
+record r6 Result[decimal, ParseError]
+    Ok (value: Decimal)
+    Err (error: Record(3))
+global g0: Bool // koji:core initialized
+global g1: Record(0) // name
 
 function f0 main(): Void
     local l0: Record(0)
@@ -176,9 +199,9 @@ function f0 main(): Void
     local l8: Int
     local l9: Bool
   b0:
-    l0 = koji_std_input([Value(Str(0)), Record(0), Location(1)])
-    g0 = l0
-    l1 = g0
+    l0 = call f36(s4, location(examples/input.kj:1))
+    g1 = l0
+    l1 = g1
     l2 = RecordTag l1
     l3 = IntCompare(Equal) l2, 0
     branch l3, b3, b2
@@ -191,15 +214,2870 @@ function f0 main(): Void
   b3:
     l4 = l1.0
     l5 = l4
-    l6 = StrConcat s1, l5
-    l7 = StrConcat l6, s2
+    l6 = StrConcat s5, l5
+    l7 = StrConcat l6, s6
     print l7
     goto b1
   b4:
     unreachable
   b5:
-    print s3
+    print s7
     goto b1
+
+function f1 koji:core (module)(): Void
+  b0:
+    branch g0, b1, b2
+  b1:
+    return
+  b2:
+    g0 = true
+    return
+
+function f2 trim(l0: Str): Str
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int // size
+    local l5: Int
+    local l6: Int // start
+    local l7: Int
+    local l8: Int // end
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Str
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    l5 = call f3(l2, 0, l4)
+    l6 = l5
+    l7 = call f4(l2, l6, l4)
+    l8 = l7
+    l10 = IntCompare(Equal) l6, 0
+    l9 = l10
+    branch l9, b1, b2
+  b1:
+    l11 = IntCompare(Equal) l8, l4
+    l9 = l11
+    goto b2
+  b2:
+    branch l9, b3, b4
+  b3:
+    return l0
+  b4:
+    l12 = call f5(l2, l6, l8)
+    return l12
+
+function f3 spaceEnd(l0: Int, l1: Int, l2: Int): Int
+    local l3: Int // at
+    local l4: Bool
+    local l5: Byte
+    local l6: Byte // b
+    local l7: Bool
+    local l8: Int
+    local l9: Bool
+    local l10: Bool
+    local l11: Int
+    local l12: Int
+    local l13: Int // width
+    local l14: Int
+    local l15: Bool
+    local l16: Bool
+    local l17: Int
+  b0:
+    l3 = l1
+    goto b1
+  b1:
+    l4 = IntCompare(Less) l3, l2
+    branch l4, b2, b3
+  b2:
+    l5 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(3))])
+    l6 = l5
+    l7 = ByteCompare(Less) l6, 128
+    branch l7, b4, b5
+  b3:
+    return l3
+  b4:
+    l8 = ByteToInt l6
+    l9 = call f15(l8)
+    l10 = Not l9
+    branch l10, b6, b7
+  b5:
+    l12 = call f13(l0, l3)
+    l13 = l12
+    l14 = call f14(l0, l3, l13)
+    l15 = call f15(l14)
+    l16 = Not l15
+    branch l16, b8, b9
+  b6:
+    return l3
+  b7:
+    l11 = IntAdd l3, 1
+    l3 = l11
+    goto b1
+  b8:
+    return l3
+  b9:
+    l17 = IntAdd l3, l13
+    l3 = l17
+    goto b1
+
+function f4 spaceStart(l0: Int, l1: Int, l2: Int): Int
+    local l3: Int // at
+    local l4: Bool
+    local l5: Int
+    local l6: Byte
+    local l7: Byte // b
+    local l8: Bool
+    local l9: Int
+    local l10: Bool
+    local l11: Bool
+    local l12: Int
+    local l13: Int
+    local l14: Int // last
+    local l15: Bool
+    local l16: Int
+    local l17: Int
+    local l18: Int
+    local l19: Bool
+    local l20: Bool
+  b0:
+    l3 = l2
+    goto b1
+  b1:
+    l4 = IntCompare(Greater) l3, l1
+    branch l4, b2, b3
+  b2:
+    l5 = IntSub l3, 1
+    l6 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(5))])
+    l7 = l6
+    l8 = ByteCompare(Less) l7, 128
+    branch l8, b4, b5
+  b3:
+    return l3
+  b4:
+    l9 = ByteToInt l7
+    l10 = call f15(l9)
+    l11 = Not l10
+    branch l11, b6, b7
+  b5:
+    l13 = IntSub l3, 1
+    l14 = l13
+    goto b8
+  b6:
+    return l3
+  b7:
+    l12 = IntSub l3, 1
+    l3 = l12
+    goto b1
+  b8:
+    l15 = call f12(l0, l14)
+    branch l15, b9, b10
+  b9:
+    l16 = IntSub l14, 1
+    l14 = l16
+    goto b8
+  b10:
+    l17 = IntSub l3, l14
+    l18 = call f14(l0, l14, l17)
+    l19 = call f15(l18)
+    l20 = Not l19
+    branch l20, b11, b12
+  b11:
+    return l3
+  b12:
+    l3 = l14
+    goto b1
+
+function f5 copyBytes(l0: Int, l1: Int, l2: Int): Str
+    local l3: Int
+    local l4: Int
+    local l5: Str
+    local l6: Str // copy
+    local l7: Int
+    local l8: Int
+    local l9: Int
+    local l10: Int
+  b0:
+    l3 = IntSub l2, l1
+    l4 = IntSub l2, l1
+    l5 = koji_unsafe_blank_string([Value(Local(3)), Value(Local(4))])
+    l6 = l5
+    l7 = koji_unsafe_string_bytes([Value(Local(6))])
+    l8 = koji_unsafe_offset([Value(Local(0)), Value(Local(1))])
+    l9 = IntSub l2, l1
+    l10 = memcpy([Value(Local(7)), Value(Local(8)), Value(Local(9))])
+    return l6
+
+function f6 startsWith(l0: Str, l1: Str): Bool
+    local l2: Int
+    local l3: Int // size
+    local l4: Int
+    local l5: Bool
+    local l6: Int
+    local l7: Int
+    local l8: Int
+    local l9: Bool
+  b0:
+    l2 = koji_unsafe_string_size([Value(Local(1))])
+    l3 = l2
+    l4 = koji_unsafe_string_size([Value(Local(0))])
+    l5 = IntCompare(Greater) l3, l4
+    branch l5, b1, b2
+  b1:
+    return false
+  b2:
+    l6 = koji_unsafe_string_bytes([Value(Local(0))])
+    l7 = koji_unsafe_string_bytes([Value(Local(1))])
+    l8 = memcmp([Value(Local(6)), Value(Local(7)), Value(Local(3))])
+    l9 = IntCompare(Equal) l8, 0
+    return l9
+
+function f7 endsWith(l0: Str, l1: Str): Bool
+    local l2: Int
+    local l3: Int // size
+    local l4: Int
+    local l5: Int
+    local l6: Int // start
+    local l7: Bool
+    local l8: Int
+    local l9: Int
+    local l10: Int
+    local l11: Int
+    local l12: Bool
+  b0:
+    l2 = koji_unsafe_string_size([Value(Local(1))])
+    l3 = l2
+    l4 = koji_unsafe_string_size([Value(Local(0))])
+    l5 = IntSub l4, l3
+    l6 = l5
+    l7 = IntCompare(Less) l6, 0
+    branch l7, b1, b2
+  b1:
+    return false
+  b2:
+    l8 = koji_unsafe_string_bytes([Value(Local(0))])
+    l9 = koji_unsafe_offset([Value(Local(8)), Value(Local(6))])
+    l10 = koji_unsafe_string_bytes([Value(Local(1))])
+    l11 = memcmp([Value(Local(9)), Value(Local(10)), Value(Local(3))])
+    l12 = IntCompare(Equal) l11, 0
+    return l12
+
+function f8 indexOf(l0: Str, l1: Str): Record(1)
+    local l2: Int
+    local l3: Int // bytes
+    local l4: Int
+    local l5: Int // found
+    local l6: Bool
+    local l7: Record(1)
+    local l8: Int // characters
+    local l9: Int
+    local l10: Int
+    local l11: Bool
+    local l12: Bool
+    local l13: Int // i
+    local l14: Bool
+    local l15: Bool
+    local l16: Int
+    local l17: Record(1)
+  b0:
+    l2 = koji_unsafe_string_bytes([Value(Local(0))])
+    l3 = l2
+    l4 = call f11(l0, l1, 0)
+    l5 = l4
+    l6 = IntCompare(Less) l5, 0
+    branch l6, b1, b2
+  b1:
+    l7 = record variant 1 ()
+    return l7
+  b2:
+    l8 = 0
+    l9 = l5
+    range_check 1
+    l10 = 0
+    l11 = false
+    goto b3
+  b3:
+    l12, l13 = range_next l10, l9, 1, l11
+    branch l12, b4, b5
+  b4:
+    l14 = call f12(l3, l13)
+    l15 = Not l14
+    branch l15, b6, b7
+  b5:
+    l17 = record variant 0 (l8)
+    return l17
+  b6:
+    l16 = IntAdd l8, 1
+    l8 = l16
+    goto b7
+  b7:
+    goto b3
+
+function f9 split(l0: Str, l1: Str, l2: Int): List(Str)
+    local l3: Int
+    local l4: Bool
+    local l5: Int
+    local l6: Int // bytes
+    local l7: List(Str)
+    local l8: List(Str) // parts
+    local l9: Int // start
+    local l10: Int
+    local l11: Int // found
+    local l12: Bool
+    local l13: Int
+    local l14: Int
+    local l15: Str
+    local l16: Int
+    local l17: Int
+    local l18: Int
+    local l19: Int
+    local l20: Int
+    local l21: Str
+  b0:
+    l3 = koji_unsafe_string_size([Value(Local(1))])
+    l4 = IntCompare(Equal) l3, 0
+    branch l4, b1, b2
+  b1:
+    koji_std_panic([Value(Str(0)), Place(Local(2))])
+    unreachable
+  b2:
+    l5 = koji_unsafe_string_bytes([Value(Local(0))])
+    l6 = l5
+    l7 = list []
+    l8 = l7
+    l9 = 0
+    goto b3
+  b3:
+    branch true, b4, b5
+  b4:
+    l10 = call f11(l0, l1, l9)
+    l11 = l10
+    l12 = IntCompare(Less) l11, 0
+    branch l12, b6, b7
+  b5:
+    l18 = koji_unsafe_offset([Value(Local(6)), Value(Local(9))])
+    l19 = koji_unsafe_string_size([Value(Local(0))])
+    l20 = IntSub l19, l9
+    l21 = koji_unsafe_new_string([Value(Local(18)), Value(Local(20))])
+    push l8, l21
+    return l8
+  b6:
+    goto b5
+  b7:
+    l13 = koji_unsafe_offset([Value(Local(6)), Value(Local(9))])
+    l14 = IntSub l11, l9
+    l15 = koji_unsafe_new_string([Value(Local(13)), Value(Local(14))])
+    push l8, l15
+    l16 = koji_unsafe_string_size([Value(Local(1))])
+    l17 = IntAdd l11, l16
+    l9 = l17
+    goto b3
+
+function f10 replace(l0: Str, l1: Str, l2: Str, l3: Int): Str
+    local l4: Int
+    local l5: Bool
+    local l6: Int
+    local l7: Int // found
+    local l8: Bool
+    local l9: Int
+    local l10: Int // bytes
+    local l11: Str // replaced
+    local l12: Int // start
+    local l13: Bool
+    local l14: Int
+    local l15: Int
+    local l16: Str
+    local l17: Str
+    local l18: Str
+    local l19: Int
+    local l20: Int
+    local l21: Int
+    local l22: Int
+    local l23: Int
+    local l24: Int
+    local l25: Str
+    local l26: Str
+  b0:
+    l4 = koji_unsafe_string_size([Value(Local(1))])
+    l5 = IntCompare(Equal) l4, 0
+    branch l5, b1, b2
+  b1:
+    koji_std_panic([Value(Str(1)), Place(Local(3))])
+    unreachable
+  b2:
+    l6 = call f11(l0, l1, 0)
+    l7 = l6
+    l8 = IntCompare(Less) l7, 0
+    branch l8, b3, b4
+  b3:
+    return l0
+  b4:
+    l9 = koji_unsafe_string_bytes([Value(Local(0))])
+    l10 = l9
+    l11 = s2
+    l12 = 0
+    goto b5
+  b5:
+    l13 = IntCompare(GreaterEqual) l7, 0
+    branch l13, b6, b7
+  b6:
+    l14 = koji_unsafe_offset([Value(Local(10)), Value(Local(12))])
+    l15 = IntSub l7, l12
+    l16 = koji_unsafe_new_string([Value(Local(14)), Value(Local(15))])
+    l17 = StrConcat l11, l16
+    l11 = l17
+    l18 = StrConcat l11, l2
+    l11 = l18
+    l19 = koji_unsafe_string_size([Value(Local(1))])
+    l20 = IntAdd l7, l19
+    l12 = l20
+    l21 = call f11(l0, l1, l12)
+    l7 = l21
+    goto b5
+  b7:
+    l22 = koji_unsafe_offset([Value(Local(10)), Value(Local(12))])
+    l23 = koji_unsafe_string_size([Value(Local(0))])
+    l24 = IntSub l23, l12
+    l25 = koji_unsafe_new_string([Value(Local(22)), Value(Local(24))])
+    l26 = StrConcat l11, l25
+    l11 = l26
+    return l11
+
+function f11 find(l0: Str, l1: Str, l2: Int): Int
+    local l3: Int
+    local l4: Int // bytes
+    local l5: Int
+    local l6: Int
+    local l7: Int
+    local l8: Int
+    local l9: Int
+    local l10: Int
+    local l11: Int // found
+    local l12: Int
+    local l13: Int // position
+    local l14: Int
+    local l15: Bool
+    local l16: Int
+  b0:
+    l3 = koji_unsafe_string_bytes([Value(Local(0))])
+    l4 = l3
+    l5 = koji_unsafe_offset([Value(Local(4)), Value(Local(2))])
+    l6 = koji_unsafe_string_size([Value(Local(0))])
+    l7 = IntSub l6, l2
+    l8 = koji_unsafe_string_bytes([Value(Local(1))])
+    l9 = koji_unsafe_string_size([Value(Local(1))])
+    l10 = memmem([Value(Local(5)), Value(Local(7)), Value(Local(8)), Value(Local(9))])
+    l11 = l10
+    l12 = koji_unsafe_distance([Value(Local(4)), Value(Local(11))])
+    l13 = l12
+    l15 = IntCompare(Less) l13, 0
+    branch l15, b1, b2
+  b1:
+    l16 = IntNeg 1
+    l14 = l16
+    goto b3
+  b2:
+    l14 = l13
+    goto b3
+  b3:
+    return l14
+
+function f12 isContinuation(l0: Int, l1: Int): Bool
+    local l2: Byte
+    local l3: Byte // b
+    local l4: Byte
+    local l5: Bool
+  b0:
+    l2 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(1))])
+    l3 = l2
+    l4 = ByteAnd l3, 192
+    l5 = ByteCompare(Equal) l4, 128
+    return l5
+
+function f13 widthAt(l0: Int, l1: Int): Int
+    local l2: Byte
+    local l3: Byte // b
+    local l4: Bool
+    local l5: Bool
+    local l6: Bool
+  b0:
+    l2 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(1))])
+    l3 = l2
+    l4 = ByteCompare(Less) l3, 128
+    branch l4, b1, b2
+  b1:
+    return 1
+  b2:
+    l5 = ByteCompare(Less) l3, 224
+    branch l5, b3, b4
+  b3:
+    return 2
+  b4:
+    l6 = ByteCompare(Less) l3, 240
+    branch l6, b5, b6
+  b5:
+    return 3
+  b6:
+    return 4
+
+function f14 codeAt(l0: Int, l1: Int, l2: Int): Int
+    local l3: Byte
+    local l4: Byte // first
+    local l5: Bool
+    local l6: Int
+    local l7: Byte
+    local l8: Byte
+    local l9: Byte
+    local l10: Int
+    local l11: Int // code
+    local l12: Int
+    local l13: Int
+    local l14: Int
+    local l15: Bool
+    local l16: Bool
+    local l17: Int // i
+    local l18: Int
+    local l19: Byte
+    local l20: Byte // next
+    local l21: Int
+    local l22: Byte
+    local l23: Int
+    local l24: Int
+  b0:
+    l3 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(1))])
+    l4 = l3
+    l5 = IntCompare(Equal) l2, 1
+    branch l5, b1, b2
+  b1:
+    l6 = ByteToInt l4
+    return l6
+  b2:
+    l7 = IntToByte l2
+    l8 = ByteShiftRight 127, l7
+    l9 = ByteAnd l4, l8
+    l10 = ByteToInt l9
+    l11 = l10
+    l12 = 1
+    l13 = l2
+    range_check 1
+    l14 = l12
+    l15 = false
+    goto b3
+  b3:
+    l16, l17 = range_next l14, l13, 1, l15
+    branch l16, b4, b5
+  b4:
+    l18 = IntAdd l1, l17
+    l19 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(18))])
+    l20 = l19
+    l21 = ShiftLeft l11, 6
+    l22 = ByteAnd l20, 63
+    l23 = ByteToInt l22
+    l24 = BitOr l21, l23
+    l11 = l24
+    goto b3
+  b5:
+    return l11
+
+function f15 isSpace(l0: Int): Bool
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Bool
+    local l13: Bool
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Bool
+    local l19: Bool
+    local l20: Bool
+    local l21: Bool
+    local l22: Bool
+    local l23: Bool
+    local l24: Bool
+    local l25: Bool
+  b0:
+    l1 = IntCompare(LessEqual) l0, 32
+    branch l1, b1, b2
+  b1:
+    l3 = IntCompare(Equal) l0, 32
+    l2 = l3
+    branch l2, b4, b3
+  b2:
+    l7 = IntCompare(Less) l0, 133
+    branch l7, b7, b8
+  b3:
+    l5 = IntCompare(GreaterEqual) l0, 9
+    l4 = l5
+    branch l4, b5, b6
+  b4:
+    return l2
+  b5:
+    l6 = IntCompare(LessEqual) l0, 13
+    l4 = l6
+    goto b6
+  b6:
+    l2 = l4
+    goto b4
+  b7:
+    return false
+  b8:
+    l8 = IntCompare(Less) l0, 5760
+    branch l8, b9, b10
+  b9:
+    l10 = IntCompare(Equal) l0, 133
+    l9 = l10
+    branch l9, b12, b11
+  b10:
+    l13 = IntCompare(GreaterEqual) l0, 8192
+    l12 = l13
+    branch l12, b13, b14
+  b11:
+    l11 = IntCompare(Equal) l0, 160
+    l9 = l11
+    goto b12
+  b12:
+    return l9
+  b13:
+    l14 = IntCompare(LessEqual) l0, 8202
+    l12 = l14
+    goto b14
+  b14:
+    branch l12, b15, b16
+  b15:
+    return true
+  b16:
+    l20 = IntCompare(Equal) l0, 5760
+    l19 = l20
+    branch l19, b18, b17
+  b17:
+    l21 = IntCompare(Equal) l0, 8232
+    l19 = l21
+    goto b18
+  b18:
+    l18 = l19
+    branch l18, b20, b19
+  b19:
+    l22 = IntCompare(Equal) l0, 8233
+    l18 = l22
+    goto b20
+  b20:
+    l17 = l18
+    branch l17, b22, b21
+  b21:
+    l23 = IntCompare(Equal) l0, 8239
+    l17 = l23
+    goto b22
+  b22:
+    l16 = l17
+    branch l16, b24, b23
+  b23:
+    l24 = IntCompare(Equal) l0, 8287
+    l16 = l24
+    goto b24
+  b24:
+    l15 = l16
+    branch l15, b26, b25
+  b25:
+    l25 = IntCompare(Equal) l0, 12288
+    l15 = l25
+    goto b26
+  b26:
+    return l15
+
+function f16 textOf(l0: Int, l1: Int): Str
+    local l2: Str // out
+    local l3: Int // start
+    local l4: Int // at
+    local l5: Bool
+    local l6: Int
+    local l7: Int // valid
+    local l8: Bool
+    local l9: Int
+    local l10: Bool
+    local l11: Int
+    local l12: Int
+    local l13: Str
+    local l14: Str
+    local l15: Str
+    local l16: Int
+    local l17: Bool
+    local l18: Str
+    local l19: Bool
+    local l20: Int
+    local l21: Int
+    local l22: Str
+    local l23: Str
+  b0:
+    l2 = s2
+    l3 = 0
+    l4 = 0
+    goto b1
+  b1:
+    l5 = IntCompare(Less) l4, l1
+    branch l5, b2, b3
+  b2:
+    l6 = call f18(l0, l4, l1)
+    l7 = l6
+    l8 = IntCompare(Greater) l7, 0
+    branch l8, b4, b5
+  b3:
+    l17 = IntCompare(Equal) l3, 0
+    branch l17, b8, b9
+  b4:
+    l9 = IntAdd l4, l7
+    l4 = l9
+    goto b1
+  b5:
+    l10 = IntCompare(Greater) l4, l3
+    branch l10, b6, b7
+  b6:
+    l11 = koji_unsafe_offset([Value(Local(0)), Value(Local(3))])
+    l12 = IntSub l4, l3
+    l13 = koji_unsafe_new_string([Value(Local(11)), Value(Local(12))])
+    l14 = StrConcat l2, l13
+    l2 = l14
+    goto b7
+  b7:
+    l15 = StrConcat l2, s3
+    l2 = l15
+    l16 = IntSub l4, l7
+    l4 = l16
+    l3 = l4
+    goto b1
+  b8:
+    l18 = koji_unsafe_new_string([Value(Local(0)), Value(Local(1))])
+    return l18
+  b9:
+    l19 = IntCompare(Greater) l4, l3
+    branch l19, b10, b11
+  b10:
+    l20 = koji_unsafe_offset([Value(Local(0)), Value(Local(3))])
+    l21 = IntSub l4, l3
+    l22 = koji_unsafe_new_string([Value(Local(20)), Value(Local(21))])
+    l23 = StrConcat l2, l22
+    l2 = l23
+    goto b11
+  b11:
+    return l2
+
+function f17 isUtf8(l0: Int, l1: Int): Bool
+    local l2: Int // at
+    local l3: Bool
+    local l4: Int
+    local l5: Int // valid
+    local l6: Bool
+    local l7: Int
+  b0:
+    l2 = 0
+    goto b1
+  b1:
+    l3 = IntCompare(Less) l2, l1
+    branch l3, b2, b3
+  b2:
+    l4 = call f18(l0, l2, l1)
+    l5 = l4
+    l6 = IntCompare(Less) l5, 0
+    branch l6, b4, b5
+  b3:
+    return true
+  b4:
+    return false
+  b5:
+    l7 = IntAdd l2, l5
+    l2 = l7
+    goto b1
+
+function f18 validAt(l0: Int, l1: Int, l2: Int): Int
+    local l3: Int
+    local l4: Int // first
+    local l5: Bool
+    local l6: Int // width
+    local l7: Int // low
+    local l8: Int // high
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Bool
+    local l13: Bool
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Bool
+    local l19: Int
+    local l20: Bool
+    local l21: Bool
+    local l22: Bool
+    local l23: Bool
+    local l24: Int
+    local l25: Int
+    local l26: Int // second
+    local l27: Bool
+    local l28: Bool
+    local l29: Bool
+    local l30: Int
+    local l31: Int
+    local l32: Int
+    local l33: Int
+    local l34: Bool
+    local l35: Bool
+    local l36: Int // i
+    local l37: Int
+    local l38: Int
+    local l39: Int // next
+    local l40: Bool
+    local l41: Bool
+    local l42: Bool
+    local l43: Int
+  b0:
+    l3 = call f19(l0, l1, l2)
+    l4 = l3
+    l5 = IntCompare(Less) l4, 128
+    branch l5, b1, b2
+  b1:
+    return 1
+  b2:
+    l6 = 0
+    l7 = 128
+    l8 = 191
+    l10 = IntCompare(GreaterEqual) l4, 194
+    l9 = l10
+    branch l9, b3, b4
+  b3:
+    l11 = IntCompare(LessEqual) l4, 223
+    l9 = l11
+    goto b4
+  b4:
+    branch l9, b5, b6
+  b5:
+    l6 = 2
+    goto b6
+  b6:
+    l13 = IntCompare(GreaterEqual) l4, 224
+    l12 = l13
+    branch l12, b7, b8
+  b7:
+    l14 = IntCompare(LessEqual) l4, 239
+    l12 = l14
+    goto b8
+  b8:
+    branch l12, b9, b10
+  b9:
+    l6 = 3
+    goto b10
+  b10:
+    l16 = IntCompare(GreaterEqual) l4, 240
+    l15 = l16
+    branch l15, b11, b12
+  b11:
+    l17 = IntCompare(LessEqual) l4, 244
+    l15 = l17
+    goto b12
+  b12:
+    branch l15, b13, b14
+  b13:
+    l6 = 4
+    goto b14
+  b14:
+    l18 = IntCompare(Equal) l6, 0
+    branch l18, b15, b16
+  b15:
+    l19 = IntNeg 1
+    return l19
+  b16:
+    l20 = IntCompare(Equal) l4, 224
+    branch l20, b17, b18
+  b17:
+    l7 = 160
+    goto b18
+  b18:
+    l21 = IntCompare(Equal) l4, 237
+    branch l21, b19, b20
+  b19:
+    l8 = 159
+    goto b20
+  b20:
+    l22 = IntCompare(Equal) l4, 240
+    branch l22, b21, b22
+  b21:
+    l7 = 144
+    goto b22
+  b22:
+    l23 = IntCompare(Equal) l4, 244
+    branch l23, b23, b24
+  b23:
+    l8 = 143
+    goto b24
+  b24:
+    l24 = IntAdd l1, 1
+    l25 = call f19(l0, l24, l2)
+    l26 = l25
+    l28 = IntCompare(Less) l26, l7
+    l27 = l28
+    branch l27, b26, b25
+  b25:
+    l29 = IntCompare(Greater) l26, l8
+    l27 = l29
+    goto b26
+  b26:
+    branch l27, b27, b28
+  b27:
+    l30 = IntNeg 1
+    return l30
+  b28:
+    l31 = 2
+    l32 = l6
+    range_check 1
+    l33 = l31
+    l34 = false
+    goto b29
+  b29:
+    l35, l36 = range_next l33, l32, 1, l34
+    branch l35, b30, b31
+  b30:
+    l37 = IntAdd l1, l36
+    l38 = call f19(l0, l37, l2)
+    l39 = l38
+    l41 = IntCompare(Less) l39, 128
+    l40 = l41
+    branch l40, b33, b32
+  b31:
+    return l6
+  b32:
+    l42 = IntCompare(Greater) l39, 191
+    l40 = l42
+    goto b33
+  b33:
+    branch l40, b34, b35
+  b34:
+    l43 = IntNeg l36
+    return l43
+  b35:
+    goto b29
+
+function f19 byteAt(l0: Int, l1: Int, l2: Int): Int
+    local l3: Bool
+    local l4: Int
+    local l5: Byte
+    local l6: Byte // b
+    local l7: Int
+  b0:
+    l3 = IntCompare(GreaterEqual) l1, l2
+    branch l3, b1, b2
+  b1:
+    l4 = IntNeg 1
+    return l4
+  b2:
+    l5 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(1))])
+    l6 = l5
+    l7 = ByteToInt l6
+    return l7
+
+function f20 cString(l0: Str): Int
+    local l1: Int
+    local l2: Int // size
+    local l3: Int
+    local l4: Int
+    local l5: Int // copy
+    local l6: Int
+    local l7: Int // bytes
+    local l8: Int
+    local l9: Int
+    local l10: Bool
+    local l11: Bool
+    local l12: Int // i
+    local l13: Byte
+    local l14: Byte // b
+    local l15: Byte // end
+  b0:
+    l1 = koji_unsafe_string_size([Value(Local(0))])
+    l2 = l1
+    l3 = IntAdd l2, 1
+    l4 = koji_unsafe_allocate([Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_string_bytes([Value(Local(0))])
+    l7 = l6
+    l8 = l2
+    range_check 1
+    l9 = 0
+    l10 = false
+    goto b1
+  b1:
+    l11, l12 = range_next l9, l8, 1, l10
+    branch l11, b2, b3
+  b2:
+    l13 = koji_unsafe_read_byte([Value(Local(7)), Value(Local(12))])
+    l14 = l13
+    koji_unsafe_write_byte([Value(Local(5)), Value(Local(12)), Value(Local(14))])
+    goto b1
+  b3:
+    l15 = 0
+    koji_unsafe_write_byte([Value(Local(5)), Value(Local(2)), Value(Local(15))])
+    return l5
+
+function f21 cText(l0: Int): Str
+    local l1: Int
+    local l2: Str
+  b0:
+    l1 = strlen([Value(Local(0))])
+    l2 = call f16(l0, l1)
+    return l2
+
+function f22 hasNul(l0: Str): Bool
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int
+    local l5: Int
+    local l6: Bool
+    local l7: Bool
+    local l8: Int // i
+    local l9: Int
+    local l10: Int
+    local l11: Bool
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    range_check 1
+    l5 = 0
+    l6 = false
+    goto b1
+  b1:
+    l7, l8 = range_next l5, l4, 1, l6
+    branch l7, b2, b3
+  b2:
+    l9 = koji_unsafe_string_size([Value(Local(0))])
+    l10 = call f19(l2, l8, l9)
+    l11 = IntCompare(Equal) l10, 0
+    branch l11, b4, b5
+  b3:
+    return false
+  b4:
+    return true
+  b5:
+    goto b1
+
+function f23 chars(l0: Str): List(Char)
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int // size
+    local l5: List(Char)
+    local l6: List(Char) // found
+    local l7: Int
+    local l8: Int // slot
+    local l9: Int // count
+    local l10: Int // at
+    local l11: Bool
+    local l12: Byte
+    local l13: Byte // first
+    local l14: Bool
+    local l15: Int
+    local l16: Int
+    local l17: Int
+    local l18: Int // width
+    local l19: Int
+    local l20: Int
+    local l21: Int
+    local l22: Int
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    l5 = list []
+    l6 = l5
+    koji_list_reserve([Value(Local(6)), Value(Local(4))])
+    l7 = koji_unsafe_list_items([Value(Local(6))])
+    l8 = l7
+    l9 = 0
+    l10 = 0
+    goto b1
+  b1:
+    l11 = IntCompare(Less) l10, l4
+    branch l11, b2, b3
+  b2:
+    l12 = koji_unsafe_read_byte([Value(Local(2)), Value(Local(10))])
+    l13 = l12
+    l14 = ByteCompare(Less) l13, 128
+    branch l14, b4, b5
+  b3:
+    koji_unsafe_set_list_length([Value(Local(6)), Value(Local(9))])
+    return l6
+  b4:
+    l15 = ByteToInt l13
+    koji_unsafe_write_int([Value(Local(8)), Value(Int(0)), Value(Local(15))])
+    l16 = IntAdd l10, 1
+    l10 = l16
+    goto b6
+  b5:
+    l17 = call f13(l2, l10)
+    l18 = l17
+    l19 = call f14(l2, l10, l18)
+    koji_unsafe_write_int([Value(Local(8)), Value(Int(0)), Value(Local(19))])
+    l20 = IntAdd l10, l18
+    l10 = l20
+    goto b6
+  b6:
+    l21 = koji_unsafe_offset([Value(Local(8)), Value(Int(8))])
+    l8 = l21
+    l22 = IntAdd l9, 1
+    l9 = l22
+    goto b1
+
+function f24 charOf(l0: Int): Record(2)
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+    local l8: Record(2)
+    local l9: Char
+    local l10: Record(2)
+  b0:
+    l3 = IntCompare(Less) l0, 0
+    l2 = l3
+    branch l2, b2, b1
+  b1:
+    l4 = IntCompare(Greater) l0, 1114111
+    l2 = l4
+    goto b2
+  b2:
+    l1 = l2
+    branch l1, b4, b3
+  b3:
+    l6 = IntCompare(GreaterEqual) l0, 55296
+    l5 = l6
+    branch l5, b5, b6
+  b4:
+    branch l1, b7, b8
+  b5:
+    l7 = IntCompare(LessEqual) l0, 57343
+    l5 = l7
+    goto b6
+  b6:
+    l1 = l5
+    goto b4
+  b7:
+    l8 = record variant 1 ()
+    return l8
+  b8:
+    l9 = CodeToChar l0
+    l10 = record variant 0 (l9)
+    return l10
+
+function f25 intOf(l0: Str): Record(4)
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int // size
+    local l5: Int
+    local l6: Int // start
+    local l7: Int
+    local l8: Int // end
+    local l9: Int // at
+    local l10: Bool // negative
+    local l11: Bool
+    local l12: Byte
+    local l13: Byte // sign
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Int
+    local l19: Bool
+    local l20: Record(3)
+    local l21: Record(4)
+    local l22: Int // value
+    local l23: Bool // overflow
+    local l24: Int
+    local l25: Int // lastDigit
+    local l26: Bool
+    local l27: Byte
+    local l28: Byte // b
+    local l29: Bool
+    local l30: Bool
+    local l31: Bool
+    local l32: Record(3)
+    local l33: Record(4)
+    local l34: Int
+    local l35: Int
+    local l36: Int // digit
+    local l37: Bool
+    local l38: Int
+    local l39: Bool
+    local l40: Bool
+    local l41: Int
+    local l42: Bool
+    local l43: Bool
+    local l44: Bool
+    local l45: Int
+    local l46: Int
+    local l47: Int
+    local l48: Record(3)
+    local l49: Record(4)
+    local l50: Int
+    local l51: Int
+    local l52: Record(4)
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    l5 = call f3(l2, 0, l4)
+    l6 = l5
+    l7 = call f4(l2, l6, l4)
+    l8 = l7
+    l9 = l6
+    l10 = false
+    l11 = IntCompare(Less) l9, l8
+    branch l11, b1, b2
+  b1:
+    l12 = koji_unsafe_read_byte([Value(Local(2)), Value(Local(9))])
+    l13 = l12
+    l15 = ByteCompare(Equal) l13, 43
+    l14 = l15
+    branch l14, b4, b3
+  b2:
+    l19 = IntCompare(Equal) l9, l8
+    branch l19, b7, b8
+  b3:
+    l16 = ByteCompare(Equal) l13, 45
+    l14 = l16
+    goto b4
+  b4:
+    branch l14, b5, b6
+  b5:
+    l17 = ByteCompare(Equal) l13, 45
+    l10 = l17
+    l18 = IntAdd l9, 1
+    l9 = l18
+    goto b6
+  b6:
+    goto b2
+  b7:
+    l20 = record variant 0 (l0)
+    l21 = record variant 1 (l20)
+    return l21
+  b8:
+    l22 = 0
+    l23 = false
+    branch l10, b9, b10
+  b9:
+    l24 = 8
+    goto b11
+  b10:
+    l24 = 7
+    goto b11
+  b11:
+    l25 = l24
+    goto b12
+  b12:
+    l26 = IntCompare(Less) l9, l8
+    branch l26, b13, b14
+  b13:
+    l27 = koji_unsafe_read_byte([Value(Local(2)), Value(Local(9))])
+    l28 = l27
+    l30 = ByteCompare(Less) l28, 48
+    l29 = l30
+    branch l29, b16, b15
+  b14:
+    branch l23, b27, b28
+  b15:
+    l31 = ByteCompare(Greater) l28, 57
+    l29 = l31
+    goto b16
+  b16:
+    branch l29, b17, b18
+  b17:
+    l32 = record variant 0 (l0)
+    l33 = record variant 1 (l32)
+    return l33
+  b18:
+    l34 = ByteToInt l28
+    l35 = IntSub l34, 48
+    l36 = l35
+    l38 = IntNeg 922337203685477580
+    l39 = IntCompare(Less) l22, l38
+    l37 = l39
+    branch l37, b20, b19
+  b19:
+    l41 = IntNeg 922337203685477580
+    l42 = IntCompare(Equal) l22, l41
+    l40 = l42
+    branch l40, b21, b22
+  b20:
+    branch l37, b23, b24
+  b21:
+    l43 = IntCompare(Greater) l36, l25
+    l40 = l43
+    goto b22
+  b22:
+    l37 = l40
+    goto b20
+  b23:
+    l23 = true
+    goto b24
+  b24:
+    l44 = Not l23
+    branch l44, b25, b26
+  b25:
+    l45 = IntMul l22, 10
+    l46 = IntSub l45, l36
+    l22 = l46
+    goto b26
+  b26:
+    l47 = IntAdd l9, 1
+    l9 = l47
+    goto b12
+  b27:
+    l48 = record variant 1 (l0)
+    l49 = record variant 1 (l48)
+    return l49
+  b28:
+    branch l10, b29, b30
+  b29:
+    l50 = l22
+    goto b31
+  b30:
+    l51 = IntNeg l22
+    l50 = l51
+    goto b31
+  b31:
+    l52 = record variant 0 (l50)
+    return l52
+
+function f26 floatOf(l0: Str): Record(5)
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int // size
+    local l5: Int
+    local l6: Int // start
+    local l7: Int
+    local l8: Int // end
+    local l9: Int // first
+    local l10: Bool
+    local l11: Bool
+    local l12: Bool
+    local l13: Int
+    local l14: Bool
+    local l15: Int
+    local l16: Bool
+    local l17: Int
+    local l18: Bool
+    local l19: Int
+    local l20: Bool
+    local l21: Int
+    local l22: Int
+    local l23: Bool
+    local l24: Int // code
+    local l25: Str
+    local l26: Float
+    local l27: Float // value
+    local l28: Bool
+    local l29: Record(3)
+    local l30: Record(5)
+    local l31: Bool
+    local l32: Record(3)
+    local l33: Record(5)
+    local l34: Record(5)
+    local l35: Float
+    local l36: Float // value
+    local l37: Int
+    local l38: Int // status
+    local l39: Bool
+    local l40: Record(3)
+    local l41: Record(5)
+    local l42: Bool
+    local l43: Record(3)
+    local l44: Record(5)
+    local l45: Record(5)
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    l5 = call f3(l2, 0, l4)
+    l6 = l5
+    l7 = call f4(l2, l6, l4)
+    l8 = l7
+    l9 = l6
+    goto b1
+  b1:
+    l11 = IntCompare(Less) l9, l8
+    l10 = l11
+    branch l10, b4, b5
+  b2:
+    l17 = IntAdd l9, 1
+    l9 = l17
+    goto b1
+  b3:
+    l19 = call f19(l2, l9, l8)
+    l20 = IntCompare(Equal) l19, 48
+    l18 = l20
+    branch l18, b8, b9
+  b4:
+    l13 = call f19(l2, l9, l8)
+    l14 = IntCompare(Equal) l13, 43
+    l12 = l14
+    branch l12, b7, b6
+  b5:
+    branch l10, b2, b3
+  b6:
+    l15 = call f19(l2, l9, l8)
+    l16 = IntCompare(Equal) l15, 45
+    l12 = l16
+    goto b7
+  b7:
+    l10 = l12
+    goto b5
+  b8:
+    l21 = IntAdd l9, 1
+    l22 = call f19(l2, l21, l8)
+    l23 = IntCompare(Equal) l22, 120
+    l18 = l23
+    goto b9
+  b9:
+    branch l18, b10, b11
+  b10:
+    l24 = 0
+    l25 = call f5(l2, l6, l8)
+    l26 = call f32(l25, l24) writeback 1 -> l24
+    l27 = l26
+    l28 = IntCompare(Equal) l24, 1
+    branch l28, b12, b13
+  b11:
+    l35 = IntToFloat 0
+    l36 = l35
+    l37 = call f27(l2, l6, l8, l36) writeback 3 -> l36
+    l38 = l37
+    l39 = IntCompare(Equal) l38, 1
+    branch l39, b16, b17
+  b12:
+    l29 = record variant 0 (l0)
+    l30 = record variant 1 (l29)
+    return l30
+  b13:
+    l31 = IntCompare(Equal) l24, 2
+    branch l31, b14, b15
+  b14:
+    l32 = record variant 1 (l0)
+    l33 = record variant 1 (l32)
+    return l33
+  b15:
+    l34 = record variant 0 (l27)
+    return l34
+  b16:
+    l40 = record variant 0 (l0)
+    l41 = record variant 1 (l40)
+    return l41
+  b17:
+    l42 = IntCompare(Equal) l38, 2
+    branch l42, b18, b19
+  b18:
+    l43 = record variant 1 (l0)
+    l44 = record variant 1 (l43)
+    return l44
+  b19:
+    l45 = record variant 0 (l36)
+    return l45
+
+function f27 decimalFloat(l0: Int, l1: Int, l2: Int, l3: Float): Int
+    local l4: Int // at
+    local l5: Bool // negative
+    local l6: Bool
+    local l7: Bool
+    local l8: Int
+    local l9: Bool
+    local l10: Int
+    local l11: Bool
+    local l12: Int
+    local l13: Int // digits
+    local l14: Int // count
+    local l15: Bool // lost
+    local l16: Int // scale
+    local l17: Int // whole
+    local l18: Bool
+    local l19: Bool
+    local l20: Int
+    local l21: Bool
+    local l22: Int
+    local l23: Int
+    local l24: Int
+    local l25: Int
+    local l26: Int // fraction
+    local l27: Int
+    local l28: Bool
+    local l29: Int
+    local l30: Bool
+    local l31: Bool
+    local l32: Int
+    local l33: Bool
+    local l34: Int
+    local l35: Int
+    local l36: Int
+    local l37: Int
+    local l38: Bool
+    local l39: Bool
+    local l40: Bool
+    local l41: Int // power
+    local l42: Bool
+    local l43: Int
+    local l44: Bool
+    local l45: Int
+    local l46: Bool
+    local l47: Int
+    local l48: Bool // negativePower
+    local l49: Bool
+    local l50: Bool
+    local l51: Int
+    local l52: Bool
+    local l53: Int
+    local l54: Bool
+    local l55: Int
+    local l56: Bool
+    local l57: Bool
+    local l58: Int
+    local l59: Bool
+    local l60: Bool
+    local l61: Bool
+    local l62: Bool
+    local l63: Int
+    local l64: Bool
+    local l65: Bool
+    local l66: Int
+    local l67: Int
+    local l68: Int
+    local l69: Int
+    local l70: Int
+    local l71: Int
+    local l72: Bool
+    local l73: Int
+    local l74: Int // exponent
+    local l75: Bool
+    local l76: Bool
+    local l77: Bool
+    local l78: Bool
+    local l79: Bool
+    local l80: Int
+    local l81: Bool
+    local l82: Bool
+    local l83: Float
+    local l84: Float // mantissa
+    local l85: Int
+    local l86: Bool
+    local l87: Int
+    local l88: Float
+    local l89: Float // tens
+    local l90: Float
+    local l91: Bool
+    local l92: Float
+    local l93: Float
+    local l94: Float // exact
+    local l95: Float
+    local l96: Float
+    local l97: Int
+    local l98: Int
+    local l99: Int
+    local l100: Int // copy
+    local l101: Int
+    local l102: Int
+    local l103: Int
+    local l104: Byte // zero
+    local l105: Int
+    local l106: Float
+    local l107: Float // largest
+    local l108: Bool
+    local l109: Bool
+    local l110: Float
+    local l111: Bool
+  b0:
+    l4 = l1
+    l5 = false
+    l7 = IntCompare(Less) l4, l2
+    l6 = l7
+    branch l6, b1, b2
+  b1:
+    l8 = call f19(l0, l4, l2)
+    l9 = call f31(l8)
+    l6 = l9
+    goto b2
+  b2:
+    branch l6, b3, b4
+  b3:
+    l10 = call f19(l0, l4, l2)
+    l11 = IntCompare(Equal) l10, 45
+    l5 = l11
+    l12 = IntAdd l4, 1
+    l4 = l12
+    goto b4
+  b4:
+    l13 = 0
+    l14 = 0
+    l15 = false
+    l16 = 0
+    l17 = 0
+    goto b5
+  b5:
+    l19 = IntCompare(Less) l4, l2
+    l18 = l19
+    branch l18, b8, b9
+  b6:
+    l22 = call f19(l0, l4, l2)
+    l23 = IntSub l22, 48
+    call f28(l23, l13, l14, l15, l16, false) writeback 1 -> l13, 2 -> l14, 3 -> l15, 4 -> l16
+    l24 = IntAdd l17, 1
+    l17 = l24
+    l25 = IntAdd l4, 1
+    l4 = l25
+    goto b5
+  b7:
+    l26 = 0
+    l27 = call f19(l0, l4, l2)
+    l28 = IntCompare(Equal) l27, 46
+    branch l28, b10, b11
+  b8:
+    l20 = call f19(l0, l4, l2)
+    l21 = call f29(l20)
+    l18 = l21
+    goto b9
+  b9:
+    branch l18, b6, b7
+  b10:
+    l29 = IntAdd l4, 1
+    l4 = l29
+    goto b12
+  b11:
+    l39 = IntCompare(Equal) l17, 0
+    l38 = l39
+    branch l38, b17, b18
+  b12:
+    l31 = IntCompare(Less) l4, l2
+    l30 = l31
+    branch l30, b15, b16
+  b13:
+    l34 = call f19(l0, l4, l2)
+    l35 = IntSub l34, 48
+    call f28(l35, l13, l14, l15, l16, true) writeback 1 -> l13, 2 -> l14, 3 -> l15, 4 -> l16
+    l36 = IntAdd l26, 1
+    l26 = l36
+    l37 = IntAdd l4, 1
+    l4 = l37
+    goto b12
+  b14:
+    goto b11
+  b15:
+    l32 = call f19(l0, l4, l2)
+    l33 = call f29(l32)
+    l30 = l33
+    goto b16
+  b16:
+    branch l30, b13, b14
+  b17:
+    l40 = IntCompare(Equal) l26, 0
+    l38 = l40
+    goto b18
+  b18:
+    branch l38, b19, b20
+  b19:
+    return 1
+  b20:
+    l41 = 0
+    l43 = call f19(l0, l4, l2)
+    l44 = IntCompare(Equal) l43, 101
+    l42 = l44
+    branch l42, b22, b21
+  b21:
+    l45 = call f19(l0, l4, l2)
+    l46 = IntCompare(Equal) l45, 69
+    l42 = l46
+    goto b22
+  b22:
+    branch l42, b23, b24
+  b23:
+    l47 = IntAdd l4, 1
+    l4 = l47
+    l48 = false
+    l50 = IntCompare(Less) l4, l2
+    l49 = l50
+    branch l49, b25, b26
+  b24:
+    l72 = IntCompare(NotEqual) l4, l2
+    branch l72, b42, b43
+  b25:
+    l51 = call f19(l0, l4, l2)
+    l52 = call f31(l51)
+    l49 = l52
+    goto b26
+  b26:
+    branch l49, b27, b28
+  b27:
+    l53 = call f19(l0, l4, l2)
+    l54 = IntCompare(Equal) l53, 45
+    l48 = l54
+    l55 = IntAdd l4, 1
+    l4 = l55
+    goto b28
+  b28:
+    l57 = IntCompare(Less) l4, l2
+    l56 = l57
+    branch l56, b29, b30
+  b29:
+    l58 = call f19(l0, l4, l2)
+    l59 = call f29(l58)
+    l56 = l59
+    goto b30
+  b30:
+    l60 = Not l56
+    branch l60, b31, b32
+  b31:
+    return 1
+  b32:
+    goto b33
+  b33:
+    l62 = IntCompare(Less) l4, l2
+    l61 = l62
+    branch l61, b36, b37
+  b34:
+    l65 = IntCompare(Less) l41, 100000
+    branch l65, b38, b39
+  b35:
+    branch l48, b40, b41
+  b36:
+    l63 = call f19(l0, l4, l2)
+    l64 = call f29(l63)
+    l61 = l64
+    goto b37
+  b37:
+    branch l61, b34, b35
+  b38:
+    l66 = IntMul l41, 10
+    l67 = call f19(l0, l4, l2)
+    l68 = IntAdd l66, l67
+    l69 = IntSub l68, 48
+    l41 = l69
+    goto b39
+  b39:
+    l70 = IntAdd l4, 1
+    l4 = l70
+    goto b33
+  b40:
+    l71 = IntNeg l41
+    l41 = l71
+    goto b41
+  b41:
+    goto b24
+  b42:
+    return 1
+  b43:
+    l73 = IntAdd l41, l16
+    l74 = l73
+    l78 = Not l15
+    l77 = l78
+    branch l77, b44, b45
+  b44:
+    l79 = IntCompare(LessEqual) l13, 9007199254740992
+    l77 = l79
+    goto b45
+  b45:
+    l76 = l77
+    branch l76, b46, b47
+  b46:
+    l80 = IntNeg 22
+    l81 = IntCompare(GreaterEqual) l74, l80
+    l76 = l81
+    goto b47
+  b47:
+    l75 = l76
+    branch l75, b48, b49
+  b48:
+    l82 = IntCompare(LessEqual) l74, 22
+    l75 = l82
+    goto b49
+  b49:
+    branch l75, b50, b51
+  b50:
+    l83 = IntToFloat l13
+    l84 = l83
+    l86 = IntCompare(Less) l74, 0
+    branch l86, b52, b53
+  b51:
+    l97 = IntSub l2, l1
+    l98 = IntAdd l97, 1
+    l99 = koji_unsafe_allocate([Value(Local(98))])
+    l100 = l99
+    l101 = koji_unsafe_offset([Value(Local(0)), Value(Local(1))])
+    l102 = IntSub l2, l1
+    l103 = memcpy([Value(Local(100)), Value(Local(101)), Value(Local(102))])
+    l104 = 0
+    l105 = IntSub l2, l1
+    koji_unsafe_write_byte([Value(Local(100)), Value(Local(105)), Value(Local(104))])
+    l106 = strtod([Value(Local(100)), Value(Int(0))])
+    l3 = l106
+    koji_unsafe_free([Value(Local(100))])
+    l107 = 0x1.fffffffffffffp1023
+    l109 = FloatCompare(Greater) l3, l107
+    l108 = l109
+    branch l108, b62, b61
+  b52:
+    l87 = IntNeg l74
+    l85 = l87
+    goto b54
+  b53:
+    l85 = l74
+    goto b54
+  b54:
+    l88 = call f30(l85)
+    l89 = l88
+    l91 = IntCompare(Less) l74, 0
+    branch l91, b55, b56
+  b55:
+    l92 = FloatDiv l84, l89
+    l90 = l92
+    goto b57
+  b56:
+    l93 = FloatMul l84, l89
+    l90 = l93
+    goto b57
+  b57:
+    l94 = l90
+    branch l5, b58, b59
+  b58:
+    l96 = FloatNeg l94
+    l95 = l96
+    goto b60
+  b59:
+    l95 = l94
+    goto b60
+  b60:
+    l3 = l95
+    return 0
+  b61:
+    l110 = FloatNeg l107
+    l111 = FloatCompare(Less) l3, l110
+    l108 = l111
+    goto b62
+  b62:
+    branch l108, b63, b64
+  b63:
+    return 2
+  b64:
+    return 0
+
+function f28 keepDigit(l0: Int, l1: Int, l2: Int, l3: Bool, l4: Int, l5: Bool): Void
+    local l6: Bool
+    local l7: Int
+    local l8: Int
+    local l9: Bool
+    local l10: Int
+    local l11: Int
+    local l12: Bool
+    local l13: Bool
+    local l14: Int
+  b0:
+    l6 = IntCompare(Less) l2, 18
+    branch l6, b1, b2
+  b1:
+    l7 = IntMul l1, 10
+    l8 = IntAdd l7, l0
+    l1 = l8
+    l9 = IntCompare(NotEqual) l1, 0
+    branch l9, b3, b4
+  b2:
+    l12 = IntCompare(NotEqual) l0, 0
+    branch l12, b7, b8
+  b3:
+    l10 = IntAdd l2, 1
+    l2 = l10
+    goto b4
+  b4:
+    branch l5, b5, b6
+  b5:
+    l11 = IntSub l4, 1
+    l4 = l11
+    goto b6
+  b6:
+    return
+  b7:
+    l3 = true
+    goto b8
+  b8:
+    l13 = Not l5
+    branch l13, b9, b10
+  b9:
+    l14 = IntAdd l4, 1
+    l4 = l14
+    goto b10
+  b10:
+    return
+
+function f29 isDigit(l0: Int): Bool
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+  b0:
+    l2 = IntCompare(GreaterEqual) l0, 48
+    l1 = l2
+    branch l1, b1, b2
+  b1:
+    l3 = IntCompare(LessEqual) l0, 57
+    l1 = l3
+    goto b2
+  b2:
+    return l1
+
+function f30 tenTo(l0: Int): Float
+    local l1: Float
+    local l2: Float // result
+    local l3: Int
+    local l4: Int
+    local l5: Bool
+    local l6: Bool
+    local l7: Int // i
+    local l8: Float
+    local l9: Float
+  b0:
+    l1 = IntToFloat 1
+    l2 = l1
+    l3 = l0
+    range_check 1
+    l4 = 0
+    l5 = false
+    goto b1
+  b1:
+    l6, l7 = range_next l4, l3, 1, l5
+    branch l6, b2, b3
+  b2:
+    l8 = IntToFloat 10
+    l9 = FloatMul l2, l8
+    l2 = l9
+    goto b1
+  b3:
+    return l2
+
+function f31 isSign(l0: Int): Bool
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+  b0:
+    l2 = IntCompare(Equal) l0, 43
+    l1 = l2
+    branch l1, b2, b1
+  b1:
+    l3 = IntCompare(Equal) l0, 45
+    l1 = l3
+    goto b2
+  b2:
+    return l1
+
+function f32 hexFloat(l0: Str, l1: Int): Float
+    local l2: List(Char)
+    local l3: List(Char) // chars
+    local l4: Int // at
+    local l5: Bool // negative
+    local l6: Bool
+    local l7: Int
+    local l8: Bool
+    local l9: Char
+    local l10: Bool
+    local l11: Int
+    local l12: Bool
+    local l13: Int
+    local l14: Bool
+    local l15: Char
+    local l16: Bool
+    local l17: Int
+    local l18: Bool
+    local l19: Bool
+    local l20: Int
+    local l21: Int
+    local l22: Bool
+    local l23: Char
+    local l24: Bool
+    local l25: Bool
+    local l26: Int
+    local l27: Char
+    local l28: Bool
+    local l29: Int
+    local l30: Char
+    local l31: Bool
+    local l32: Float
+    local l33: Int
+    local l34: Int
+    local l35: Int // end
+    local l36: Int // power
+    local l37: Int
+    local l38: Int
+    local l39: Int
+    local l40: Int
+    local l41: Bool
+    local l42: Bool
+    local l43: Int // i
+    local l44: Bool
+    local l45: Int
+    local l46: Bool
+    local l47: Bool
+    local l48: Char
+    local l49: Bool
+    local l50: Char
+    local l51: Bool
+    local l52: Int
+    local l53: Bool
+    local l54: Int
+    local l55: Int
+    local l56: Str
+    local l57: Record(4)
+    local l58: Record(4)
+    local l59: Int
+    local l60: Bool
+    local l61: Int
+    local l62: Int // value
+    local l63: Int
+    local l64: Int
+    local l65: Bool
+    local l66: Int
+    local l67: Int
+    local l68: Bool
+    local l69: Int
+    local l70: Bool
+    local l71: Float
+    local l72: Int
+    local l73: Int
+    local l74: Str
+    local l75: Str
+    local l76: Int
+    local l77: Int
+    local l78: Str
+    local l79: Bool
+    local l80: Float
+    local l81: Int // point
+    local l82: Int
+    local l83: Int
+    local l84: Int
+    local l85: Bool
+    local l86: Bool
+    local l87: Int // i
+    local l88: Bool
+    local l89: Bool
+    local l90: Char
+    local l91: Bool
+    local l92: Bool
+    local l93: Bool
+    local l94: Bool
+    local l95: Bool
+    local l96: Int
+    local l97: Bool
+    local l98: Float
+    local l99: U128
+    local l100: U128 // mantissa
+    local l101: Int // kept
+    local l102: Bool // sticky
+    local l103: Int // exponent
+    local l104: Int
+    local l105: Int
+    local l106: Int
+    local l107: Bool
+    local l108: Bool
+    local l109: Int // i
+    local l110: Bool
+    local l111: Char
+    local l112: Int
+    local l113: Int // digit
+    local l114: Bool
+    local l115: Float
+    local l116: Bool
+    local l117: Bool // inFraction
+    local l118: Bool
+    local l119: Bool
+    local l120: U128
+    local l121: Bool
+    local l122: Bool
+    local l123: Int
+    local l124: U128
+    local l125: U128
+    local l126: U128
+    local l127: U128
+    local l128: Int
+    local l129: Bool
+    local l130: Bool
+    local l131: Int
+    local l132: Float
+    local l133: Int
+    local l134: Float
+    local l135: Float
+    local l136: Float // sign
+    local l137: U128
+    local l138: Bool
+    local l139: Float
+    local l140: Float
+    local l141: Int
+    local l142: Int
+    local l143: Int // bits
+    local l144: Int
+    local l145: Int
+    local l146: Int // leading
+    local l147: Bool
+    local l148: Float
+    local l149: Int
+    local l150: Int
+    local l151: Bool
+    local l152: Int
+    local l153: Int
+    local l154: Int
+    local l155: Int // precision
+    local l156: Int
+    local l157: Int // shift
+    local l158: U128 // keptBits
+    local l159: Int // scale
+    local l160: Bool
+    local l161: U128
+    local l162: Bool
+    local l163: U128
+    local l164: U128
+    local l165: U128
+    local l166: U128
+    local l167: U128
+    local l168: U128
+    local l169: U128 // dropped
+    local l170: U128
+    local l171: Bool
+    local l172: U128
+    local l173: U128
+    local l174: Int
+    local l175: U128
+    local l176: U128
+    local l177: U128 // half
+    local l178: U128
+    local l179: Bool
+    local l180: U128
+    local l181: U128
+    local l182: U128
+    local l183: Bool
+    local l184: Bool
+    local l185: Bool
+    local l186: Bool
+    local l187: Bool
+    local l188: U128
+    local l189: U128
+    local l190: U128
+    local l191: Bool
+    local l192: Bool // up
+    local l193: U128
+    local l194: U128
+    local l195: Int
+    local l196: Bool
+    local l197: U128
+    local l198: Bool
+    local l199: Int
+    local l200: Int
+    local l201: Int
+    local l202: Bool
+    local l203: Float
+    local l204: Float
+    local l205: Float
+    local l206: Int
+    local l207: Float
+    local l208: Float
+    local l209: Int
+    local l210: Int
+    local l211: Float
+    local l212: Float
+  b0:
+    l2 = call f23(l0)
+    l3 = l2
+    l4 = 0
+    l5 = false
+    l7 = ListLength l3
+    l8 = IntCompare(Less) l4, l7
+    l6 = l8
+    branch l6, b1, b2
+  b1:
+    l9 = l3[l4]
+    l10 = CharCompare(Equal) l9, '-'
+    l6 = l10
+    goto b2
+  b2:
+    branch l6, b3, b4
+  b3:
+    l5 = true
+    l11 = IntAdd l4, 1
+    l4 = l11
+    goto b5
+  b4:
+    l13 = ListLength l3
+    l14 = IntCompare(Less) l4, l13
+    l12 = l14
+    branch l12, b6, b7
+  b5:
+    l20 = IntAdd l4, 1
+    l21 = ListLength l3
+    l22 = IntCompare(GreaterEqual) l20, l21
+    l19 = l22
+    branch l19, b11, b10
+  b6:
+    l15 = l3[l4]
+    l16 = CharCompare(Equal) l15, '+'
+    l12 = l16
+    goto b7
+  b7:
+    branch l12, b8, b9
+  b8:
+    l17 = IntAdd l4, 1
+    l4 = l17
+    goto b9
+  b9:
+    goto b5
+  b10:
+    l23 = l3[l4]
+    l24 = CharCompare(NotEqual) l23, '0'
+    l19 = l24
+    goto b11
+  b11:
+    l18 = l19
+    branch l18, b13, b12
+  b12:
+    l26 = IntAdd l4, 1
+    l27 = l3[l26]
+    l28 = CharCompare(NotEqual) l27, 'x'
+    l25 = l28
+    branch l25, b14, b15
+  b13:
+    branch l18, b16, b17
+  b14:
+    l29 = IntAdd l4, 1
+    l30 = l3[l29]
+    l31 = CharCompare(NotEqual) l30, 'X'
+    l25 = l31
+    goto b15
+  b15:
+    l18 = l25
+    goto b13
+  b16:
+    l1 = 1
+    l32 = IntToFloat 0
+    return l32
+  b17:
+    l33 = IntAdd l4, 2
+    l4 = l33
+    l34 = ListLength l3
+    l35 = l34
+    l36 = 0
+    l37 = l4
+    l38 = ListLength l3
+    l39 = l38
+    range_check 1
+    l40 = l37
+    l41 = false
+    goto b18
+  b18:
+    l42, l43 = range_next l40, l39, 1, l41
+    branch l42, b19, b20
+  b19:
+    l45 = ListLength l3
+    l46 = IntCompare(Equal) l35, l45
+    l44 = l46
+    branch l44, b21, b22
+  b20:
+    l52 = ListLength l3
+    l53 = IntCompare(Less) l35, l52
+    branch l53, b27, b28
+  b21:
+    l48 = l3[l43]
+    l49 = CharCompare(Equal) l48, 'p'
+    l47 = l49
+    branch l47, b24, b23
+  b22:
+    branch l44, b25, b26
+  b23:
+    l50 = l3[l43]
+    l51 = CharCompare(Equal) l50, 'P'
+    l47 = l51
+    goto b24
+  b24:
+    l44 = l47
+    goto b22
+  b25:
+    l35 = l43
+    goto b26
+  b26:
+    goto b18
+  b27:
+    l54 = IntAdd l35, 1
+    l55 = l54
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
+    l57 = call f25(l56)
+    l58 = l57
+    l59 = RecordTag l58
+    l60 = IntCompare(Equal) l59, 0
+    branch l60, b31, b30
+  b28:
+    l81 = l35
+    l82 = l4
+    l83 = l35
+    range_check 1
+    l84 = l82
+    l85 = false
+    goto b42
+  b29:
+    l72 = IntAdd l35, 1
+    l73 = l72
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
+    l75 = call f2(l74)
+    l76 = IntAdd l35, 1
+    l77 = l76
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
+    l79 = StrCompare(NotEqual) l75, l78
+    branch l79, b40, b41
+  b30:
+    l69 = RecordTag l58
+    l70 = IntCompare(Equal) l69, 1
+    branch l70, b39, b38
+  b31:
+    l61 = l58.0
+    l62 = l61
+    l64 = IntNeg 100000
+    l65 = IntCompare(Less) l62, l64
+    branch l65, b32, b33
+  b32:
+    l66 = IntNeg 100000
+    l63 = l66
+    goto b34
+  b33:
+    l68 = IntCompare(Greater) l62, 100000
+    branch l68, b35, b36
+  b34:
+    l36 = l63
+    goto b29
+  b35:
+    l67 = 100000
+    goto b37
+  b36:
+    l67 = l62
+    goto b37
+  b37:
+    l63 = l67
+    goto b34
+  b38:
+    unreachable
+  b39:
+    l1 = 1
+    l71 = IntToFloat 0
+    return l71
+  b40:
+    l1 = 1
+    l80 = IntToFloat 0
+    return l80
+  b41:
+    goto b28
+  b42:
+    l86, l87 = range_next l84, l83, 1, l85
+    branch l86, b43, b44
+  b43:
+    l89 = IntCompare(Equal) l81, l35
+    l88 = l89
+    branch l88, b45, b46
+  b44:
+    l93 = IntCompare(Equal) l81, l4
+    l92 = l93
+    branch l92, b49, b50
+  b45:
+    l90 = l3[l87]
+    l91 = CharCompare(Equal) l90, '.'
+    l88 = l91
+    goto b46
+  b46:
+    branch l88, b47, b48
+  b47:
+    l81 = l87
+    goto b48
+  b48:
+    goto b42
+  b49:
+    l95 = IntCompare(Equal) l81, l35
+    l94 = l95
+    branch l94, b52, b51
+  b50:
+    branch l92, b53, b54
+  b51:
+    l96 = IntAdd l81, 1
+    l97 = IntCompare(Equal) l96, l35
+    l94 = l97
+    goto b52
+  b52:
+    l92 = l94
+    goto b50
+  b53:
+    l1 = 1
+    l98 = IntToFloat 0
+    return l98
+  b54:
+    l99 = IntToU128 0
+    l100 = l99
+    l101 = 0
+    l102 = false
+    l103 = l36
+    l104 = l4
+    l105 = l35
+    range_check 1
+    l106 = l104
+    l107 = false
+    goto b55
+  b55:
+    l108, l109 = range_next l106, l105, 1, l107
+    branch l108, b56, b57
+  b56:
+    l110 = IntCompare(Equal) l109, l81
+    branch l110, b58, b59
+  b57:
+    branch l5, b75, b76
+  b58:
+    goto b55
+  b59:
+    l111 = l3[l109]
+    l112 = call f33(l111)
+    l113 = l112
+    l114 = IntCompare(Less) l113, 0
+    branch l114, b60, b61
+  b60:
+    l1 = 1
+    l115 = IntToFloat 0
+    return l115
+  b61:
+    l116 = IntCompare(Greater) l109, l81
+    l117 = l116
+    l118 = IntCompare(Less) l101, 30
+    branch l118, b62, b63
+  b62:
+    l120 = IntToU128 0
+    l121 = U128Compare(NotEqual) l100, l120
+    l119 = l121
+    branch l119, b66, b65
+  b63:
+    l129 = IntCompare(NotEqual) l113, 0
+    branch l129, b71, b72
+  b64:
+    goto b55
+  b65:
+    l122 = IntCompare(NotEqual) l113, 0
+    l119 = l122
+    goto b66
+  b66:
+    branch l119, b67, b68
+  b67:
+    l123 = IntAdd l101, 1
+    l101 = l123
+    goto b68
+  b68:
+    l124 = IntToU128 4
+    l125 = U128ShiftLeft l100, l124
+    l126 = koji_unsafe_wide([Value(Local(113)), Value(Int(0))])
+    l127 = U128Or l125, l126
+    l100 = l127
+    branch l117, b69, b70
+  b69:
+    l128 = IntSub l103, 4
+    l103 = l128
+    goto b70
+  b70:
+    goto b64
+  b71:
+    l102 = true
+    goto b72
+  b72:
+    l130 = Not l117
+    branch l130, b73, b74
+  b73:
+    l131 = IntAdd l103, 4
+    l103 = l131
+    goto b74
+  b74:
+    goto b64
+  b75:
+    l133 = IntNeg 1
+    l134 = IntToFloat l133
+    l132 = l134
+    goto b77
+  b76:
+    l135 = IntToFloat 1
+    l132 = l135
+    goto b77
+  b77:
+    l136 = l132
+    l137 = IntToU128 0
+    l138 = U128Compare(Equal) l100, l137
+    branch l138, b78, b79
+  b78:
+    l139 = IntToFloat 0
+    l140 = FloatMul l136, l139
+    return l140
+  b79:
+    l141 = koji_unsafe_leading_zeros([Value(Local(100))])
+    l142 = IntSub 128, l141
+    l143 = l142
+    l144 = IntAdd l103, l143
+    l145 = IntSub l144, 1
+    l146 = l145
+    l147 = IntCompare(Greater) l146, 1023
+    branch l147, b80, b81
+  b80:
+    l1 = 2
+    l148 = IntToFloat 0
+    return l148
+  b81:
+    l150 = IntNeg 1022
+    l151 = IntCompare(Less) l146, l150
+    branch l151, b82, b83
+  b82:
+    l152 = IntNeg 1022
+    l153 = IntSub l152, l146
+    l154 = IntSub 53, l153
+    l149 = l154
+    goto b84
+  b83:
+    l149 = 53
+    goto b84
+  b84:
+    l155 = l149
+    l156 = IntSub l143, l155
+    l157 = l156
+    l158 = l100
+    l159 = l103
+    l160 = IntCompare(Greater) l157, 0
+    branch l160, b85, b86
+  b85:
+    l162 = IntCompare(GreaterEqual) l157, 128
+    branch l162, b87, b88
+  b86:
+    l197 = IntToU128 0
+    l198 = U128Compare(NotEqual) l158, l197
+    l196 = l198
+    branch l196, b104, b105
+  b87:
+    l161 = l100
+    goto b89
+  b88:
+    l163 = koji_unsafe_wide([Value(Int(1)), Value(Int(0))])
+    l164 = koji_unsafe_wide([Value(Local(157)), Value(Int(0))])
+    l165 = U128ShiftLeft l163, l164
+    l166 = IntToU128 1
+    l167 = U128Sub l165, l166
+    l168 = U128And l100, l167
+    l161 = l168
+    goto b89
+  b89:
+    l169 = l161
+    l171 = IntCompare(Greater) l157, 128
+    branch l171, b90, b91
+  b90:
+    l172 = koji_unsafe_wide([Value(Int(0)), Value(Int(0))])
+    l170 = l172
+    goto b92
+  b91:
+    l173 = koji_unsafe_wide([Value(Int(1)), Value(Int(0))])
+    l174 = IntSub l157, 1
+    l175 = koji_unsafe_wide([Value(Local(174)), Value(Int(0))])
+    l176 = U128ShiftLeft l173, l175
+    l170 = l176
+    goto b92
+  b92:
+    l177 = l170
+    l179 = IntCompare(GreaterEqual) l157, 128
+    branch l179, b93, b94
+  b93:
+    l180 = koji_unsafe_wide([Value(Int(0)), Value(Int(0))])
+    l178 = l180
+    goto b95
+  b94:
+    l181 = koji_unsafe_wide([Value(Local(157)), Value(Int(0))])
+    l182 = U128ShiftRight l100, l181
+    l178 = l182
+    goto b95
+  b95:
+    l158 = l178
+    l184 = U128Compare(Greater) l169, l177
+    l183 = l184
+    branch l183, b97, b96
+  b96:
+    l186 = U128Compare(Equal) l169, l177
+    l185 = l186
+    branch l185, b98, b99
+  b97:
+    l192 = l183
+    branch l192, b102, b103
+  b98:
+    l187 = l102
+    branch l187, b101, b100
+  b99:
+    l183 = l185
+    goto b97
+  b100:
+    l188 = IntToU128 1
+    l189 = U128And l158, l188
+    l190 = IntToU128 1
+    l191 = U128Compare(Equal) l189, l190
+    l187 = l191
+    goto b101
+  b101:
+    l185 = l187
+    goto b99
+  b102:
+    l193 = IntToU128 1
+    l194 = U128Add l158, l193
+    l158 = l194
+    goto b103
+  b103:
+    l195 = IntAdd l159, l157
+    l159 = l195
+    goto b86
+  b104:
+    l199 = koji_unsafe_leading_zeros([Value(Local(158))])
+    l200 = IntSub 128, l199
+    l201 = IntAdd l200, l159
+    l202 = IntCompare(Greater) l201, 1024
+    l196 = l202
+    goto b105
+  b105:
+    branch l196, b106, b107
+  b106:
+    l1 = 2
+    l203 = IntToFloat 0
+    return l203
+  b107:
+    l204 = koji_unsafe_wide_to_float([Value(Local(158))])
+    l205 = FloatMul l136, l204
+    l206 = IntDiv l159, 2
+    l207 = call f34(l206)
+    l208 = FloatMul l205, l207
+    l209 = IntDiv l159, 2
+    l210 = IntSub l159, l209
+    l211 = call f34(l210)
+    l212 = FloatMul l208, l211
+    return l212
+
+function f33 hexValue(l0: Char): Int
+    local l1: Int
+    local l2: Int // code
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Int
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Int
+    local l11: Bool
+    local l12: Bool
+    local l13: Bool
+    local l14: Int
+    local l15: Int
+  b0:
+    l1 = CharCode l0
+    l2 = l1
+    l4 = IntCompare(GreaterEqual) l2, 48
+    l3 = l4
+    branch l3, b1, b2
+  b1:
+    l5 = IntCompare(LessEqual) l2, 57
+    l3 = l5
+    goto b2
+  b2:
+    branch l3, b3, b4
+  b3:
+    l6 = IntSub l2, 48
+    return l6
+  b4:
+    l8 = IntCompare(GreaterEqual) l2, 97
+    l7 = l8
+    branch l7, b5, b6
+  b5:
+    l9 = IntCompare(LessEqual) l2, 102
+    l7 = l9
+    goto b6
+  b6:
+    branch l7, b7, b8
+  b7:
+    l10 = IntSub l2, 87
+    return l10
+  b8:
+    l12 = IntCompare(GreaterEqual) l2, 65
+    l11 = l12
+    branch l11, b9, b10
+  b9:
+    l13 = IntCompare(LessEqual) l2, 70
+    l11 = l13
+    goto b10
+  b10:
+    branch l11, b11, b12
+  b11:
+    l14 = IntSub l2, 55
+    return l14
+  b12:
+    l15 = IntNeg 1
+    return l15
+
+function f34 powerOfTwo(l0: Int): Float
+    local l1: Float
+    local l2: Float // result
+    local l3: Float
+    local l4: Float // base
+    local l5: Int
+    local l6: Bool
+    local l7: Int
+    local l8: Int // left
+    local l9: Bool
+    local l10: Int
+    local l11: Bool
+    local l12: Float
+    local l13: Int
+    local l14: Bool
+    local l15: Float
+    local l16: Float
+    local l17: Bool
+    local l18: Float
+    local l19: Float
+  b0:
+    l1 = IntToFloat 1
+    l2 = l1
+    l3 = IntToFloat 2
+    l4 = l3
+    l6 = IntCompare(Less) l0, 0
+    branch l6, b1, b2
+  b1:
+    l7 = IntNeg l0
+    l5 = l7
+    goto b3
+  b2:
+    l5 = l0
+    goto b3
+  b3:
+    l8 = l5
+    goto b4
+  b4:
+    l9 = IntCompare(Greater) l8, 0
+    branch l9, b5, b6
+  b5:
+    l10 = BitAnd l8, 1
+    l11 = IntCompare(Equal) l10, 1
+    branch l11, b7, b8
+  b6:
+    l17 = IntCompare(Less) l0, 0
+    branch l17, b11, b12
+  b7:
+    l12 = FloatMul l2, l4
+    l2 = l12
+    goto b8
+  b8:
+    l13 = IntDiv l8, 2
+    l8 = l13
+    l14 = IntCompare(Greater) l8, 0
+    branch l14, b9, b10
+  b9:
+    l15 = FloatMul l4, l4
+    l4 = l15
+    goto b10
+  b10:
+    goto b4
+  b11:
+    l18 = IntToFloat 1
+    l19 = FloatDiv l18, l2
+    l16 = l19
+    goto b13
+  b12:
+    l16 = l2
+    goto b13
+  b13:
+    return l16
+
+function f35 readLine(l0: Int): Record(0)
+    local l1: Record(0)
+  b0:
+    l1 = call f36(s2, l0)
+    return l1
+
+function f36 readLineAfter(l0: Str, l1: Int): Record(0)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(0)
+    local l10: Record(0)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f37 decimalOf(l0: Str): Record(6)
+    local l1: Int
+    local l2: Int // status
+    local l3: Decimal
+    local l4: Decimal // value
+    local l5: Int
+    local l6: Int // code
+    local l7: Bool
+    local l8: Record(3)
+    local l9: Record(6)
+    local l10: Bool
+    local l11: Record(3)
+    local l12: Record(6)
+    local l13: Record(6)
+  b0:
+    l1 = koji_unsafe_allocate([Value(Int(8))])
+    l2 = l1
+    l3 = koji_decimal_parse([Value(Local(0)), Value(Local(2))])
+    l4 = l3
+    l5 = koji_unsafe_read_int([Value(Local(2)), Value(Int(0))])
+    l6 = l5
+    koji_unsafe_free([Value(Local(2))])
+    l7 = IntCompare(Equal) l6, 1
+    branch l7, b1, b2
+  b1:
+    l8 = record variant 0 (l0)
+    l9 = record variant 1 (l8)
+    return l9
+  b2:
+    l10 = IntCompare(Equal) l6, 2
+    branch l10, b3, b4
+  b3:
+    l11 = record variant 1 (l0)
+    l12 = record variant 1 (l11)
+    return l12
+  b4:
+    l13 = record variant 0 (l4)
+    return l13
 ==== examples/interpolation.kj
 string s0 = "Result: "
 global g0: Int // result
@@ -960,7 +3838,10 @@ record r4 Result[int, ParseError]
 record r5 Result[float, ParseError]
     Ok (value: Float)
     Err (error: Record(3))
-record r6 Result[decimal, ParseError]
+record r6 Option[string]
+    Some (value: Str)
+    None ()
+record r7 Result[decimal, ParseError]
     Ok (value: Decimal)
     Err (error: Record(3))
 global g0: Bool // koji:core initialized
@@ -3308,7 +6189,7 @@ function f32 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f25(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -3325,11 +6206,11 @@ function f32 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f2(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -3792,7 +6673,41 @@ function f34 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f35 decimalOf(l0: Str): Record(6)
+function f35 readLine(l0: Int): Record(6)
+    local l1: Record(6)
+  b0:
+    l1 = call f36(s2, l0)
+    return l1
+
+function f36 readLineAfter(l0: Str, l1: Int): Record(6)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(6)
+    local l10: Record(6)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f37 decimalOf(l0: Str): Record(7)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -3801,11 +6716,11 @@ function f35 decimalOf(l0: Str): Record(6)
     local l6: Int // code
     local l7: Bool
     local l8: Record(3)
-    local l9: Record(6)
+    local l9: Record(7)
     local l10: Bool
     local l11: Record(3)
-    local l12: Record(6)
-    local l13: Record(6)
+    local l12: Record(7)
+    local l13: Record(7)
   b0:
     l1 = koji_unsafe_allocate([Value(Int(8))])
     l2 = l1
@@ -4113,14 +7028,17 @@ record r3 Option[char]
 record r4 Result[float, ParseError]
     Ok (value: Float)
     Err (error: Record(0))
-record r5 Result[decimal, ParseError]
+record r5 Option[string]
+    Some (value: Str)
+    None ()
+record r6 Result[decimal, ParseError]
     Ok (value: Decimal)
     Err (error: Record(0))
-record r6 E
+record r7 E
     Parse (error: Record(0))
-record r7 Result[int, E]
+record r8 Result[int, E]
     Ok (value: Int)
-    Err (error: Record(6))
+    Err (error: Record(7))
 global g0: Bool // koji:core initialized
 global g1: Record(1) // r
 
@@ -4129,10 +7047,10 @@ function f0 main(): Void
     local l1: Record(1)
     local l2: Int
     local l3: Bool
-    local l4: Record(7)
+    local l4: Record(8)
     local l5: Int
     local l6: Record(0)
-    local l7: Record(6)
+    local l7: Record(7)
     local l8: Str
   b0:
     l0 = call f25(s4)
@@ -6453,7 +9371,7 @@ function f32 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f25(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -6470,11 +9388,11 @@ function f32 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f2(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -6937,7 +9855,41 @@ function f34 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f35 decimalOf(l0: Str): Record(5)
+function f35 readLine(l0: Int): Record(5)
+    local l1: Record(5)
+  b0:
+    l1 = call f36(s2, l0)
+    return l1
+
+function f36 readLineAfter(l0: Str, l1: Int): Record(5)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(5)
+    local l10: Record(5)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f37 decimalOf(l0: Str): Record(6)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -6946,11 +9898,11 @@ function f35 decimalOf(l0: Str): Record(5)
     local l6: Int // code
     local l7: Bool
     local l8: Record(0)
-    local l9: Record(5)
+    local l9: Record(6)
     local l10: Bool
     local l11: Record(0)
-    local l12: Record(5)
-    local l13: Record(5)
+    local l12: Record(6)
+    local l13: Record(6)
   b0:
     l1 = koji_unsafe_allocate([Value(Int(8))])
     l2 = l1
@@ -7003,7 +9955,10 @@ record r5 Result[int, ParseError]
 record r6 Result[float, ParseError]
     Ok (value: Float)
     Err (error: Record(1))
-record r7 Result[decimal, ParseError]
+record r7 Option[string]
+    Some (value: Str)
+    None ()
+record r8 Result[decimal, ParseError]
     Ok (value: Decimal)
     Err (error: Record(1))
 global g0: Bool // koji:core initialized
@@ -9349,7 +12304,7 @@ function f33 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f26(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -9366,11 +12321,11 @@ function f33 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f3(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -9833,7 +12788,41 @@ function f35 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f36 decimalOf(l0: Str): Record(7)
+function f36 readLine(l0: Int): Record(7)
+    local l1: Record(7)
+  b0:
+    l1 = call f37(s2, l0)
+    return l1
+
+function f37 readLineAfter(l0: Str, l1: Int): Record(7)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(7)
+    local l10: Record(7)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f38 decimalOf(l0: Str): Record(8)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -9842,11 +12831,11 @@ function f36 decimalOf(l0: Str): Record(7)
     local l6: Int // code
     local l7: Bool
     local l8: Record(1)
-    local l9: Record(7)
+    local l9: Record(8)
     local l10: Bool
     local l11: Record(1)
-    local l12: Record(7)
-    local l13: Record(7)
+    local l12: Record(8)
+    local l13: Record(8)
   b0:
     l1 = koji_unsafe_allocate([Value(Int(8))])
     l2 = l1
@@ -10255,10 +13244,10 @@ function f0 main(): Void
     l23 = BoolToStr l22
     l24 = StrConcat l20, s24
     l25 = StrConcat l24, l23
-    l26 = call f73(s25, s26)
+    l26 = call f75(s25, s26)
     l27 = StrConcat l25, s24
     l28 = StrConcat l27, l26
-    l29 = call f74(s27)
+    l29 = call f76(s27)
     l30 = RecordToStr l29
     l31 = StrConcat l28, s24
     l32 = StrConcat l31, l30
@@ -14066,7 +17055,7 @@ function f69 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f62(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -14083,11 +17072,11 @@ function f69 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f39(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -14550,7 +17539,41 @@ function f71 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f72 decimalOf(l0: Str): Record(16)
+function f72 readLine(l0: Int): Record(4)
+    local l1: Record(4)
+  b0:
+    l1 = call f73(s1, l0)
+    return l1
+
+function f73 readLineAfter(l0: Str, l1: Int): Record(4)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(4)
+    local l10: Record(4)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f74 decimalOf(l0: Str): Record(16)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -14589,7 +17612,7 @@ function f72 decimalOf(l0: Str): Record(16)
     l13 = record variant 0 (l4)
     return l13
 
-function f73 join(l0: Str, l1: Str): Str
+function f75 join(l0: Str, l1: Str): Str
     local l2: Bool
     local l3: Bool
     local l4: Bool
@@ -14620,7 +17643,7 @@ function f73 join(l0: Str, l1: Str): Str
     l8 = StrConcat l7, l1
     return l8
 
-function f74 parent(l0: Str): Record(4)
+function f76 parent(l0: Str): Record(4)
     local l1: List(Char)
     local l2: List(Char) // chars
     local l3: Int
@@ -14646,7 +17669,7 @@ function f74 parent(l0: Str): Record(4)
     l1 = call f60(l0)
     l2 = l1
     l3 = ListLength l2
-    l4 = call f79(l2, l3)
+    l4 = call f81(l2, l3)
     l5 = l4
     l7 = IntCompare(Equal) l5, 0
     l6 = l7
@@ -14669,9 +17692,9 @@ function f74 parent(l0: Str): Record(4)
     l12 = record variant 1 ()
     return l12
   b6:
-    l13 = call f80(l2, l5)
+    l13 = call f82(l2, l5)
     l14 = l13
-    l15 = call f79(l2, l14)
+    l15 = call f81(l2, l14)
     l16 = l15
     l17 = IntCompare(Equal) l16, 0
     branch l17, b7, b8
@@ -14684,7 +17707,7 @@ function f74 parent(l0: Str): Record(4)
     l21 = record variant 0 (l20)
     return l21
 
-function f75 name(l0: Str): Record(4)
+function f77 name(l0: Str): Record(4)
     local l1: List(Char)
     local l2: List(Char) // chars
     local l3: Int
@@ -14712,7 +17735,7 @@ function f75 name(l0: Str): Record(4)
     l1 = call f60(l0)
     l2 = l1
     l3 = ListLength l2
-    l4 = call f79(l2, l3)
+    l4 = call f81(l2, l3)
     l5 = l4
     l7 = IntCompare(Equal) l5, 0
     l6 = l7
@@ -14735,7 +17758,7 @@ function f75 name(l0: Str): Record(4)
     l12 = record variant 1 ()
     return l12
   b6:
-    l13 = call f80(l2, l5)
+    l13 = call f82(l2, l5)
     l14 = l13
     l15 = l14
     l16 = l5
@@ -14757,7 +17780,7 @@ function f75 name(l0: Str): Record(4)
     l23 = record variant 0 (l18)
     return l23
 
-function f76 stem(l0: Str): Record(4)
+function f78 stem(l0: Str): Record(4)
     local l1: Record(4)
     local l2: Record(4)
     local l3: Record(4)
@@ -14776,7 +17799,7 @@ function f76 stem(l0: Str): Record(4)
     local l16: Bool
     local l17: Record(4)
   b0:
-    l2 = call f75(l0)
+    l2 = call f77(l0)
     l3 = l2
     l4 = RecordTag l3
     l5 = IntCompare(Equal) l4, 0
@@ -14790,7 +17813,7 @@ function f76 stem(l0: Str): Record(4)
   b3:
     l6 = l3.0
     l7 = l6
-    l8 = call f81(l7)
+    l8 = call f83(l7)
     l9 = l8
     l10 = IntCompare(LessEqual) l9, 0
     branch l10, b4, b5
@@ -14810,7 +17833,7 @@ function f76 stem(l0: Str): Record(4)
     l1 = l17
     goto b1
 
-function f77 extension(l0: Str): Record(4)
+function f79 extension(l0: Str): Record(4)
     local l1: Record(4)
     local l2: Record(4)
     local l3: Record(4)
@@ -14830,7 +17853,7 @@ function f77 extension(l0: Str): Record(4)
     local l17: Bool
     local l18: Record(4)
   b0:
-    l2 = call f75(l0)
+    l2 = call f77(l0)
     l3 = l2
     l4 = RecordTag l3
     l5 = IntCompare(Equal) l4, 0
@@ -14844,7 +17867,7 @@ function f77 extension(l0: Str): Record(4)
   b3:
     l6 = l3.0
     l7 = l6
-    l8 = call f81(l7)
+    l8 = call f83(l7)
     l9 = l8
     l10 = IntCompare(LessEqual) l9, 0
     branch l10, b4, b5
@@ -14865,13 +17888,13 @@ function f77 extension(l0: Str): Record(4)
     l1 = l18
     goto b1
 
-function f78 isAbsolute(l0: Str): Bool
+function f80 isAbsolute(l0: Str): Bool
     local l1: Bool
   b0:
     l1 = call f43(l0, s0)
     return l1
 
-function f79 trimmedEnd(l0: List(Char), l1: Int): Int
+function f81 trimmedEnd(l0: List(Char), l1: Int): Int
     local l2: Int // at
     local l3: Bool
     local l4: Bool
@@ -14942,7 +17965,7 @@ function f79 trimmedEnd(l0: List(Char), l1: Int): Int
   b13:
     goto b3
 
-function f80 partStart(l0: List(Char), l1: Int): Int
+function f82 partStart(l0: List(Char), l1: Int): Int
     local l2: Int // at
     local l3: Bool
     local l4: Bool
@@ -14972,7 +17995,7 @@ function f80 partStart(l0: List(Char), l1: Int): Int
   b5:
     branch l3, b2, b3
 
-function f81 lastDot(l0: Str): Int
+function f83 lastDot(l0: Str): Int
     local l1: Int
     local l2: Int // found
     local l3: Int // position
@@ -16332,7 +19355,7 @@ function f16 Parser.number(l0: Record(4)): Record(7)
     l36 = IntCompare(Equal) l35, 0
     branch l36, b16, b15
   b13:
-    l46 = call f127(l3)
+    l46 = call f129(l3)
     l47 = l46
     l48 = RecordTag l47
     l49 = IntCompare(Equal) l48, 0
@@ -26983,7 +30006,7 @@ function f124 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f117(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -27000,11 +30023,11 @@ function f124 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f94(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -27467,7 +30490,41 @@ function f126 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f127 decimalOf(l0: Str): Record(43)
+function f127 readLine(l0: Int): Record(12)
+    local l1: Record(12)
+  b0:
+    l1 = call f128(s2, l0)
+    return l1
+
+function f128 readLineAfter(l0: Str, l1: Int): Record(12)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(12)
+    local l10: Record(12)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f129 decimalOf(l0: Str): Record(43)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -28078,7 +31135,7 @@ function f9 File.write(l0: Record(1), l1: Str, l2: Int): Record(5)
 
 function f10 File.close(l0: Record(1)): Void
   b0:
-    drop l0 with f72
+    drop l0 with f74
     return
 
 function f11 list(l0: Str): Record(6)
@@ -31884,7 +34941,7 @@ function f68 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f61(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -31901,11 +34958,11 @@ function f68 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f38(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -32368,7 +35425,41 @@ function f70 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f71 decimalOf(l0: Str): Record(20)
+function f71 readLine(l0: Int): Record(8)
+    local l1: Record(8)
+  b0:
+    l1 = call f72(s2, l0)
+    return l1
+
+function f72 readLineAfter(l0: Str, l1: Int): Record(8)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(8)
+    local l10: Record(8)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f73 decimalOf(l0: Str): Record(20)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -32407,7 +35498,7 @@ function f71 decimalOf(l0: Str): Record(20)
     l13 = record variant 0 (l4)
     return l13
 
-function f72 drop Record(1)(l0: Record(1)): Void
+function f74 drop Record(1)(l0: Record(1)): Void
     local l1: Record(1)
   b0:
     l1 = l0
@@ -37558,7 +40649,7 @@ function f83 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f76(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -37575,11 +40666,11 @@ function f83 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f53(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -38042,7 +41133,41 @@ function f85 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f86 decimalOf(l0: Str): Record(20)
+function f86 readLine(l0: Int): Record(8)
+    local l1: Record(8)
+  b0:
+    l1 = call f87(s2, l0)
+    return l1
+
+function f87 readLineAfter(l0: Str, l1: Int): Record(8)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(8)
+    local l10: Record(8)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f88 decimalOf(l0: Str): Record(20)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -38105,7 +41230,10 @@ record r3 Result[int, ParseError]
 record r4 Result[float, ParseError]
     Ok (value: Float)
     Err (error: Record(2))
-record r5 Result[decimal, ParseError]
+record r5 Option[string]
+    Some (value: Str)
+    None ()
+record r6 Result[decimal, ParseError]
     Ok (value: Decimal)
     Err (error: Record(2))
 global g0: Bool // koji:core initialized
@@ -40503,7 +43631,7 @@ function f32 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f25(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -40520,11 +43648,11 @@ function f32 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f2(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -40987,7 +44115,41 @@ function f34 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f35 decimalOf(l0: Str): Record(5)
+function f35 readLine(l0: Int): Record(5)
+    local l1: Record(5)
+  b0:
+    l1 = call f36(s2, l0)
+    return l1
+
+function f36 readLineAfter(l0: Str, l1: Int): Record(5)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(5)
+    local l10: Record(5)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f37 decimalOf(l0: Str): Record(6)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -40996,11 +44158,11 @@ function f35 decimalOf(l0: Str): Record(5)
     local l6: Int // code
     local l7: Bool
     local l8: Record(2)
-    local l9: Record(5)
+    local l9: Record(6)
     local l10: Bool
     local l11: Record(2)
-    local l12: Record(5)
-    local l13: Record(5)
+    local l12: Record(6)
+    local l13: Record(6)
   b0:
     l1 = koji_unsafe_allocate([Value(Int(8))])
     l2 = l1
@@ -41056,7 +44218,10 @@ record r3 Result[int, ParseError]
 record r4 Result[float, ParseError]
     Ok (value: Float)
     Err (error: Record(2))
-record r5 Result[decimal, ParseError]
+record r5 Option[string]
+    Some (value: Str)
+    None ()
+record r6 Result[decimal, ParseError]
     Ok (value: Decimal)
     Err (error: Record(2))
 global g0: Bool // koji:core initialized
@@ -43470,7 +46635,7 @@ function f32 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f25(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -43487,11 +46652,11 @@ function f32 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f2(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -43954,7 +47119,41 @@ function f34 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f35 decimalOf(l0: Str): Record(5)
+function f35 readLine(l0: Int): Record(5)
+    local l1: Record(5)
+  b0:
+    l1 = call f36(s2, l0)
+    return l1
+
+function f36 readLineAfter(l0: Str, l1: Int): Record(5)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(5)
+    local l10: Record(5)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f37 decimalOf(l0: Str): Record(6)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -43963,11 +47162,11 @@ function f35 decimalOf(l0: Str): Record(5)
     local l6: Int // code
     local l7: Bool
     local l8: Record(2)
-    local l9: Record(5)
+    local l9: Record(6)
     local l10: Bool
     local l11: Record(2)
-    local l12: Record(5)
-    local l13: Record(5)
+    local l12: Record(6)
+    local l13: Record(6)
   b0:
     l1 = koji_unsafe_allocate([Value(Int(8))])
     l2 = l1
@@ -44061,19 +47260,2897 @@ function f0 main(): Void
   b6:
     unreachable
 ==== test/ir/cases.txt #24
-string s0 = "name? "
-record r0 Option[string]
+string s0 = "split() separator cannot be empty"
+string s1 = "replace() needs a non-empty text to replace"
+string s2 = ""
+string s3 = "�"
+string s4 = "name? "
+record r0 Option[int]
+    Some (value: Int)
+    None ()
+record r1 Option[char]
+    Some (value: Char)
+    None ()
+record r2 ParseError
+    InvalidNumber (text: Str)
+    OutOfRange (text: Str)
+record r3 Result[int, ParseError]
+    Ok (value: Int)
+    Err (error: Record(2))
+record r4 Result[float, ParseError]
+    Ok (value: Float)
+    Err (error: Record(2))
+record r5 Option[string]
     Some (value: Str)
     None ()
+record r6 Result[decimal, ParseError]
+    Ok (value: Decimal)
+    Err (error: Record(2))
+global g0: Bool // koji:core initialized
 
 function f0 main(): Void
-    local l0: Record(0)
+    local l0: Record(5)
     local l1: Str
   b0:
-    l0 = koji_std_input([Value(Str(0)), Record(0), Location(1)])
+    l0 = call f36(s4, location(case24.kj:1))
     l1 = RecordToStr l0
     print l1
     return
+
+function f1 koji:core (module)(): Void
+  b0:
+    branch g0, b1, b2
+  b1:
+    return
+  b2:
+    g0 = true
+    return
+
+function f2 trim(l0: Str): Str
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int // size
+    local l5: Int
+    local l6: Int // start
+    local l7: Int
+    local l8: Int // end
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Str
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    l5 = call f3(l2, 0, l4)
+    l6 = l5
+    l7 = call f4(l2, l6, l4)
+    l8 = l7
+    l10 = IntCompare(Equal) l6, 0
+    l9 = l10
+    branch l9, b1, b2
+  b1:
+    l11 = IntCompare(Equal) l8, l4
+    l9 = l11
+    goto b2
+  b2:
+    branch l9, b3, b4
+  b3:
+    return l0
+  b4:
+    l12 = call f5(l2, l6, l8)
+    return l12
+
+function f3 spaceEnd(l0: Int, l1: Int, l2: Int): Int
+    local l3: Int // at
+    local l4: Bool
+    local l5: Byte
+    local l6: Byte // b
+    local l7: Bool
+    local l8: Int
+    local l9: Bool
+    local l10: Bool
+    local l11: Int
+    local l12: Int
+    local l13: Int // width
+    local l14: Int
+    local l15: Bool
+    local l16: Bool
+    local l17: Int
+  b0:
+    l3 = l1
+    goto b1
+  b1:
+    l4 = IntCompare(Less) l3, l2
+    branch l4, b2, b3
+  b2:
+    l5 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(3))])
+    l6 = l5
+    l7 = ByteCompare(Less) l6, 128
+    branch l7, b4, b5
+  b3:
+    return l3
+  b4:
+    l8 = ByteToInt l6
+    l9 = call f15(l8)
+    l10 = Not l9
+    branch l10, b6, b7
+  b5:
+    l12 = call f13(l0, l3)
+    l13 = l12
+    l14 = call f14(l0, l3, l13)
+    l15 = call f15(l14)
+    l16 = Not l15
+    branch l16, b8, b9
+  b6:
+    return l3
+  b7:
+    l11 = IntAdd l3, 1
+    l3 = l11
+    goto b1
+  b8:
+    return l3
+  b9:
+    l17 = IntAdd l3, l13
+    l3 = l17
+    goto b1
+
+function f4 spaceStart(l0: Int, l1: Int, l2: Int): Int
+    local l3: Int // at
+    local l4: Bool
+    local l5: Int
+    local l6: Byte
+    local l7: Byte // b
+    local l8: Bool
+    local l9: Int
+    local l10: Bool
+    local l11: Bool
+    local l12: Int
+    local l13: Int
+    local l14: Int // last
+    local l15: Bool
+    local l16: Int
+    local l17: Int
+    local l18: Int
+    local l19: Bool
+    local l20: Bool
+  b0:
+    l3 = l2
+    goto b1
+  b1:
+    l4 = IntCompare(Greater) l3, l1
+    branch l4, b2, b3
+  b2:
+    l5 = IntSub l3, 1
+    l6 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(5))])
+    l7 = l6
+    l8 = ByteCompare(Less) l7, 128
+    branch l8, b4, b5
+  b3:
+    return l3
+  b4:
+    l9 = ByteToInt l7
+    l10 = call f15(l9)
+    l11 = Not l10
+    branch l11, b6, b7
+  b5:
+    l13 = IntSub l3, 1
+    l14 = l13
+    goto b8
+  b6:
+    return l3
+  b7:
+    l12 = IntSub l3, 1
+    l3 = l12
+    goto b1
+  b8:
+    l15 = call f12(l0, l14)
+    branch l15, b9, b10
+  b9:
+    l16 = IntSub l14, 1
+    l14 = l16
+    goto b8
+  b10:
+    l17 = IntSub l3, l14
+    l18 = call f14(l0, l14, l17)
+    l19 = call f15(l18)
+    l20 = Not l19
+    branch l20, b11, b12
+  b11:
+    return l3
+  b12:
+    l3 = l14
+    goto b1
+
+function f5 copyBytes(l0: Int, l1: Int, l2: Int): Str
+    local l3: Int
+    local l4: Int
+    local l5: Str
+    local l6: Str // copy
+    local l7: Int
+    local l8: Int
+    local l9: Int
+    local l10: Int
+  b0:
+    l3 = IntSub l2, l1
+    l4 = IntSub l2, l1
+    l5 = koji_unsafe_blank_string([Value(Local(3)), Value(Local(4))])
+    l6 = l5
+    l7 = koji_unsafe_string_bytes([Value(Local(6))])
+    l8 = koji_unsafe_offset([Value(Local(0)), Value(Local(1))])
+    l9 = IntSub l2, l1
+    l10 = memcpy([Value(Local(7)), Value(Local(8)), Value(Local(9))])
+    return l6
+
+function f6 startsWith(l0: Str, l1: Str): Bool
+    local l2: Int
+    local l3: Int // size
+    local l4: Int
+    local l5: Bool
+    local l6: Int
+    local l7: Int
+    local l8: Int
+    local l9: Bool
+  b0:
+    l2 = koji_unsafe_string_size([Value(Local(1))])
+    l3 = l2
+    l4 = koji_unsafe_string_size([Value(Local(0))])
+    l5 = IntCompare(Greater) l3, l4
+    branch l5, b1, b2
+  b1:
+    return false
+  b2:
+    l6 = koji_unsafe_string_bytes([Value(Local(0))])
+    l7 = koji_unsafe_string_bytes([Value(Local(1))])
+    l8 = memcmp([Value(Local(6)), Value(Local(7)), Value(Local(3))])
+    l9 = IntCompare(Equal) l8, 0
+    return l9
+
+function f7 endsWith(l0: Str, l1: Str): Bool
+    local l2: Int
+    local l3: Int // size
+    local l4: Int
+    local l5: Int
+    local l6: Int // start
+    local l7: Bool
+    local l8: Int
+    local l9: Int
+    local l10: Int
+    local l11: Int
+    local l12: Bool
+  b0:
+    l2 = koji_unsafe_string_size([Value(Local(1))])
+    l3 = l2
+    l4 = koji_unsafe_string_size([Value(Local(0))])
+    l5 = IntSub l4, l3
+    l6 = l5
+    l7 = IntCompare(Less) l6, 0
+    branch l7, b1, b2
+  b1:
+    return false
+  b2:
+    l8 = koji_unsafe_string_bytes([Value(Local(0))])
+    l9 = koji_unsafe_offset([Value(Local(8)), Value(Local(6))])
+    l10 = koji_unsafe_string_bytes([Value(Local(1))])
+    l11 = memcmp([Value(Local(9)), Value(Local(10)), Value(Local(3))])
+    l12 = IntCompare(Equal) l11, 0
+    return l12
+
+function f8 indexOf(l0: Str, l1: Str): Record(0)
+    local l2: Int
+    local l3: Int // bytes
+    local l4: Int
+    local l5: Int // found
+    local l6: Bool
+    local l7: Record(0)
+    local l8: Int // characters
+    local l9: Int
+    local l10: Int
+    local l11: Bool
+    local l12: Bool
+    local l13: Int // i
+    local l14: Bool
+    local l15: Bool
+    local l16: Int
+    local l17: Record(0)
+  b0:
+    l2 = koji_unsafe_string_bytes([Value(Local(0))])
+    l3 = l2
+    l4 = call f11(l0, l1, 0)
+    l5 = l4
+    l6 = IntCompare(Less) l5, 0
+    branch l6, b1, b2
+  b1:
+    l7 = record variant 1 ()
+    return l7
+  b2:
+    l8 = 0
+    l9 = l5
+    range_check 1
+    l10 = 0
+    l11 = false
+    goto b3
+  b3:
+    l12, l13 = range_next l10, l9, 1, l11
+    branch l12, b4, b5
+  b4:
+    l14 = call f12(l3, l13)
+    l15 = Not l14
+    branch l15, b6, b7
+  b5:
+    l17 = record variant 0 (l8)
+    return l17
+  b6:
+    l16 = IntAdd l8, 1
+    l8 = l16
+    goto b7
+  b7:
+    goto b3
+
+function f9 split(l0: Str, l1: Str, l2: Int): List(Str)
+    local l3: Int
+    local l4: Bool
+    local l5: Int
+    local l6: Int // bytes
+    local l7: List(Str)
+    local l8: List(Str) // parts
+    local l9: Int // start
+    local l10: Int
+    local l11: Int // found
+    local l12: Bool
+    local l13: Int
+    local l14: Int
+    local l15: Str
+    local l16: Int
+    local l17: Int
+    local l18: Int
+    local l19: Int
+    local l20: Int
+    local l21: Str
+  b0:
+    l3 = koji_unsafe_string_size([Value(Local(1))])
+    l4 = IntCompare(Equal) l3, 0
+    branch l4, b1, b2
+  b1:
+    koji_std_panic([Value(Str(0)), Place(Local(2))])
+    unreachable
+  b2:
+    l5 = koji_unsafe_string_bytes([Value(Local(0))])
+    l6 = l5
+    l7 = list []
+    l8 = l7
+    l9 = 0
+    goto b3
+  b3:
+    branch true, b4, b5
+  b4:
+    l10 = call f11(l0, l1, l9)
+    l11 = l10
+    l12 = IntCompare(Less) l11, 0
+    branch l12, b6, b7
+  b5:
+    l18 = koji_unsafe_offset([Value(Local(6)), Value(Local(9))])
+    l19 = koji_unsafe_string_size([Value(Local(0))])
+    l20 = IntSub l19, l9
+    l21 = koji_unsafe_new_string([Value(Local(18)), Value(Local(20))])
+    push l8, l21
+    return l8
+  b6:
+    goto b5
+  b7:
+    l13 = koji_unsafe_offset([Value(Local(6)), Value(Local(9))])
+    l14 = IntSub l11, l9
+    l15 = koji_unsafe_new_string([Value(Local(13)), Value(Local(14))])
+    push l8, l15
+    l16 = koji_unsafe_string_size([Value(Local(1))])
+    l17 = IntAdd l11, l16
+    l9 = l17
+    goto b3
+
+function f10 replace(l0: Str, l1: Str, l2: Str, l3: Int): Str
+    local l4: Int
+    local l5: Bool
+    local l6: Int
+    local l7: Int // found
+    local l8: Bool
+    local l9: Int
+    local l10: Int // bytes
+    local l11: Str // replaced
+    local l12: Int // start
+    local l13: Bool
+    local l14: Int
+    local l15: Int
+    local l16: Str
+    local l17: Str
+    local l18: Str
+    local l19: Int
+    local l20: Int
+    local l21: Int
+    local l22: Int
+    local l23: Int
+    local l24: Int
+    local l25: Str
+    local l26: Str
+  b0:
+    l4 = koji_unsafe_string_size([Value(Local(1))])
+    l5 = IntCompare(Equal) l4, 0
+    branch l5, b1, b2
+  b1:
+    koji_std_panic([Value(Str(1)), Place(Local(3))])
+    unreachable
+  b2:
+    l6 = call f11(l0, l1, 0)
+    l7 = l6
+    l8 = IntCompare(Less) l7, 0
+    branch l8, b3, b4
+  b3:
+    return l0
+  b4:
+    l9 = koji_unsafe_string_bytes([Value(Local(0))])
+    l10 = l9
+    l11 = s2
+    l12 = 0
+    goto b5
+  b5:
+    l13 = IntCompare(GreaterEqual) l7, 0
+    branch l13, b6, b7
+  b6:
+    l14 = koji_unsafe_offset([Value(Local(10)), Value(Local(12))])
+    l15 = IntSub l7, l12
+    l16 = koji_unsafe_new_string([Value(Local(14)), Value(Local(15))])
+    l17 = StrConcat l11, l16
+    l11 = l17
+    l18 = StrConcat l11, l2
+    l11 = l18
+    l19 = koji_unsafe_string_size([Value(Local(1))])
+    l20 = IntAdd l7, l19
+    l12 = l20
+    l21 = call f11(l0, l1, l12)
+    l7 = l21
+    goto b5
+  b7:
+    l22 = koji_unsafe_offset([Value(Local(10)), Value(Local(12))])
+    l23 = koji_unsafe_string_size([Value(Local(0))])
+    l24 = IntSub l23, l12
+    l25 = koji_unsafe_new_string([Value(Local(22)), Value(Local(24))])
+    l26 = StrConcat l11, l25
+    l11 = l26
+    return l11
+
+function f11 find(l0: Str, l1: Str, l2: Int): Int
+    local l3: Int
+    local l4: Int // bytes
+    local l5: Int
+    local l6: Int
+    local l7: Int
+    local l8: Int
+    local l9: Int
+    local l10: Int
+    local l11: Int // found
+    local l12: Int
+    local l13: Int // position
+    local l14: Int
+    local l15: Bool
+    local l16: Int
+  b0:
+    l3 = koji_unsafe_string_bytes([Value(Local(0))])
+    l4 = l3
+    l5 = koji_unsafe_offset([Value(Local(4)), Value(Local(2))])
+    l6 = koji_unsafe_string_size([Value(Local(0))])
+    l7 = IntSub l6, l2
+    l8 = koji_unsafe_string_bytes([Value(Local(1))])
+    l9 = koji_unsafe_string_size([Value(Local(1))])
+    l10 = memmem([Value(Local(5)), Value(Local(7)), Value(Local(8)), Value(Local(9))])
+    l11 = l10
+    l12 = koji_unsafe_distance([Value(Local(4)), Value(Local(11))])
+    l13 = l12
+    l15 = IntCompare(Less) l13, 0
+    branch l15, b1, b2
+  b1:
+    l16 = IntNeg 1
+    l14 = l16
+    goto b3
+  b2:
+    l14 = l13
+    goto b3
+  b3:
+    return l14
+
+function f12 isContinuation(l0: Int, l1: Int): Bool
+    local l2: Byte
+    local l3: Byte // b
+    local l4: Byte
+    local l5: Bool
+  b0:
+    l2 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(1))])
+    l3 = l2
+    l4 = ByteAnd l3, 192
+    l5 = ByteCompare(Equal) l4, 128
+    return l5
+
+function f13 widthAt(l0: Int, l1: Int): Int
+    local l2: Byte
+    local l3: Byte // b
+    local l4: Bool
+    local l5: Bool
+    local l6: Bool
+  b0:
+    l2 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(1))])
+    l3 = l2
+    l4 = ByteCompare(Less) l3, 128
+    branch l4, b1, b2
+  b1:
+    return 1
+  b2:
+    l5 = ByteCompare(Less) l3, 224
+    branch l5, b3, b4
+  b3:
+    return 2
+  b4:
+    l6 = ByteCompare(Less) l3, 240
+    branch l6, b5, b6
+  b5:
+    return 3
+  b6:
+    return 4
+
+function f14 codeAt(l0: Int, l1: Int, l2: Int): Int
+    local l3: Byte
+    local l4: Byte // first
+    local l5: Bool
+    local l6: Int
+    local l7: Byte
+    local l8: Byte
+    local l9: Byte
+    local l10: Int
+    local l11: Int // code
+    local l12: Int
+    local l13: Int
+    local l14: Int
+    local l15: Bool
+    local l16: Bool
+    local l17: Int // i
+    local l18: Int
+    local l19: Byte
+    local l20: Byte // next
+    local l21: Int
+    local l22: Byte
+    local l23: Int
+    local l24: Int
+  b0:
+    l3 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(1))])
+    l4 = l3
+    l5 = IntCompare(Equal) l2, 1
+    branch l5, b1, b2
+  b1:
+    l6 = ByteToInt l4
+    return l6
+  b2:
+    l7 = IntToByte l2
+    l8 = ByteShiftRight 127, l7
+    l9 = ByteAnd l4, l8
+    l10 = ByteToInt l9
+    l11 = l10
+    l12 = 1
+    l13 = l2
+    range_check 1
+    l14 = l12
+    l15 = false
+    goto b3
+  b3:
+    l16, l17 = range_next l14, l13, 1, l15
+    branch l16, b4, b5
+  b4:
+    l18 = IntAdd l1, l17
+    l19 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(18))])
+    l20 = l19
+    l21 = ShiftLeft l11, 6
+    l22 = ByteAnd l20, 63
+    l23 = ByteToInt l22
+    l24 = BitOr l21, l23
+    l11 = l24
+    goto b3
+  b5:
+    return l11
+
+function f15 isSpace(l0: Int): Bool
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Bool
+    local l13: Bool
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Bool
+    local l19: Bool
+    local l20: Bool
+    local l21: Bool
+    local l22: Bool
+    local l23: Bool
+    local l24: Bool
+    local l25: Bool
+  b0:
+    l1 = IntCompare(LessEqual) l0, 32
+    branch l1, b1, b2
+  b1:
+    l3 = IntCompare(Equal) l0, 32
+    l2 = l3
+    branch l2, b4, b3
+  b2:
+    l7 = IntCompare(Less) l0, 133
+    branch l7, b7, b8
+  b3:
+    l5 = IntCompare(GreaterEqual) l0, 9
+    l4 = l5
+    branch l4, b5, b6
+  b4:
+    return l2
+  b5:
+    l6 = IntCompare(LessEqual) l0, 13
+    l4 = l6
+    goto b6
+  b6:
+    l2 = l4
+    goto b4
+  b7:
+    return false
+  b8:
+    l8 = IntCompare(Less) l0, 5760
+    branch l8, b9, b10
+  b9:
+    l10 = IntCompare(Equal) l0, 133
+    l9 = l10
+    branch l9, b12, b11
+  b10:
+    l13 = IntCompare(GreaterEqual) l0, 8192
+    l12 = l13
+    branch l12, b13, b14
+  b11:
+    l11 = IntCompare(Equal) l0, 160
+    l9 = l11
+    goto b12
+  b12:
+    return l9
+  b13:
+    l14 = IntCompare(LessEqual) l0, 8202
+    l12 = l14
+    goto b14
+  b14:
+    branch l12, b15, b16
+  b15:
+    return true
+  b16:
+    l20 = IntCompare(Equal) l0, 5760
+    l19 = l20
+    branch l19, b18, b17
+  b17:
+    l21 = IntCompare(Equal) l0, 8232
+    l19 = l21
+    goto b18
+  b18:
+    l18 = l19
+    branch l18, b20, b19
+  b19:
+    l22 = IntCompare(Equal) l0, 8233
+    l18 = l22
+    goto b20
+  b20:
+    l17 = l18
+    branch l17, b22, b21
+  b21:
+    l23 = IntCompare(Equal) l0, 8239
+    l17 = l23
+    goto b22
+  b22:
+    l16 = l17
+    branch l16, b24, b23
+  b23:
+    l24 = IntCompare(Equal) l0, 8287
+    l16 = l24
+    goto b24
+  b24:
+    l15 = l16
+    branch l15, b26, b25
+  b25:
+    l25 = IntCompare(Equal) l0, 12288
+    l15 = l25
+    goto b26
+  b26:
+    return l15
+
+function f16 textOf(l0: Int, l1: Int): Str
+    local l2: Str // out
+    local l3: Int // start
+    local l4: Int // at
+    local l5: Bool
+    local l6: Int
+    local l7: Int // valid
+    local l8: Bool
+    local l9: Int
+    local l10: Bool
+    local l11: Int
+    local l12: Int
+    local l13: Str
+    local l14: Str
+    local l15: Str
+    local l16: Int
+    local l17: Bool
+    local l18: Str
+    local l19: Bool
+    local l20: Int
+    local l21: Int
+    local l22: Str
+    local l23: Str
+  b0:
+    l2 = s2
+    l3 = 0
+    l4 = 0
+    goto b1
+  b1:
+    l5 = IntCompare(Less) l4, l1
+    branch l5, b2, b3
+  b2:
+    l6 = call f18(l0, l4, l1)
+    l7 = l6
+    l8 = IntCompare(Greater) l7, 0
+    branch l8, b4, b5
+  b3:
+    l17 = IntCompare(Equal) l3, 0
+    branch l17, b8, b9
+  b4:
+    l9 = IntAdd l4, l7
+    l4 = l9
+    goto b1
+  b5:
+    l10 = IntCompare(Greater) l4, l3
+    branch l10, b6, b7
+  b6:
+    l11 = koji_unsafe_offset([Value(Local(0)), Value(Local(3))])
+    l12 = IntSub l4, l3
+    l13 = koji_unsafe_new_string([Value(Local(11)), Value(Local(12))])
+    l14 = StrConcat l2, l13
+    l2 = l14
+    goto b7
+  b7:
+    l15 = StrConcat l2, s3
+    l2 = l15
+    l16 = IntSub l4, l7
+    l4 = l16
+    l3 = l4
+    goto b1
+  b8:
+    l18 = koji_unsafe_new_string([Value(Local(0)), Value(Local(1))])
+    return l18
+  b9:
+    l19 = IntCompare(Greater) l4, l3
+    branch l19, b10, b11
+  b10:
+    l20 = koji_unsafe_offset([Value(Local(0)), Value(Local(3))])
+    l21 = IntSub l4, l3
+    l22 = koji_unsafe_new_string([Value(Local(20)), Value(Local(21))])
+    l23 = StrConcat l2, l22
+    l2 = l23
+    goto b11
+  b11:
+    return l2
+
+function f17 isUtf8(l0: Int, l1: Int): Bool
+    local l2: Int // at
+    local l3: Bool
+    local l4: Int
+    local l5: Int // valid
+    local l6: Bool
+    local l7: Int
+  b0:
+    l2 = 0
+    goto b1
+  b1:
+    l3 = IntCompare(Less) l2, l1
+    branch l3, b2, b3
+  b2:
+    l4 = call f18(l0, l2, l1)
+    l5 = l4
+    l6 = IntCompare(Less) l5, 0
+    branch l6, b4, b5
+  b3:
+    return true
+  b4:
+    return false
+  b5:
+    l7 = IntAdd l2, l5
+    l2 = l7
+    goto b1
+
+function f18 validAt(l0: Int, l1: Int, l2: Int): Int
+    local l3: Int
+    local l4: Int // first
+    local l5: Bool
+    local l6: Int // width
+    local l7: Int // low
+    local l8: Int // high
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Bool
+    local l13: Bool
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Bool
+    local l19: Int
+    local l20: Bool
+    local l21: Bool
+    local l22: Bool
+    local l23: Bool
+    local l24: Int
+    local l25: Int
+    local l26: Int // second
+    local l27: Bool
+    local l28: Bool
+    local l29: Bool
+    local l30: Int
+    local l31: Int
+    local l32: Int
+    local l33: Int
+    local l34: Bool
+    local l35: Bool
+    local l36: Int // i
+    local l37: Int
+    local l38: Int
+    local l39: Int // next
+    local l40: Bool
+    local l41: Bool
+    local l42: Bool
+    local l43: Int
+  b0:
+    l3 = call f19(l0, l1, l2)
+    l4 = l3
+    l5 = IntCompare(Less) l4, 128
+    branch l5, b1, b2
+  b1:
+    return 1
+  b2:
+    l6 = 0
+    l7 = 128
+    l8 = 191
+    l10 = IntCompare(GreaterEqual) l4, 194
+    l9 = l10
+    branch l9, b3, b4
+  b3:
+    l11 = IntCompare(LessEqual) l4, 223
+    l9 = l11
+    goto b4
+  b4:
+    branch l9, b5, b6
+  b5:
+    l6 = 2
+    goto b6
+  b6:
+    l13 = IntCompare(GreaterEqual) l4, 224
+    l12 = l13
+    branch l12, b7, b8
+  b7:
+    l14 = IntCompare(LessEqual) l4, 239
+    l12 = l14
+    goto b8
+  b8:
+    branch l12, b9, b10
+  b9:
+    l6 = 3
+    goto b10
+  b10:
+    l16 = IntCompare(GreaterEqual) l4, 240
+    l15 = l16
+    branch l15, b11, b12
+  b11:
+    l17 = IntCompare(LessEqual) l4, 244
+    l15 = l17
+    goto b12
+  b12:
+    branch l15, b13, b14
+  b13:
+    l6 = 4
+    goto b14
+  b14:
+    l18 = IntCompare(Equal) l6, 0
+    branch l18, b15, b16
+  b15:
+    l19 = IntNeg 1
+    return l19
+  b16:
+    l20 = IntCompare(Equal) l4, 224
+    branch l20, b17, b18
+  b17:
+    l7 = 160
+    goto b18
+  b18:
+    l21 = IntCompare(Equal) l4, 237
+    branch l21, b19, b20
+  b19:
+    l8 = 159
+    goto b20
+  b20:
+    l22 = IntCompare(Equal) l4, 240
+    branch l22, b21, b22
+  b21:
+    l7 = 144
+    goto b22
+  b22:
+    l23 = IntCompare(Equal) l4, 244
+    branch l23, b23, b24
+  b23:
+    l8 = 143
+    goto b24
+  b24:
+    l24 = IntAdd l1, 1
+    l25 = call f19(l0, l24, l2)
+    l26 = l25
+    l28 = IntCompare(Less) l26, l7
+    l27 = l28
+    branch l27, b26, b25
+  b25:
+    l29 = IntCompare(Greater) l26, l8
+    l27 = l29
+    goto b26
+  b26:
+    branch l27, b27, b28
+  b27:
+    l30 = IntNeg 1
+    return l30
+  b28:
+    l31 = 2
+    l32 = l6
+    range_check 1
+    l33 = l31
+    l34 = false
+    goto b29
+  b29:
+    l35, l36 = range_next l33, l32, 1, l34
+    branch l35, b30, b31
+  b30:
+    l37 = IntAdd l1, l36
+    l38 = call f19(l0, l37, l2)
+    l39 = l38
+    l41 = IntCompare(Less) l39, 128
+    l40 = l41
+    branch l40, b33, b32
+  b31:
+    return l6
+  b32:
+    l42 = IntCompare(Greater) l39, 191
+    l40 = l42
+    goto b33
+  b33:
+    branch l40, b34, b35
+  b34:
+    l43 = IntNeg l36
+    return l43
+  b35:
+    goto b29
+
+function f19 byteAt(l0: Int, l1: Int, l2: Int): Int
+    local l3: Bool
+    local l4: Int
+    local l5: Byte
+    local l6: Byte // b
+    local l7: Int
+  b0:
+    l3 = IntCompare(GreaterEqual) l1, l2
+    branch l3, b1, b2
+  b1:
+    l4 = IntNeg 1
+    return l4
+  b2:
+    l5 = koji_unsafe_read_byte([Value(Local(0)), Value(Local(1))])
+    l6 = l5
+    l7 = ByteToInt l6
+    return l7
+
+function f20 cString(l0: Str): Int
+    local l1: Int
+    local l2: Int // size
+    local l3: Int
+    local l4: Int
+    local l5: Int // copy
+    local l6: Int
+    local l7: Int // bytes
+    local l8: Int
+    local l9: Int
+    local l10: Bool
+    local l11: Bool
+    local l12: Int // i
+    local l13: Byte
+    local l14: Byte // b
+    local l15: Byte // end
+  b0:
+    l1 = koji_unsafe_string_size([Value(Local(0))])
+    l2 = l1
+    l3 = IntAdd l2, 1
+    l4 = koji_unsafe_allocate([Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_string_bytes([Value(Local(0))])
+    l7 = l6
+    l8 = l2
+    range_check 1
+    l9 = 0
+    l10 = false
+    goto b1
+  b1:
+    l11, l12 = range_next l9, l8, 1, l10
+    branch l11, b2, b3
+  b2:
+    l13 = koji_unsafe_read_byte([Value(Local(7)), Value(Local(12))])
+    l14 = l13
+    koji_unsafe_write_byte([Value(Local(5)), Value(Local(12)), Value(Local(14))])
+    goto b1
+  b3:
+    l15 = 0
+    koji_unsafe_write_byte([Value(Local(5)), Value(Local(2)), Value(Local(15))])
+    return l5
+
+function f21 cText(l0: Int): Str
+    local l1: Int
+    local l2: Str
+  b0:
+    l1 = strlen([Value(Local(0))])
+    l2 = call f16(l0, l1)
+    return l2
+
+function f22 hasNul(l0: Str): Bool
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int
+    local l5: Int
+    local l6: Bool
+    local l7: Bool
+    local l8: Int // i
+    local l9: Int
+    local l10: Int
+    local l11: Bool
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    range_check 1
+    l5 = 0
+    l6 = false
+    goto b1
+  b1:
+    l7, l8 = range_next l5, l4, 1, l6
+    branch l7, b2, b3
+  b2:
+    l9 = koji_unsafe_string_size([Value(Local(0))])
+    l10 = call f19(l2, l8, l9)
+    l11 = IntCompare(Equal) l10, 0
+    branch l11, b4, b5
+  b3:
+    return false
+  b4:
+    return true
+  b5:
+    goto b1
+
+function f23 chars(l0: Str): List(Char)
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int // size
+    local l5: List(Char)
+    local l6: List(Char) // found
+    local l7: Int
+    local l8: Int // slot
+    local l9: Int // count
+    local l10: Int // at
+    local l11: Bool
+    local l12: Byte
+    local l13: Byte // first
+    local l14: Bool
+    local l15: Int
+    local l16: Int
+    local l17: Int
+    local l18: Int // width
+    local l19: Int
+    local l20: Int
+    local l21: Int
+    local l22: Int
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    l5 = list []
+    l6 = l5
+    koji_list_reserve([Value(Local(6)), Value(Local(4))])
+    l7 = koji_unsafe_list_items([Value(Local(6))])
+    l8 = l7
+    l9 = 0
+    l10 = 0
+    goto b1
+  b1:
+    l11 = IntCompare(Less) l10, l4
+    branch l11, b2, b3
+  b2:
+    l12 = koji_unsafe_read_byte([Value(Local(2)), Value(Local(10))])
+    l13 = l12
+    l14 = ByteCompare(Less) l13, 128
+    branch l14, b4, b5
+  b3:
+    koji_unsafe_set_list_length([Value(Local(6)), Value(Local(9))])
+    return l6
+  b4:
+    l15 = ByteToInt l13
+    koji_unsafe_write_int([Value(Local(8)), Value(Int(0)), Value(Local(15))])
+    l16 = IntAdd l10, 1
+    l10 = l16
+    goto b6
+  b5:
+    l17 = call f13(l2, l10)
+    l18 = l17
+    l19 = call f14(l2, l10, l18)
+    koji_unsafe_write_int([Value(Local(8)), Value(Int(0)), Value(Local(19))])
+    l20 = IntAdd l10, l18
+    l10 = l20
+    goto b6
+  b6:
+    l21 = koji_unsafe_offset([Value(Local(8)), Value(Int(8))])
+    l8 = l21
+    l22 = IntAdd l9, 1
+    l9 = l22
+    goto b1
+
+function f24 charOf(l0: Int): Record(1)
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+    local l8: Record(1)
+    local l9: Char
+    local l10: Record(1)
+  b0:
+    l3 = IntCompare(Less) l0, 0
+    l2 = l3
+    branch l2, b2, b1
+  b1:
+    l4 = IntCompare(Greater) l0, 1114111
+    l2 = l4
+    goto b2
+  b2:
+    l1 = l2
+    branch l1, b4, b3
+  b3:
+    l6 = IntCompare(GreaterEqual) l0, 55296
+    l5 = l6
+    branch l5, b5, b6
+  b4:
+    branch l1, b7, b8
+  b5:
+    l7 = IntCompare(LessEqual) l0, 57343
+    l5 = l7
+    goto b6
+  b6:
+    l1 = l5
+    goto b4
+  b7:
+    l8 = record variant 1 ()
+    return l8
+  b8:
+    l9 = CodeToChar l0
+    l10 = record variant 0 (l9)
+    return l10
+
+function f25 intOf(l0: Str): Record(3)
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int // size
+    local l5: Int
+    local l6: Int // start
+    local l7: Int
+    local l8: Int // end
+    local l9: Int // at
+    local l10: Bool // negative
+    local l11: Bool
+    local l12: Byte
+    local l13: Byte // sign
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Int
+    local l19: Bool
+    local l20: Record(2)
+    local l21: Record(3)
+    local l22: Int // value
+    local l23: Bool // overflow
+    local l24: Int
+    local l25: Int // lastDigit
+    local l26: Bool
+    local l27: Byte
+    local l28: Byte // b
+    local l29: Bool
+    local l30: Bool
+    local l31: Bool
+    local l32: Record(2)
+    local l33: Record(3)
+    local l34: Int
+    local l35: Int
+    local l36: Int // digit
+    local l37: Bool
+    local l38: Int
+    local l39: Bool
+    local l40: Bool
+    local l41: Int
+    local l42: Bool
+    local l43: Bool
+    local l44: Bool
+    local l45: Int
+    local l46: Int
+    local l47: Int
+    local l48: Record(2)
+    local l49: Record(3)
+    local l50: Int
+    local l51: Int
+    local l52: Record(3)
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    l5 = call f3(l2, 0, l4)
+    l6 = l5
+    l7 = call f4(l2, l6, l4)
+    l8 = l7
+    l9 = l6
+    l10 = false
+    l11 = IntCompare(Less) l9, l8
+    branch l11, b1, b2
+  b1:
+    l12 = koji_unsafe_read_byte([Value(Local(2)), Value(Local(9))])
+    l13 = l12
+    l15 = ByteCompare(Equal) l13, 43
+    l14 = l15
+    branch l14, b4, b3
+  b2:
+    l19 = IntCompare(Equal) l9, l8
+    branch l19, b7, b8
+  b3:
+    l16 = ByteCompare(Equal) l13, 45
+    l14 = l16
+    goto b4
+  b4:
+    branch l14, b5, b6
+  b5:
+    l17 = ByteCompare(Equal) l13, 45
+    l10 = l17
+    l18 = IntAdd l9, 1
+    l9 = l18
+    goto b6
+  b6:
+    goto b2
+  b7:
+    l20 = record variant 0 (l0)
+    l21 = record variant 1 (l20)
+    return l21
+  b8:
+    l22 = 0
+    l23 = false
+    branch l10, b9, b10
+  b9:
+    l24 = 8
+    goto b11
+  b10:
+    l24 = 7
+    goto b11
+  b11:
+    l25 = l24
+    goto b12
+  b12:
+    l26 = IntCompare(Less) l9, l8
+    branch l26, b13, b14
+  b13:
+    l27 = koji_unsafe_read_byte([Value(Local(2)), Value(Local(9))])
+    l28 = l27
+    l30 = ByteCompare(Less) l28, 48
+    l29 = l30
+    branch l29, b16, b15
+  b14:
+    branch l23, b27, b28
+  b15:
+    l31 = ByteCompare(Greater) l28, 57
+    l29 = l31
+    goto b16
+  b16:
+    branch l29, b17, b18
+  b17:
+    l32 = record variant 0 (l0)
+    l33 = record variant 1 (l32)
+    return l33
+  b18:
+    l34 = ByteToInt l28
+    l35 = IntSub l34, 48
+    l36 = l35
+    l38 = IntNeg 922337203685477580
+    l39 = IntCompare(Less) l22, l38
+    l37 = l39
+    branch l37, b20, b19
+  b19:
+    l41 = IntNeg 922337203685477580
+    l42 = IntCompare(Equal) l22, l41
+    l40 = l42
+    branch l40, b21, b22
+  b20:
+    branch l37, b23, b24
+  b21:
+    l43 = IntCompare(Greater) l36, l25
+    l40 = l43
+    goto b22
+  b22:
+    l37 = l40
+    goto b20
+  b23:
+    l23 = true
+    goto b24
+  b24:
+    l44 = Not l23
+    branch l44, b25, b26
+  b25:
+    l45 = IntMul l22, 10
+    l46 = IntSub l45, l36
+    l22 = l46
+    goto b26
+  b26:
+    l47 = IntAdd l9, 1
+    l9 = l47
+    goto b12
+  b27:
+    l48 = record variant 1 (l0)
+    l49 = record variant 1 (l48)
+    return l49
+  b28:
+    branch l10, b29, b30
+  b29:
+    l50 = l22
+    goto b31
+  b30:
+    l51 = IntNeg l22
+    l50 = l51
+    goto b31
+  b31:
+    l52 = record variant 0 (l50)
+    return l52
+
+function f26 floatOf(l0: Str): Record(4)
+    local l1: Int
+    local l2: Int // bytes
+    local l3: Int
+    local l4: Int // size
+    local l5: Int
+    local l6: Int // start
+    local l7: Int
+    local l8: Int // end
+    local l9: Int // first
+    local l10: Bool
+    local l11: Bool
+    local l12: Bool
+    local l13: Int
+    local l14: Bool
+    local l15: Int
+    local l16: Bool
+    local l17: Int
+    local l18: Bool
+    local l19: Int
+    local l20: Bool
+    local l21: Int
+    local l22: Int
+    local l23: Bool
+    local l24: Int // code
+    local l25: Str
+    local l26: Float
+    local l27: Float // value
+    local l28: Bool
+    local l29: Record(2)
+    local l30: Record(4)
+    local l31: Bool
+    local l32: Record(2)
+    local l33: Record(4)
+    local l34: Record(4)
+    local l35: Float
+    local l36: Float // value
+    local l37: Int
+    local l38: Int // status
+    local l39: Bool
+    local l40: Record(2)
+    local l41: Record(4)
+    local l42: Bool
+    local l43: Record(2)
+    local l44: Record(4)
+    local l45: Record(4)
+  b0:
+    l1 = koji_unsafe_string_bytes([Value(Local(0))])
+    l2 = l1
+    l3 = koji_unsafe_string_size([Value(Local(0))])
+    l4 = l3
+    l5 = call f3(l2, 0, l4)
+    l6 = l5
+    l7 = call f4(l2, l6, l4)
+    l8 = l7
+    l9 = l6
+    goto b1
+  b1:
+    l11 = IntCompare(Less) l9, l8
+    l10 = l11
+    branch l10, b4, b5
+  b2:
+    l17 = IntAdd l9, 1
+    l9 = l17
+    goto b1
+  b3:
+    l19 = call f19(l2, l9, l8)
+    l20 = IntCompare(Equal) l19, 48
+    l18 = l20
+    branch l18, b8, b9
+  b4:
+    l13 = call f19(l2, l9, l8)
+    l14 = IntCompare(Equal) l13, 43
+    l12 = l14
+    branch l12, b7, b6
+  b5:
+    branch l10, b2, b3
+  b6:
+    l15 = call f19(l2, l9, l8)
+    l16 = IntCompare(Equal) l15, 45
+    l12 = l16
+    goto b7
+  b7:
+    l10 = l12
+    goto b5
+  b8:
+    l21 = IntAdd l9, 1
+    l22 = call f19(l2, l21, l8)
+    l23 = IntCompare(Equal) l22, 120
+    l18 = l23
+    goto b9
+  b9:
+    branch l18, b10, b11
+  b10:
+    l24 = 0
+    l25 = call f5(l2, l6, l8)
+    l26 = call f32(l25, l24) writeback 1 -> l24
+    l27 = l26
+    l28 = IntCompare(Equal) l24, 1
+    branch l28, b12, b13
+  b11:
+    l35 = IntToFloat 0
+    l36 = l35
+    l37 = call f27(l2, l6, l8, l36) writeback 3 -> l36
+    l38 = l37
+    l39 = IntCompare(Equal) l38, 1
+    branch l39, b16, b17
+  b12:
+    l29 = record variant 0 (l0)
+    l30 = record variant 1 (l29)
+    return l30
+  b13:
+    l31 = IntCompare(Equal) l24, 2
+    branch l31, b14, b15
+  b14:
+    l32 = record variant 1 (l0)
+    l33 = record variant 1 (l32)
+    return l33
+  b15:
+    l34 = record variant 0 (l27)
+    return l34
+  b16:
+    l40 = record variant 0 (l0)
+    l41 = record variant 1 (l40)
+    return l41
+  b17:
+    l42 = IntCompare(Equal) l38, 2
+    branch l42, b18, b19
+  b18:
+    l43 = record variant 1 (l0)
+    l44 = record variant 1 (l43)
+    return l44
+  b19:
+    l45 = record variant 0 (l36)
+    return l45
+
+function f27 decimalFloat(l0: Int, l1: Int, l2: Int, l3: Float): Int
+    local l4: Int // at
+    local l5: Bool // negative
+    local l6: Bool
+    local l7: Bool
+    local l8: Int
+    local l9: Bool
+    local l10: Int
+    local l11: Bool
+    local l12: Int
+    local l13: Int // digits
+    local l14: Int // count
+    local l15: Bool // lost
+    local l16: Int // scale
+    local l17: Int // whole
+    local l18: Bool
+    local l19: Bool
+    local l20: Int
+    local l21: Bool
+    local l22: Int
+    local l23: Int
+    local l24: Int
+    local l25: Int
+    local l26: Int // fraction
+    local l27: Int
+    local l28: Bool
+    local l29: Int
+    local l30: Bool
+    local l31: Bool
+    local l32: Int
+    local l33: Bool
+    local l34: Int
+    local l35: Int
+    local l36: Int
+    local l37: Int
+    local l38: Bool
+    local l39: Bool
+    local l40: Bool
+    local l41: Int // power
+    local l42: Bool
+    local l43: Int
+    local l44: Bool
+    local l45: Int
+    local l46: Bool
+    local l47: Int
+    local l48: Bool // negativePower
+    local l49: Bool
+    local l50: Bool
+    local l51: Int
+    local l52: Bool
+    local l53: Int
+    local l54: Bool
+    local l55: Int
+    local l56: Bool
+    local l57: Bool
+    local l58: Int
+    local l59: Bool
+    local l60: Bool
+    local l61: Bool
+    local l62: Bool
+    local l63: Int
+    local l64: Bool
+    local l65: Bool
+    local l66: Int
+    local l67: Int
+    local l68: Int
+    local l69: Int
+    local l70: Int
+    local l71: Int
+    local l72: Bool
+    local l73: Int
+    local l74: Int // exponent
+    local l75: Bool
+    local l76: Bool
+    local l77: Bool
+    local l78: Bool
+    local l79: Bool
+    local l80: Int
+    local l81: Bool
+    local l82: Bool
+    local l83: Float
+    local l84: Float // mantissa
+    local l85: Int
+    local l86: Bool
+    local l87: Int
+    local l88: Float
+    local l89: Float // tens
+    local l90: Float
+    local l91: Bool
+    local l92: Float
+    local l93: Float
+    local l94: Float // exact
+    local l95: Float
+    local l96: Float
+    local l97: Int
+    local l98: Int
+    local l99: Int
+    local l100: Int // copy
+    local l101: Int
+    local l102: Int
+    local l103: Int
+    local l104: Byte // zero
+    local l105: Int
+    local l106: Float
+    local l107: Float // largest
+    local l108: Bool
+    local l109: Bool
+    local l110: Float
+    local l111: Bool
+  b0:
+    l4 = l1
+    l5 = false
+    l7 = IntCompare(Less) l4, l2
+    l6 = l7
+    branch l6, b1, b2
+  b1:
+    l8 = call f19(l0, l4, l2)
+    l9 = call f31(l8)
+    l6 = l9
+    goto b2
+  b2:
+    branch l6, b3, b4
+  b3:
+    l10 = call f19(l0, l4, l2)
+    l11 = IntCompare(Equal) l10, 45
+    l5 = l11
+    l12 = IntAdd l4, 1
+    l4 = l12
+    goto b4
+  b4:
+    l13 = 0
+    l14 = 0
+    l15 = false
+    l16 = 0
+    l17 = 0
+    goto b5
+  b5:
+    l19 = IntCompare(Less) l4, l2
+    l18 = l19
+    branch l18, b8, b9
+  b6:
+    l22 = call f19(l0, l4, l2)
+    l23 = IntSub l22, 48
+    call f28(l23, l13, l14, l15, l16, false) writeback 1 -> l13, 2 -> l14, 3 -> l15, 4 -> l16
+    l24 = IntAdd l17, 1
+    l17 = l24
+    l25 = IntAdd l4, 1
+    l4 = l25
+    goto b5
+  b7:
+    l26 = 0
+    l27 = call f19(l0, l4, l2)
+    l28 = IntCompare(Equal) l27, 46
+    branch l28, b10, b11
+  b8:
+    l20 = call f19(l0, l4, l2)
+    l21 = call f29(l20)
+    l18 = l21
+    goto b9
+  b9:
+    branch l18, b6, b7
+  b10:
+    l29 = IntAdd l4, 1
+    l4 = l29
+    goto b12
+  b11:
+    l39 = IntCompare(Equal) l17, 0
+    l38 = l39
+    branch l38, b17, b18
+  b12:
+    l31 = IntCompare(Less) l4, l2
+    l30 = l31
+    branch l30, b15, b16
+  b13:
+    l34 = call f19(l0, l4, l2)
+    l35 = IntSub l34, 48
+    call f28(l35, l13, l14, l15, l16, true) writeback 1 -> l13, 2 -> l14, 3 -> l15, 4 -> l16
+    l36 = IntAdd l26, 1
+    l26 = l36
+    l37 = IntAdd l4, 1
+    l4 = l37
+    goto b12
+  b14:
+    goto b11
+  b15:
+    l32 = call f19(l0, l4, l2)
+    l33 = call f29(l32)
+    l30 = l33
+    goto b16
+  b16:
+    branch l30, b13, b14
+  b17:
+    l40 = IntCompare(Equal) l26, 0
+    l38 = l40
+    goto b18
+  b18:
+    branch l38, b19, b20
+  b19:
+    return 1
+  b20:
+    l41 = 0
+    l43 = call f19(l0, l4, l2)
+    l44 = IntCompare(Equal) l43, 101
+    l42 = l44
+    branch l42, b22, b21
+  b21:
+    l45 = call f19(l0, l4, l2)
+    l46 = IntCompare(Equal) l45, 69
+    l42 = l46
+    goto b22
+  b22:
+    branch l42, b23, b24
+  b23:
+    l47 = IntAdd l4, 1
+    l4 = l47
+    l48 = false
+    l50 = IntCompare(Less) l4, l2
+    l49 = l50
+    branch l49, b25, b26
+  b24:
+    l72 = IntCompare(NotEqual) l4, l2
+    branch l72, b42, b43
+  b25:
+    l51 = call f19(l0, l4, l2)
+    l52 = call f31(l51)
+    l49 = l52
+    goto b26
+  b26:
+    branch l49, b27, b28
+  b27:
+    l53 = call f19(l0, l4, l2)
+    l54 = IntCompare(Equal) l53, 45
+    l48 = l54
+    l55 = IntAdd l4, 1
+    l4 = l55
+    goto b28
+  b28:
+    l57 = IntCompare(Less) l4, l2
+    l56 = l57
+    branch l56, b29, b30
+  b29:
+    l58 = call f19(l0, l4, l2)
+    l59 = call f29(l58)
+    l56 = l59
+    goto b30
+  b30:
+    l60 = Not l56
+    branch l60, b31, b32
+  b31:
+    return 1
+  b32:
+    goto b33
+  b33:
+    l62 = IntCompare(Less) l4, l2
+    l61 = l62
+    branch l61, b36, b37
+  b34:
+    l65 = IntCompare(Less) l41, 100000
+    branch l65, b38, b39
+  b35:
+    branch l48, b40, b41
+  b36:
+    l63 = call f19(l0, l4, l2)
+    l64 = call f29(l63)
+    l61 = l64
+    goto b37
+  b37:
+    branch l61, b34, b35
+  b38:
+    l66 = IntMul l41, 10
+    l67 = call f19(l0, l4, l2)
+    l68 = IntAdd l66, l67
+    l69 = IntSub l68, 48
+    l41 = l69
+    goto b39
+  b39:
+    l70 = IntAdd l4, 1
+    l4 = l70
+    goto b33
+  b40:
+    l71 = IntNeg l41
+    l41 = l71
+    goto b41
+  b41:
+    goto b24
+  b42:
+    return 1
+  b43:
+    l73 = IntAdd l41, l16
+    l74 = l73
+    l78 = Not l15
+    l77 = l78
+    branch l77, b44, b45
+  b44:
+    l79 = IntCompare(LessEqual) l13, 9007199254740992
+    l77 = l79
+    goto b45
+  b45:
+    l76 = l77
+    branch l76, b46, b47
+  b46:
+    l80 = IntNeg 22
+    l81 = IntCompare(GreaterEqual) l74, l80
+    l76 = l81
+    goto b47
+  b47:
+    l75 = l76
+    branch l75, b48, b49
+  b48:
+    l82 = IntCompare(LessEqual) l74, 22
+    l75 = l82
+    goto b49
+  b49:
+    branch l75, b50, b51
+  b50:
+    l83 = IntToFloat l13
+    l84 = l83
+    l86 = IntCompare(Less) l74, 0
+    branch l86, b52, b53
+  b51:
+    l97 = IntSub l2, l1
+    l98 = IntAdd l97, 1
+    l99 = koji_unsafe_allocate([Value(Local(98))])
+    l100 = l99
+    l101 = koji_unsafe_offset([Value(Local(0)), Value(Local(1))])
+    l102 = IntSub l2, l1
+    l103 = memcpy([Value(Local(100)), Value(Local(101)), Value(Local(102))])
+    l104 = 0
+    l105 = IntSub l2, l1
+    koji_unsafe_write_byte([Value(Local(100)), Value(Local(105)), Value(Local(104))])
+    l106 = strtod([Value(Local(100)), Value(Int(0))])
+    l3 = l106
+    koji_unsafe_free([Value(Local(100))])
+    l107 = 0x1.fffffffffffffp1023
+    l109 = FloatCompare(Greater) l3, l107
+    l108 = l109
+    branch l108, b62, b61
+  b52:
+    l87 = IntNeg l74
+    l85 = l87
+    goto b54
+  b53:
+    l85 = l74
+    goto b54
+  b54:
+    l88 = call f30(l85)
+    l89 = l88
+    l91 = IntCompare(Less) l74, 0
+    branch l91, b55, b56
+  b55:
+    l92 = FloatDiv l84, l89
+    l90 = l92
+    goto b57
+  b56:
+    l93 = FloatMul l84, l89
+    l90 = l93
+    goto b57
+  b57:
+    l94 = l90
+    branch l5, b58, b59
+  b58:
+    l96 = FloatNeg l94
+    l95 = l96
+    goto b60
+  b59:
+    l95 = l94
+    goto b60
+  b60:
+    l3 = l95
+    return 0
+  b61:
+    l110 = FloatNeg l107
+    l111 = FloatCompare(Less) l3, l110
+    l108 = l111
+    goto b62
+  b62:
+    branch l108, b63, b64
+  b63:
+    return 2
+  b64:
+    return 0
+
+function f28 keepDigit(l0: Int, l1: Int, l2: Int, l3: Bool, l4: Int, l5: Bool): Void
+    local l6: Bool
+    local l7: Int
+    local l8: Int
+    local l9: Bool
+    local l10: Int
+    local l11: Int
+    local l12: Bool
+    local l13: Bool
+    local l14: Int
+  b0:
+    l6 = IntCompare(Less) l2, 18
+    branch l6, b1, b2
+  b1:
+    l7 = IntMul l1, 10
+    l8 = IntAdd l7, l0
+    l1 = l8
+    l9 = IntCompare(NotEqual) l1, 0
+    branch l9, b3, b4
+  b2:
+    l12 = IntCompare(NotEqual) l0, 0
+    branch l12, b7, b8
+  b3:
+    l10 = IntAdd l2, 1
+    l2 = l10
+    goto b4
+  b4:
+    branch l5, b5, b6
+  b5:
+    l11 = IntSub l4, 1
+    l4 = l11
+    goto b6
+  b6:
+    return
+  b7:
+    l3 = true
+    goto b8
+  b8:
+    l13 = Not l5
+    branch l13, b9, b10
+  b9:
+    l14 = IntAdd l4, 1
+    l4 = l14
+    goto b10
+  b10:
+    return
+
+function f29 isDigit(l0: Int): Bool
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+  b0:
+    l2 = IntCompare(GreaterEqual) l0, 48
+    l1 = l2
+    branch l1, b1, b2
+  b1:
+    l3 = IntCompare(LessEqual) l0, 57
+    l1 = l3
+    goto b2
+  b2:
+    return l1
+
+function f30 tenTo(l0: Int): Float
+    local l1: Float
+    local l2: Float // result
+    local l3: Int
+    local l4: Int
+    local l5: Bool
+    local l6: Bool
+    local l7: Int // i
+    local l8: Float
+    local l9: Float
+  b0:
+    l1 = IntToFloat 1
+    l2 = l1
+    l3 = l0
+    range_check 1
+    l4 = 0
+    l5 = false
+    goto b1
+  b1:
+    l6, l7 = range_next l4, l3, 1, l5
+    branch l6, b2, b3
+  b2:
+    l8 = IntToFloat 10
+    l9 = FloatMul l2, l8
+    l2 = l9
+    goto b1
+  b3:
+    return l2
+
+function f31 isSign(l0: Int): Bool
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+  b0:
+    l2 = IntCompare(Equal) l0, 43
+    l1 = l2
+    branch l1, b2, b1
+  b1:
+    l3 = IntCompare(Equal) l0, 45
+    l1 = l3
+    goto b2
+  b2:
+    return l1
+
+function f32 hexFloat(l0: Str, l1: Int): Float
+    local l2: List(Char)
+    local l3: List(Char) // chars
+    local l4: Int // at
+    local l5: Bool // negative
+    local l6: Bool
+    local l7: Int
+    local l8: Bool
+    local l9: Char
+    local l10: Bool
+    local l11: Int
+    local l12: Bool
+    local l13: Int
+    local l14: Bool
+    local l15: Char
+    local l16: Bool
+    local l17: Int
+    local l18: Bool
+    local l19: Bool
+    local l20: Int
+    local l21: Int
+    local l22: Bool
+    local l23: Char
+    local l24: Bool
+    local l25: Bool
+    local l26: Int
+    local l27: Char
+    local l28: Bool
+    local l29: Int
+    local l30: Char
+    local l31: Bool
+    local l32: Float
+    local l33: Int
+    local l34: Int
+    local l35: Int // end
+    local l36: Int // power
+    local l37: Int
+    local l38: Int
+    local l39: Int
+    local l40: Int
+    local l41: Bool
+    local l42: Bool
+    local l43: Int // i
+    local l44: Bool
+    local l45: Int
+    local l46: Bool
+    local l47: Bool
+    local l48: Char
+    local l49: Bool
+    local l50: Char
+    local l51: Bool
+    local l52: Int
+    local l53: Bool
+    local l54: Int
+    local l55: Int
+    local l56: Str
+    local l57: Record(3)
+    local l58: Record(3)
+    local l59: Int
+    local l60: Bool
+    local l61: Int
+    local l62: Int // value
+    local l63: Int
+    local l64: Int
+    local l65: Bool
+    local l66: Int
+    local l67: Int
+    local l68: Bool
+    local l69: Int
+    local l70: Bool
+    local l71: Float
+    local l72: Int
+    local l73: Int
+    local l74: Str
+    local l75: Str
+    local l76: Int
+    local l77: Int
+    local l78: Str
+    local l79: Bool
+    local l80: Float
+    local l81: Int // point
+    local l82: Int
+    local l83: Int
+    local l84: Int
+    local l85: Bool
+    local l86: Bool
+    local l87: Int // i
+    local l88: Bool
+    local l89: Bool
+    local l90: Char
+    local l91: Bool
+    local l92: Bool
+    local l93: Bool
+    local l94: Bool
+    local l95: Bool
+    local l96: Int
+    local l97: Bool
+    local l98: Float
+    local l99: U128
+    local l100: U128 // mantissa
+    local l101: Int // kept
+    local l102: Bool // sticky
+    local l103: Int // exponent
+    local l104: Int
+    local l105: Int
+    local l106: Int
+    local l107: Bool
+    local l108: Bool
+    local l109: Int // i
+    local l110: Bool
+    local l111: Char
+    local l112: Int
+    local l113: Int // digit
+    local l114: Bool
+    local l115: Float
+    local l116: Bool
+    local l117: Bool // inFraction
+    local l118: Bool
+    local l119: Bool
+    local l120: U128
+    local l121: Bool
+    local l122: Bool
+    local l123: Int
+    local l124: U128
+    local l125: U128
+    local l126: U128
+    local l127: U128
+    local l128: Int
+    local l129: Bool
+    local l130: Bool
+    local l131: Int
+    local l132: Float
+    local l133: Int
+    local l134: Float
+    local l135: Float
+    local l136: Float // sign
+    local l137: U128
+    local l138: Bool
+    local l139: Float
+    local l140: Float
+    local l141: Int
+    local l142: Int
+    local l143: Int // bits
+    local l144: Int
+    local l145: Int
+    local l146: Int // leading
+    local l147: Bool
+    local l148: Float
+    local l149: Int
+    local l150: Int
+    local l151: Bool
+    local l152: Int
+    local l153: Int
+    local l154: Int
+    local l155: Int // precision
+    local l156: Int
+    local l157: Int // shift
+    local l158: U128 // keptBits
+    local l159: Int // scale
+    local l160: Bool
+    local l161: U128
+    local l162: Bool
+    local l163: U128
+    local l164: U128
+    local l165: U128
+    local l166: U128
+    local l167: U128
+    local l168: U128
+    local l169: U128 // dropped
+    local l170: U128
+    local l171: Bool
+    local l172: U128
+    local l173: U128
+    local l174: Int
+    local l175: U128
+    local l176: U128
+    local l177: U128 // half
+    local l178: U128
+    local l179: Bool
+    local l180: U128
+    local l181: U128
+    local l182: U128
+    local l183: Bool
+    local l184: Bool
+    local l185: Bool
+    local l186: Bool
+    local l187: Bool
+    local l188: U128
+    local l189: U128
+    local l190: U128
+    local l191: Bool
+    local l192: Bool // up
+    local l193: U128
+    local l194: U128
+    local l195: Int
+    local l196: Bool
+    local l197: U128
+    local l198: Bool
+    local l199: Int
+    local l200: Int
+    local l201: Int
+    local l202: Bool
+    local l203: Float
+    local l204: Float
+    local l205: Float
+    local l206: Int
+    local l207: Float
+    local l208: Float
+    local l209: Int
+    local l210: Int
+    local l211: Float
+    local l212: Float
+  b0:
+    l2 = call f23(l0)
+    l3 = l2
+    l4 = 0
+    l5 = false
+    l7 = ListLength l3
+    l8 = IntCompare(Less) l4, l7
+    l6 = l8
+    branch l6, b1, b2
+  b1:
+    l9 = l3[l4]
+    l10 = CharCompare(Equal) l9, '-'
+    l6 = l10
+    goto b2
+  b2:
+    branch l6, b3, b4
+  b3:
+    l5 = true
+    l11 = IntAdd l4, 1
+    l4 = l11
+    goto b5
+  b4:
+    l13 = ListLength l3
+    l14 = IntCompare(Less) l4, l13
+    l12 = l14
+    branch l12, b6, b7
+  b5:
+    l20 = IntAdd l4, 1
+    l21 = ListLength l3
+    l22 = IntCompare(GreaterEqual) l20, l21
+    l19 = l22
+    branch l19, b11, b10
+  b6:
+    l15 = l3[l4]
+    l16 = CharCompare(Equal) l15, '+'
+    l12 = l16
+    goto b7
+  b7:
+    branch l12, b8, b9
+  b8:
+    l17 = IntAdd l4, 1
+    l4 = l17
+    goto b9
+  b9:
+    goto b5
+  b10:
+    l23 = l3[l4]
+    l24 = CharCompare(NotEqual) l23, '0'
+    l19 = l24
+    goto b11
+  b11:
+    l18 = l19
+    branch l18, b13, b12
+  b12:
+    l26 = IntAdd l4, 1
+    l27 = l3[l26]
+    l28 = CharCompare(NotEqual) l27, 'x'
+    l25 = l28
+    branch l25, b14, b15
+  b13:
+    branch l18, b16, b17
+  b14:
+    l29 = IntAdd l4, 1
+    l30 = l3[l29]
+    l31 = CharCompare(NotEqual) l30, 'X'
+    l25 = l31
+    goto b15
+  b15:
+    l18 = l25
+    goto b13
+  b16:
+    l1 = 1
+    l32 = IntToFloat 0
+    return l32
+  b17:
+    l33 = IntAdd l4, 2
+    l4 = l33
+    l34 = ListLength l3
+    l35 = l34
+    l36 = 0
+    l37 = l4
+    l38 = ListLength l3
+    l39 = l38
+    range_check 1
+    l40 = l37
+    l41 = false
+    goto b18
+  b18:
+    l42, l43 = range_next l40, l39, 1, l41
+    branch l42, b19, b20
+  b19:
+    l45 = ListLength l3
+    l46 = IntCompare(Equal) l35, l45
+    l44 = l46
+    branch l44, b21, b22
+  b20:
+    l52 = ListLength l3
+    l53 = IntCompare(Less) l35, l52
+    branch l53, b27, b28
+  b21:
+    l48 = l3[l43]
+    l49 = CharCompare(Equal) l48, 'p'
+    l47 = l49
+    branch l47, b24, b23
+  b22:
+    branch l44, b25, b26
+  b23:
+    l50 = l3[l43]
+    l51 = CharCompare(Equal) l50, 'P'
+    l47 = l51
+    goto b24
+  b24:
+    l44 = l47
+    goto b22
+  b25:
+    l35 = l43
+    goto b26
+  b26:
+    goto b18
+  b27:
+    l54 = IntAdd l35, 1
+    l55 = l54
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
+    l57 = call f25(l56)
+    l58 = l57
+    l59 = RecordTag l58
+    l60 = IntCompare(Equal) l59, 0
+    branch l60, b31, b30
+  b28:
+    l81 = l35
+    l82 = l4
+    l83 = l35
+    range_check 1
+    l84 = l82
+    l85 = false
+    goto b42
+  b29:
+    l72 = IntAdd l35, 1
+    l73 = l72
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
+    l75 = call f2(l74)
+    l76 = IntAdd l35, 1
+    l77 = l76
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
+    l79 = StrCompare(NotEqual) l75, l78
+    branch l79, b40, b41
+  b30:
+    l69 = RecordTag l58
+    l70 = IntCompare(Equal) l69, 1
+    branch l70, b39, b38
+  b31:
+    l61 = l58.0
+    l62 = l61
+    l64 = IntNeg 100000
+    l65 = IntCompare(Less) l62, l64
+    branch l65, b32, b33
+  b32:
+    l66 = IntNeg 100000
+    l63 = l66
+    goto b34
+  b33:
+    l68 = IntCompare(Greater) l62, 100000
+    branch l68, b35, b36
+  b34:
+    l36 = l63
+    goto b29
+  b35:
+    l67 = 100000
+    goto b37
+  b36:
+    l67 = l62
+    goto b37
+  b37:
+    l63 = l67
+    goto b34
+  b38:
+    unreachable
+  b39:
+    l1 = 1
+    l71 = IntToFloat 0
+    return l71
+  b40:
+    l1 = 1
+    l80 = IntToFloat 0
+    return l80
+  b41:
+    goto b28
+  b42:
+    l86, l87 = range_next l84, l83, 1, l85
+    branch l86, b43, b44
+  b43:
+    l89 = IntCompare(Equal) l81, l35
+    l88 = l89
+    branch l88, b45, b46
+  b44:
+    l93 = IntCompare(Equal) l81, l4
+    l92 = l93
+    branch l92, b49, b50
+  b45:
+    l90 = l3[l87]
+    l91 = CharCompare(Equal) l90, '.'
+    l88 = l91
+    goto b46
+  b46:
+    branch l88, b47, b48
+  b47:
+    l81 = l87
+    goto b48
+  b48:
+    goto b42
+  b49:
+    l95 = IntCompare(Equal) l81, l35
+    l94 = l95
+    branch l94, b52, b51
+  b50:
+    branch l92, b53, b54
+  b51:
+    l96 = IntAdd l81, 1
+    l97 = IntCompare(Equal) l96, l35
+    l94 = l97
+    goto b52
+  b52:
+    l92 = l94
+    goto b50
+  b53:
+    l1 = 1
+    l98 = IntToFloat 0
+    return l98
+  b54:
+    l99 = IntToU128 0
+    l100 = l99
+    l101 = 0
+    l102 = false
+    l103 = l36
+    l104 = l4
+    l105 = l35
+    range_check 1
+    l106 = l104
+    l107 = false
+    goto b55
+  b55:
+    l108, l109 = range_next l106, l105, 1, l107
+    branch l108, b56, b57
+  b56:
+    l110 = IntCompare(Equal) l109, l81
+    branch l110, b58, b59
+  b57:
+    branch l5, b75, b76
+  b58:
+    goto b55
+  b59:
+    l111 = l3[l109]
+    l112 = call f33(l111)
+    l113 = l112
+    l114 = IntCompare(Less) l113, 0
+    branch l114, b60, b61
+  b60:
+    l1 = 1
+    l115 = IntToFloat 0
+    return l115
+  b61:
+    l116 = IntCompare(Greater) l109, l81
+    l117 = l116
+    l118 = IntCompare(Less) l101, 30
+    branch l118, b62, b63
+  b62:
+    l120 = IntToU128 0
+    l121 = U128Compare(NotEqual) l100, l120
+    l119 = l121
+    branch l119, b66, b65
+  b63:
+    l129 = IntCompare(NotEqual) l113, 0
+    branch l129, b71, b72
+  b64:
+    goto b55
+  b65:
+    l122 = IntCompare(NotEqual) l113, 0
+    l119 = l122
+    goto b66
+  b66:
+    branch l119, b67, b68
+  b67:
+    l123 = IntAdd l101, 1
+    l101 = l123
+    goto b68
+  b68:
+    l124 = IntToU128 4
+    l125 = U128ShiftLeft l100, l124
+    l126 = koji_unsafe_wide([Value(Local(113)), Value(Int(0))])
+    l127 = U128Or l125, l126
+    l100 = l127
+    branch l117, b69, b70
+  b69:
+    l128 = IntSub l103, 4
+    l103 = l128
+    goto b70
+  b70:
+    goto b64
+  b71:
+    l102 = true
+    goto b72
+  b72:
+    l130 = Not l117
+    branch l130, b73, b74
+  b73:
+    l131 = IntAdd l103, 4
+    l103 = l131
+    goto b74
+  b74:
+    goto b64
+  b75:
+    l133 = IntNeg 1
+    l134 = IntToFloat l133
+    l132 = l134
+    goto b77
+  b76:
+    l135 = IntToFloat 1
+    l132 = l135
+    goto b77
+  b77:
+    l136 = l132
+    l137 = IntToU128 0
+    l138 = U128Compare(Equal) l100, l137
+    branch l138, b78, b79
+  b78:
+    l139 = IntToFloat 0
+    l140 = FloatMul l136, l139
+    return l140
+  b79:
+    l141 = koji_unsafe_leading_zeros([Value(Local(100))])
+    l142 = IntSub 128, l141
+    l143 = l142
+    l144 = IntAdd l103, l143
+    l145 = IntSub l144, 1
+    l146 = l145
+    l147 = IntCompare(Greater) l146, 1023
+    branch l147, b80, b81
+  b80:
+    l1 = 2
+    l148 = IntToFloat 0
+    return l148
+  b81:
+    l150 = IntNeg 1022
+    l151 = IntCompare(Less) l146, l150
+    branch l151, b82, b83
+  b82:
+    l152 = IntNeg 1022
+    l153 = IntSub l152, l146
+    l154 = IntSub 53, l153
+    l149 = l154
+    goto b84
+  b83:
+    l149 = 53
+    goto b84
+  b84:
+    l155 = l149
+    l156 = IntSub l143, l155
+    l157 = l156
+    l158 = l100
+    l159 = l103
+    l160 = IntCompare(Greater) l157, 0
+    branch l160, b85, b86
+  b85:
+    l162 = IntCompare(GreaterEqual) l157, 128
+    branch l162, b87, b88
+  b86:
+    l197 = IntToU128 0
+    l198 = U128Compare(NotEqual) l158, l197
+    l196 = l198
+    branch l196, b104, b105
+  b87:
+    l161 = l100
+    goto b89
+  b88:
+    l163 = koji_unsafe_wide([Value(Int(1)), Value(Int(0))])
+    l164 = koji_unsafe_wide([Value(Local(157)), Value(Int(0))])
+    l165 = U128ShiftLeft l163, l164
+    l166 = IntToU128 1
+    l167 = U128Sub l165, l166
+    l168 = U128And l100, l167
+    l161 = l168
+    goto b89
+  b89:
+    l169 = l161
+    l171 = IntCompare(Greater) l157, 128
+    branch l171, b90, b91
+  b90:
+    l172 = koji_unsafe_wide([Value(Int(0)), Value(Int(0))])
+    l170 = l172
+    goto b92
+  b91:
+    l173 = koji_unsafe_wide([Value(Int(1)), Value(Int(0))])
+    l174 = IntSub l157, 1
+    l175 = koji_unsafe_wide([Value(Local(174)), Value(Int(0))])
+    l176 = U128ShiftLeft l173, l175
+    l170 = l176
+    goto b92
+  b92:
+    l177 = l170
+    l179 = IntCompare(GreaterEqual) l157, 128
+    branch l179, b93, b94
+  b93:
+    l180 = koji_unsafe_wide([Value(Int(0)), Value(Int(0))])
+    l178 = l180
+    goto b95
+  b94:
+    l181 = koji_unsafe_wide([Value(Local(157)), Value(Int(0))])
+    l182 = U128ShiftRight l100, l181
+    l178 = l182
+    goto b95
+  b95:
+    l158 = l178
+    l184 = U128Compare(Greater) l169, l177
+    l183 = l184
+    branch l183, b97, b96
+  b96:
+    l186 = U128Compare(Equal) l169, l177
+    l185 = l186
+    branch l185, b98, b99
+  b97:
+    l192 = l183
+    branch l192, b102, b103
+  b98:
+    l187 = l102
+    branch l187, b101, b100
+  b99:
+    l183 = l185
+    goto b97
+  b100:
+    l188 = IntToU128 1
+    l189 = U128And l158, l188
+    l190 = IntToU128 1
+    l191 = U128Compare(Equal) l189, l190
+    l187 = l191
+    goto b101
+  b101:
+    l185 = l187
+    goto b99
+  b102:
+    l193 = IntToU128 1
+    l194 = U128Add l158, l193
+    l158 = l194
+    goto b103
+  b103:
+    l195 = IntAdd l159, l157
+    l159 = l195
+    goto b86
+  b104:
+    l199 = koji_unsafe_leading_zeros([Value(Local(158))])
+    l200 = IntSub 128, l199
+    l201 = IntAdd l200, l159
+    l202 = IntCompare(Greater) l201, 1024
+    l196 = l202
+    goto b105
+  b105:
+    branch l196, b106, b107
+  b106:
+    l1 = 2
+    l203 = IntToFloat 0
+    return l203
+  b107:
+    l204 = koji_unsafe_wide_to_float([Value(Local(158))])
+    l205 = FloatMul l136, l204
+    l206 = IntDiv l159, 2
+    l207 = call f34(l206)
+    l208 = FloatMul l205, l207
+    l209 = IntDiv l159, 2
+    l210 = IntSub l159, l209
+    l211 = call f34(l210)
+    l212 = FloatMul l208, l211
+    return l212
+
+function f33 hexValue(l0: Char): Int
+    local l1: Int
+    local l2: Int // code
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Int
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Int
+    local l11: Bool
+    local l12: Bool
+    local l13: Bool
+    local l14: Int
+    local l15: Int
+  b0:
+    l1 = CharCode l0
+    l2 = l1
+    l4 = IntCompare(GreaterEqual) l2, 48
+    l3 = l4
+    branch l3, b1, b2
+  b1:
+    l5 = IntCompare(LessEqual) l2, 57
+    l3 = l5
+    goto b2
+  b2:
+    branch l3, b3, b4
+  b3:
+    l6 = IntSub l2, 48
+    return l6
+  b4:
+    l8 = IntCompare(GreaterEqual) l2, 97
+    l7 = l8
+    branch l7, b5, b6
+  b5:
+    l9 = IntCompare(LessEqual) l2, 102
+    l7 = l9
+    goto b6
+  b6:
+    branch l7, b7, b8
+  b7:
+    l10 = IntSub l2, 87
+    return l10
+  b8:
+    l12 = IntCompare(GreaterEqual) l2, 65
+    l11 = l12
+    branch l11, b9, b10
+  b9:
+    l13 = IntCompare(LessEqual) l2, 70
+    l11 = l13
+    goto b10
+  b10:
+    branch l11, b11, b12
+  b11:
+    l14 = IntSub l2, 55
+    return l14
+  b12:
+    l15 = IntNeg 1
+    return l15
+
+function f34 powerOfTwo(l0: Int): Float
+    local l1: Float
+    local l2: Float // result
+    local l3: Float
+    local l4: Float // base
+    local l5: Int
+    local l6: Bool
+    local l7: Int
+    local l8: Int // left
+    local l9: Bool
+    local l10: Int
+    local l11: Bool
+    local l12: Float
+    local l13: Int
+    local l14: Bool
+    local l15: Float
+    local l16: Float
+    local l17: Bool
+    local l18: Float
+    local l19: Float
+  b0:
+    l1 = IntToFloat 1
+    l2 = l1
+    l3 = IntToFloat 2
+    l4 = l3
+    l6 = IntCompare(Less) l0, 0
+    branch l6, b1, b2
+  b1:
+    l7 = IntNeg l0
+    l5 = l7
+    goto b3
+  b2:
+    l5 = l0
+    goto b3
+  b3:
+    l8 = l5
+    goto b4
+  b4:
+    l9 = IntCompare(Greater) l8, 0
+    branch l9, b5, b6
+  b5:
+    l10 = BitAnd l8, 1
+    l11 = IntCompare(Equal) l10, 1
+    branch l11, b7, b8
+  b6:
+    l17 = IntCompare(Less) l0, 0
+    branch l17, b11, b12
+  b7:
+    l12 = FloatMul l2, l4
+    l2 = l12
+    goto b8
+  b8:
+    l13 = IntDiv l8, 2
+    l8 = l13
+    l14 = IntCompare(Greater) l8, 0
+    branch l14, b9, b10
+  b9:
+    l15 = FloatMul l4, l4
+    l4 = l15
+    goto b10
+  b10:
+    goto b4
+  b11:
+    l18 = IntToFloat 1
+    l19 = FloatDiv l18, l2
+    l16 = l19
+    goto b13
+  b12:
+    l16 = l2
+    goto b13
+  b13:
+    return l16
+
+function f35 readLine(l0: Int): Record(5)
+    local l1: Record(5)
+  b0:
+    l1 = call f36(s2, l0)
+    return l1
+
+function f36 readLineAfter(l0: Str, l1: Int): Record(5)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(5)
+    local l10: Record(5)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f37 decimalOf(l0: Str): Record(6)
+    local l1: Int
+    local l2: Int // status
+    local l3: Decimal
+    local l4: Decimal // value
+    local l5: Int
+    local l6: Int // code
+    local l7: Bool
+    local l8: Record(2)
+    local l9: Record(6)
+    local l10: Bool
+    local l11: Record(2)
+    local l12: Record(6)
+    local l13: Record(6)
+  b0:
+    l1 = koji_unsafe_allocate([Value(Int(8))])
+    l2 = l1
+    l3 = koji_decimal_parse([Value(Local(0)), Value(Local(2))])
+    l4 = l3
+    l5 = koji_unsafe_read_int([Value(Local(2)), Value(Int(0))])
+    l6 = l5
+    koji_unsafe_free([Value(Local(2))])
+    l7 = IntCompare(Equal) l6, 1
+    branch l7, b1, b2
+  b1:
+    l8 = record variant 0 (l0)
+    l9 = record variant 1 (l8)
+    return l9
+  b2:
+    l10 = IntCompare(Equal) l6, 2
+    branch l10, b3, b4
+  b3:
+    l11 = record variant 1 (l0)
+    l12 = record variant 1 (l11)
+    return l12
+  b4:
+    l13 = record variant 0 (l4)
+    return l13
 ==== test/ir/cases.txt #25
 string s0 = "stop"
 
@@ -44800,7 +50877,7 @@ function f9 File.write(l0: Record(1), l1: Str, l2: Int): Record(5)
 
 function f10 File.close(l0: Record(1)): Void
   b0:
-    drop l0 with f72
+    drop l0 with f74
     return
 
 function f11 list(l0: Str): Record(6)
@@ -48606,7 +54683,7 @@ function f68 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f61(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -48623,11 +54700,11 @@ function f68 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f38(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -49090,7 +55167,41 @@ function f70 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f71 decimalOf(l0: Str): Record(20)
+function f71 readLine(l0: Int): Record(8)
+    local l1: Record(8)
+  b0:
+    l1 = call f72(s2, l0)
+    return l1
+
+function f72 readLineAfter(l0: Str, l1: Int): Record(8)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(8)
+    local l10: Record(8)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f73 decimalOf(l0: Str): Record(20)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -49129,7 +55240,7 @@ function f71 decimalOf(l0: Str): Record(20)
     l13 = record variant 0 (l4)
     return l13
 
-function f72 drop Record(1)(l0: Record(1)): Void
+function f74 drop Record(1)(l0: Record(1)): Void
     local l1: Record(1)
   b0:
     l1 = l0
@@ -49416,7 +55527,7 @@ function f3 make(): List(Int)
   b0:
     l0 = 1
     l1 = record variant 0 (l0)
-    l2 = closure f67 with l1
+    l2 = closure f69 with l1
     l3 = l2
     l0 = 5
     l4 = call l3(1)
@@ -50383,7 +56494,7 @@ function f16 Parser.number(l0: Record(4)): Record(7)
     l36 = IntCompare(Equal) l35, 0
     branch l36, b16, b15
   b13:
-    l46 = call f66(l3)
+    l46 = call f68(l3)
     l47 = l46
     l48 = RecordTag l47
     l49 = IntCompare(Equal) l48, 0
@@ -54076,7 +60187,7 @@ function f63 hexFloat(l0: Str, l1: Int): Float
   b27:
     l54 = IntAdd l35, 1
     l55 = l54
-    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(629)])
+    l56 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(55)), Mode(0), Value(Int(0)), Location(631)])
     l57 = call f56(l56)
     l58 = l57
     l59 = RecordTag l58
@@ -54093,11 +60204,11 @@ function f63 hexFloat(l0: Str, l1: Int): Float
   b29:
     l72 = IntAdd l35, 1
     l73 = l72
-    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(639)])
+    l74 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(73)), Mode(0), Value(Int(0)), Location(641)])
     l75 = call f33(l74)
     l76 = IntAdd l35, 1
     l77 = l76
-    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(639)])
+    l78 = koji_std_string_slice([Value(Local(0)), Mode(1), Value(Local(77)), Mode(0), Value(Int(0)), Location(641)])
     l79 = StrCompare(NotEqual) l75, l78
     branch l79, b40, b41
   b30:
@@ -54560,7 +60671,41 @@ function f65 powerOfTwo(l0: Int): Float
   b13:
     return l16
 
-function f66 decimalOf(l0: Str): Record(19)
+function f66 readLine(l0: Int): Record(12)
+    local l1: Record(12)
+  b0:
+    l1 = call f67(s2, l0)
+    return l1
+
+function f67 readLineAfter(l0: Str, l1: Int): Record(12)
+    local l2: Int
+    local l3: Int // status
+    local l4: Str
+    local l5: Str // line
+    local l6: Int
+    local l7: Int // ended
+    local l8: Bool
+    local l9: Record(12)
+    local l10: Record(12)
+  b0:
+    l2 = koji_unsafe_allocate([Value(Int(8))])
+    l3 = l2
+    koji_unsafe_write_int([Value(Local(3)), Value(Int(0)), Value(Int(0))])
+    l4 = koji_read_line([Value(Local(0)), Value(Local(1)), Value(Local(3))])
+    l5 = l4
+    l6 = koji_unsafe_read_int([Value(Local(3)), Value(Int(0))])
+    l7 = l6
+    koji_unsafe_free([Value(Local(3))])
+    l8 = IntCompare(Equal) l7, 1
+    branch l8, b1, b2
+  b1:
+    l9 = record variant 1 ()
+    return l9
+  b2:
+    l10 = record variant 0 (l5)
+    return l10
+
+function f68 decimalOf(l0: Str): Record(19)
     local l1: Int
     local l2: Int // status
     local l3: Decimal
@@ -54599,7 +60744,7 @@ function f66 decimalOf(l0: Str): Record(19)
     l13 = record variant 0 (l4)
     return l13
 
-function f67 twice(l0: Record(20), l1: Int): Int
+function f69 twice(l0: Record(20), l1: Int): Int
     local l2: Int // x
     local l3: Int
     local l4: Int

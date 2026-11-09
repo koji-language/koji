@@ -186,7 +186,7 @@ KOJI_INLINE int64_t koji_unsafe_distance(int64_t from, int64_t to) { return to -
 #define KOJI_INODE64(name)
 #endif
 
-_Noreturn void koji_panic(const char *location, const char *message);
+_Noreturn void koji_panic(const char *location, const void *message);
 
 /* `U128`: its words, and the words of a decimal. */
 KOJI_INLINE KojiU128 koji_unsafe_wide(int64_t low, int64_t high) { return (KojiU128)(uint64_t)high << 64 | (uint64_t)low; }
@@ -405,18 +405,12 @@ void koji_list_sort_by(KojiList **variable, const KojiClosure *comparison,
 
 /* The standard library (runtime/src/stdlib.rs). */
 void koji_init(int argc, const char *const *argv);
-KojiRecord *koji_std_input(const KojiString *prompt, const KojiRecordType *option, const char *location);
 _Noreturn void koji_std_panic(const KojiString *message, const char *location);
-KojiRecord *koji_std_int_from_string(const KojiString *string, const KojiRecordType *result);
-KojiRecord *koji_std_float_from_string(const KojiString *string, const KojiRecordType *result);
 int64_t koji_std_float_to_int(double value, const char *location);
-KojiRecord *koji_std_decimal_from_string(const KojiString *string, const KojiRecordType *result);
 KojiString *koji_std_string_upper(const KojiString *string);
 KojiString *koji_std_string_lower(const KojiString *string);
 bool koji_std_string_is(const KojiString *string, int32_t test);
 
-KojiRecord *koji_std_char(int64_t code, const KojiRecordType *option);
-KojiList *koji_std_string_chars(const KojiString *string, const KojiElementType *element);
 uint32_t koji_std_string_char_at(const KojiString *string, int64_t index, const char *location);
 KojiString *koji_std_string_slice(const KojiString *string, bool has_start, int64_t start, bool has_end, int64_t end,
                                   const char *location);
@@ -427,7 +421,7 @@ KojiRecord *koji_std_http_request(int32_t method, const KojiString *url, const K
 _Noreturn void koji_fail(const char *location, const KojiString *message);
 void koji_print(const KojiString *text, const char *location);
 void koji_print_error(const KojiString *text, const char *location);
-_Noreturn void koji_panic(const char *location, const char *message);
+_Noreturn void koji_panic(const char *location, const void *message);
 _Noreturn void koji_panic_shift(const char *location, int64_t amount);
 int64_t koji_int_pow(int64_t base, int64_t exponent, const char *location);
 double koji_float_pow(double base, double exponent, const char *location);

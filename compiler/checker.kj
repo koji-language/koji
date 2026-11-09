@@ -17,8 +17,8 @@ export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'end
 // The internal modules (std/koji/): `koji:core`, compiled with the programs that use it, and those
 // of the library of the runtime written in Koji, compiled once (`kojic dump library`) and linked
 // into every program.
-immut internalModules = ['koji:core', 'koji:decimal', 'koji:numbers', 'koji:text']
-export immut libraryModules = ['koji:decimal', 'koji:numbers', 'koji:text']
+immut internalModules = ['koji:core', 'koji:decimal', 'koji:numbers', 'koji:output', 'koji:text']
+export immut libraryModules = ['koji:decimal', 'koji:numbers', 'koji:output', 'koji:text']
 
 type SymbolKind = {
     ValueSymbol
@@ -1519,8 +1519,9 @@ function Checker.declareExtern(mut self, name: string, params: Param[], returns:
                 if (not self.isCValue(each) and each != StringType and each != U128Type) { return Err(self.failure(`'${name}' is extern: its parameters must be int, CInt, float, decimal, boolean, char, byte, U128, string, Address or Location, found ${self.show(each)}`)) }
             }
 
-            if (returned != VoidType and not self.isCValue(returned)) {
-                return Err(self.failure(`'${name}' is extern: it must return int, CInt, float, decimal, boolean, Address, Location or nothing, found ${self.show(returned)}`))
+            // A string returned is a new reference, as the functions of the library give them.
+            if (returned != VoidType and returned != NeverType and returned != StringType and not self.isCValue(returned)) {
+                return Err(self.failure(`'${name}' is extern: it must return int, CInt, float, decimal, boolean, string, Address, Location, Never or nothing, found ${self.show(returned)}`))
             }
         }
         _ => {}
@@ -1554,8 +1555,8 @@ function Checker.checkForC(mut self, declaration: Node): Result[void, string] {
             }
 
             // A string is a new reference for C, as the runtime gives them.
-            if (returned != VoidType and not self.isCValue(returned) and returned != U128Type and returned != StringType) {
-                return Err(self.failure(`'${name}' is for C: it must return int, CInt, float, decimal, boolean, U128, Address, string or nothing, found ${self.show(returned)}`))
+            if (returned != VoidType and returned != NeverType and not self.isCValue(returned) and returned != U128Type and returned != StringType) {
+                return Err(self.failure(`'${name}' is for C: it must return int, CInt, float, decimal, boolean, U128, Address, string, Never or nothing, found ${self.show(returned)}`))
             }
         }
         _ => {}
@@ -1655,13 +1656,15 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize', 'charOfCode', 'truncate', 'reserve', 'listItems', 'setListLength'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize', 'charOfCode', 'truncate', 'reserve', 'listItems', 'setListLength', 'locationAddress'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
     module.types['Address'] = KnownType(named(self.builtins.address))
     module.types['Location'] = KnownType(named(self.builtins.location))
     module.types['U128'] = KnownType(U128Type)
+    // The type of a function that does not return (`exit` of C, a panic).
+    module.types['Never'] = KnownType(NeverType)
     // The `int` of C (32 bits), in `extern` declarations: an `int` in Koji.
     module.types['CInt'] = KnownType(IntType)
     // The `size_t` of C (unsigned, 64 bits), in `extern` declarations: an `int` in Koji.
@@ -4841,6 +4844,9 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
 
             if (types.length() > 0) { self.expectArg(name, 0, s, types[0])? }
 
+            // `readLine` of koji:core.
+            self.coreModule()?
+
             return Ok(self.optionOf(StringType))
         }
         'range' => {
@@ -4989,6 +4995,11 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.expectList(name, types[0])?
             self.expectArg(name, 1, IntType, types[1])?
             return Ok(VoidType)
+        }
+        // The text of a place (`main.kj:12`), as C has it.
+        'unsafe.locationAddress' => {
+            self.checkExactly(name, types, [named(b.location)])?
+            return Ok(named(b.address))
         }
         'unsafe.isNull' => {
             self.checkExactly(name, types, [named(b.address)])?

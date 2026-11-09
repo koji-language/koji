@@ -12,6 +12,8 @@ extern function memmem(haystack: Address, haystackSize: CSize, needle: Address, 
 extern function strlen(text: Address): CSize
 extern function strtod(text: Address, end: Address): float
 extern function memcpy(target: Address, source: Address, size: CSize): Address
+// A line of the standard input, from the library (std/koji/output.kj).
+extern function koji_read_line(prompt: string, here: Location, status: Address): string
 // The decimal of a text, from the library (std/koji/decimal.kj).
 extern function koji_decimal_parse(text: string, status: Address): decimal
 
@@ -751,6 +753,24 @@ function powerOfTwo(n: int): float {
     }
 
     return if (n < 0) { float(1) / result } else { result }
+}
+
+// `input()` and `input(prompt)`: a line of the standard input without its line break, or `None`
+// at its end.
+function readLine(here: Location): Option[string] {
+    return readLineAfter('', here)
+}
+
+function readLineAfter(prompt: string, here: Location): Option[string] {
+    immut status = allocate(8)
+    write(status, 0, 0)
+    immut line = koji_read_line(prompt, here, status)
+    immut ended: int = read(status, 0)
+    free(status)
+
+    if (ended == 1) { return None }
+
+    return Some(line)
 }
 
 function decimalOf(text: string): Result[decimal, ParseError] {

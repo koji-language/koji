@@ -1,0 +1,181 @@
+// `koji:output`: what a program writes (`print`, `printError`) and reads (`input`), and how it ends
+// on a panic or on an error that reached its top level, in the library of the runtime written in
+// Koji (C calls these functions by their names). The writes go to the system at once, a line in
+// one call, as Rust's output flushed at each line did.
+
+import { Address, CInt, Location, Never, allocate, isNull, locationAddress, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
+import { cString, cText, isUtf8 } from 'koji:core'
+
+extern function writev(fd: CInt, buffers: Address, count: CInt): int
+extern function strerror(code: CInt): Address
+extern function exit(code: CInt): Never
+extern function fdopen(fd: CInt, mode: Address): Address
+extern function getline(line: Address, capacity: Address, stream: Address): int
+extern function ferror(stream: Address): CInt
+extern function clearerr(stream: Address)
+extern function koji_system_errno(): CInt
+
+// Two buffers for `writev` (their addresses and sizes), and a line break.
+immut buffers = allocate(32)
+immut lineBreak = cString('\n')
+immut readMode = cString('r')
+// The standard input, opened when a program first reads it, and the block `getline` fills (its
+// address, then its capacity).
+mut input = nullAddress()
+immut line = zeroed(16)
+
+function zeroed(size: int): Address {
+    immut block = allocate(size)
+
+    for i in range(size / 8) {
+        write(block, i * 8, 0)
+    }
+
+    return block
+}
+
+// `print(text)`.
+extern function koji_print(text: string, here: Location) {
+    immut code = written(1, text, true)
+
+    if (code != 0) { end('panic', here, `cannot write output: ${message(code)}`) }
+}
+
+// `printError(text)`, on the standard error.
+extern function koji_print_error(text: string, here: Location) {
+    immut code = written(2, text, true)
+
+    if (code != 0) { end('panic', here, `cannot write output: ${message(code)}`) }
+}
+
+// `panic(message)`, and the panics of the library.
+extern function koji_std_panic(text: string, here: Location): Never {
+    end('panic', here, text)
+}
+
+// The panics of the generated code (overflow, division by zero...), with a text of C.
+extern function koji_panic(here: Location, text: Address): Never {
+    end('panic', here, cText(text))
+}
+
+// `a << b` or `a >> b` with a shift outside 0..64.
+extern function koji_panic_shift(here: Location, amount: int): Never {
+    end('panic', here, `invalid shift amount ${amount}`)
+}
+
+// An `Err` or a `None` that reached the top level of the program with `?`.
+extern function koji_fail(here: Location, text: string): Never {
+    end('error', here, text)
+}
+
+// Ends the program with `panic: main.kj:12: message` (or `error: ...`) on the standard error, and
+// the exit code 1.
+function end(kind: string, here: Location, text: string): Never {
+    written(2, `${kind}: ${cText(locationAddress(here))}: ${text}`, true)
+    exit(1)
+}
+
+// Writes the bytes of `text`, and a line break when `ending`, to `fd`: 0, or the error of the
+// system (-1 when it wrote nothing).
+function written(fd: int, text: string, ending: boolean): int {
+    mut at = stringBytes(text)
+    mut size = stringSize(text)
+    mut breakSize = if (ending) { 1 } else { 0 }
+
+    while (size + breakSize > 0) {
+        mut count = 0
+
+        if (size > 0) {
+            write(buffers, 0, at)
+            write(buffers, 8, size)
+            count = 1
+        }
+
+        if (breakSize > 0) {
+            write(buffers, count * 16, lineBreak)
+            write(buffers, count * 16 + 8, 1)
+            count += 1
+        }
+
+        immut done = writev(fd, buffers, count)
+
+        if (done < 0) {
+            immut code = koji_system_errno()
+
+            // Interrupted by a signal: again.
+            if (code == 4) { continue }
+
+            // A standard output that is closed takes everything, as in Rust.
+            if (code == 9) { return 0 }
+
+            return code
+        }
+
+        if (done == 0) { return -1 }
+
+        if (done >= size) {
+            breakSize -= done - size
+            size = 0
+            continue
+        }
+
+        at = offset(at, done)
+        size -= done
+    }
+
+    return 0
+}
+
+// The text of an error of the system, as Rust shows it.
+function message(code: int): string {
+    if (code == -1) { return 'failed to write whole buffer' }
+
+    return `${cText(strerror(code))} (os error ${code})`
+}
+
+// `input(prompt)`: a line of the standard input without its line break; `status` becomes 1 at the
+// end of the input.
+extern function koji_read_line(prompt: string, here: Location, status: Address): string {
+    if (stringSize(prompt) > 0) {
+        immut code = written(1, prompt, false)
+
+        if (code != 0) { end('panic', here, `cannot write output: ${message(code)}`) }
+    }
+
+    if (isNull(input)) { input = fdopen(0, readMode) }
+
+    // A standard input that is closed is empty, as in Rust.
+    if (isNull(input)) {
+        write(status, 0, 1)
+        return ''
+    }
+
+    clearerr(input)
+    immut size = getline(line, offset(line, 8), input)
+
+    if (size < 0) {
+        immut code = koji_system_errno()
+
+        if (ferror(input) != 0 and code != 9) { end('panic', here, `cannot read input: ${message(code)}`) }
+
+        write(status, 0, 1)
+        return ''
+    }
+
+    immut bytes: Address = read(line, 0)
+
+    if (not isUtf8(bytes, size)) { end('panic', here, 'cannot read input: stream did not contain valid UTF-8') }
+
+    mut last = size
+
+    while (last > 0 and isLineEnd(bytes, last - 1)) {
+        last -= 1
+    }
+
+    return newString(bytes, last)
+}
+
+function isLineEnd(bytes: Address, at: int): boolean {
+    immut b: byte = read(bytes, at)
+    return b == 10 or b == 13
+}

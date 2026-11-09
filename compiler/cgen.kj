@@ -234,7 +234,8 @@ function Generator.generateProgram(mut self) {
     for found in self.program.externs {
         immut params = if (found.params.length() == 0) { 'void' } else { found.params.join(', ') }
         immut symbol = if (found.name in inode64) { ` KOJI_INODE64(${found.name})` } else { '' }
-        self.line(`${found.returns} ${found.name}(${params})${symbol};`)
+        immut returned = if (found.returns == 'never') { '_Noreturn void' } else { found.returns }
+        self.line(`${returned} ${found.name}(${params})${symbol};`)
     }
 
     if (self.program.externs.length() > 0) { self.line('KOJI_EXTERNS_END') }
@@ -295,15 +296,19 @@ function Generator.generateProgram(mut self) {
 
         mut body = ''
 
-        if (found.returns == 'void') {
-            body = `${call};${releases}`
-        } else {
+        if (found.returns == 'void') { body = `${call};${releases}` }
+
+        // It ends the program: C knows it from `_Noreturn`.
+        if (found.returns == 'never') { body = `${call}; __builtin_unreachable();` }
+
+        if (found.returns != 'void' and found.returns != 'never') {
             body = if (releases == '') { `return ${toC(found.returns, call)};` } else { `${found.returns} result = ${toC(found.returns, call)};${releases} return result;` }
         }
 
 
         self.line('')
-        self.line(`${found.returns} ${found.name}(${list}) { ${body} }`)
+        immut returned = if (found.returns == 'never') { '_Noreturn void' } else { found.returns }
+        self.line(`${returned} ${found.name}(${list}) { ${body} }`)
     }
 
     self.line('')

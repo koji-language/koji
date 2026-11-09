@@ -443,6 +443,16 @@ fn input_returns_an_option() {
     "#;
     assert_eq!(run_with_input(source, "Ana\n"), "What's your name?Hello, Ana!\n");
     assert_eq!(run_with_input(source, ""), "What's your name?No input\n");
+    // Lines end with `\n` or `\r\n`, and the last one may have no line break.
+    let source = r#"
+        mut line = input()
+
+        while (line is Some) {
+            print(line)
+            line = input()
+        }
+    "#;
+    assert_eq!(run_with_input(source, "a\r\n\nbé\nlast"), "Some('a')\nSome('')\nSome('bé')\nSome('last')\n");
 }
 
 // ---------------------------------------------------------------------------
