@@ -275,7 +275,7 @@ extern function koji_string_hash(text: string): int {
 }
 
 // (rotate_left(hash, 5) ^ word) * K, in 64 bits.
-function mixed(hash: U128, chunk: U128): U128 {
+export function mixed(hash: U128, chunk: U128): U128 {
     immut mask = wide(-1, 0)
     immut rotated = ((hash << 5) | (hash >> 59)) & mask
     return wordProduct(rotated ^ chunk, wide(0x517CC1B727220A95, 0)) & mask

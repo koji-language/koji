@@ -1,0 +1,458 @@
+// `koji:list`: lists, in the library of the runtime written in Koji (C calls these functions by
+// their names). A list is a block of 6 words (runtime/prelude.h): its count of references, the type
+// of its items (a `KojiElementType`, whose functions retain, release, show, compare and hash an
+// item), the words of an item (1, or 2 for a decimal), the address of the items, their number, and
+// the words that the block of the items holds. Two variables share a list until one of them changes
+// it, which copies it first: a function that changes a list takes the variable that holds it.
+
+import { Address, CInt, CSize, Location, Never, U128, blankString, distance, lowWord, nullAddress, offset, panicAt, read, stringBytes, stringSize, wide, write } from 'koji:unsafe'
+import { mixed } from 'koji:text'
+
+// The blocks of the pool, and the functions of the type of the items (runtime/prelude.h).
+extern function koji_memory_take(words: int): Address
+extern function koji_memory_give(block: Address, words: int)
+extern function koji_memory_resize(block: Address, words: int, newWords: int): Address
+extern function koji_element_size(element: Address): int
+extern function koji_element_counted(element: Address): boolean
+extern function koji_element_retain(element: Address, slot: Address)
+extern function koji_element_release(element: Address, slot: Address)
+extern function koji_element_repr(element: Address, slot: Address): string
+extern function koji_element_equal(element: Address, a: Address, b: Address): boolean
+extern function koji_element_orderable(element: Address): boolean
+extern function koji_element_compare(element: Address, a: Address, b: Address): CInt
+extern function koji_element_hash(element: Address, slot: Address): int
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function memmove(target: Address, source: Address, size: CSize): Address
+
+// The words of the block of a list.
+immut listWords = 6
+
+function elementOf(list: Address): Address {
+    immut element: Address = read(list, 8)
+    return element
+}
+
+function strideOf(list: Address): int {
+    immut stride: int = read(list, 16)
+    return stride
+}
+
+function itemsOf(list: Address): Address {
+    immut items: Address = read(list, 24)
+    return items
+}
+
+function lengthOf(list: Address): int {
+    immut length: int = read(list, 32)
+    return length
+}
+
+function capacityOf(list: Address): int {
+    immut capacity: int = read(list, 40)
+    return capacity
+}
+
+// The slot of the item at `index`.
+function slotOf(list: Address, index: int): Address {
+    return offset(itemsOf(list), index * strideOf(list) * 8)
+}
+
+// A new list without items, with room for `count` of them.
+function newList(element: Address, count: int): Address {
+    immut stride = if (koji_element_size(element) > 8) { 2 } else { 1 }
+    immut list = koji_memory_take(listWords)
+    immut words = count * stride
+    write(list, 0, 1)
+    write(list, 8, element)
+    write(list, 16, stride)
+    // No block for no items: an address that is not 0, as Rust's empty vectors have.
+    write(list, 24, if (words > 0) { koji_memory_take(words) } else { offset(nullAddress(), 8) })
+    write(list, 32, 0)
+    write(list, 40, words)
+    return list
+}
+
+// Adds a reference to the items from `start` to `end`.
+function retainItems(list: Address, start: int, end: int) {
+    immut element = elementOf(list)
+
+    if (not koji_element_counted(element)) { return }
+
+    mut index = start
+
+    while (index < end) {
+        koji_element_retain(element, slotOf(list, index))
+        index += 1
+    }
+}
+
+// A new list with the items of `list`, each with a new reference.
+function copied(list: Address): Address {
+    immut length = lengthOf(list)
+    immut copy = newList(elementOf(list), length)
+    memcpy(itemsOf(copy), itemsOf(list), length * strideOf(list) * 8)
+    write(copy, 32, length)
+    retainItems(copy, 0, length)
+    return copy
+}
+
+// The list in `variable`, made its own (copied when another variable shares it).
+function unshared(variable: Address): Address {
+    immut list: Address = read(variable, 0)
+    immut references: int = read(list, 0)
+
+    if (references == 1) { return list }
+
+    immut copy = copied(list)
+    write(list, 0, references - 1)
+    write(variable, 0, copy)
+    return copy
+}
+
+// Room for `more` items: the block grows as Rust's vectors grow (twice as large, 4 words at least).
+function makeRoom(list: Address, more: int) {
+    immut needed = (lengthOf(list) + more) * strideOf(list)
+    immut capacity = capacityOf(list)
+
+    if (needed <= capacity) { return }
+
+    mut grown = capacity * 2
+
+    if (grown < needed) { grown = needed }
+
+    if (grown < 4) { grown = 4 }
+
+    write(list, 24, if (capacity == 0) { koji_memory_take(grown) } else { koji_memory_resize(itemsOf(list), capacity, grown) })
+    write(list, 40, grown)
+}
+
+// Puts the item of the generated code at `value` (its bytes, the rest of the slot 0) in `slot`.
+function putItem(slot: Address, value: Address, element: Address, stride: int) {
+    immut size = koji_element_size(element)
+
+    if (size == 8) {
+        immut word: int = read(value, 0)
+        write(slot, 0, word)
+        return
+    }
+
+    write(slot, 0, 0)
+
+    if (stride == 2) { write(slot, 8, 0) }
+
+    memcpy(slot, value, size)
+}
+
+// The position of `index` in a list of `length` items (`end`: the position after the last one
+// too), or a panic.
+function position(index: int, length: int, end: boolean, here: Location): int {
+    if (index >= 0 and (index < length or (end and index == length))) { return index }
+
+    panicAt(here, `index ${index} out of range (length ${length})`)
+}
+
+extern function koji_list_new(element: Address, capacity: CSize): Address {
+    return newList(element, capacity)
+}
+
+// Releases the items of a list without references and frees it.
+extern function koji_list_free(list: Address) {
+    immut element = elementOf(list)
+    immut length = lengthOf(list)
+
+    if (koji_element_counted(element)) {
+        mut index = 0
+
+        while (index < length) {
+            koji_element_release(element, slotOf(list, index))
+            index += 1
+        }
+    }
+
+    immut capacity = capacityOf(list)
+
+    if (capacity > 0) { koji_memory_give(itemsOf(list), capacity) }
+
+    koji_memory_give(list, listWords)
+}
+
+// The panic of an index out of range (`koji_list_get` of the prelude).
+extern function koji_list_index_panic(index: int, length: int, here: Location): Never {
+    panicAt(here, `index ${index} out of range (length ${length})`)
+}
+
+// The slot of the item at `index`, to change it (`grid[0][1] = 5` changes the item of `grid[0]`
+// in place).
+extern function koji_list_slot(variable: Address, index: int, here: Location): Address {
+    immut list = unshared(variable)
+    return slotOf(list, position(index, lengthOf(list), false, here))
+}
+
+// `items[index] = value`.
+extern function koji_list_set(variable: Address, index: int, value: Address, here: Location) {
+    immut list = unshared(variable)
+    immut slot = slotOf(list, position(index, lengthOf(list), false, here))
+    immut element = elementOf(list)
+    koji_element_release(element, slot)
+    putItem(slot, value, element, strideOf(list))
+    koji_element_retain(element, slot)
+}
+
+// `items.push(value)`.
+extern function koji_list_push(variable: Address, value: Address) {
+    immut list = unshared(variable)
+    makeRoom(list, 1)
+    immut length = lengthOf(list)
+    immut slot = slotOf(list, length)
+    immut element = elementOf(list)
+    putItem(slot, value, element, strideOf(list))
+    write(list, 32, length + 1)
+    koji_element_retain(element, slot)
+}
+
+// Room for `more` items in a list that is not shared (`reserve` of `koji:unsafe`).
+extern function koji_list_reserve(list: Address, more: int) {
+    immut references: int = read(list, 0)
+
+    if (references == 1 and more > 0) { makeRoom(list, more) }
+}
+
+// `items.insert(index, value)`.
+extern function koji_list_insert(variable: Address, index: int, value: Address, here: Location) {
+    immut list = unshared(variable)
+    immut length = lengthOf(list)
+    immut at = position(index, length, true, here)
+    makeRoom(list, 1)
+    immut stride = strideOf(list)
+    immut slot = slotOf(list, at)
+    memmove(offset(slot, stride * 8), slot, (length - at) * stride * 8)
+    immut element = elementOf(list)
+    putItem(slot, value, element, stride)
+    write(list, 32, length + 1)
+    koji_element_retain(element, slot)
+}
+
+// `items.sort()`: a stable sort of orderable items (merges of runs that double, through a block
+// as large as the items).
+extern function koji_list_sort(variable: Address) {
+    immut list = unshared(variable)
+    immut element = elementOf(list)
+    immut length = lengthOf(list)
+
+    if (not koji_element_orderable(element) or length < 2) { return }
+
+    immut size = strideOf(list) * 8
+    immut words = length * strideOf(list)
+    immut other = koji_memory_take(words)
+    mut source = itemsOf(list)
+    mut target = other
+    mut width = 1
+
+    while (width < length) {
+        mut start = 0
+
+        while (start < length) {
+            immut middle = minOf(start + width, length)
+            immut end = minOf(start + 2 * width, length)
+            mut left = start
+            mut right = middle
+            mut at = start
+
+            while (at < end) {
+                // From the right only when it goes strictly before: equal items keep their order.
+                immut fromRight = left >= middle or (right < end and koji_element_compare(element, offset(source, right * size), offset(source, left * size)) < 0)
+                immut taken = if (fromRight) { right } else { left }
+                memcpy(offset(target, at * size), offset(source, taken * size), size)
+
+                if (fromRight) {
+                    right += 1
+                } else {
+                    left += 1
+                }
+
+                at += 1
+            }
+
+            start = end
+        }
+
+        immut swapped = source
+        source = target
+        target = swapped
+        width = width * 2
+    }
+
+    // The items in the block of the list, and the other given back.
+    if (distance(source, itemsOf(list)) != 0) { memcpy(itemsOf(list), source, length * size) }
+
+    koji_memory_give(other, words)
+}
+
+function minOf(a: int, b: int): int {
+    return if (a < b) { a } else { b }
+}
+
+// `a + b`: a new list.
+extern function koji_list_concat(a: Address, b: Address): Address {
+    immut lengthA = lengthOf(a)
+    immut lengthB = lengthOf(b)
+    immut size = strideOf(a) * 8
+    immut joined = newList(elementOf(a), lengthA + lengthB)
+    memcpy(itemsOf(joined), itemsOf(a), lengthA * size)
+    memcpy(offset(itemsOf(joined), lengthA * size), itemsOf(b), lengthB * size)
+    write(joined, 32, lengthA + lengthB)
+    retainItems(joined, 0, lengthA + lengthB)
+    return joined
+}
+
+// `items[start..end]`, where a missing bound is the start or the end of the list.
+extern function koji_list_slice(list: Address, hasStart: boolean, start: int, hasEnd: boolean, end: int, here: Location): Address {
+    immut length = lengthOf(list)
+    immut first = if (hasStart) { start } else { 0 }
+    immut last = if (hasEnd) { end } else { length }
+
+    if (first < 0 or last > length or first > last) { panicAt(here, `slice ${first}..${last} out of range (length ${length})`) }
+
+    immut count = last - first
+    immut part = newList(elementOf(list), count)
+    memcpy(itemsOf(part), slotOf(list, first), count * strideOf(list) * 8)
+    write(part, 32, count)
+    retainItems(part, 0, count)
+    return part
+}
+
+extern function koji_list_equal(a: Address, b: Address): boolean {
+    if (distance(a, b) == 0) { return true }
+
+    immut length = lengthOf(a)
+
+    if (lengthOf(b) != length) { return false }
+
+    immut element = elementOf(a)
+    mut index = 0
+
+    while (index < length) {
+        if (not koji_element_equal(element, slotOf(a, index), slotOf(b, index))) { return false }
+
+        index += 1
+    }
+
+    return true
+}
+
+// `value in items`.
+extern function koji_list_contains(list: Address, value: Address): boolean {
+    return koji_list_index_of(list, value) >= 0
+}
+
+// `items.indexOf(value)`: the position of the first equal item, or -1.
+extern function koji_list_index_of(list: Address, value: Address): int {
+    immut element = elementOf(list)
+    immut length = lengthOf(list)
+    mut index = 0
+
+    while (index < length) {
+        if (koji_element_equal(element, slotOf(list, index), value)) { return index }
+
+        index += 1
+    }
+
+    return -1
+}
+
+// The list as written in code: `[1, 2, 3]`, `['a', 'b']`.
+extern function koji_list_repr(list: Address): string {
+    immut element = elementOf(list)
+    immut length = lengthOf(list)
+    mut text = '['
+    mut index = 0
+
+    while (index < length) {
+        if (index > 0) { text += ', ' }
+
+        text += koji_element_repr(element, slotOf(list, index))
+        index += 1
+    }
+
+    return text + ']'
+}
+
+// `items.join(separator)`, for a list of strings: their size first, then their bytes. A slot holds
+// the address of a string, whose size is its second word and whose bytes follow its third
+// (runtime/prelude.h); the list keeps them alive.
+extern function koji_list_join(list: Address, separator: string): string {
+    immut length = lengthOf(list)
+    immut gap = stringSize(separator)
+    mut total = if (length > 0) { gap * (length - 1) } else { 0 }
+    mut index = 0
+
+    while (index < length) {
+        immut text: Address = read(slotOf(list, index), 0)
+        immut size: int = read(text, 8)
+        total += size
+        index += 1
+    }
+
+    immut joined = blankString(total, total)
+    immut bytes = stringBytes(joined)
+    mut at = 0
+    index = 0
+
+    while (index < length) {
+        if (index > 0) {
+            memcpy(offset(bytes, at), stringBytes(separator), gap)
+            at += gap
+        }
+
+        immut text: Address = read(slotOf(list, index), 0)
+        immut size: int = read(text, 8)
+        memcpy(offset(bytes, at), offset(text, 24), size)
+        at += size
+        index += 1
+    }
+
+    return joined
+}
+
+// `items.pop()`: copies the last item to `out` (the caller now holds its reference), or false for
+// an empty list.
+extern function koji_list_pop(variable: Address, out: Address): boolean {
+    immut list = unshared(variable)
+    immut length = lengthOf(list)
+
+    if (length == 0) { return false }
+
+    memcpy(out, slotOf(list, length - 1), koji_element_size(elementOf(list)))
+    write(list, 32, length - 1)
+    return true
+}
+
+// `items.removeAt(index)`: as `pop`, for the item at `index`; false when `index` is out of range.
+extern function koji_list_remove(variable: Address, index: int, out: Address): boolean {
+    immut list = unshared(variable)
+    immut length = lengthOf(list)
+
+    if (index < 0 or index >= length) { return false }
+
+    immut stride = strideOf(list)
+    immut slot = slotOf(list, index)
+    memcpy(out, slot, koji_element_size(elementOf(list)))
+    memmove(slot, offset(slot, stride * 8), (length - index - 1) * stride * 8)
+    write(list, 32, length - 1)
+    return true
+}
+
+// A hash of the items, in order.
+extern function koji_list_hash(list: Address): int {
+    immut element = elementOf(list)
+    immut length = lengthOf(list)
+    mut hash: U128 = 0
+    mut index = 0
+
+    while (index < length) {
+        hash = mixed(hash, wide(koji_element_hash(element, slotOf(list, index)), 0))
+        index += 1
+    }
+
+    return lowWord(hash)
+}

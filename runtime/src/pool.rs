@@ -184,6 +184,13 @@ pub extern "C" fn koji_pool_free(block: *mut u8, words: usize) {
     unsafe { System.dealloc(block, system_layout(words * 8)) };
 }
 
+/// The block `block` of `words` words, grown or shrunk to `new_words` (its contents kept), as the
+/// allocator of the runtime does it (for the lists of std/koji/list.kj).
+#[no_mangle]
+pub extern "C" fn koji_pool_resize(block: *mut u8, words: usize, new_words: usize) -> *mut u8 {
+    unsafe { Allocator.realloc(block, Layout::from_size_align_unchecked(words * 8, 8), new_words * 8) }
+}
+
 /// The allocator of the runtime: blocks of up to `POOLED` words (aligned to 8 bytes at most) come
 /// from the pool, the others from the system.
 pub struct Allocator;
