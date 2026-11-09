@@ -112,6 +112,9 @@ KOJI_INLINE const void *koji_list_get(const KojiList *list, int64_t index, const
 void *koji_list_slot(KojiList **variable, int64_t index, const char *location);
 void koji_list_set(KojiList **variable, int64_t index, const void *value, const char *location);
 void koji_list_push(KojiList **variable, const void *value);
+void koji_list_reserve(KojiList *list, int64_t more);
+KOJI_INLINE int64_t koji_unsafe_list_items(const KojiList *list) { return (int64_t)(intptr_t)list->items; }
+KOJI_INLINE void koji_unsafe_set_list_length(KojiList *list, int64_t length) { list->length = (size_t)length; }
 void koji_list_insert(KojiList **variable, int64_t index, const void *value, const char *location);
 void koji_list_sort(KojiList **variable);
 KojiList *koji_list_concat(const KojiList *a, const KojiList *b);

@@ -286,6 +286,16 @@ pub extern "C" fn koji_list_push(variable: *mut *mut KojiList, value: *const c_v
     list.retain_item(list.len() - 1);
 }
 
+/// Room for `more` items in a list that is not shared (`reserve` of `koji:unsafe`).
+#[no_mangle]
+pub extern "C" fn koji_list_reserve(list: *mut KojiList, more: i64) {
+    let list = unsafe { &mut *list };
+    if list.references.get() == 1 && more > 0 {
+        let stride = list.stride;
+        list.edit(|items| items.reserve(more as usize * stride));
+    }
+}
+
 /// `items.insert(index, value)`.
 #[no_mangle]
 pub extern "C" fn koji_list_insert(

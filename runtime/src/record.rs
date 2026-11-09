@@ -72,6 +72,7 @@ fn block_words(fields: usize) -> usize {
 }
 
 /// A new record of variant `tag`, with one reference and its fields zero.
+#[inline]
 fn allocate(ty: *const KojiRecordType, tag: usize) -> *mut KojiRecord {
     let words = unsafe { (*(*ty).variants.add(tag)).word_count() };
     unsafe {

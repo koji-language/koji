@@ -2,10 +2,13 @@
 // text of a float, in the library of the runtime written in Koji (C calls these functions by
 // their names).
 
-import { Location, U128, allocate, free, lowWord, panicAt, read, wide, wordProduct, write } from 'koji:unsafe'
+import { Location, U128, allocate, decimalHigh, decimalLow, free, lowWord, panicAt, read, truncate, wide, wordProduct, write } from 'koji:unsafe'
 
 extern function pow(base: float, exponent: float): float
 extern function floor(x: float): float
+extern function trunc(x: float): float
+// The shortest decimal of a float (std/koji/decimal.kj).
+extern function koji_decimal_from_float(value: float): decimal
 
 // The text of a float, as it is stored: in hexadecimal, `0x1.8p1` for 3.0 (a mantissa in base 16
 // and a power of 2), which is also how a float is written in code. Exact, and never mistaken for
@@ -121,4 +124,23 @@ extern function koji_float_pow(base: float, exponent: float, here: Location): fl
     if (result > largest or result < -largest) { panicAt(here, 'float overflow') }
 
     return result
+}
+
+// `int(f)`: the int part of a float, or a panic when it does not fit.
+extern function koji_std_float_to_int(value: float, here: Location): int {
+    immut whole = trunc(value)
+
+    if (whole < float(9.2e18) and whole > float(-9.2e18)) { return truncate(whole) }
+
+    panicAt(here, `integer overflow: ${plainText(whole)} does not fit in an int`)
+}
+
+// A float that is an integer, in full: its shortest digits, then zeros (as Rust shows floats).
+function plainText(value: float): string {
+    immut shortest = koji_decimal_from_float(value)
+    immut high = decimalHigh(shortest)
+    immut coefficient = wide(decimalLow(shortest), high & ((1 << 49) - 1))
+    immut exponent = ((high >> 49) & 0x3FFF) - 6176
+    immut sign = if (high < 0) { '-' } else { '' }
+    return `${sign}${coefficient}${'0' * exponent}`
 }

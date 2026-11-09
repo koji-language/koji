@@ -374,6 +374,22 @@ fn conversion_methods() {
         run("print(int('99999999999999999999'), float('1e400'), float('nan'), float('inf'))"),
         "Err(OutOfRange('99999999999999999999')) Err(OutOfRange('1e400')) Err(InvalidNumber('nan')) Err(InvalidNumber('inf'))\n"
     );
+    // The limits of an int, white space around (Unicode's too), and signs.
+    assert_eq!(
+        run("print(int(' -9223372036854775808\\n'), int('+9223372036854775807'), int('-9223372036854775809'), int('9223372036854775808x'), int('\u{3000}7'), int('+-1'), int('-'))"),
+        "Ok(-9223372036854775808) Ok(9223372036854775807) Err(OutOfRange('-9223372036854775809')) Err(InvalidNumber('9223372036854775808x')) Ok(7) Err(InvalidNumber('+-1')) Err(InvalidNumber('-'))\n"
+    );
+    // Exact without the C library (Clinger's fast path) and with it, signed zeros, the smallest
+    // floats, and the forms that are not numbers.
+    assert_eq!(
+        run("print(float('-0'), float('.5'), float('5.'), float('1e22'), float('1e23'), float('9007199254740993'), float('0.1'), float('4.9e-324'), float('1e-400'), float('1e'), float('.'), float('1.2.3'))"),
+        "Ok(-0x0p0) Ok(0x1p-1) Ok(0x1.4p2) Ok(0x1.0f0cf064dd592p73) Ok(0x1.52d02c7e14af6p76) Ok(0x1p53) Ok(0x1.999999999999ap-4) Ok(0x0.0000000000001p-1022) Ok(0x0p0) Err(InvalidNumber('1e')) Err(InvalidNumber('.')) Err(InvalidNumber('1.2.3'))\n"
+    );
+    // In hexadecimal, rounded to the nearest float (half to even).
+    assert_eq!(
+        run("print(float('0x1.999999999999ap-4'), float('0x1.00000000000008p0'), float('0x1.00000000000018p0'), float('0x1.000000000000081p0'), float('0x1.8p-1074'), float('-0x1.8p1'), float('0x1p1024'), float('0x'))"),
+        "Ok(0x1.999999999999ap-4) Ok(0x1p0) Ok(0x1.0000000000002p0) Ok(0x1.0000000000001p0) Ok(0x0.0000000000002p-1022) Ok(-0x1.8p1) Err(OutOfRange('0x1p1024')) Err(InvalidNumber('0x'))\n"
+    );
     let source = r#"
         match (int('42')) {
             Ok(value) => print(value + 1)

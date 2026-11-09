@@ -12,7 +12,7 @@ immut stdlibModules = ['http']
 
 // The methods of strings written in Koji, in std/koji/core.kj: the compiler calls its function of
 // the same name, with the string first.
-export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'endsWith', 'indexOf']
+export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'endsWith', 'indexOf', 'chars']
 
 // The internal modules (std/koji/): `koji:core`, compiled with the programs that use it, and those
 // of the library of the runtime written in Koji, compiled once (`kojic dump library`) and linked
@@ -1515,7 +1515,8 @@ function Checker.declareExtern(mut self, name: string, params: Param[], returns:
     match (ty) {
         FunctionType(paramTypes, returned) => {
             for each in paramTypes {
-                if (not self.isCValue(each)) { return Err(self.failure(`'${name}' is extern: its parameters must be int, CInt, float, decimal, boolean, Address or Location, found ${self.show(each)}`)) }
+                // A string is read by the function (the caller keeps it).
+                if (not self.isCValue(each) and each != StringType and each != U128Type) { return Err(self.failure(`'${name}' is extern: its parameters must be int, CInt, float, decimal, boolean, char, byte, U128, string, Address or Location, found ${self.show(each)}`)) }
             }
 
             if (returned != VoidType and not self.isCValue(returned)) {
@@ -1594,6 +1595,9 @@ function Checker.isCValue(self, ty: Type): boolean {
 // The internal module of the functions that some built-in methods are (std/koji/core.kj, see
 // `coreMethods`): checked the first time one of them is used.
 function Checker.coreModule(mut self): Result[int, string] {
+    // Inside it (or while it is checked), its own functions.
+    if ('std:core' in self.loading) { return Ok(-1) }
+
     return self.internalModule('koji:core')
 }
 
@@ -1634,6 +1638,14 @@ function Checker.addBuiltins(mut self, path: string, id: int) {
     }
 }
 
+// The first argument of `reserve`, `listItems` and `setListLength`: a list.
+function Checker.expectList(self, name: string, ty: Type): Result[void, string] {
+    return match (ty) {
+        ListType(_) => Ok()
+        other => Err(self.failure(`argument 1 of '${name}' must be a list, found ${self.show(other)}`))
+    }
+}
+
 // The module `koji:unsafe`: memory and the types of C, for the standard library.
 function Checker.unsafeModule(mut self): int {
     match (self.stdlib.get('koji:unsafe')) {
@@ -1643,7 +1655,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize', 'charOfCode', 'truncate', 'reserve', 'listItems', 'setListLength'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -2548,7 +2560,11 @@ function Checker.checkStatement(mut self, node: Node, expected: Option[Type]): R
 
             match (iterableType) {
                 ListType(inner) => item = inner
-                StringType => item = CharType
+                StringType => {
+                    // Its characters come from `chars` of std/koji/core.kj.
+                    self.coreModule()?
+                    item = CharType
+                }
                 UnknownType => item = UnknownType
                 // A map gives its keys; a set, its items.
                 NamedType(_, _) => {
@@ -4843,8 +4859,10 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.arity(name, types, 1, 1)?
             return Ok(StringType)
         }
-        // `char(72)`: the character with that code, or `None` if no character has it.
+        // `char(72)`: the character with that code, or `None` if no character has it (`charOf` of
+        // std/koji/core.kj).
         'char' => {
+            self.coreModule()?
             self.checkExactly(name, types, [IntType])?
             return Ok(self.optionOf(CharType))
         }
@@ -4897,6 +4915,16 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.checkExactly(name, types, [IntType, IntType])?
             return Ok(U128Type)
         }
+        // The int of a float of C's conversion, toward zero (no check: the float is in range).
+        'unsafe.truncate' => {
+            self.checkExactly(name, types, [FloatType])?
+            return Ok(IntType)
+        }
+        // The character of a code that is one (no check).
+        'unsafe.charOfCode' => {
+            self.checkExactly(name, types, [IntType])?
+            return Ok(CharType)
+        }
         // A new string of `size` bytes to write (`stringBytes`), with room for `capacity`.
         'unsafe.blankString' => {
             self.checkExactly(name, types, [IntType, IntType])?
@@ -4939,6 +4967,28 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         'unsafe.nullAddress' => {
             self.checkExactly(name, types, [])?
             return Ok(named(b.address))
+        }
+        // `reserve(items, 100)`: room for 100 more items, when the list is not shared.
+        'unsafe.reserve' => {
+            self.arity(name, types, 2, 2)?
+            self.expectList(name, types[0])?
+            self.expectArg(name, 1, IntType, types[1])?
+            return Ok(VoidType)
+        }
+        // The address of the items of a list (a word each, two for a decimal), valid while the
+        // list lives and does not grow.
+        'unsafe.listItems' => {
+            self.arity(name, types, 1, 1)?
+            self.expectList(name, types[0])?
+            return Ok(named(b.address))
+        }
+        // The number of items of a list that is not shared, whose items up to it were written
+        // (within its capacity).
+        'unsafe.setListLength' => {
+            self.arity(name, types, 2, 2)?
+            self.expectList(name, types[0])?
+            self.expectArg(name, 1, IntType, types[1])?
+            return Ok(VoidType)
         }
         'unsafe.isNull' => {
             self.checkExactly(name, types, [named(b.address)])?
@@ -5015,8 +5065,11 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
 }
 
 // `int(x)`, `float(x)` and `decimal(x)`.
-function Checker.conversion(self, name: string, types: Type[], target: Type): Result[Type, string] {
+function Checker.conversion(mut self, name: string, types: Type[], target: Type): Result[Type, string] {
     self.arity(name, types, 1, 1)?
+
+    // The numbers of text are read by std/koji/core.kj (`intOf`...).
+    if (types[0] == StringType) { self.coreModule()? }
 
     return match (types[0]) {
         IntType => Ok(target)

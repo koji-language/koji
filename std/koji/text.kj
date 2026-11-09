@@ -4,7 +4,7 @@
 // the UTF-8 bytes. A function gives a new reference to the string it returns; it reads the strings
 // it is given, but those it takes (`take`: the caller gives its reference).
 
-import { Address, CInt, CSize, U128, allocate, blankString, distance, free, lowWord, newString, offset, read, setStringSize, stringBytes, stringCapacity, stringReferences, stringSize, wide, wordProduct, write } from 'koji:unsafe'
+import { Address, CInt, CSize, Location, U128, blankString, charOfCode, distance, lowWord, newString, offset, panicAt, read, setStringSize, stringBytes, stringCapacity, stringReferences, stringSize, wide, wordProduct, write } from 'koji:unsafe'
 
 extern function memcpy(target: Address, source: Address, size: CSize): Address
 extern function memcmp(a: Address, b: Address, size: CSize): CInt
@@ -326,4 +326,66 @@ function maxOf(a: int, b: int): int {
 
 function minOf(a: int, b: int): int {
     return if (a < b) { a } else { b }
+}
+
+// `text[index]`: the character at that position (in characters).
+extern function koji_std_string_char_at(text: string, index: int, here: Location): char {
+    immut bytes = stringBytes(text)
+    immut size = stringSize(text)
+    immut at = byteOfChar(bytes, size, index)
+
+    if (index < 0 or at >= size) { panicAt(here, `index ${index} out of range (length ${koji_string_length(text)})`) }
+
+    return charOfCode(codeAt(bytes, at))
+}
+
+// `text[start..end]` (in characters); a missing bound is the start or the end.
+extern function koji_std_string_slice(text: string, hasStart: boolean, start: int, hasEnd: boolean, end: int, here: Location): string {
+    immut bytes = stringBytes(text)
+    immut size = stringSize(text)
+    immut length = koji_string_length(text)
+    immut first = if (hasStart) { start } else { 0 }
+    immut last = if (hasEnd) { end } else { length }
+
+    if (first < 0 or last > length or first > last) { panicAt(here, `slice ${first}..${last} out of range (length ${length})`) }
+
+    immut startByte = byteOfChar(bytes, size, first)
+    immut endByte = byteOfChar(bytes, size, last)
+    return newString(offset(bytes, startByte), endByte - startByte)
+}
+
+// The byte where the character `index` starts (the size for the end, or past it).
+function byteOfChar(bytes: Address, size: int, index: int): int {
+    if (index <= 0) { return 0 }
+
+    mut count = 0
+
+    for at in range(size) {
+        immut b: byte = read(bytes, at)
+
+        if ((b & 0xC0) != 0x80) {
+            if (count == index) { return at }
+
+            count += 1
+        }
+    }
+
+    return size
+}
+
+// The code of the character that starts at `at` (the bytes are UTF-8).
+function codeAt(bytes: Address, at: int): int {
+    immut first: byte = read(bytes, at)
+
+    if (first < 0x80) { return int(first) }
+
+    immut width = if (first < 0xE0) { 2 } else { if (first < 0xF0) { 3 } else { 4 } }
+    mut code = int(first & (0x7F >> byte(width)))
+
+    for i in range(1, width) {
+        immut next: byte = read(bytes, at + i)
+        code = (code << 6) | int(next & 0x3F)
+    }
+
+    return code
 }

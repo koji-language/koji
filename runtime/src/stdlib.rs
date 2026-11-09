@@ -8,9 +8,8 @@
 use std::ffi::c_char;
 use std::io::{BufRead, Write};
 
-use crate::list::{new_list, KojiElementType, KojiList};
 use crate::output::panic_at;
-use crate::record::{field_record, make, KojiRecord, KojiRecordType};
+use crate::record::{make, KojiRecord, KojiRecordType};
 use crate::string::{new_string, string_text, KojiString};
 
 /// Called by `main` before anything else.
@@ -32,11 +31,6 @@ extern "C" {
 mod without_library {
     #[no_mangle]
     extern "C" fn koji_library_init() {}
-
-    #[no_mangle]
-    extern "C" fn koji_decimal_parse(_text: *const super::KojiString, _status: *mut i64) -> super::KojiDecimal {
-        super::KojiDecimal { lo: 0, hi: 0 }
-    }
 }
 
 // The messages of errors and the conversions of text.
@@ -64,39 +58,6 @@ pub fn error_message(type_name: &str, variant: &str, texts: &[String]) -> Option
     })
 }
 
-/// `int('...')`: the number, or the variant of `ParseError` (`InvalidNumber`, `OutOfRange`).
-pub fn parse_int(text: &str) -> Result<i64, &'static str> {
-    let trimmed = text.trim();
-    trimmed.parse::<i64>().map_err(|_| {
-        let digits = trimmed.strip_prefix(['-', '+']).unwrap_or(trimmed);
-        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-            "OutOfRange"
-        } else {
-            "InvalidNumber"
-        }
-    })
-}
-
-/// `float('...')`: only decimal notation is accepted (no `nan` or `inf`).
-pub fn parse_float(text: &str) -> Result<f64, &'static str> {
-    let trimmed = text.trim();
-    if trimmed.trim_start_matches(['-', '+']).starts_with("0x") {
-        return match crate::numbers::parse_hex_float(trimmed) {
-            Some(n) if n.is_finite() => Ok(n),
-            Some(_) => Err("OutOfRange"),
-            None => Err("InvalidNumber"),
-        };
-    }
-    let well_formed = !trimmed.is_empty()
-        && trimmed.chars().any(|c| c.is_ascii_digit())
-        && trimmed.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E'));
-    match trimmed.parse::<f64>() {
-        Ok(n) if well_formed && n.is_finite() => Ok(n),
-        Ok(_) if well_formed => Err("OutOfRange"),
-        _ => Err("InvalidNumber"),
-    }
-}
-
 /// Python-like `istitle`: every word starts with an uppercase letter followed by lowercase ones.
 pub fn is_title(s: &str) -> bool {
     let mut cased = false;
@@ -119,15 +80,6 @@ pub fn is_title(s: &str) -> bool {
         }
     }
     cased
-}
-
-/// The int part of a float, or a panic when it does not fit.
-pub fn float_to_int(value: f64) -> Result<i64, String> {
-    if value.is_finite() && value.abs() < 9.2e18 {
-        Ok(value as i64)
-    } else {
-        Err(format!("integer overflow: {} does not fit in an int", value))
-    }
 }
 
 // Helpers.
@@ -153,13 +105,6 @@ fn some_string(option: *const KojiRecordType, value: Option<String>) -> *mut Koj
         Some(value) => some(option, slot(new_string(value))),
         None => none(option),
     }
-}
-
-/// `Err(<variant>(text))` of a `Result` whose error type has variants with one string.
-fn error_with_text(result: *const KojiRecordType, variant: &str, text: &str) -> *mut KojiRecord {
-    let error_type = field_record(result, "Err", 0);
-    let error = make(error_type, variant, &[slot(new_string(text.to_string()))]);
-    make(result, "Err", &[error as usize as u64])
 }
 
 // Built-in functions.
@@ -194,52 +139,6 @@ pub extern "C" fn koji_std_panic(message: *const KojiString, location: *const c_
     panic_at(location, text(message))
 }
 
-#[no_mangle]
-pub extern "C" fn koji_std_int_from_string(string: *const KojiString, result: *const KojiRecordType) -> *mut KojiRecord {
-    match parse_int(text(string)) {
-        Ok(n) => make(result, "Ok", &[n as u64]),
-        Err(variant) => error_with_text(result, variant, text(string)),
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_float_from_string(string: *const KojiString, result: *const KojiRecordType) -> *mut KojiRecord {
-    match parse_float(text(string)) {
-        Ok(n) => make(result, "Ok", &[n.to_bits()]),
-        Err(variant) => error_with_text(result, variant, text(string)),
-    }
-}
-
-/// A decimal in C: two words (see std/koji/decimal.kj).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct KojiDecimal {
-    pub lo: u64,
-    pub hi: u64,
-}
-
-extern "C" {
-    /// The decimal of a text, from the library written in Koji (std/koji/decimal.kj): `status` is
-    /// 0, or 1 for a text that is not a number, or 2 for one out of range.
-    fn koji_decimal_parse(text: *const KojiString, status: *mut i64) -> KojiDecimal;
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_decimal_from_string(string: *const KojiString, result: *const KojiRecordType) -> *mut KojiRecord {
-    let mut status = 0i64;
-    let value = unsafe { koji_decimal_parse(string, &mut status) };
-    match status {
-        0 => make(result, "Ok", &[value.lo, value.hi]),
-        1 => error_with_text(result, "InvalidNumber", text(string)),
-        _ => error_with_text(result, "OutOfRange", text(string)),
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_float_to_int(value: f64, location: *const c_char) -> i64 {
-    float_to_int(value.trunc()).unwrap_or_else(|message| panic_at(location, &message))
-}
-
 // Methods of strings.
 
 #[no_mangle]
@@ -272,47 +171,3 @@ pub extern "C" fn koji_std_string_is(string: *const KojiString, test: i32) -> bo
 
 // char
 
-/// `char(code)`: `Some` of the character with that code, or `None`.
-#[no_mangle]
-pub extern "C" fn koji_std_char(code: i64, option: *const KojiRecordType) -> *mut KojiRecord {
-    match u32::try_from(code).ok().and_then(char::from_u32) {
-        Some(c) => some(option, c as u32 as u64),
-        None => none(option),
-    }
-}
-
-/// `text.chars()`.
-#[no_mangle]
-pub extern "C" fn koji_std_string_chars(string: *const KojiString, element: *const KojiElementType) -> *mut KojiList {
-    new_list(element, text(string).chars().map(|c| c as u32 as u64).collect())
-}
-
-/// `text[index]`: the character at that position (in characters).
-#[no_mangle]
-pub extern "C" fn koji_std_string_char_at(string: *const KojiString, index: i64, location: *const c_char) -> u32 {
-    let s = text(string);
-    let length = s.chars().count();
-    if index < 0 || index as usize >= length {
-        panic_at(location, &format!("index {} out of range (length {})", index, length));
-    }
-    s.chars().nth(index as usize).expect("checked") as u32
-}
-
-/// `text[start..end]` (in characters); a missing bound is the start or the end.
-#[no_mangle]
-pub extern "C" fn koji_std_string_slice(
-    string: *const KojiString,
-    has_start: bool,
-    start: i64,
-    has_end: bool,
-    end: i64,
-    location: *const c_char,
-) -> *mut KojiString {
-    let s = text(string);
-    let length = s.chars().count() as i64;
-    let (start, end) = (if has_start { start } else { 0 }, if has_end { end } else { length });
-    if start < 0 || end > length || start > end {
-        panic_at(location, &format!("slice {}..{} out of range (length {})", start, end, length));
-    }
-    new_string(s.chars().skip(start as usize).take((end - start) as usize).collect())
-}

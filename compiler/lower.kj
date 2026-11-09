@@ -709,6 +709,7 @@ function externTy(written: string): Ty {
         'KojiDecimal' => DecimalTy
         'KojiU128' => U128Ty
         'KojiString *' => StrTy
+        'const KojiString *' => StrTy
         'uint32_t' => CharTy
         'uint8_t' => ByteTy
         _ => IntTy
@@ -1022,8 +1023,9 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
 
                     for param in params {
                         immut written = cTypeOf(param.annotation)
-                        // C keeps a string it gives to read: `const`, as the prelude declares it.
-                        types.push(if (written == 'KojiString *' and not param.isTake) { 'const KojiString *' } else { written })
+                        // C keeps a string it gives to read: `const`, as the prelude declares it; an
+                        // address is a `const void *`, as `extern` declarations make it.
+                        types.push(if (written == 'KojiString *' and not param.isTake) { 'const KojiString *' } else { if (written == 'void *') { 'const void *' } else { written } })
                         taken.push(param.isTake)
                     }
 
@@ -1042,7 +1044,7 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
                     // An address is a `const void *` for C, as the functions of its library that
                     // only read memory declare it (`memcmp`): declared otherwise, gcc warns.
                     immut written = cTypeOf(param.annotation)
-                    types.push(if (written == 'void *') { 'const void *' } else { written })
+                    types.push(if (written == 'void *') { 'const void *' } else { if (written == 'KojiString *') { 'const KojiString *' } else { written } })
                 }
 
                 immut returned = match (returns) {
@@ -2266,13 +2268,10 @@ function Lowerer.forList(mut self, mut builder: Builder, variable: string, itera
             immut map = self.value(mut builder, iterable)?
             value = self.unary(mut builder, 'MapKeys', map, listType)
         }
-        // A string gives its characters.
+        // A string gives its characters (`chars` of std/koji/core.kj).
         StrTy => {
             listType = ListTy(CharTy)
-            immut text = self.value(mut builder, iterable)?
-            immut dest = builder.local(listType, None)
-            builder.emit(StdCallIns(Some(dest), 'koji_std_string_chars', [ValueArg(text), ElementArg(CharTy)]))
-            value = LocalOp(dest)
+            value = self.required(self.coreCall(mut builder, 'chars', [iterable])?)?
         }
         _ => return Err(self.unsupported("a 'for' loop over this value"))
     }
@@ -3899,6 +3898,10 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
         'string' if (args.length() == 1) => return Ok(Some(self.shown(mut builder, args[0], displayAt(displays, 0))?))
         conversion if ((conversion == 'int' or conversion == 'float' or conversion == 'decimal') and args.length() == 1) => {
             immut ty = self.typeIn(builder, args[0])?
+
+            // The numbers of text: `intOf`, `floatOf` and `decimalOf` of std/koji/core.kj.
+            if (ty == StrTy) { return self.coreCall(mut builder, `${name}Of`, args) }
+
             immut value = self.value(mut builder, args[0])?
             immut line = self.line
 
@@ -3948,19 +3951,6 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
                 return Ok(Some(self.choose(mut builder, value, FloatOp(float(1)), FloatOp(float(0)), FloatTy)))
             }
 
-            if (ty == StrTy) {
-                immut result = match (self.typeIn(builder, call)?) {
-                    RecordTy(record) => record
-                    _ => return Err(self.unsupported(`'${name}' of this value`))
-                }
-                immut runner = match (name) {
-                    'int' => 'koji_std_int_from_string'
-                    'float' => 'koji_std_float_from_string'
-                    _ => 'koji_std_decimal_from_string'
-                }
-                return self.std(mut builder, call, runner, [ValueArg(value), RecordArg(result)])
-            }
-
             return Err(self.unsupported(`'${name}' of this value`))
         }
         // `range(...)` as a value: the list of its numbers.
@@ -3982,11 +3972,7 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
 
             return Ok(Some(self.unary(mut builder, 'IntToByte', value, ByteTy)))
         }
-        'char' if (args.length() == 1) => {
-            immut code = self.valueOf(mut builder, args[0], IntTy)?
-            immut option = self.recordOf(builder, call)?
-            return self.std(mut builder, call, 'koji_std_char', [ValueArg(code), RecordArg(option)])
-        }
+        'char' if (args.length() == 1) => return self.coreCall(mut builder, 'charOf', args)
         'input' => {
             mut prompt = NullArg
 
@@ -4091,6 +4077,14 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             }
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
         }
+        'koji:unsafe.truncate' => {
+            immut value = self.valueOf(mut builder, args[0], FloatTy)?
+            return Ok(Some(self.unary(mut builder, 'FloatTruncate', value, IntTy)))
+        }
+        'koji:unsafe.charOfCode' => {
+            immut code = self.valueOf(mut builder, args[0], IntTy)?
+            return Ok(Some(self.unary(mut builder, 'CodeToChar', code, CharTy)))
+        }
         'koji:unsafe.blankString' => {
             runner = 'koji_unsafe_blank_string'
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
@@ -4098,6 +4092,20 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
         other if (other == 'koji:unsafe.stringReferences' or other == 'koji:unsafe.stringCapacity') => {
             runner = if (name == 'stringReferences') { 'koji_unsafe_string_references' } else { 'koji_unsafe_string_capacity' }
             arguments = [self.stdValue(mut builder, args, 0, StrTy)?]
+        }
+        'koji:unsafe.reserve' => {
+            immut list = self.value(mut builder, args[0])?
+            builder.emit(StdCallIns(None, 'koji_list_reserve', [ValueArg(list), self.stdValue(mut builder, args, 1, IntTy)?]))
+            return Ok(None)
+        }
+        'koji:unsafe.listItems' => {
+            runner = 'koji_unsafe_list_items'
+            arguments = [ValueArg(self.value(mut builder, args[0])?)]
+        }
+        'koji:unsafe.setListLength' => {
+            immut list = self.value(mut builder, args[0])?
+            builder.emit(StdCallIns(None, 'koji_unsafe_set_list_length', [ValueArg(list), self.stdValue(mut builder, args, 1, IntTy)?]))
+            return Ok(None)
         }
         'koji:unsafe.setStringSize' => {
             builder.emit(StdCallIns(None, 'koji_unsafe_set_string_size', [self.stdValue(mut builder, args, 0, StrTy)?, self.stdValue(mut builder, args, 1, IntTy)?]))
@@ -4275,10 +4283,6 @@ function Lowerer.builtinMethod(mut self, mut builder: Builder, call: Node, objec
                     }
 
                     return self.coreCall(mut builder, name, all)
-                }
-                'chars' => {
-                    immut value = self.value(mut builder, object)?
-                    return self.std(mut builder, call, 'koji_std_string_chars', [ValueArg(value), ElementArg(CharTy)])
                 }
                 'length' => {
                     immut value = self.value(mut builder, object)?
