@@ -7,7 +7,6 @@
 
 use std::cell::Cell;
 
-use crate::numbers::format_float;
 
 /// A string, laid out for C (the prelude counts its references inline): its UTF-8 bytes follow
 /// it, in the same allocation, from the pool for a short one.
@@ -67,13 +66,6 @@ pub extern "C" fn koji_string_new(bytes: *const u8, length: usize) -> *mut KojiS
     from_str(&String::from_utf8_lossy(bytes))
 }
 
-/// A new string of `length` bytes that the caller writes, in a block that holds `capacity` (the
-/// C of compilers before `koji_unsafe_blank_string` was inline calls it).
-#[no_mangle]
-pub extern "C" fn koji_string_blank(length: usize, capacity: usize) -> *mut KojiString {
-    allocate_with(length, capacity.max(length), |_| {})
-}
-
 /// A new string with the bytes `bytes[..length]`, which are UTF-8 (`koji:unsafe`).
 #[no_mangle]
 pub extern "C" fn koji_string_from_utf8(bytes: *const u8, length: usize) -> *mut KojiString {
@@ -105,11 +97,6 @@ pub extern "C" fn koji_string_release(string: *mut KojiString) {
             reference.references.set(references);
         }
     }
-}
-
-#[no_mangle]
-pub extern "C" fn koji_string_from_float(value: f64) -> *mut KojiString {
-    new_string(format_float(value))
 }
 
 /// The text as written in code: in quotes, with `\\`, `\'`, `\n`, `\t` and `\r` escaped.

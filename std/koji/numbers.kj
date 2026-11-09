@@ -1,0 +1,124 @@
+// `koji:numbers`: the operators of ints and floats that need more than an expression of C, and the
+// text of a float, in the library of the runtime written in Koji (C calls these functions by
+// their names).
+
+import { Location, U128, allocate, free, lowWord, panicAt, read, wide, wordProduct, write } from 'koji:unsafe'
+
+extern function pow(base: float, exponent: float): float
+extern function floor(x: float): float
+
+// The text of a float, as it is stored: in hexadecimal, `0x1.8p1` for 3.0 (a mantissa in base 16
+// and a power of 2), which is also how a float is written in code. Exact, and never mistaken for
+// a decimal.
+extern function koji_string_from_float(value: float): string {
+    immut bits = bitsOf(value)
+    immut sign = if (bits < 0) { '-' } else { '' }
+    immut storedExponent = (bits >> 52) & 0x7FF
+    immut fraction = bits & ((1 << 52) - 1)
+
+    // Not numbers of Koji, but a float of C may be one.
+    if (storedExponent == 0x7FF) { return if (fraction != 0) { 'NaN' } else { `${sign}inf` } }
+
+    if (storedExponent == 0 and fraction == 0) { return `${sign}0x0p0` }
+
+    // A subnormal number has no leading 1: 0x0.0000000000001p-1022.
+    immut lead = if (storedExponent == 0) { 0 } else { 1 }
+    immut exponent = if (storedExponent == 0) { -1022 } else { storedExponent - 1023 }
+    // The 13 hexadecimal digits of the fraction, without the zeros at the end.
+    mut digits = ''
+
+    for i in range(13) {
+        digits += hexDigit((fraction >> (4 * (12 - i))) & 0xF)
+    }
+
+    mut end = 13
+
+    while (end > 0 and digits[end - 1] == '0') {
+        end -= 1
+    }
+
+    if (end == 0) { return `${sign}0x${lead}p${exponent}` }
+
+    return `${sign}0x${lead}.${digits[..end]}p${exponent}`
+}
+
+function hexDigit(n: int): string {
+    return '0123456789abcdef'[n..n + 1]
+}
+
+// The 64 bits of a float, as an int.
+function bitsOf(value: float): int {
+    immut place = allocate(8)
+    write(place, 0, value)
+    immut bits: int = read(place, 0)
+    free(place)
+    return bits
+}
+
+// `base ** exponent` for ints; panics at `here` when there is no int result.
+extern function koji_int_pow(base: int, exponent: int, here: Location): int {
+    if (base == 0 and exponent < 0) { panicAt(here, 'division by zero') }
+
+    if (exponent < 0) { panicAt(here, 'negative exponent with int operands; use a decimal base') }
+
+    // As Rust's `checked_pow`, whose exponent has 32 bits.
+    if (exponent > 4294967295) { panicAt(here, 'integer overflow') }
+
+    if (exponent == 0) { return 1 }
+
+    mut result = 1
+    mut square = base
+    mut left = exponent
+    mut fits = true
+
+    while (true) {
+        if ((left & 1) == 1) {
+            result = multiplied(result, square, mut fits)
+
+            if (not fits) { panicAt(here, 'integer overflow') }
+
+            if (left == 1) { return result }
+        }
+
+        left = left >> 1
+        square = multiplied(square, square, mut fits)
+
+        if (not fits) { panicAt(here, 'integer overflow') }
+    }
+
+    return result
+}
+
+// `a * b`, with `fits` false when it is beyond an int.
+function multiplied(a: int, b: int, mut fits: boolean): int {
+    immut nothing: U128 = 0
+    immut sizeA = if (a < 0) { nothing - wide(a, -1) } else { wide(a, 0) }
+    immut sizeB = if (b < 0) { nothing - wide(b, -1) } else { wide(b, 0) }
+    immut product = wordProduct(sizeA, sizeB)
+    immut negative = (a < 0) != (b < 0)
+    immut limit = wide(-9223372036854775807 - 1, 0)
+
+    if (product > limit or (product == limit and not negative)) {
+        fits = false
+        return 0
+    }
+
+    return if (negative) { lowWord(nothing - product) } else { lowWord(product) }
+}
+
+// `base ** exponent` for floats, with real numbers only (`0 ** 0` is 1); panics at `here` when
+// there is no real result.
+extern function koji_float_pow(base: float, exponent: float, here: Location): float {
+    if (base < 0 and floor(exponent) != exponent) {
+        panicAt(here, `${koji_string_from_float(base)} ** ${koji_string_from_float(exponent)} is not a real number (use math.pow to handle it)`)
+    }
+
+    if (base == 0 and exponent < 0) { panicAt(here, 'division by zero') }
+
+    immut result = pow(base, exponent)
+    immut largest = float(1.7976931348623157e308)
+
+    if (result > largest or result < -largest) { panicAt(here, 'float overflow') }
+
+    return result
+}

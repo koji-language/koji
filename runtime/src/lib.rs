@@ -18,7 +18,7 @@ mod pool;
 mod string;
 mod system;
 
-pub use numbers::{float_pow, format_float, int_pow, parse_hex_float, PowFailure};
+pub use numbers::parse_hex_float;
 pub use string::repr_string;
 pub use http::{http_request, HttpOutcome};
 pub use stdlib::{error_message, float_to_int, is_title, parse_float, parse_int};
