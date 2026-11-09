@@ -1,0 +1,29 @@
+mut a: decimal = 10
+
+print(a) // 10.0
+
+a = 0.1
+
+print(a) // 0.1
+
+immut b: decimal = 0.2
+
+immut c: decimal = a + b
+
+print(c) // 0.3
+print(float(c)) // 0x1.3333333333333p-2
+
+// -------------------------------------
+
+immut x: float = 0x1.999999999999ap-4
+immut y: float = float(0.2)
+
+immut z: float = x + y
+
+print(z) // 0x1.3333333333334p-2
+print(decimal(z)) // 0.30000000000000004
+
+// -------------------------------------
+
+print(float(c) == z) // false
+print(c == decimal(z)) // false
