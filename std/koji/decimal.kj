@@ -1766,8 +1766,194 @@ function fixedDivideSmall(x: Fixed, n: int): Fixed {
     return { negative: x.negative and magnitude.length() > 0, magnitude: magnitude }
 }
 
-// e^x by its series, for |x| below 3.
+// e^x by its series, for |x| below 3: 1 + x + x^2/2 + ..., each term the one before times x,
+// divided by 10^64 and by n toward zero, until a term is 0. In buffers of limbs of 8 bytes that the
+// term and the sum change in place, with the same values as `expSeriesLists` (a division by 10^64
+// and then by n is one by 10^64 n: floor(floor(q / a) / b) = floor(q / ab)).
 function expSeries(x: Fixed): Fixed {
+    immut xCount = x.magnitude.length()
+
+    // |x| below 3 takes 4 limbs, as in every use (`newtonLn`, `realPower`); anything larger, by the
+    // lists.
+    if (xCount > 4) { return expSeriesLists(x) }
+
+    immut xLimbs = allocate(4 * 8)
+    immut term = allocate(6 * 8)
+    immut sum = allocate(6 * 8)
+    immut product = allocate(10 * 8)
+    immut given = listItems(x.magnitude)
+
+    for i in range(xCount) {
+        setLimb(xLimbs, i, rawWord(given, i, xCount))
+    }
+
+    // 1 is 10^64: 10^7 in the limb of 10^57.
+    for i in range(3) {
+        setLimb(term, i, 0)
+        setLimb(sum, i, 0)
+    }
+
+    setLimb(term, 3, u128(10000000))
+    setLimb(sum, 3, u128(10000000))
+    mut termCount = 4
+    mut sumCount = 4
+    mut termNegative = false
+    mut sumNegative = false
+    mut n = 1
+
+    while (true) {
+        // product = term * x
+        immut productCount = termCount + xCount
+
+        for i in range(productCount) {
+            setLimb(product, i, 0)
+        }
+
+        for i in range(termCount) {
+            immut factor = limbAt(term, i)
+            mut carry: U128 = 0
+
+            for j in range(xCount) {
+                immut current = limbAt(product, i + j) + wordProduct(factor, limbAt(xLimbs, j)) + carry
+                carry = current / limbBase()
+                setLimb(product, i + j, current - wordProduct(carry, limbBase()))
+            }
+
+            setLimb(product, i + xCount, carry)
+        }
+
+        // term = product / (10^64 n): three limbs dropped, then one division by 10^7 n.
+        termCount = if (productCount > 3) { productCount - 3 } else { 0 }
+        memcpy(term, offset(product, 24), termCount * 8)
+        immut divisor = u128(10000000 * n)
+        mut rest: U128 = 0
+        mut i = termCount - 1
+
+        while (i >= 0) {
+            immut current = wordProduct(rest, limbBase()) + limbAt(term, i)
+            immut quotient = current / divisor
+            rest = current - wordProduct(quotient, divisor)
+            setLimb(term, i, quotient)
+            i -= 1
+        }
+
+        termCount = limbCount(term, termCount)
+
+        if (termCount == 0) { break }
+
+        termNegative = termNegative != x.negative
+        // sum += term, with their signs.
+        immut order = compareLimbs(sum, sumCount, term, termCount)
+
+        if (sumNegative == termNegative) {
+            mut carry: U128 = 0
+            immut longer = maxOf(sumCount, termCount)
+
+            for k in range(longer) {
+                mut total = limbOr(sum, k, sumCount) + limbOr(term, k, termCount) + carry
+                carry = 0
+
+                if (total >= limbBase()) {
+                    total = total - limbBase()
+                    carry = 1
+                }
+
+                setLimb(sum, k, total)
+            }
+
+            sumCount = longer
+
+            if (carry != 0) {
+                setLimb(sum, longer, carry)
+                sumCount = longer + 1
+            }
+        } else {
+            // The larger less the smaller, with the sign of the larger (0 is positive).
+            immut sumLarger = order >= 0
+            immut count = if (sumLarger) { sumCount } else { termCount }
+            mut borrow: U128 = 0
+
+            for k in range(count) {
+                immut large = if (sumLarger) { limbAt(sum, k) } else { limbAt(term, k) }
+                immut small = (if (sumLarger) { limbOr(term, k, termCount) } else { limbOr(sum, k, sumCount) }) + borrow
+
+                if (large >= small) {
+                    setLimb(sum, k, large - small)
+                    borrow = 0
+                } else {
+                    setLimb(sum, k, large + limbBase() - small)
+                    borrow = 1
+                }
+            }
+
+            sumCount = limbCount(sum, count)
+            sumNegative = if (sumLarger) { sumNegative and sumCount > 0 } else { termNegative }
+        }
+
+        n += 1
+    }
+
+    immut magnitude = zeroWords(sumCount)
+    immut target = listItems(magnitude)
+
+    for k in range(sumCount) {
+        putWord(target, k, limbAt(sum, k))
+    }
+
+    free(xLimbs)
+    free(term)
+    free(sum)
+    free(product)
+    return { negative: sumNegative, magnitude: magnitude }
+}
+
+// The limbs of 8 bytes of `expSeries`.
+function limbAt(limbs: Address, i: int): U128 {
+    immut low: int = read(limbs, i * 8)
+    return wide(low, 0)
+}
+
+// The limb `i` of a number of `count` limbs, 0 beyond them.
+function limbOr(limbs: Address, i: int, count: int): U128 {
+    if (i >= count) { return 0 }
+
+    return limbAt(limbs, i)
+}
+
+function setLimb(limbs: Address, i: int, value: U128) {
+    write(limbs, i * 8, lowWord(value))
+}
+
+// The limbs of a number of `count` limbs but its zero limbs at the end.
+function limbCount(limbs: Address, count: int): int {
+    mut end = count
+
+    while (end > 0 and limbAt(limbs, end - 1) == 0) {
+        end -= 1
+    }
+
+    return end
+}
+
+function compareLimbs(a: Address, aCount: int, b: Address, bCount: int): int {
+    if (aCount != bCount) { return if (aCount < bCount) { -1 } else { 1 } }
+
+    mut i = aCount - 1
+
+    while (i >= 0) {
+        immut x = limbAt(a, i)
+        immut y = limbAt(b, i)
+
+        if (x != y) { return if (x < y) { -1 } else { 1 } }
+
+        i -= 1
+    }
+
+    return 0
+}
+
+// e^x by its series, on lists: what `expSeries` computes.
+function expSeriesLists(x: Fixed): Fixed {
     mut sum = fixedOne()
     mut term = fixedOne()
     mut n = 1
