@@ -1592,12 +1592,13 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'decimalLow', 'decimalHigh', 'decimalOf'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
     module.types['Address'] = KnownType(named(self.builtins.address))
     module.types['Location'] = KnownType(named(self.builtins.location))
+    module.types['U128'] = KnownType(U128Type)
     // The `int` of C (32 bits), in `extern` declarations: an `int` in Koji.
     module.types['CInt'] = KnownType(IntType)
     // The `size_t` of C (unsigned, 64 bits), in `extern` declarations: an `int` in Koji.
@@ -1908,6 +1909,7 @@ function Checker.satisfies(mut self, ty: Type, constraint: int): boolean {
         StringType => true
         CharType => true
         ByteType => true
+        U128Type => true
         UnknownType => true
         NeverType => true
         NamedType(id, _) => self.table[id].kind == ParamKind(orderable)
@@ -2876,7 +2878,9 @@ function Checker.checkAssignedValue(mut self, targetType: Type, op: string, valu
     if (op == '=') {
         valueType = self.checkValue(value, Some(targetType))?
     } else {
-        immut right = self.checkValue(value, None)?
+        // `b += 1`: the literal is a byte (or a `U128`) beside one.
+        immut hint = if (targetType == ByteType or targetType == U128Type) { Some(targetType) } else { None }
+        immut right = self.checkValue(value, hint)?
         valueType = self.binaryType(op[..op.length() - 1], targetType, right)?
     }
 
@@ -3041,8 +3045,14 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
             self.state.line = line
             return self.checkExpression(statement, expected)
         }
-        // `255` is a byte where a byte is expected.
+        // `255` is a byte where a byte is expected, and a `U128` where one is.
         IntLiteral(value) => {
+            if (expected == Some(U128Type)) {
+                if (value < 0) { return Err(self.failure(`${value} is not a U128 (it is negative)`)) }
+
+                return Ok(U128Type)
+            }
+
             if (expected != Some(ByteType)) { return Ok(IntType) }
 
             if (value < 0 or value > 255) { return Err(self.failure(`${value} is not a byte (0 to 255)`)) }
@@ -3187,6 +3197,8 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
             if (op == '~' and ty == IntType) { return Ok(IntType) }
 
             if (op == '~' and ty == ByteType) { return Ok(ByteType) }
+
+            if (op == '~' and ty == U128Type) { return Ok(U128Type) }
 
             return Err(self.failure(`operator '${op}' cannot be applied to ${self.show(ty)}`))
         }
@@ -3362,10 +3374,14 @@ function Checker.checkBinary(mut self, op: string, left: Node, right: Node): Res
 
     if (leftIsString or leftIsInt) {
         rightType = self.checkValue(right, None)?
-        mut wanted = if (rightType == CharType or rightType == ByteType) { Some(rightType) } else { None }
+        mut wanted = if (rightType == CharType or rightType == ByteType or rightType == U128Type) { Some(rightType) } else { None }
 
         // `255 in bytes`: the item of a list, a set or a map of bytes.
-        if (leftIsInt and op == 'in' and self.containedItem(rightType) == Some(ByteType)) { wanted = Some(ByteType) }
+        if (leftIsInt and op == 'in') {
+            immut item = self.containedItem(rightType)
+
+            if (item == Some(ByteType) or item == Some(U128Type)) { wanted = item }
+        }
 
         leftType = self.checkValue(left, wanted)?
     } else {
@@ -3379,6 +3395,7 @@ function Checker.checkBinary(mut self, op: string, left: Node, right: Node): Res
         immut wanted = match (leftType) {
             CharType => if (op != 'in') { Some(CharType) } else { None }
             ByteType => Some(ByteType)
+            U128Type => Some(U128Type)
             ListType(_) => if (rightIsList) { Some(leftType) } else { None }
             NamedType(_, _) => Some(leftType)
             _ => None
@@ -3639,6 +3656,7 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
     immut bothInt = left == IntType and right == IntType
     // Bytes only with bytes (a literal is one where the other side is).
     immut bothBytes = left == ByteType and right == ByteType
+    immut bothWide = left == U128Type and right == U128Type
     // The type of `int`, `float` and `decimal` operands together.
     immut fraction = if (left == DecimalType or right == DecimalType) { DecimalType } else { FloatType }
     // A float and a decimal are converted explicitly.
@@ -3650,6 +3668,8 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
             if (bothInt) { return Ok(IntType) }
 
             if (bothBytes) { return Ok(ByteType) }
+
+            if (bothWide) { return Ok(U128Type) }
 
             if (numeric) { return Ok(fraction) }
 
@@ -3678,6 +3698,8 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
 
             if (bothBytes) { return Ok(ByteType) }
 
+            if (bothWide and op != '**') { return Ok(U128Type) }
+
             if (numeric) { return Ok(fraction) }
 
             if (op == '*' and ((left == StringType and right == IntType) or (left == IntType and right == StringType))) {
@@ -3687,7 +3709,7 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
             return cannot
         }
         op if (op in ['>', '>=', '<', '<=']) => {
-            if (numeric or bothBytes or (left == StringType and right == StringType) or (left == CharType and right == CharType)) {
+            if (numeric or bothBytes or bothWide or (left == StringType and right == StringType) or (left == CharType and right == CharType)) {
                 return Ok(BooleanType)
             }
 
@@ -3753,6 +3775,8 @@ function Checker.binaryType(mut self, op: string, left: Type, right: Type): Resu
             if (bothInt) { return Ok(IntType) }
 
             if (bothBytes) { return Ok(ByteType) }
+
+            if (bothWide) { return Ok(U128Type) }
 
             return cannot
         }
@@ -4811,6 +4835,25 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         'unsafe.free' => {
             self.checkExactly(name, types, [named(b.address)])?
             return Ok(VoidType)
+        }
+        // `wide(low, high)`: the U128 of two words of 64 bits (as ints: the bits of `int` taken as
+        // unsigned); `lowWord` and `highWord` give them back.
+        'unsafe.wide' => {
+            self.checkExactly(name, types, [IntType, IntType])?
+            return Ok(U128Type)
+        }
+        other if (other == 'unsafe.lowWord' or other == 'unsafe.highWord' or other == 'unsafe.leadingZeros') => {
+            self.checkExactly(name, types, [U128Type])?
+            return Ok(IntType)
+        }
+        // The two words of a decimal (see runtime/src/decimal.rs), and the decimal of two words.
+        other if (other == 'unsafe.decimalLow' or other == 'unsafe.decimalHigh') => {
+            self.checkExactly(name, types, [DecimalType])?
+            return Ok(IntType)
+        }
+        'unsafe.decimalOf' => {
+            self.checkExactly(name, types, [IntType, IntType])?
+            return Ok(DecimalType)
         }
         // The address 0, which C calls NULL.
         'unsafe.nullAddress' => {

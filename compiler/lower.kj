@@ -297,6 +297,7 @@ function Lowerer.ty(mut self, ty: Type): Result[Ty, string] {
         ListType(item) => return Ok(ListTy(self.ty(item)?))
         CharType => return Ok(CharTy)
         ByteType => return Ok(ByteTy)
+        U128Type => return Ok(U128Ty)
         FunctionType(params, returns) => {
             mut types: Ty[] = []
 
@@ -464,6 +465,7 @@ function Lowerer.typeExpr(mut self, written: TypeExpr): Result[Ty, string] {
                 'string' => return Ok(StrTy)
                 'char' => return Ok(CharTy)
                 'byte' => return Ok(ByteTy)
+                'U128' => return Ok(U128Ty)
                 'void' => return Ok(VoidTy)
                 _ => {}
             }
@@ -2660,6 +2662,7 @@ function Lowerer.textOf(mut self, mut builder: Builder, value: Operand, ty: Ty):
         BoolTy => 'BoolToStr'
         CharTy => 'CharToStr'
         ByteTy => 'ByteToStr'
+        U128Ty => 'U128ToStr'
         ListTy(_) => 'ListToStr'
         RecordTy(_) => 'RecordToStr'
         MapTy(_, _) => 'MapToStr'
@@ -2718,7 +2721,12 @@ function Lowerer.expression(mut self, mut builder: Builder, node: Node): Result[
             self.line = line
             return self.expression(mut builder, inner)
         }
-        IntLiteral(value) => return Ok(Some(IntOp(value)))
+        IntLiteral(value) => {
+            // A literal where a `U128` is expected (`koji:unsafe`).
+            if (self.typeIn(builder, node)? == U128Ty) { return Ok(Some(self.unary(mut builder, 'IntToU128', IntOp(value), U128Ty))) }
+
+            return Ok(Some(IntOp(value)))
+        }
         DecimalLiteral(text) => return self.decimalConstant(text)
         FloatLiteral(value, _) => return Ok(Some(FloatOp(value)))
         BooleanLiteral(value) => return Ok(Some(BoolOp(value)))
@@ -2956,7 +2964,12 @@ function Lowerer.compound(mut self, mut builder: Builder, node: Node): Result[Op
                     _ => ''
                 }
                 'not' => if (ty == BoolTy) { 'Not' } else { '' }
-                _ => if (ty == IntTy) { 'BitNot' } else { if (ty == ByteTy) { 'ByteNot' } else { '' } }
+                _ => match (ty) {
+                    IntTy => 'BitNot'
+                    ByteTy => 'ByteNot'
+                    U128Ty => 'U128Not'
+                    _ => ''
+                }
             }
 
             if (lowered == '') { return Err(self.unsupported('this operator')) }
@@ -3224,6 +3237,31 @@ function Lowerer.arithmetic(mut self, mut builder: Builder, op: string, left: Op
                     _ => return Err(self.unsupported(`'${op}' on bytes`))
                 }
                 resultType = ByteTy
+            }
+        }
+
+        return Ok({ value: self.binary(mut builder, lowered, first, second, resultType), ty: resultType })
+    }
+
+    // `U128` of `koji:unsafe`: the arithmetic wraps around.
+    if (leftType == U128Ty and rightType == U128Ty) {
+        match (comparison) {
+            Some(name) => lowered = `U128Compare(${name})`
+            None => {
+                lowered = match (op) {
+                    '+' => 'U128Add'
+                    '-' => 'U128Sub'
+                    '*' => 'U128Mul'
+                    '/' => 'U128Div'
+                    '%' => 'U128Rem'
+                    '&' => 'U128And'
+                    '|' => 'U128Or'
+                    '^' => 'U128Xor'
+                    '<<' => 'U128ShiftLeft'
+                    '>>' => 'U128ShiftRight'
+                    _ => return Err(self.unsupported(`'${op}' on U128`))
+                }
+                resultType = U128Ty
             }
         }
 
@@ -3946,6 +3984,26 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
                 'distance' => 'koji_unsafe_distance'
                 _ => 'koji_unsafe_new_string'
             }
+            arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
+        }
+        'koji:unsafe.wide' => {
+            runner = 'koji_unsafe_wide'
+            arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
+        }
+        other if (other in ['koji:unsafe.lowWord', 'koji:unsafe.highWord', 'koji:unsafe.leadingZeros']) => {
+            runner = match (name) {
+                'lowWord' => 'koji_unsafe_low_word'
+                'highWord' => 'koji_unsafe_high_word'
+                _ => 'koji_unsafe_leading_zeros'
+            }
+            arguments = [self.stdValue(mut builder, args, 0, U128Ty)?]
+        }
+        other if (other == 'koji:unsafe.decimalLow' or other == 'koji:unsafe.decimalHigh') => {
+            runner = if (name == 'decimalLow') { 'koji_unsafe_decimal_low' } else { 'koji_unsafe_decimal_high' }
+            arguments = [self.stdValue(mut builder, args, 0, DecimalTy)?]
+        }
+        'koji:unsafe.decimalOf' => {
+            runner = 'koji_unsafe_decimal_of'
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
         }
         'koji:unsafe.nullAddress' => return Ok(Some(IntOp(0)))

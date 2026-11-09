@@ -11,6 +11,8 @@ export type Type = {
     CharType
     // An unsigned integer of 8 bits: 0 to 255.
     ByteType
+    // An unsigned integer of 128 bits, whose arithmetic wraps around (`U128` of `koji:unsafe`).
+    U128Type
     BooleanType
     VoidType
     // Not known yet (`None`, `[]`): compatible with anything and refined on later assignments.
@@ -325,6 +327,7 @@ export function display(table: TypeInfo[], ty: Type): string {
         BooleanType => 'boolean'
         CharType => 'char'
         ByteType => 'byte'
+        U128Type => 'U128'
         VoidType => 'void'
         UnknownType => '?'
         NeverType => 'never'

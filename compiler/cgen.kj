@@ -47,6 +47,7 @@ function cType(ty: Ty): string {
         BoolTy => 'bool'
         CharTy => 'uint32_t'
         ByteTy => 'uint8_t'
+        U128Ty => 'KojiU128'
         StrTy => 'KojiString *'
         ListTy(_) => 'KojiList *'
         RecordTy(_) => 'KojiRecord *'
@@ -93,10 +94,11 @@ function release(ty: Ty): Option[string] {
     }
 }
 
-// The 8-byte words a value takes in a record, a list or a map: two for a decimal.
+// The 8-byte words a value takes in a record, a list or a map: two for a decimal and a U128.
 function words(ty: Ty): int {
     return match (ty) {
         DecimalTy => 2
+        U128Ty => 2
         _ => 1
     }
 }
@@ -118,6 +120,7 @@ function elementType(ty: Ty): string {
         BoolTy => '&koji_element_bool'
         CharTy => '&koji_element_char'
         ByteTy => '&koji_element_byte'
+        U128Ty => '&koji_element_u128'
         StrTy => '&koji_element_string'
         ListTy(_) => '&koji_element_list'
         RecordTy(_) => '&koji_element_record'
@@ -702,6 +705,9 @@ function unaryExpression(op: string, value: string, location: string): string {
         'Not' => `!(${value})`
         'BitNot' => `~(${value})`
         'ByteNot' => `(uint8_t)~(${value})`
+        'U128Not' => `~(${value})`
+        'IntToU128' => `(KojiU128)(${value})`
+        'U128ToStr' => `koji_u128_to_string(${value})`
         'ByteToInt' => `(int64_t)(${value})`
         'IntToByte' => `koji_int_to_byte(${value}, ${location})`
         'ByteToStr' => `koji_string_from_int((int64_t)(${value}))`
@@ -793,7 +799,7 @@ function Generator.binary(self, op: string, left: string, right: string, line: i
         'DecimalPow' => `koji_decimal_pow(${left}, ${right}, ${location})`
         'DecimalPower' => `koji_decimal_power(${left}, ${right}, ${location})`
         'DecimalCompare' => `(koji_decimal_compare(${left}, ${right}) ${symbol(parts.comparison)} 0)`
-        name if (name in ['IntCompare', 'FloatCompare', 'BoolCompare', 'CharCompare', 'ByteCompare']) => `(${left} ${symbol(parts.comparison)} ${right})`
+        name if (name in ['IntCompare', 'FloatCompare', 'BoolCompare', 'CharCompare', 'ByteCompare', 'U128Compare']) => `(${left} ${symbol(parts.comparison)} ${right})`
         // Bytes: the arithmetic panics outside 0 to 255; the bits stay in 8 bits.
         'ByteAdd' => `koji_byte_add(${left}, ${right}, ${location})`
         'ByteSub' => `koji_byte_sub(${left}, ${right}, ${location})`
@@ -806,6 +812,18 @@ function Generator.binary(self, op: string, left: string, right: string, line: i
         'ByteXor' => `(uint8_t)(${left} ^ ${right})`
         'ByteShiftLeft' => `koji_byte_shift_left(${left}, ${right}, ${location})`
         'ByteShiftRight' => `koji_byte_shift_right(${left}, ${right}, ${location})`
+        // `U128` of `koji:unsafe`: the arithmetic wraps around; a division by zero and a shift
+        // beyond 127 panic.
+        'U128Add' => `(${left} + ${right})`
+        'U128Sub' => `(${left} - ${right})`
+        'U128Mul' => `(${left} * ${right})`
+        'U128Div' => `koji_u128_div(${left}, ${right}, ${location})`
+        'U128Rem' => `koji_u128_rem(${left}, ${right}, ${location})`
+        'U128And' => `(${left} & ${right})`
+        'U128Or' => `(${left} | ${right})`
+        'U128Xor' => `(${left} ^ ${right})`
+        'U128ShiftLeft' => `koji_u128_shift_left(${left}, ${right}, ${location})`
+        'U128ShiftRight' => `koji_u128_shift_right(${left}, ${right}, ${location})`
         'StrCompare' => {
             match (parts.comparison) {
                 'Equal' => `koji_string_equal(${left}, ${right})`
@@ -1352,6 +1370,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                         BoolTy => 'bool'
                         CharTy => 'char'
                         ByteTy => 'byte'
+                        U128Ty => 'u128'
                         StrTy => 'string'
                         ListTy(_) => 'list'
                         RecordTy(_) => 'record'
@@ -1530,6 +1549,7 @@ function Generator.stackEqual(self, routine: IrFunction, other: string, local: i
             BoolTy => tests.push(`${mine} == ${theirs}`)
             CharTy => tests.push(`${mine} == ${theirs}`)
             ByteTy => tests.push(`${mine} == ${theirs}`)
+            U128Ty => tests.push(`${mine} == ${theirs}`)
             StrTy => tests.push(`koji_string_equal(${mine}, ${theirs})`)
             VoidTy => {}
             _ => return None
