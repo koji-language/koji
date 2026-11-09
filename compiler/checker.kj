@@ -8,7 +8,7 @@ import { decimalLiteral } from 'decimal.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
-immut stdlibModules = ['time', 'file', 'datetime', 'math', 'http', 'system']
+immut stdlibModules = ['time', 'file', 'math', 'http', 'system']
 
 type SymbolKind = {
     ValueSymbol
@@ -128,9 +128,7 @@ type Builtins = {
     output: int
     systemError: int
     set: int
-    dateError: int
     file: int
-    datetime: int
     response: int
     operatingSystem: int
 }
@@ -330,10 +328,6 @@ function builtinSums(): BuiltinSum[] {
             ]
         },
         {
-            name: 'DateError', module: Some('datetime'), params: 0,
-            variants: [variant('PatternMismatch', [field('text', 'string'), field('pattern', 'string')]), variant('InvalidDate', text)]
-        },
-        {
             name: 'SystemError', module: Some('system'), params: 0,
             variants: [
                 variant('NotFound', [field('command', 'string')]), variant('PermissionDenied', [field('command', 'string')]),
@@ -352,7 +346,6 @@ function stdlibFunctions(module: string): string[] {
     return match (module) {
         'time' => ['sleep', 'now', 'monotonic']
         'file' => ['open', 'list', 'exists', 'createDir', 'remove']
-        'datetime' => ['now', 'today', 'format', 'parse']
         'math' => ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
         'http' => ['get', 'post', 'put', 'delete']
         'system' => ['args', 'env', 'executable', 'exit', 'run', 'capture']
@@ -424,13 +417,6 @@ function Checker.create(): Checker {
         { name: 'write', params: [StringType], returns: NamedType(result, [VoidType, fileError]) },
         { name: 'close', params: [], returns: VoidType }
     ]))
-    mut dateFields: FieldType[] = []
-
-    for name in ['year', 'month', 'day', 'hour', 'minute', 'second'] {
-        dateFields.push({ name: name, ty: IntType })
-    }
-
-    immut datetime = addType(mut table, 'DateTime', 0, BuiltinKind(dateFields, []))
     immut response = addType(mut table, 'Response', 0, BuiltinKind([{ name: 'status', ty: IntType }, { name: 'body', ty: StringType }], []))
     immut output = addType(mut table, 'Output', 0, BuiltinKind([
         { name: 'status', ty: IntType }, { name: 'stdout', ty: StringType }, { name: 'stderr', ty: StringType }
@@ -439,8 +425,7 @@ function Checker.create(): Checker {
         option: sumId(ids, 'Option'), result: result, parseError: sumId(ids, 'ParseError'),
         mathError: sumId(ids, 'MathError'), fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
         httpError: sumId(ids, 'HttpError'), map: map, output: output, systemError: sumId(ids, 'SystemError'),
-        set: set, dateError: sumId(ids, 'DateError'), file: file,
-        datetime: datetime, response: response,
+        set: set, file: file, response: response,
         operatingSystem: sumId(ids, 'OperatingSystem')
     }
     return {
@@ -461,7 +446,6 @@ function Checker.builtinSumId(self, name: string): int {
         'FileError' => b.fileError
         'Mode' => b.fileMode
         'HttpError' => b.httpError
-        'DateError' => b.dateError
         'SystemError' => b.systemError
         _ => b.operatingSystem
     }
@@ -573,7 +557,6 @@ function Checker.stdlibModule(mut self, name: string): int {
 
     match (name) {
         'file' => module.types['File'] = KnownType(named(b.file))
-        'datetime' => module.types['DateTime'] = KnownType(named(b.datetime))
         'http' => module.types['Response'] = KnownType(named(b.response))
         'system' => module.types['Output'] = KnownType(named(b.output))
         _ => {}
@@ -1865,7 +1848,7 @@ function Checker.equatableIn(mut self, ty: Type, mut visited: Set[int]): boolean
 
     match (self.table[parts.id].kind) {
         ParamKind(constraint) => return constraint >= equatable
-        BuiltinKind(_, _) => return parts.id == b.datetime or parts.id == b.response
+        BuiltinKind(_, _) => return parts.id == b.response
         _ => {}
     }
 
@@ -4687,24 +4670,6 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
         other if (other == 'file.createDir' or other == 'file.remove') => {
             self.checkExactly(name, types, [s])?
             return Ok(self.resultWith(VoidType, b.fileError))
-        }
-        'datetime.now' => {
-            self.checkExactly(name, types, [])?
-            return Ok(named(b.datetime))
-        }
-        'datetime.today' => {
-            self.checkExactly(name, types, [])?
-            return Ok(StringType)
-        }
-        'datetime.format' => {
-            self.arity(name, types, 2, 2)?
-            self.expectNumberArg(name, 0, types[0])?
-            self.expectArg(name, 1, s, types[1])?
-            return Ok(StringType)
-        }
-        'datetime.parse' => {
-            self.checkExactly(name, types, [s, s])?
-            return Ok(self.resultWith(IntType, b.dateError))
         }
         'math.abs' => {
             self.arity(name, types, 1, 1)?

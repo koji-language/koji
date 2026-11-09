@@ -41,7 +41,6 @@ pub fn error_message(type_name: &str, variant: &str, texts: &[String]) -> Option
         "MathError",
         "FileError",
         "HttpError",
-        "DateError",
         "SystemError",
     ];
     if !ERROR_TYPES.contains(&type_name) {
@@ -71,8 +70,6 @@ pub fn error_message(type_name: &str, variant: &str, texts: &[String]) -> Option
         "Timeout" => format!("the request to '{}' timed out", text(0)),
         "Tls" => format!("secure connection to '{}' failed: {}", text(0), text(1)),
         "InvalidResponse" => format!("invalid response from '{}': {}", text(0), text(1)),
-        "PatternMismatch" => format!("'{}' does not match the pattern '{}'", text(0), text(1)),
-        "InvalidDate" => format!("'{}' is not a valid date", text(0)),
         _ => return None,
     })
 }

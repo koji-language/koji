@@ -1,11 +1,11 @@
 # datetime
 
-The `datetime` module provides utilities to work with current date and time, and to format or parse date strings.
+The `datetime` module provides utilities to work with current date and time, and to format or parse date strings. It is written in Koji: `std/datetime.kj`.
 
 ## Functions
 
 -   `now() -> DateTime`  
-    Returns the current date and time. When printed or interpolated, it is shown as a formatted string (e.g. `2025-04-20 14:30:00`).
+    Returns the current date and time. When printed or interpolated, it is shown as a formatted string (e.g. `2025-04-20 14:30:00`), by its `display` method; inside a list or another value, its fields are shown, as for any type.
 
     A `DateTime` has these fields (all `int`):
 
@@ -19,8 +19,8 @@ The `datetime` module provides utilities to work with current date and time, and
 -   `today() -> string`  
     Returns the current date as a string (e.g. `2025-04-20`).
 
--   `format(timestamp: int, pattern: string) -> string`  
-    Converts a timestamp (seconds since the epoch) to a date string that follows `pattern`.
+-   `format(timestamp: decimal, pattern: string) -> string`  
+    Converts a timestamp (seconds since the epoch; an `int` is a `decimal` too, a fraction of a second is dropped) to a date string that follows `pattern`.
 
     Format tokens (case-insensitive, e.g. `YYYY-MM-DD` or `yyyy-mm-dd`) can include:
 

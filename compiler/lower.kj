@@ -3726,22 +3726,6 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             immut body = if (method >= 2) { self.stdValue(mut builder, args, 1, StrTy)? } else { NullArg }
             arguments = [ModeArg(method), url, body, self.stdResult(builder, call)?]
         }
-        'datetime.now' => {
-            runner = 'koji_std_datetime_now'
-            arguments = [self.stdResult(builder, call)?]
-        }
-        'datetime.today' => runner = 'koji_std_datetime_today'
-        'datetime.format' => {
-            runner = 'koji_std_datetime_format'
-            immut time = ValueArg(self.decimalArg(mut builder, args[0])?)
-            arguments = [time, self.stdValue(mut builder, args, 1, StrTy)?]
-        }
-        'datetime.parse' => {
-            runner = 'koji_std_datetime_parse'
-            immut text = self.stdValue(mut builder, args, 0, StrTy)?
-            immut pattern = self.stdValue(mut builder, args, 1, StrTy)?
-            arguments = [text, pattern, self.stdResult(builder, call)?]
-        }
         'file.open' => {
             runner = 'koji_std_file_open'
             immut path = self.stdValue(mut builder, args, 0, StrTy)?

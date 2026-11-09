@@ -325,11 +325,6 @@ bool koji_std_file_exists(const KojiString *path);
 KojiRecord *koji_std_file_create_dir(const KojiString *path, const KojiRecordType *result);
 KojiRecord *koji_std_file_remove(const KojiString *path, const KojiRecordType *result);
 
-KojiRecord *koji_std_datetime_now(const KojiRecordType *type);
-KojiString *koji_std_datetime_today(void);
-KojiString *koji_std_datetime_format(KojiDecimal timestamp, const KojiString *pattern);
-KojiRecord *koji_std_datetime_parse(const KojiString *text, const KojiString *pattern, const KojiRecordType *result);
-
 KojiRecord *koji_std_http_request(int32_t method, const KojiString *url, const KojiString *body,
                                   const KojiRecordType *result);
 

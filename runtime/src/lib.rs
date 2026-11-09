@@ -7,7 +7,6 @@
 
 mod closure;
 mod decimal;
-pub mod datetime;
 mod file;
 mod hash;
 mod http;

@@ -262,12 +262,6 @@ pub extern "C" fn koji_record_repr(record: *const KojiRecord) -> *mut KojiString
     if let Some(display) = unsafe { (*record.ty).display } {
         return unsafe { display(record) };
     }
-    // A `DateTime` is shown as a date: `2026-01-31 12:00:00`.
-    if type_name(record) == "DateTime" && record.field_count() == 6 {
-        let f = |index: usize| record.words()[index] as i64;
-        let date = crate::datetime::DateTime { year: f(0), month: f(1), day: f(2), hour: f(3), minute: f(4), second: f(5) };
-        return new_string(date.to_string());
-    }
     let field = |index: usize| -> String {
         let item = unsafe { (record.field_type(index).repr)(record.slot(index)) };
         let text = string_text(item).to_string();
