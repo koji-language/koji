@@ -1,19 +1,477 @@
-// `koji:decimal`: the decimals of the runtime (see doc/design.md and runtime/src/decimal.rs, where
-// the rest still is), in the library of the runtime written in Koji: C calls these functions by
-// their names.
+// `koji:decimal`: the decimals of the runtime, in the library of the runtime written in Koji (C
+// calls these functions by their names). runtime/src/decimal.rs still has the conversions of
+// text and floats, and the powers with a fractional exponent.
 //
 // A value is `coefficient * 10^exponent`, with a coefficient below 10^34 and an exponent from
 // -6176 to 6111, in two words of 64 bits: the low one holds the low 64 bits of the coefficient; the
 // high one its 49 high bits, then 14 bits of exponent (plus 6176), then the sign. Zero is all zero
-// bits.
+// bits. Values are not normalized (`1.50` may be kept as 150e-2): operations skip the work of
+// removing trailing zeros, and equality, hashing and text look through them. An operation rounds
+// its exact result to 34 digits, half to even; a result too large panics (`decimal overflow`), and
+// so does one too small to be anything but zero (`decimal underflow`).
+//
+// Numbers of 256 bits (products, dividends) are two `U128`: `high` and `low`.
 
-import { U128, decimalHigh, decimalLow, decimalOf, lowWord, wide } from 'koji:unsafe'
+import { CInt, Location, U128, decimalHigh, decimalLow, decimalOf, highWord, leadingZeros, lowWord, panicAt, wide, wordProduct } from 'koji:unsafe'
+
+// The functions of the runtime in Rust (runtime/src/decimal.rs): `x ** y` with a fractional `y`,
+// for a positive `x`, by e^(y ln x) with 64 digits.
+extern function koji_decimal_real_power(base: decimal, exponent: decimal, here: Location): decimal
+extern function sqrt(x: float): float
+
+immut digitCount = 34
+// The zeros after the point, before the first digit, from which a fraction is shown in scientific
+// notation.
+immut placeHolders = 6
+immut minExponent = -6176
+immut maxExponent = 6111
 
 // The bits of the sign, and of the coefficient in the high word.
 immut signBit = -9223372036854775807 - 1
 immut coefficientBits = (1 << 49) - 1
 // The exponent 0, in the high word.
 immut exponentZero = 6176 << 49
+
+// 10^0 to 10^38.
+immut powers = tenPowers()
+// 2^64 - 1: one word.
+immut word = wide(-1, 0)
+immut largest = wide(-1, -1)
+// 10^(38 + i), for the numbers of 256 bits.
+immut widePowersHigh = widePowers(true)
+immut widePowersLow = widePowers(false)
+
+// Why a result has no decimal.
+immut noLimit = 0
+immut overflow = 1
+immut underflow = 2
+
+// The parts of a value.
+
+function isNegative(value: decimal): boolean {
+    return decimalHigh(value) < 0
+}
+
+function coefficientOf(value: decimal): U128 {
+    return wide(decimalLow(value), decimalHigh(value) & coefficientBits)
+}
+
+function exponentOf(value: decimal): int {
+    return ((decimalHigh(value) >> 49) & 0x3FFF) + minExponent
+}
+
+function isZero(value: decimal): boolean {
+    return decimalLow(value) == 0 and (decimalHigh(value) & coefficientBits) == 0
+}
+
+function make(negative: boolean, coefficient: U128, exponent: int): decimal {
+    immut sign = if (negative) { signBit } else { 0 }
+    return decimalOf(lowWord(coefficient), highWord(coefficient) | ((exponent - minExponent) << 49) | sign)
+}
+
+function zero(): decimal {
+    return decimalOf(0, 0)
+}
+
+// 10^34, the first number of 35 digits (a constant for the C compiler).
+function tenTo34(): U128 {
+    return wide(4003012203950112768, 542101086242752)
+}
+
+function u128(n: int): U128 {
+    return wide(n, 0)
+}
+
+function tenPowers(): U128[] {
+    mut table: U128[] = [1]
+
+    for i in range(38) {
+        table.push(table[i] * 10)
+    }
+
+    return table
+}
+
+// The high or the low halves of 10^38 to 10^77.
+function widePowers(high: boolean): U128[] {
+    mut table: U128[] = []
+    immut tens = tenPowers()
+
+    for i in range(39) {
+        mut top: U128 = 0
+        immut bottom = multiplyWide(tens[38], tens[i], mut top)
+        table.push(if (high) { top } else { bottom })
+    }
+
+    // 10^77 = 10^76 * 10
+    mut top: U128 = 0
+    immut bottom = multiplyWide(tens[38], tens[38], mut top)
+    immut low = (bottom & wide(-1, 0)) * 10
+    immut middle = (bottom >> 64) * 10 + (low >> 64)
+    immut lowHalf = (low & wide(-1, 0)) | ((middle & wide(-1, 0)) << 64)
+    immut highHalf = top * 10 + (middle >> 64)
+    table.push(if (high) { highHalf } else { lowHalf })
+    return table
+}
+
+function maxOf(a: int, b: int): int {
+    return if (a > b) { a } else { b }
+}
+
+function minOf(a: int, b: int): int {
+    return if (a < b) { a } else { b }
+}
+
+// The number of decimal digits, without dividing: from the number of bits and a table.
+function digits(n: U128): int {
+    if (n == 0) { return 1 }
+
+    return nonzeroDigits(n)
+}
+
+// `digits` of a number that is not zero: small, so the compiler inlines it.
+function nonzeroDigits(n: U128): int {
+    // floor(bits * log10(2)), then one more when n reaches the next power of ten.
+    immut guess = ((128 - leadingZeros(n)) * 1233) >> 12
+    return if (n >= powers[guess]) { guess + 1 } else { guess }
+}
+
+// Rounding
+
+// `coefficient * 10^exponent` (plus less than one unit of its last digit when `sticky`) rounded to
+// 34 digits, half to even; the coefficient may have up to 39 digits. `limit` tells why there is
+// no result.
+function round(negative: boolean, coefficient: U128, exponent: int, sticky: boolean, mut limit: int): decimal {
+    // Most results: exact, with 34 digits or less, in range.
+    if (not sticky and coefficient < tenTo34() and exponent >= minExponent and exponent <= maxExponent) {
+        return make(negative and coefficient != 0, coefficient, exponent)
+    }
+
+    return roundSlowly(negative, coefficient, exponent, sticky, mut limit)
+}
+
+function roundSlowly(negative: boolean, coefficient: U128, exponent: int, sticky: boolean, mut limit: int): decimal {
+    if (coefficient == 0 and not sticky) { return make(false, 0, maxOf(minExponent, minOf(exponent, maxExponent))) }
+
+    immut drop = maxOf(maxOf(digits(coefficient) - digitCount, minExponent - exponent), 0)
+    mut kept = coefficient
+    mut at = exponent
+
+    if (drop > 0) {
+        mut quotient: U128 = 0
+        mut up = false
+
+        // Beyond 38 digits, the rest is below half a unit.
+        if (drop < 39) {
+            immut unit = powers[drop]
+            quotient = coefficient / unit
+            immut rest = coefficient - quotient * unit
+            immut half = unit >> 1
+            up = rest > half or (rest == half and (sticky or (quotient & 1) == 1))
+        }
+
+        kept = if (up) { quotient + 1 } else { quotient }
+        at += drop
+
+        if (kept == tenTo34()) {
+            kept = kept / 10
+            at += 1
+        }
+
+        if (kept == 0) {
+            limit = underflow
+            return zero()
+        }
+    }
+
+    if (at > maxExponent) {
+        // A value with fewer digits can take zeros instead of a larger exponent.
+        immut pad = at - maxExponent
+
+        if (digits(kept) + pad > digitCount) {
+            limit = overflow
+            return zero()
+        }
+
+        kept = kept * powers[pad]
+        at = maxExponent
+    }
+
+    return make(negative, kept, at)
+}
+
+// Whether an exact result needs no rounding: 34 digits or less, in range (most results). Small:
+// the compiler inlines it, and the callers make the value at once.
+function exact(coefficient: U128, exponent: int): boolean {
+    return coefficient < tenTo34() and u128(exponent - minExponent) <= 12287
+}
+
+// `round`, with a panic at `here` when there is no result.
+function finish(negative: boolean, coefficient: U128, exponent: int, sticky: boolean, here: Location): decimal {
+    mut limit = noLimit
+    immut value = round(negative, coefficient, exponent, sticky, mut limit)
+    checkLimit(limit, here)
+    return value
+}
+
+function checkLimit(limit: int, here: Location) {
+    if (limit == overflow) { panicAt(here, 'decimal overflow') }
+
+    if (limit == underflow) { panicAt(here, 'decimal underflow') }
+}
+
+// Numbers of 256 bits
+
+// `a * b`: its low half, and its high half in `high`.
+function multiplyWide(a: U128, b: U128, mut high: U128): U128 {
+    immut a0 = a & word
+    immut a1 = a >> 64
+    immut b0 = b & word
+    immut b1 = b >> 64
+    immut low = wordProduct(a0, b0)
+    immut middle1 = wordProduct(a0, b1)
+    immut middle2 = wordProduct(a1, b0)
+    immut top = wordProduct(a1, b1)
+    immut middle = middle1 + middle2
+    immut carry: U128 = if (middle < middle1) { 1 } else { 0 }
+    immut sum = low + (middle << 64)
+    immut carryLow: U128 = if (sum < low) { 1 } else { 0 }
+    high = top + (middle >> 64) + (carry << 64) + carryLow
+    return sum
+}
+
+// Whether `a` is below `b` (high halves first).
+function wideBelow(aHigh: U128, aLow: U128, bHigh: U128, bLow: U128): boolean {
+    if (aHigh != bHigh) { return aHigh < bHigh }
+
+    return aLow < bLow
+}
+
+// The number of digits of a number of 256 bits, from its number of bits and one comparison.
+function wideDigits(high: U128, low: U128): int {
+    if (high == 0) { return digits(low) }
+
+    immut bits = 256 - leadingZeros(high)
+    immut guess = (bits * 1233) >> 12
+    // 10^guess: guess is from 38 (above 2^128) to 77.
+    immut below = wideBelow(high, low, widePowersHigh[guess - 38], widePowersLow[guess - 38])
+    return if (below) { guess } else { guess + 1 }
+}
+
+// `n / d` (in `quotientHigh` and `quotientLow`), and `n % d` as the result: Knuth's algorithm D
+// with digits of 64 bits (the divisor has one or two), so each step of the quotient is one
+// division of 128 bits by 64.
+function divideWide(high: U128, low: U128, d: U128, mut quotientHigh: U128, mut quotientLow: U128): U128 {
+    if ((d >> 64) == 0) {
+        // A divisor of one digit: short division, a digit at a time.
+        immut n3 = high >> 64
+        immut q3 = n3 / d
+        mut current = ((n3 - q3 * d) << 64) | (high & word)
+        immut q2 = current / d
+        current = ((current - q2 * d) << 64) | (low >> 64)
+        immut q1 = current / d
+        current = ((current - q1 * d) << 64) | (low & word)
+        immut q0 = current / d
+        quotientHigh = (q3 << 64) | q2
+        quotientLow = (q1 << 64) | q0
+        return current - q0 * d
+    }
+
+    return divideLong(high, low, d, mut quotientHigh, mut quotientLow)
+}
+
+// `divideWide` for a divisor of two digits (Knuth's algorithm D). The dividend is normalized on
+// five digits, and each of the three steps gives a digit of the quotient: a dividend with fewer
+// digits gives zeros first.
+function divideLong(high: U128, low: U128, d: U128, mut quotientHigh: U128, mut quotientLow: U128): U128 {
+    if (high == 0 and low < d) {
+        quotientHigh = 0
+        quotientLow = 0
+        return low
+    }
+
+    immut n0 = low & word
+    immut n1 = low >> 64
+    immut n2 = high & word
+    immut n3 = high >> 64
+    immut d0 = d & word
+    immut d1 = d >> 64
+    immut shift = u128(leadingZeros(d1) - 64)
+    immut v0 = (d0 << shift) & word
+    immut v1 = shiftedLeft(d1, d0, shift)
+    mut u4: U128 = if (shift == 0) { 0 } else { n3 >> (64 - shift) }
+    mut u3 = shiftedLeft(n3, n2, shift)
+    mut u2 = shiftedLeft(n2, n1, shift)
+    mut u1 = shiftedLeft(n1, n0, shift)
+    mut u0 = (n0 << shift) & word
+    immut q2 = knuthStep(mut u4, mut u3, mut u2, v1, v0)
+    immut q1 = knuthStep(mut u3, mut u2, mut u1, v1, v0)
+    immut q0 = knuthStep(mut u2, mut u1, mut u0, v1, v0)
+    quotientHigh = q2
+    quotientLow = q0 | (q1 << 64)
+
+    if (shift == 0) { return u0 | (u1 << 64) }
+
+    immut restLow = ((u0 >> shift) | (u1 << (64 - shift))) & word
+    immut restHigh = ((u1 >> shift) | (u2 << (64 - shift))) & word
+    return restLow | (restHigh << 64)
+}
+
+// One step of Knuth's algorithm D: the digit of the quotient for the digits `top`, `middle` and
+// `bottom` of the dividend, which become those of the remainder.
+function knuthStep(mut top: U128, mut middle: U128, mut bottom: U128, v1: U128, v0: U128): U128 {
+    immut both = (top << 64) | middle
+    mut estimate: U128 = word
+    mut remainder: U128 = 0
+
+    if (top < v1) {
+        estimate = both / v1
+        remainder = both - wordProduct(estimate, v1)
+    } else {
+        remainder = both - wordProduct(estimate, v1)
+    }
+
+    // At most two corrections; a remainder of 65 bits means the estimate is right.
+    while ((remainder >> 64) == 0 and wordProduct(estimate, v0) > ((remainder << 64) | bottom)) {
+        estimate -= 1
+        remainder += v1
+    }
+
+    // (top, middle, bottom) -= estimate * (v1, v0)
+    immut productLow = wordProduct(estimate, v0)
+    immut productHigh = wordProduct(estimate, v1) + (productLow >> 64)
+    immut lowDigit = productLow & word
+    immut middleDigit = productHigh & word
+    immut highDigit = productHigh >> 64
+    immut borrowA: U128 = if (bottom < lowDigit) { 1 } else { 0 }
+    immut a = (bottom - lowDigit) & word
+    immut b1 = (middle - middleDigit) & word
+    immut borrowB: U128 = if (middle < middleDigit or b1 < borrowA) { 1 } else { 0 }
+    immut b = (b1 - borrowA) & word
+    immut c1 = (top - highDigit) & word
+    immut borrowC = top < highDigit or c1 < borrowB
+    bottom = a
+    middle = b
+    top = (c1 - borrowB) & word
+
+    if (not borrowC) { return estimate }
+
+    // The estimate was one too large: add the divisor back.
+    immut sumA = bottom + v0
+    immut sumB = middle + v1 + (sumA >> 64)
+    bottom = sumA & word
+    middle = sumB & word
+    top = (top + (sumB >> 64)) & word
+    return estimate - 1
+}
+
+// The digit `high` shifted left by `shift` bits, with the bits of `low` that come in.
+function shiftedLeft(high: U128, low: U128, shift: U128): U128 {
+    if (shift == 0) { return high }
+
+    return ((high << shift) | (low >> (64 - shift))) & word
+}
+
+// `round` for a coefficient of up to 77 digits: cut to 38 digits (the rest as `sticky`), which
+// `round` rounds.
+function roundWide(negative: boolean, high: U128, low: U128, exponent: int, sticky: boolean, mut limit: int): decimal {
+    if (high == 0) { return round(negative, low, exponent, sticky, mut limit) }
+
+    // Usually: one division keeps 34 digits, and its remainder rounds them.
+    immut drop = wideDigits(high, low) - digitCount
+
+    if (drop <= 38 and exponent + drop >= minExponent and exponent + drop <= maxExponent) {
+        immut unit = powers[drop]
+        mut quotientHigh: U128 = 0
+        mut quotientLow: U128 = 0
+        immut rest = divideWide(high, low, unit, mut quotientHigh, mut quotientLow)
+        immut quotient = if (quotientHigh == 0) { quotientLow } else { largest }
+        immut half = unit >> 1
+        immut up = rest > half or (rest == half and (sticky or (quotient & 1) == 1))
+        immut kept = if (up) { quotient + 1 } else { quotient }
+
+        if (kept < tenTo34()) { return make(negative, kept, exponent + drop) }
+
+        return round(negative, kept / 10, exponent + drop + 1, false, mut limit)
+    }
+
+    mut cutHigh = high
+    mut cutLow = low
+    mut at = exponent
+    mut cutSticky = sticky
+    cut(mut cutHigh, mut cutLow, mut at, mut cutSticky)
+    return round(negative, cutLow, at, cutSticky, mut limit)
+}
+
+function finishWide(negative: boolean, high: U128, low: U128, exponent: int, sticky: boolean, here: Location): decimal {
+    mut limit = noLimit
+    immut value = roundWide(negative, high, low, exponent, sticky, mut limit)
+    checkLimit(limit, here)
+    return value
+}
+
+// The number with 38 digits at most (in `low`), and whether a nonzero part was cut.
+function cut(mut high: U128, mut low: U128, mut exponent: int, mut sticky: boolean) {
+    if (high == 0) { return }
+
+    mut drop = wideDigits(high, low) - 38
+
+    while (drop > 0) {
+        immut step = minOf(drop, 38)
+        mut quotientHigh: U128 = 0
+        mut quotientLow: U128 = 0
+        immut rest = divideWide(high, low, powers[step], mut quotientHigh, mut quotientLow)
+        high = quotientHigh
+        low = quotientLow
+
+        if (rest != 0) { sticky = true }
+
+        exponent += step
+        drop -= step
+    }
+
+    if (high != 0) {
+        high = 0
+        low = largest
+    }
+}
+
+// `coefficient * 10^scale` (scale up to 76): its low half, and its high half in `high`.
+function scaled(coefficient: U128, scale: int, mut high: U128): U128 {
+    if (scale <= 38) { return multiplyWide(coefficient, powers[scale], mut high) }
+
+    mut firstHigh: U128 = 0
+    immut firstLow = multiplyWide(coefficient, powers[38], mut firstHigh)
+    // The first product is below 10^72: times 10^(scale - 38) still fits.
+    immut power = powers[scale - 38]
+
+    if (firstHigh == 0) { return multiplyWide(firstLow, power, mut high) }
+
+    mut aHigh: U128 = 0
+    immut aLow = multiplyWide(firstLow, power, mut aHigh)
+    mut bHigh: U128 = 0
+    immut bLow = multiplyWide(firstHigh, power, mut bHigh)
+    // a + b * 2^128
+    high = aHigh + bLow
+    return aLow
+}
+
+// The nearest float of a number of 256 bits.
+function wideToFloat(high: U128, low: U128): float {
+    mut total = wordToFloat(high >> 64)
+    total = total * float(18446744073709551616.0) + wordToFloat(high & word)
+    total = total * float(18446744073709551616.0) + wordToFloat(low >> 64)
+    return total * float(18446744073709551616.0) + wordToFloat(low & word)
+}
+
+// A word, rounded once: its two halves of 32 bits are exact.
+function wordToFloat(value: U128): float {
+    immut top = lowWord(value >> 32)
+    immut bottom = lowWord(value & wide(0xFFFFFFFF, 0))
+    return float(top) * float(4294967296) + float(bottom)
+}
+
+// The operations
 
 extern function koji_decimal_neg(value: decimal): decimal {
     // Zero has no sign.
@@ -30,11 +488,543 @@ extern function koji_decimal_from_int(value: int): decimal {
     if (value >= 0) { return decimalOf(value, exponentZero) }
 
     // The magnitude of a negative int, `int.min` too, in 64 bits.
-    immut zero: U128 = 0
-    immut magnitude = zero - wide(value, -1)
+    immut nothing: U128 = 0
+    immut magnitude = nothing - wide(value, -1)
     return decimalOf(lowWord(magnitude), exponentZero | signBit)
 }
 
-function isZero(value: decimal): boolean {
-    return decimalLow(value) == 0 and (decimalHigh(value) & coefficientBits) == 0
+extern function koji_decimal_add(a: decimal, b: decimal, here: Location): decimal {
+    mut limit = noLimit
+    immut value = add(a, b, mut limit)
+    checkLimit(limit, here)
+    return value
+}
+
+extern function koji_decimal_sub(a: decimal, b: decimal, here: Location): decimal {
+    mut limit = noLimit
+    immut value = add(a, koji_decimal_neg(b), mut limit)
+    checkLimit(limit, here)
+    return value
+}
+
+function add(a: decimal, b: decimal, mut limit: int): decimal {
+    immut ea = exponentOf(a)
+    immut eb = exponentOf(b)
+    immut na = isNegative(a)
+    immut nb = isNegative(b)
+    immut ca = coefficientOf(a)
+    immut cb = coefficientOf(b)
+
+    if (ea == eb) {
+        // The same exponent (amounts of money, measures): one addition, no alignment.
+        if (na == nb) {
+            immut sum = ca + cb
+
+            if (exact(sum, ea)) { return make(na, sum, ea) }
+
+            return round(na, sum, ea, false, mut limit)
+        }
+
+        if (ca >= cb) { return round(na, ca - cb, ea, false, mut limit) }
+
+        return round(nb, cb - ca, ea, false, mut limit)
+    }
+
+    if (ca == 0) { return b }
+
+    if (cb == 0) { return a }
+
+    // `x` has the larger exponent.
+    immut first = ea > eb
+    immut nx = if (first) { na } else { nb }
+    immut ny = if (first) { nb } else { na }
+    immut cx = if (first) { ca } else { cb }
+    immut cy = if (first) { cb } else { ca }
+    immut ex = if (first) { ea } else { eb }
+    immut ey = if (first) { eb } else { ea }
+    immut distance = ex - ey
+    mut big: U128 = 0
+    mut small: U128 = 0
+    mut exponent = 0
+    mut sticky = false
+
+    if (distance <= 38 and cx < powers[38 - distance]) {
+        // Exact: `x` shifted still fits in 128 bits.
+        big = cx * powers[distance]
+        small = cy
+        exponent = ey
+    } else {
+        // `y` is far below: `x` with 38 digits, and `y` cut, the rest of it as `sticky`.
+        immut shiftX = 38 - nonzeroDigits(cx)
+        immut shiftY = distance - shiftX
+
+        if (shiftY >= 39) {
+            sticky = cy != 0
+        } else {
+            immut unit = powers[shiftY]
+            small = cy / unit
+            sticky = cy % unit != 0
+        }
+
+        big = cx * powers[shiftX]
+        exponent = ex - shiftX
+    }
+
+    // The coefficient of the result, then its sign.
+    mut result: U128 = 0
+    mut negative = nx
+
+    if (nx == ny) {
+        result = big + small
+    } else {
+        if (big >= small) {
+            immut cutOff: U128 = if (sticky) { 1 } else { 0 }
+            result = big - small - cutOff
+        } else {
+            result = small - big
+            negative = ny
+            sticky = false
+        }
+    }
+
+    if (not sticky and exact(result, exponent)) { return make(negative and result != 0, result, exponent) }
+
+    return round(negative, result, exponent, sticky, mut limit)
+}
+
+extern function koji_decimal_mul(a: decimal, b: decimal, here: Location): decimal {
+    immut negative = isNegative(a) != isNegative(b)
+    immut exponent = exponentOf(a) + exponentOf(b)
+    immut ca = coefficientOf(a)
+    immut cb = coefficientOf(b)
+
+    if (ca == 0 or cb == 0) { return zero() }
+
+    // Both below 2^64: the product fits in 128 bits.
+    if ((ca >> 64) == 0 and (cb >> 64) == 0) {
+        immut product = wordProduct(ca, cb)
+
+        if (exact(product, exponent)) { return make(negative, product, exponent) }
+
+        return finish(negative, product, exponent, false, here)
+    }
+
+    mut high: U128 = 0
+    immut low = multiplyWide(ca, cb, mut high)
+    return finishWide(negative, high, low, exponent, false, here)
+}
+
+extern function koji_decimal_div(a: decimal, b: decimal, here: Location): decimal {
+    immut cb = coefficientOf(b)
+
+    if (cb == 0) { panicAt(here, 'division by zero') }
+
+    immut ca = coefficientOf(a)
+
+    if (ca == 0) { return zero() }
+
+    immut negative = isNegative(a) != isNegative(b)
+    // Scaled so that the quotient has at least 35 digits (one to round with).
+    immut scale = maxOf(35 + digits(cb) - digits(ca), 0)
+    immut exponent = exponentOf(a) - exponentOf(b) - scale
+
+    if (digits(ca) + scale <= 38) {
+        // A small divisor: one division of 128 bits.
+        immut dividend = ca * powers[scale]
+        immut quotient = dividend / cb
+        immut sticky = dividend - quotient * cb != 0
+
+        if (not sticky and exact(quotient, exponent)) { return make(negative, quotient, exponent) }
+
+        return finish(negative, quotient, exponent, sticky, here)
+    }
+
+    mut high: U128 = 0
+    immut low = scaled(ca, scale, mut high)
+    mut quotientHigh: U128 = 0
+    mut quotientLow: U128 = 0
+    immut rest = divideWide(high, low, cb, mut quotientHigh, mut quotientLow)
+    return finishWide(negative, quotientHigh, quotientLow, exponent, rest != 0, here)
+}
+
+// The remainder of the division truncated toward zero, with the sign of `a`; exact.
+extern function koji_decimal_rem(a: decimal, b: decimal, here: Location): decimal {
+    immut cb = coefficientOf(b)
+
+    if (cb == 0) { panicAt(here, 'division by zero') }
+
+    immut ca = coefficientOf(a)
+
+    if (ca == 0) { return zero() }
+
+    immut ea = exponentOf(a)
+    immut eb = exponentOf(b)
+    mut rest: U128 = 0
+    mut exponent = 0
+
+    if (ea >= eb) {
+        // (a * 10^d) mod b, with products of 256 bits.
+        mut power = u128(1) % cb
+        mut base = u128(10) % cb
+        mut d = ea - eb
+
+        while (d > 0) {
+            if ((d & 1) == 1) { power = multiplyModulo(power, base, cb) }
+
+            base = multiplyModulo(base, base, cb)
+            d = d >> 1
+        }
+
+        rest = multiplyModulo(ca % cb, power, cb)
+        exponent = eb
+    } else {
+        immut d = eb - ea
+        // b * 10^d is above a (below 10^34) once it has 35 digits.
+        rest = if (d + digits(cb) > 34) { ca } else { ca % (cb * powers[d]) }
+        exponent = ea
+    }
+
+    mut limit = noLimit
+    immut value = round(isNegative(a), rest, exponent, false, mut limit)
+    return if (limit == noLimit) { value } else { zero() }
+}
+
+function multiplyModulo(x: U128, y: U128, modulus: U128): U128 {
+    mut high: U128 = 0
+    immut low = multiplyWide(x, y, mut high)
+    mut quotientHigh: U128 = 0
+    mut quotientLow: U128 = 0
+    return divideWide(high, low, modulus, mut quotientHigh, mut quotientLow)
+}
+
+// `base ** exponent` for an int exponent: exact, rounded once.
+extern function koji_decimal_pow(base: decimal, exponent: int, here: Location): decimal {
+    if (exponent == 0) { return koji_decimal_from_int(1) }
+
+    immut coefficient = coefficientOf(base)
+
+    if (coefficient == 0) {
+        if (exponent < 0) { panicAt(here, 'division by zero') }
+
+        return zero()
+    }
+
+    immut negative = isNegative(base) and exponent % 2 != 0
+    // Squaring with 38 digits (four more than the result keeps), then one rounding.
+    mut result: U128 = 1
+    mut resultExponent = 0
+    mut resultSticky = false
+    mut square = coefficient
+    mut squareExponent = exponentOf(base)
+    mut squareSticky = false
+    // |exponent|, `int.min` too.
+    immut nothing: U128 = 0
+    mut n = if (exponent > 0) { u128(exponent) } else { nothing - wide(exponent, -1) }
+
+    while (n > 0) {
+        if ((n & 1) == 1) { multiplyKept(mut result, mut resultExponent, mut resultSticky, square, squareExponent, squareSticky) }
+
+        n = n >> 1
+
+        if (n > 0) {
+            immut factor = square
+            immut factorExponent = squareExponent
+            immut factorSticky = squareSticky
+            multiplyKept(mut square, mut squareExponent, mut squareSticky, factor, factorExponent, factorSticky)
+        }
+
+        immut resultAt = digits(result) + resultExponent
+        immut squareAt = digits(square) + squareExponent
+
+        if (maxOf(resultAt, squareAt) > 2 * (maxExponent + 40)) { panicAt(here, if (exponent > 0) { 'decimal overflow' } else { 'decimal underflow' }) }
+
+        if (minOf(resultAt, squareAt) < 2 * minExponent) { panicAt(here, if (exponent > 0) { 'decimal underflow' } else { 'decimal overflow' }) }
+    }
+
+    if (resultSticky) {
+        // Not exact in 38 digits: the rounding of each step would add up; e^(n ln x) with 64
+        // digits instead.
+        immut magnitude = koji_decimal_real_power(koji_decimal_abs(base), koji_decimal_from_int(exponent), here)
+        return if (negative) { koji_decimal_neg(magnitude) } else { magnitude }
+    }
+
+    if (exponent > 0) { return finish(negative, result, resultExponent, false, here) }
+
+    // 1 / (coefficient * 10^exponent), the divisor with up to 38 digits.
+    immut scale = 35 + digits(result)
+    mut high: U128 = 0
+    immut low = scaled(1, scale, mut high)
+    mut quotientHigh: U128 = 0
+    mut quotientLow: U128 = 0
+    immut rest = divideWide(high, low, result, mut quotientHigh, mut quotientLow)
+    return finishWide(negative, quotientHigh, quotientLow, -resultExponent - scale, rest != 0, here)
+}
+
+// A product kept with 38 digits, for `koji_decimal_pow`.
+function multiplyKept(mut coefficient: U128, mut exponent: int, mut sticky: boolean, factor: U128, factorExponent: int, factorSticky: boolean) {
+    mut high: U128 = 0
+    mut low = multiplyWide(coefficient, factor, mut high)
+    mut at = exponent + factorExponent
+    mut cutSticky = sticky or factorSticky
+    cut(mut high, mut low, mut at, mut cutSticky)
+    coefficient = low
+    exponent = at
+    sticky = cutSticky
+}
+
+// `base ** exponent` with a decimal exponent: an int exponent is exact; another is computed with
+// 64 digits and rounded to 34.
+extern function koji_decimal_power(base: decimal, exponent: decimal, here: Location): decimal {
+    mut fits = true
+    immut n = toInt(exponent, 3, mut fits)
+
+    if (fits and koji_decimal_compare(koji_decimal_from_int(n), exponent) == 0) { return koji_decimal_pow(base, n, here) }
+
+    if (isZero(base)) {
+        if (isNegative(exponent)) { panicAt(here, 'division by zero') }
+
+        return zero()
+    }
+
+    if (isNegative(base)) { panicAt(here, `${shown(base)} ** ${shown(exponent)} is not a real number (use math.pow to handle it)`) }
+
+    return koji_decimal_real_power(base, exponent, here)
+}
+
+// The square root, correctly rounded, of a number that is not negative (`math.sqrt`).
+extern function koji_decimal_sqrt(value: decimal): decimal {
+    immut coefficient = coefficientOf(value)
+
+    if (coefficient == 0) { return zero() }
+
+    immut exponent = exponentOf(value)
+    // The coefficient with 69 or 70 digits and an even exponent: its root has 35 digits.
+    mut shift = 70 - digits(coefficient)
+
+    if ((exponent - shift) % 2 != 0) { shift -= 1 }
+
+    mut high: U128 = 0
+    immut low = scaled(coefficient, shift, mut high)
+    // Newton's method from just above the root of a float (53 correct bits): it goes down to the
+    // floor of the root.
+    immut estimate = floatToU128(sqrt(wideToFloat(high, low)))
+    mut root = estimate + (estimate >> 40) + 2
+
+    while (true) {
+        mut quotientHigh: U128 = 0
+        mut quotientLow: U128 = 0
+        divideWide(high, low, root, mut quotientHigh, mut quotientLow)
+        immut quotient = if (quotientHigh == 0) { quotientLow } else { largest }
+        // (root + quotient) / 2, without losing the carry.
+        immut next = (root >> 1) + (quotient >> 1) + (root & quotient & 1)
+
+        if (next >= root) { break }
+
+        root = next
+    }
+
+    mut squareHigh: U128 = 0
+    immut squareLow = multiplyWide(root, root, mut squareHigh)
+    immut sticky = squareHigh != high or squareLow != low
+    mut limit = noLimit
+    immut rounded = round(false, root, (exponent - shift) / 2, sticky, mut limit)
+    return if (limit == noLimit) { rounded } else { zero() }
+}
+
+// A float below 2^128 that is an integer, as a U128.
+function floatToU128(value: float): U128 {
+    immut top = int(value / float(18446744073709551616.0))
+    immut rest = value - float(top) * float(18446744073709551616.0)
+    // The rest is below 2^64: in two halves, below 2^63 each.
+    immut upper = int(rest / float(2))
+    immut bottom = int(rest - float(upper) * float(2))
+    return (u128(top) << 64) + u128(upper) * 2 + u128(bottom)
+}
+
+// -1, 0 or 1.
+extern function koji_decimal_compare(a: decimal, b: decimal): CInt {
+    immut ca = coefficientOf(a)
+    immut cb = coefficientOf(b)
+    immut na = isNegative(a)
+    immut nb = isNegative(b)
+
+    if (ca == 0 and cb == 0) { return 0 }
+
+    if (ca == 0) { return if (nb) { 1 } else { -1 } }
+
+    if (cb == 0) { return if (na) { -1 } else { 1 } }
+
+    if (na != nb) { return if (na) { -1 } else { 1 } }
+
+    immut ea = exponentOf(a)
+    immut eb = exponentOf(b)
+    mut magnitude = 0
+
+    if (ea == eb) {
+        magnitude = order(ca, cb)
+    } else {
+        immut da = nonzeroDigits(ca)
+        immut db = nonzeroDigits(cb)
+        immut pa = da + ea
+        immut pb = db + eb
+
+        if (pa != pb) {
+            magnitude = if (pa < pb) { -1 } else { 1 }
+        } else {
+            // The same position: both coefficients with 34 digits.
+            magnitude = order(ca * powers[digitCount - da], cb * powers[digitCount - db])
+        }
+    }
+
+    return if (na) { -magnitude } else { magnitude }
+}
+
+function order(a: U128, b: U128): int {
+    if (a < b) { return -1 }
+
+    return if (a > b) { 1 } else { 0 }
+}
+
+// Without trailing zeros: the same value always gives the same parts.
+function normalized(value: decimal): decimal {
+    mut coefficient = coefficientOf(value)
+
+    if (coefficient == 0) { return zero() }
+
+    mut exponent = exponentOf(value)
+
+    // Without dividing when the last digit is not zero (most values).
+    if (coefficient % 10 != 0) { return value }
+
+    removeZeros(mut coefficient, mut exponent, 16)
+    removeZeros(mut coefficient, mut exponent, 8)
+    removeZeros(mut coefficient, mut exponent, 4)
+    removeZeros(mut coefficient, mut exponent, 2)
+    removeZeros(mut coefficient, mut exponent, 1)
+    return make(isNegative(value), coefficient, exponent)
+}
+
+// Removes `step` trailing zeros as long as there are.
+function removeZeros(mut coefficient: U128, mut exponent: int, step: int) {
+    immut unit = powers[step]
+
+    while (true) {
+        immut quotient = coefficient / unit
+
+        if (quotient * unit != coefficient) { return }
+
+        coefficient = quotient
+        exponent += step
+    }
+}
+
+// A hash that agrees with equality (`1.5` and `1.50` are equal).
+extern function koji_decimal_hash(value: decimal): int {
+    immut d = normalized(value)
+    immut exponent = exponentOf(d)
+    immut sign: U128 = if (isNegative(d)) { u128(1) << 127 } else { 0 }
+    immut mixed = coefficientOf(d) ^ (wide(exponent, if (exponent < 0) { -1 } else { 0 }) << 113) ^ sign
+    immut top = mixed >> 64
+    immut rotated = ((top << 29) | (top >> 35)) & word
+    return lowWord(mixed & word) ^ lowWord(rotated)
+}
+
+// `int(d)` (mode 3, toward zero), `math.floor` (0), `math.ceil` (1) and `math.round` (2: half away
+// from zero).
+extern function koji_decimal_to_int(value: decimal, mode: CInt, here: Location): int {
+    mut fits = true
+    immut n = toInt(value, mode, mut fits)
+
+    if (not fits) { panicAt(here, `integer overflow: ${shown(value)} does not fit in an int`) }
+
+    return n
+}
+
+// The integer part by `mode`, with `fits` false when it does not fit in an int. The steps are
+// simple choices, which the C compiler makes without branches (the digits are random).
+function toInt(value: decimal, mode: int, mut fits: boolean): int {
+    immut coefficient = coefficientOf(value)
+    immut exponent = exponentOf(value)
+    immut negative = isNegative(value)
+    mut magnitude: U128 = 0
+
+    if (exponent >= 0) {
+        if (coefficient == 0) { return 0 }
+
+        if (exponent > 19 or coefficient > largest / powers[exponent]) {
+            fits = false
+            return 0
+        }
+
+        magnitude = coefficient * powers[exponent]
+    } else {
+        // Below 10^34 * 10^-39: less than one half.
+        immut unit = if (exponent < -38) { largest } else { powers[-exponent] }
+        immut whole = if (exponent < -38) { u128(0) } else { coefficient / unit }
+        immut rest = coefficient - whole * unit
+        // One more for the rounding away from zero: floor of a negative, ceiling of a positive,
+        // or nearest from one half.
+        immut inexact = rest != 0
+        // rest >= unit - unit / 2, from the sign of the difference (both are below 2^127), which
+        // the C compiler computes without a jump: the digits are random.
+        immut half = ((rest - (unit - (unit >> 1))) >> 127) == 0
+        immut floorUp = mode == 0 and negative
+        immut ceilingUp = mode == 1 and not negative
+        immut nearestUp = mode == 2 and half
+        immut up: U128 = if (inexact and (floorUp or ceilingUp or nearestUp)) { 1 } else { 0 }
+        magnitude = whole + up
+    }
+
+    immut limit = u128(9223372036854775807)
+
+    if (negative) {
+        if (magnitude > limit + 1) {
+            fits = false
+            return 0
+        }
+
+        // -magnitude, `int.min` too.
+        immut nothing: U128 = 0
+        return lowWord(nothing - magnitude)
+    }
+
+    if (magnitude > limit) {
+        fits = false
+        return 0
+    }
+
+    return lowWord(magnitude)
+}
+
+// In full, as in everyday writing (`10`, `1.5`, `0.001`, `3000000`), without trailing zeros. A
+// whole number is in full as long as it fits in the 34 digits a decimal holds; beyond them its
+// other digits would be zeros the decimal does not even keep, so it is in scientific notation
+// (`1e300`), which shows every digit kept. A fraction that needs many zeros only to hold places,
+// six or more after the point before its first digit, is in scientific notation too, as science
+// writes it (`1e-7`, `1.602176634e-19`).
+extern function koji_string_from_decimal(value: decimal): string {
+    return shown(value)
+}
+
+function shown(given: decimal): string {
+    immut value = normalized(given)
+    immut coefficient = coefficientOf(value)
+
+    if (coefficient == 0) { return '0' }
+
+    immut sign = if (isNegative(value)) { '-' } else { '' }
+    immut text = string(coefficient)
+    immut exponent = exponentOf(value)
+    immut position = text.length() + exponent
+
+    if (-position >= placeHolders or position > digitCount) {
+        immut mantissa = if (text.length() > 1) { `${text[..1]}.${text[1..]}` } else { text }
+        return `${sign}${mantissa}e${position - 1}`
+    }
+
+    if (exponent >= 0) { return `${sign}${text}${'0' * exponent}` }
+
+    if (position > 0) { return `${sign}${text[..position]}.${text[position..]}` }
+
+    return `${sign}0.${'0' * -position}${text}`
 }

@@ -1574,6 +1574,8 @@ fn stdlib_math() {
     assert_error("import math\nprint(math.pow(10, 7000))", "decimal overflow");
     assert_error("import math\nprint(math.pow(float(10), 400))", "float overflow");
     assert_error("import math\nprint(math.round(1e300))", "integer overflow");
+    // A zero made by an operation (`0 * 1.5`) has no fraction to round up.
+    assert_eq!(run("import math\nimmut z = 0 * 1.5\nprint(math.ceil(z), math.floor(-z), math.ceil(1e-50), math.floor(-1e-50))"), "0 0 1 -1\n");
     // The module is in Koji (std/math.kj): its panics are at the line of the call.
     assert_error("import math\n\nprint(math.abs(-9223372036854775807 - 1))", "panic: test.kj:3: integer overflow");
     assert_error("import math\n\nprint(math.pow(float(10), float(400)))", "panic: test.kj:3: float overflow");

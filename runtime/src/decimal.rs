@@ -13,6 +13,11 @@
 //! coefficient; `hi` has the 49 high bits of the coefficient, then 14 bits of exponent (plus
 //! 6176), then the sign. Zero is all zero bits.
 
+// The arithmetic is in Koji now (std/koji/decimal.kj); this module keeps it for the conversions
+// of text and floats and the fractional powers, which move next, and for its tests, which compare
+// with Python.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::cmp::Ordering;
 use std::ffi::c_char;
 
@@ -1185,59 +1190,11 @@ fn divided<T>(result: Option<T>, location: *const c_char) -> T {
     result.unwrap_or_else(|| panic_at(location, "division by zero"))
 }
 
+/// `base ** exponent` with a fractional exponent, for a positive base: e^(y ln x) with 64 digits
+/// (for `koji:decimal`, std/koji/decimal.kj).
 #[no_mangle]
-pub extern "C" fn koji_decimal_add(a: KojiDecimal, b: KojiDecimal, location: *const c_char) -> KojiDecimal {
-    located(from_c(a).add(from_c(b)), location)
-}
-
-#[no_mangle]
-pub extern "C" fn koji_decimal_sub(a: KojiDecimal, b: KojiDecimal, location: *const c_char) -> KojiDecimal {
-    located(from_c(a).subtract(from_c(b)), location)
-}
-
-#[no_mangle]
-pub extern "C" fn koji_decimal_mul(a: KojiDecimal, b: KojiDecimal, location: *const c_char) -> KojiDecimal {
-    located(from_c(a).multiply(from_c(b)), location)
-}
-
-#[no_mangle]
-pub extern "C" fn koji_decimal_div(a: KojiDecimal, b: KojiDecimal, location: *const c_char) -> KojiDecimal {
-    located(divided(from_c(a).divide(from_c(b)), location), location)
-}
-
-#[no_mangle]
-pub extern "C" fn koji_decimal_rem(a: KojiDecimal, b: KojiDecimal, location: *const c_char) -> KojiDecimal {
-    to_c(divided(from_c(a).remainder(from_c(b)), location))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_decimal_pow(base: KojiDecimal, exponent: i64, location: *const c_char) -> KojiDecimal {
-    located(divided(from_c(base).power(exponent), location), location)
-}
-
-/// `base ** exponent` with a decimal exponent (an int exponent is exact).
-#[no_mangle]
-pub extern "C" fn koji_decimal_power(base: KojiDecimal, exponent: KojiDecimal, location: *const c_char) -> KojiDecimal {
-    match divided(from_c(base).power_of(from_c(exponent)), location) {
-        Ok(value) => to_c(value),
-        Err(Some(limit)) => panic_at(location, limit.message()),
-        Err(None) => panic_at(
-            location,
-            &format!("{} ** {} is not a real number (use math.pow to handle it)", from_c(base), from_c(exponent)),
-        ),
-    }
-}
-
-/// The square root, correctly rounded, of a number that is not negative (`math.sqrt`).
-#[no_mangle]
-pub extern "C" fn koji_decimal_sqrt(value: KojiDecimal) -> KojiDecimal {
-    to_c(from_c(value).sqrt().unwrap_or(ZERO))
-}
-
-/// A hash that agrees with equality (`1.5` and `1.50` are equal).
-#[no_mangle]
-pub extern "C" fn koji_decimal_hash(value: KojiDecimal) -> u64 {
-    from_c(value).hash()
+pub extern "C" fn koji_decimal_real_power(base: KojiDecimal, exponent: KojiDecimal, location: *const c_char) -> KojiDecimal {
+    located(real::power(from_c(base), from_c(exponent)), location)
 }
 
 /// The shortest decimal that is the same float again: exact both ways.
@@ -1252,30 +1209,10 @@ pub extern "C" fn koji_decimal_to_float(value: KojiDecimal, location: *const c_c
     from_c(value).to_float().unwrap_or_else(|| panic_at(location, "float overflow"))
 }
 
-/// `int(d)` (mode 3, toward zero), `math.floor` (0), `math.ceil` (1) and `math.round` (2).
-#[no_mangle]
-pub extern "C" fn koji_decimal_to_int(value: KojiDecimal, mode: i32, location: *const c_char) -> i64 {
-    let decimal = from_c(value);
-    decimal
-        .to_int(mode)
-        .unwrap_or_else(|| panic_at(location, &format!("integer overflow: {} does not fit in an int", decimal)))
-}
-
-/// -1, 0 or 1.
-#[no_mangle]
-pub extern "C" fn koji_decimal_compare(a: KojiDecimal, b: KojiDecimal) -> i32 {
-    from_c(a).compare(from_c(b)) as i32
-}
-
 /// A constant: `coefficient * 10^exponent` (for the benchmark and the tests).
 #[no_mangle]
 pub extern "C" fn koji_decimal_make(negative: bool, coefficient: u64, exponent: i32) -> KojiDecimal {
     to_c(Decimal::new(negative, coefficient as u128, exponent as i64).unwrap_or(ZERO))
-}
-
-#[no_mangle]
-pub extern "C" fn koji_string_from_decimal(value: KojiDecimal) -> *mut crate::string::KojiString {
-    crate::string::new_string(from_c(value).to_string())
 }
 
 #[cfg(test)]

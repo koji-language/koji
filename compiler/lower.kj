@@ -207,6 +207,9 @@ type Lowerer = {
     externs: IrExtern[]
     // The functions C calls by their names (`extern function name(...) { ... }`).
     forC: IrForC[]
+    // The top-level `immut` ints whose value is known while compiling (`immut limit = 1 << 49`):
+    // their uses are the value, which the C compiler folds.
+    constants: Map[int, int]
     table: TypeInfo[]
     tables: Tables
     records: IrRecord[]
@@ -691,6 +694,7 @@ function cTypeOf(written: Option[TypeExpr]): string {
         Some(Named('decimal')) => 'KojiDecimal'
         Some(Named('Location')) => 'const char *'
         Some(Named('U128')) => 'KojiU128'
+        Some(Named('string')) => 'KojiString *'
         _ => 'int64_t'
     }
 }
@@ -702,6 +706,7 @@ function externTy(written: string): Ty {
         'bool' => BoolTy
         'KojiDecimal' => DecimalTy
         'KojiU128' => U128Ty
+        'KojiString *' => StrTy
         _ => IntTy
     }
 }
@@ -1291,16 +1296,75 @@ function Lowerer.declareGlobals(mut self): Result[void, string] {
         immut declaration = unlocated(statement)
 
         match (declaration.kind) {
-            VarDecl(name, annotation, value, _) => {
+            VarDecl(name, annotation, value, isImmut) => {
                 immut ty = self.variableType(declaration, annotation, value)?
                 self.globals.push({ ty: ty, name: name })
-                self.modules[self.module].names[name] = GlobalItem(self.globals.length() - 1)
+                immut id = self.globals.length() - 1
+
+                if (isImmut and ty == IntTy) {
+                    match (self.constantValue(value)) {
+                        Some(known) => self.constants[id] = known
+                        None => {}
+                    }
+                }
+
+                self.modules[self.module].names[name] = GlobalItem(id)
             }
             _ => {}
         }
     }
 
     return Ok()
+}
+
+// A top-level variable read: its value when it is a constant.
+function Lowerer.globalValue(self, id: int): Operand {
+    return match (self.constants.get(id)) {
+        Some(value) => IntOp(value)
+        None => GlobalOp(id)
+    }
+}
+
+// The value of an int expression made of literals, constants of the module and operators, when
+// it is known without overflowing.
+function Lowerer.constantValue(self, node: Node): Option[int] {
+    match (unlocated(node).kind) {
+        IntLiteral(value) => return Some(value)
+        Name(name) => {
+            return match (self.modules[self.module].names.get(name)) {
+                Some(GlobalItem(id)) => self.constants.get(id)
+                _ => None
+            }
+        }
+        Unary(op, operand) => {
+            immut value = self.constantValue(operand)?
+
+            if (op == '-' and value != -9223372036854775807 - 1) { return Some(-value) }
+
+            if (op == '~') { return Some(~value) }
+
+            return None
+        }
+        Binary(op, left, right) => {
+            immut a = self.constantValue(left)?
+            immut b = self.constantValue(right)?
+            immut largest = 9223372036854775807
+            immut smallest = -largest - 1
+
+            return match (op) {
+                '+' => if ((b > 0 and a > largest - b) or (b < 0 and a < smallest - b)) { None } else { Some(a + b) }
+                '-' => if ((b < 0 and a > largest + b) or (b > 0 and a < smallest + b)) { None } else { Some(a - b) }
+                '&' => Some(a & b)
+                '|' => Some(a | b)
+                '^' => Some(a ^ b)
+                // Only what keeps its bits: no overflow.
+                '<<' => if (b >= 0 and b < 63 and a >= 0 and a <= (largest >> b)) { Some(a << b) } else { None }
+                '>>' => if (b >= 0 and b < 64) { Some(a >> b) } else { None }
+                _ => None
+            }
+        }
+        _ => return None
+    }
 }
 
 // The function that runs the top-level statements of the module, after the modules it imports.
@@ -2864,7 +2928,7 @@ function Lowerer.expression(mut self, mut builder: Builder, node: Node): Result[
 
             return match (found.place) {
                 LocalPlace(id) => Ok(Some(LocalOp(id)))
-                GlobalPlace(id) => Ok(Some(GlobalOp(id)))
+                GlobalPlace(id) => Ok(Some(self.globalValue(id)))
             }
         }
         Call(callee, args) => return self.lowerCall(mut builder, node, callee, args)
@@ -2889,7 +2953,7 @@ function Lowerer.member(mut self, mut builder: Builder, node: Node, object: Node
     match (self.moduleOf(builder, object)) {
         Some(module) => {
             match (self.modules[module].names.get(name)) {
-                Some(GlobalItem(id)) => return Ok(Some(GlobalOp(id)))
+                Some(GlobalItem(id)) => return Ok(Some(self.globalValue(id)))
                 Some(FunctionItem(key)) => {
                     immut typeArgs = self.callTypeArgs(node)?
                     return Ok(Some(self.functionValue(mut builder, key, typeArgs, name)?))
@@ -4019,6 +4083,10 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             }
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
         }
+        'koji:unsafe.wordProduct' => {
+            runner = 'koji_unsafe_word_product'
+            arguments = [self.stdValue(mut builder, args, 0, U128Ty)?, self.stdValue(mut builder, args, 1, U128Ty)?]
+        }
         'koji:unsafe.wide' => {
             runner = 'koji_unsafe_wide'
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
@@ -4814,7 +4882,7 @@ export function lower(program: Program): Result[IrProgram, string] {
         table: program.table, tables: program.tables, records: [], recordIds: [:], file: entry.display, line: 0,
         functions: [], signatures: [:], globals: [], strings: [], stringIds: [:], emptyEnvironment: None, wrappers: [:],
         genericFunctions: [:], instances: [:], pending: [], substitution: [], typeNames: [], recordTypes: [:],
-        externs: [], forC: [], dropFunctions: [:], modules: [], moduleIds: [:], module: 0, owningMatch: false, importTargets: [:], blockItems: [],
+        externs: [], forC: [], constants: [:], dropFunctions: [:], modules: [], moduleIds: [:], module: 0, owningMatch: false, importTargets: [:], blockItems: [],
         checked: checked
     }
     // The top-level statements of the main file are function 0.

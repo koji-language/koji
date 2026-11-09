@@ -188,6 +188,7 @@ _Noreturn void koji_panic(const char *location, const char *message);
 /* `U128`: its words, and the words of a decimal. */
 KOJI_INLINE KojiU128 koji_unsafe_wide(int64_t low, int64_t high) { return (KojiU128)(uint64_t)high << 64 | (uint64_t)low; }
 KOJI_INLINE int64_t koji_unsafe_low_word(KojiU128 value) { return (int64_t)(uint64_t)value; }
+KOJI_INLINE KojiU128 koji_unsafe_word_product(KojiU128 a, KojiU128 b) { return (KojiU128)(uint64_t)a * (uint64_t)b; }
 KOJI_INLINE int64_t koji_unsafe_high_word(KojiU128 value) { return (int64_t)(uint64_t)(value >> 64); }
 KOJI_INLINE int64_t koji_unsafe_leading_zeros(KojiU128 value) {
     uint64_t high = (uint64_t)(value >> 64), low = (uint64_t)value;
@@ -200,12 +201,38 @@ KOJI_INLINE KojiDecimal koji_unsafe_decimal_of(int64_t low, int64_t high) {
     KojiDecimal value = { (uint64_t)low, (uint64_t)high };
     return value;
 }
+/* A divisor of 64 bits: two instructions `div` on x86-64, a digit of 64 bits each (the generic
+   division is a call). */
+#if defined(__x86_64__)
+KOJI_INLINE uint64_t koji_u128_divide_word(uint64_t high, uint64_t low, uint64_t divisor, uint64_t *rest) {
+    uint64_t quotient;
+    __asm__("divq %4" : "=a"(quotient), "=d"(*rest) : "a"(low), "d"(high), "rm"(divisor));
+    return quotient;
+}
+#endif
 KOJI_INLINE KojiU128 koji_u128_div(KojiU128 a, KojiU128 b, const char *location) {
     if (b == 0) koji_panic(location, "division by zero");
+#if defined(__x86_64__)
+    /* A constant divisor is the C compiler's: it may multiply instead. */
+    if (!__builtin_constant_p(b) && (uint64_t)(b >> 64) == 0) {
+        uint64_t high = (uint64_t)(a >> 64), divisor = (uint64_t)b, rest;
+        if (high < divisor) return koji_u128_divide_word(high, (uint64_t)a, divisor, &rest);
+        uint64_t top = high / divisor;
+        uint64_t bottom = koji_u128_divide_word(high % divisor, (uint64_t)a, divisor, &rest);
+        return (KojiU128)top << 64 | bottom;
+    }
+#endif
     return a / b;
 }
 KOJI_INLINE KojiU128 koji_u128_rem(KojiU128 a, KojiU128 b, const char *location) {
     if (b == 0) koji_panic(location, "division by zero");
+#if defined(__x86_64__)
+    if (!__builtin_constant_p(b) && (uint64_t)(b >> 64) == 0) {
+        uint64_t high = (uint64_t)(a >> 64), divisor = (uint64_t)b, rest;
+        koji_u128_divide_word(high < divisor ? high : high % divisor, (uint64_t)a, divisor, &rest);
+        return rest;
+    }
+#endif
     return a % b;
 }
 KOJI_INLINE KojiU128 koji_u128_shift_left(KojiU128 a, KojiU128 b, const char *location) {
@@ -395,7 +422,7 @@ KojiDecimal koji_decimal_pow(KojiDecimal base, int64_t exponent, const char *loc
 KojiDecimal koji_decimal_power(KojiDecimal base, KojiDecimal exponent, const char *location);
 KojiDecimal koji_decimal_neg(KojiDecimal value);
 int32_t koji_decimal_compare(KojiDecimal a, KojiDecimal b);
-uint64_t koji_decimal_hash(KojiDecimal value);
+int64_t koji_decimal_hash(KojiDecimal value);
 KojiDecimal koji_decimal_from_int(int64_t value);
 KojiDecimal koji_decimal_from_float(double value);
 double koji_decimal_to_float(KojiDecimal value, const char *location);
@@ -521,7 +548,7 @@ static bool koji_equal_decimal(const void *a, const void *b) {
 static int32_t koji_compare_decimal(const void *a, const void *b) {
     return koji_decimal_compare(*(const KojiDecimal *)a, *(const KojiDecimal *)b);
 }
-static uint64_t koji_hash_decimal(const void *slot) { return koji_decimal_hash(*(const KojiDecimal *)slot); }
+static uint64_t koji_hash_decimal(const void *slot) { return (uint64_t)koji_decimal_hash(*(const KojiDecimal *)slot); }
 static const KojiElementType koji_element_decimal = {
     sizeof(KojiDecimal), NULL, NULL, koji_repr_decimal, koji_equal_decimal, koji_compare_decimal, koji_hash_decimal, NULL};
 

@@ -2101,7 +2101,7 @@ function f21 now(): Decimal
     local l2: Decimal
   b0:
     l0 = call f24(0)
-    l1 = IntToDecimal g8
+    l1 = IntToDecimal 62167219200
     l2 = DecimalAdd l0, l1
     return l2
 
@@ -7523,7 +7523,7 @@ function f35 compile(l0: Str): Record(21)
     return l30
   b4:
     l31 = call f63(l24)
-    l32 = IntCompare(Greater) l31, g18
+    l32 = IntCompare(Greater) l31, 500000
     branch l32, b5, b6
   b5:
     l33 = record variant 2 (l0)
@@ -8477,10 +8477,10 @@ function f47 Parser.atom(l0: Record(22), l1: Record(23), l2: Int): Record(28)
     l32 = CharCompare(Equal) l4, '$'
     branch l32, b14, b15
   b11:
-    l27 = g5
+    l27 = 2
     goto b13
   b12:
-    l27 = g3
+    l27 = 0
     goto b13
   b13:
     l29 = record variant 4 (l27)
@@ -8494,10 +8494,10 @@ function f47 Parser.atom(l0: Record(22), l1: Record(23), l2: Int): Record(28)
     l38 = CharCompare(Equal) l4, '\\'
     branch l38, b19, b20
   b16:
-    l33 = g6
+    l33 = 3
     goto b18
   b17:
-    l33 = g4
+    l33 = 1
     goto b18
   b18:
     l35 = record variant 4 (l33)
@@ -9305,7 +9305,7 @@ function f52 Parser.escape(l0: Record(22), l1: Record(23)): Record(25)
     l14 = l0.2
     l15 = IntAdd l14, 1
     l0.2 = l15
-    l16 = record variant 4 (g7)
+    l16 = record variant 4 (4)
     l17 = record variant 0 (l16)
     return l17
   b10:
@@ -9315,7 +9315,7 @@ function f52 Parser.escape(l0: Record(22), l1: Record(23)): Record(25)
     l19 = l0.2
     l20 = IntAdd l19, 1
     l0.2 = l20
-    l21 = record variant 4 (g8)
+    l21 = record variant 4 (5)
     l22 = record variant 0 (l21)
     return l22
   b12:
@@ -9325,7 +9325,7 @@ function f52 Parser.escape(l0: Record(22), l1: Record(23)): Record(25)
     l24 = l0.2
     l25 = IntAdd l24, 1
     l0.2 = l25
-    l26 = record variant 4 (g3)
+    l26 = record variant 4 (0)
     l27 = record variant 0 (l26)
     return l27
   b14:
@@ -9335,7 +9335,7 @@ function f52 Parser.escape(l0: Record(22), l1: Record(23)): Record(25)
     l29 = l0.2
     l30 = IntAdd l29, 1
     l0.2 = l30
-    l31 = record variant 4 (g4)
+    l31 = record variant 4 (1)
     l32 = record variant 0 (l31)
     return l32
   b16:
@@ -9345,7 +9345,7 @@ function f52 Parser.escape(l0: Record(22), l1: Record(23)): Record(25)
     l34 = l0.2
     l35 = IntAdd l34, 1
     l0.2 = l35
-    l36 = record variant 4 (g9)
+    l36 = record variant 4 (6)
     l37 = record variant 0 (l36)
     return l37
   b18:
@@ -9354,7 +9354,7 @@ function f52 Parser.escape(l0: Record(22), l1: Record(23)): Record(25)
     l39 = l0.2
     l40 = IntAdd l39, 1
     l0.2 = l40
-    l41 = record variant 4 (g10)
+    l41 = record variant 4 (7)
     l42 = record variant 0 (l41)
     return l42
   b20:
@@ -9463,37 +9463,37 @@ function f53 Parser.classEscape(l0: Record(22)): Record(31)
     l6 = CharCompare(Equal) l4, 'D'
     branch l6, b5, b4
   b3:
-    l3 = g11
+    l3 = 0
     goto b1
   b4:
     l7 = CharCompare(Equal) l4, 'w'
     branch l7, b7, b6
   b5:
-    l3 = g11
+    l3 = 0
     goto b1
   b6:
     l8 = CharCompare(Equal) l4, 'W'
     branch l8, b9, b8
   b7:
-    l3 = g12
+    l3 = 1
     goto b1
   b8:
     l9 = CharCompare(Equal) l4, 's'
     branch l9, b11, b10
   b9:
-    l3 = g12
+    l3 = 1
     goto b1
   b10:
     l10 = CharCompare(Equal) l4, 'S'
     branch l10, b13, b12
   b11:
-    l3 = g13
+    l3 = 2
     goto b1
   b12:
     l11 = CharCompare(Equal) l4, 'p'
     branch l11, b15, b14
   b13:
-    l3 = g13
+    l3 = 2
     goto b1
   b14:
     l13 = CharCompare(Equal) l4, 'P'
@@ -9686,116 +9686,116 @@ function f54 Parser.property(l0: Record(22)): Record(32)
     l30 = StrCompare(Equal) l28, s30
     branch l30, b15, b14
   b13:
-    l24 = g14
+    l24 = 3
     goto b11
   b14:
     l31 = StrCompare(Equal) l28, s31
     branch l31, b17, b16
   b15:
-    l24 = g14
+    l24 = 3
     goto b11
   b16:
     l32 = StrCompare(Equal) l28, s32
     branch l32, b19, b18
   b17:
-    l24 = g14
+    l24 = 3
     goto b11
   b18:
     l33 = StrCompare(Equal) l28, s33
     branch l33, b21, b20
   b19:
-    l24 = g14
+    l24 = 3
     goto b11
   b20:
     l34 = StrCompare(Equal) l28, s34
     branch l34, b23, b22
   b21:
-    l24 = g15
+    l24 = 4
     goto b11
   b22:
     l35 = StrCompare(Equal) l28, s35
     branch l35, b25, b24
   b23:
-    l24 = g15
+    l24 = 4
     goto b11
   b24:
     l36 = StrCompare(Equal) l28, s36
     branch l36, b27, b26
   b25:
-    l24 = g15
+    l24 = 4
     goto b11
   b26:
     l37 = StrCompare(Equal) l28, s37
     branch l37, b29, b28
   b27:
-    l24 = g15
+    l24 = 4
     goto b11
   b28:
     l38 = StrCompare(Equal) l28, s38
     branch l38, b31, b30
   b29:
-    l24 = g16
+    l24 = 5
     goto b11
   b30:
     l39 = StrCompare(Equal) l28, s39
     branch l39, b33, b32
   b31:
-    l24 = g16
+    l24 = 5
     goto b11
   b32:
     l40 = StrCompare(Equal) l28, s40
     branch l40, b35, b34
   b33:
-    l24 = g16
+    l24 = 5
     goto b11
   b34:
     l41 = StrCompare(Equal) l28, s41
     branch l41, b37, b36
   b35:
-    l24 = g16
+    l24 = 5
     goto b11
   b36:
     l42 = StrCompare(Equal) l28, s42
     branch l42, b39, b38
   b37:
-    l24 = g17
+    l24 = 6
     goto b11
   b38:
     l43 = StrCompare(Equal) l28, s43
     branch l43, b41, b40
   b39:
-    l24 = g17
+    l24 = 6
     goto b11
   b40:
     l44 = StrCompare(Equal) l28, s44
     branch l44, b43, b42
   b41:
-    l24 = g11
+    l24 = 0
     goto b11
   b42:
     l45 = StrCompare(Equal) l28, s45
     branch l45, b45, b44
   b43:
-    l24 = g11
+    l24 = 0
     goto b11
   b44:
     l46 = StrCompare(Equal) l28, s46
     branch l46, b47, b46
   b45:
-    l24 = g11
+    l24 = 0
     goto b11
   b46:
     l47 = StrCompare(Equal) l28, s47
     branch l47, b49, b48
   b47:
-    l24 = g13
+    l24 = 2
     goto b11
   b48:
     l48 = IntNeg 1
     l24 = l48
     goto b11
   b49:
-    l24 = g13
+    l24 = 2
     goto b11
   b50:
     unreachable
@@ -11424,7 +11424,7 @@ function f63 size(l0: Record(24)): Int
     l22 = call f63(l21)
     l23 = IntAdd l15, l22
     l15 = l23
-    l24 = IntCompare(Greater) l15, g18
+    l24 = IntCompare(Greater) l15, 500000
     branch l24, b12, b13
   b10:
     l20 = IntAdd l18, 1
@@ -11458,7 +11458,7 @@ function f63 size(l0: Record(24)): Int
     l37 = IntAdd l36, 2
     l38 = IntAdd l29, l37
     l29 = l38
-    l39 = IntCompare(Greater) l29, g18
+    l39 = IntCompare(Greater) l29, 500000
     branch l39, b20, b21
   b18:
     l34 = IntAdd l32, 1
@@ -11500,7 +11500,7 @@ function f63 size(l0: Record(24)): Int
     l56 = l57
     branch l56, b27, b28
   b27:
-    l58 = IntAdd g18, 1
+    l58 = IntAdd 500000, 1
     l59 = IntDiv l58, l52
     l60 = IntCompare(Greater) l55, l59
     l56 = l60
@@ -11508,7 +11508,7 @@ function f63 size(l0: Record(24)): Int
   b28:
     branch l56, b29, b30
   b29:
-    l61 = IntAdd g18, 1
+    l61 = IntAdd 500000, 1
     return l61
   b30:
     l62 = IntMul l55, l52
@@ -11957,7 +11957,7 @@ function f68 startsAnchored(l0: Record(24)): Bool
   b3:
     l5 = l2.0
     l6 = l5
-    l7 = IntCompare(Equal) l6, g3
+    l7 = IntCompare(Equal) l6, 0
     l1 = l7
     goto b1
   b4:
@@ -13272,26 +13272,26 @@ function f76 holds(l0: Int, l1: List(Char), l2: Int): Bool
   b0:
     l3 = ListLength l1
     l4 = l3
-    l5 = IntCompare(Equal) l0, g3
+    l5 = IntCompare(Equal) l0, 0
     branch l5, b1, b2
   b1:
     l6 = IntCompare(Equal) l2, 0
     return l6
   b2:
-    l7 = IntCompare(Equal) l0, g4
+    l7 = IntCompare(Equal) l0, 1
     branch l7, b3, b4
   b3:
     l8 = IntCompare(Equal) l2, l4
     return l8
   b4:
-    l9 = IntCompare(Equal) l0, g5
+    l9 = IntCompare(Equal) l0, 2
     branch l9, b5, b6
   b5:
     l11 = IntCompare(Equal) l2, 0
     l10 = l11
     branch l10, b8, b7
   b6:
-    l15 = IntCompare(Equal) l0, g6
+    l15 = IntCompare(Equal) l0, 3
     branch l15, b9, b10
   b7:
     l12 = IntSub l2, 1
@@ -13334,19 +13334,19 @@ function f76 holds(l0: Int, l1: List(Char), l2: Int): Bool
     goto b16
   b16:
     l30 = l26
-    l31 = IntCompare(Equal) l0, g7
+    l31 = IntCompare(Equal) l0, 4
     branch l31, b17, b18
   b17:
     l32 = BoolCompare(NotEqual) l25, l30
     return l32
   b18:
-    l33 = IntCompare(Equal) l0, g8
+    l33 = IntCompare(Equal) l0, 5
     branch l33, b19, b20
   b19:
     l34 = BoolCompare(Equal) l25, l30
     return l34
   b20:
-    l35 = IntCompare(Equal) l0, g9
+    l35 = IntCompare(Equal) l0, 6
     branch l35, b21, b22
   b21:
     l37 = Not l25
@@ -13370,7 +13370,7 @@ function f76 holds(l0: Int, l1: List(Char), l2: Int): Bool
 function f77 isWord(l0: Char): Bool
     local l1: Bool
   b0:
-    l1 = call f75(g12, l0)
+    l1 = call f75(1, l0)
     return l1
 
 function f78 Regex.test(l0: Record(17), l1: Str): Bool
@@ -14155,7 +14155,7 @@ function f89 isAsciiLetter(l0: Char): Bool
 function f90 isSpace(l0: Char): Bool
     local l1: Bool
   b0:
-    l1 = call f75(g13, l0)
+    l1 = call f75(2, l0)
     return l1
 
 function f91 lowered(l0: Char): Char
@@ -19092,7 +19092,7 @@ function f11 parse(l0: Str, l1: Str): Record(2)
     l102 = l12.1
     l103 = l12.2
     l104 = call f16(l101, l102, l103)
-    l105 = IntAdd l104, g5
+    l105 = IntAdd l104, 719528
     l106 = IntMul l105, 86400
     l107 = l12.3
     l108 = IntMul l107, 3600
@@ -19355,9 +19355,9 @@ function f14 dateOf(l0: Int): Record(0)
     local l23: Record(0)
   b0:
     l1 = call f18(l0, 86400)
-    l2 = IntSub l1, g5
+    l2 = IntSub l1, 719528
     l3 = l2
-    l4 = IntAdd l3, g5
+    l4 = IntAdd l3, 719528
     l5 = IntMul l4, 86400
     l6 = IntSub l0, l5
     l7 = l6
@@ -19691,7 +19691,7 @@ function f20 now(): Decimal
     local l2: Decimal
   b0:
     l0 = call f23(0)
-    l1 = IntToDecimal g6
+    l1 = IntToDecimal 62167219200
     l2 = DecimalAdd l0, l1
     return l2
 
@@ -23344,7 +23344,7 @@ function f0 main(): Void
     local l18: Str
   b0:
     g0 = 3
-    l1 = g0
+    l1 = 3
     l2 = IntCompare(Equal) l1, 1
     branch l2, b3, b2
   b1:
@@ -23490,7 +23490,7 @@ function f0 main(): Void
 function f1 twice(): Int
     local l0: Int
   b0:
-    l0 = IntMul g0, 2
+    l0 = IntMul 2, 2
     return l0
 ==== test/ir/cases.txt #27
 string s0 = "split() separator cannot be empty"

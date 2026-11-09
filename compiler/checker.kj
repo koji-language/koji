@@ -1552,8 +1552,9 @@ function Checker.checkForC(mut self, declaration: Node): Result[void, string] {
                 if (not self.isCValue(each) and each != U128Type) { return Err(self.failure(`'${name}' is for C: its parameters must be int, CInt, float, decimal, boolean, U128, Address or Location, found ${self.show(each)}`)) }
             }
 
-            if (returned != VoidType and not self.isCValue(returned) and returned != U128Type) {
-                return Err(self.failure(`'${name}' is for C: it must return int, CInt, float, decimal, boolean, U128, Address or nothing, found ${self.show(returned)}`))
+            // A string is a new reference for C, as the runtime gives them.
+            if (returned != VoidType and not self.isCValue(returned) and returned != U128Type and returned != StringType) {
+                return Err(self.failure(`'${name}' is for C: it must return int, CInt, float, decimal, boolean, U128, Address, string or nothing, found ${self.show(returned)}`))
             }
         }
         _ => {}
@@ -1640,7 +1641,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'decimalLow', 'decimalHigh', 'decimalOf'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'decimalLow', 'decimalHigh', 'decimalOf'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -4892,6 +4893,11 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         // unsigned); `lowWord` and `highWord` give them back.
         'unsafe.wide' => {
             self.checkExactly(name, types, [IntType, IntType])?
+            return Ok(U128Type)
+        }
+        // The product of the low words of two U128 (one multiplication of 64 bits by 64).
+        'unsafe.wordProduct' => {
+            self.checkExactly(name, types, [U128Type, U128Type])?
             return Ok(U128Type)
         }
         other if (other == 'unsafe.lowWord' or other == 'unsafe.highWord' or other == 'unsafe.leadingZeros') => {
