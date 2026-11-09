@@ -19,4 +19,4 @@ mod system;
 
 pub use string::repr_string;
 pub use http::{http_request, HttpOutcome};
-pub use stdlib::{error_message, is_title};
+pub use stdlib::error_message;

@@ -17,8 +17,8 @@ export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'end
 // The internal modules (std/koji/): `koji:core`, compiled with the programs that use it, and those
 // of the library of the runtime written in Koji, compiled once (`kojic dump library`) and linked
 // into every program.
-immut internalModules = ['koji:core', 'koji:decimal', 'koji:numbers', 'koji:output', 'koji:text']
-export immut libraryModules = ['koji:decimal', 'koji:numbers', 'koji:output', 'koji:text']
+immut internalModules = ['koji:core', 'koji:decimal', 'koji:numbers', 'koji:output', 'koji:text', 'koji:unicode']
+export immut libraryModules = ['koji:decimal', 'koji:numbers', 'koji:output', 'koji:text', 'koji:unicode']
 
 type SymbolKind = {
     ValueSymbol
@@ -1110,7 +1110,8 @@ function Checker.importedModule(mut self, path: string): Result[int, string] {
     if (path in internalModules) {
         if (not self.state.path.startsWith('std:')) { return Err(self.failure(`'${path}' is only for the standard library`)) }
 
-        if (path in libraryModules and self.state.path != 'std:library') {
+        // The modules of the library are compiled together: one of them may import another.
+        if (path in libraryModules and self.state.path != 'std:library' and not (`koji:${self.state.path[4..]}` in libraryModules)) {
             return Err(self.failure(`'${path}' is in the library of the runtime: its functions are called by their names of C ('extern function')`))
         }
 

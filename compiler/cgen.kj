@@ -221,10 +221,12 @@ function Generator.generateProgram(mut self) {
     self.line('')
     immut strings = self.program.strings
 
-    // `used`: gcc keeps the constant of a function it removed, so that the string it holds is not
-    // lost.
+    // The strings written in the program: static data, which nothing frees (its count of references
+    // never comes down to 0) and which costs nothing to start.
     for id in range(strings.length()) {
-        self.line(`static KojiString *koji_s${id} __attribute__((used)); // ${stringDebug(strings[id])}`)
+        immut size = byteLength(strings[id])
+        self.line(`static struct { size_t references, length, capacity; char bytes[${size + 1}]; } koji_s${id}_data = { (size_t)1 << 62, ${size}, ${size}, ${cString(strings[id])} };`)
+        self.line(`static KojiString *const koji_s${id} __attribute__((unused)) = (KojiString *)&koji_s${id}_data; // ${stringDebug(strings[id])}`)
     }
 
     // The C functions that `extern` declarations name, with the types of Koji (an address is a
@@ -318,10 +320,6 @@ function Generator.generateProgram(mut self) {
     } else {
         self.line('int main(int argc, char **argv) {')
         self.line('    koji_init(argc, (const char *const *)argv);')
-    }
-
-    for id in range(strings.length()) {
-        self.line(`    koji_s${id} = koji_string_new(${cString(strings[id])}, ${byteLength(strings[id])});`)
     }
 
     self.line(`    ${functionName(self.program.main)}();`)

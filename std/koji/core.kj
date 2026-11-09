@@ -176,7 +176,7 @@ function find(text: string, part: string, start: int): int {
 }
 
 // The bytes of UTF-8 that continue a character (`10xxxxxx`).
-function isContinuation(bytes: Address, at: int): boolean {
+export function isContinuation(bytes: Address, at: int): boolean {
     immut b: byte = read(bytes, at)
     return (b & 0xC0) == 0x80
 }
@@ -211,7 +211,7 @@ function codeAt(bytes: Address, at: int, width: int): int {
 }
 
 // White space, as Unicode defines it (`White_Space`).
-function isSpace(code: int): boolean {
+export function isSpace(code: int): boolean {
     if (code <= 0x20) { return code == 0x20 or (code >= 0x09 and code <= 0x0D) }
 
     if (code < 0x85) { return false }

@@ -1,8 +1,7 @@
-//! The start of a program, the messages of the errors of the standard library, and the methods
-//! of strings that are not written in Koji yet.
+//! The start of a program, and the messages of the errors of the standard library (for the
+//! display of records, until they move).
 
 use std::ffi::c_char;
-use crate::string::{new_string, string_text, KojiString};
 
 /// Called by `main` before anything else.
 #[no_mangle]
@@ -49,60 +48,3 @@ pub fn error_message(type_name: &str, variant: &str, texts: &[String]) -> Option
         _ => return None,
     })
 }
-
-/// Python-like `istitle`: every word starts with an uppercase letter followed by lowercase ones.
-pub fn is_title(s: &str) -> bool {
-    let mut cased = false;
-    let mut previous_cased = false;
-    for c in s.chars() {
-        if c.is_uppercase() {
-            if previous_cased {
-                return false;
-            }
-            previous_cased = true;
-            cased = true;
-        } else if c.is_lowercase() {
-            if !previous_cased {
-                return false;
-            }
-            previous_cased = true;
-            cased = true;
-        } else {
-            previous_cased = false;
-        }
-    }
-    cased
-}
-
-// Methods of strings.
-
-#[no_mangle]
-pub extern "C" fn koji_std_string_upper(string: *const KojiString) -> *mut KojiString {
-    new_string(string_text(string).to_uppercase())
-}
-
-#[no_mangle]
-pub extern "C" fn koji_std_string_lower(string: *const KojiString) -> *mut KojiString {
-    new_string(string_text(string).to_lowercase())
-}
-
-/// The `is...` methods: `test` is 0 `isSpace`, 1 `isNumeric`, 2 `isAlpha`, 3
-/// `isAlphaNumeric`, 4 `isUpper`, 5 `isLower`, 6 `isTitle`.
-#[no_mangle]
-pub extern "C" fn koji_std_string_is(string: *const KojiString, test: i32) -> bool {
-    let s = string_text(string);
-    let all = |predicate: fn(char) -> bool| !s.is_empty() && s.chars().all(predicate);
-    let has_cased = s.chars().any(|c| c.is_uppercase() || c.is_lowercase());
-    match test {
-        0 => all(char::is_whitespace),
-        1 => all(char::is_numeric),
-        2 => all(char::is_alphabetic),
-        3 => all(char::is_alphanumeric),
-        4 => has_cased && !s.chars().any(char::is_lowercase),
-        5 => has_cased && !s.chars().any(char::is_uppercase),
-        _ => is_title(s),
-    }
-}
-
-// char
-

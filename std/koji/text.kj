@@ -4,7 +4,9 @@
 // the UTF-8 bytes. A function gives a new reference to the string it returns; it reads the strings
 // it is given, but those it takes (`take`: the caller gives its reference).
 
-import { Address, CInt, CSize, Location, U128, blankString, charOfCode, distance, lowWord, newString, offset, panicAt, read, setStringSize, stringBytes, stringCapacity, stringReferences, stringSize, wide, wordProduct, write } from 'koji:unsafe'
+import { Address, CInt, CSize, Location, U128, allocate, blankString, charOfCode, distance, isNull, lowWord, newString, nullAddress, offset, panicAt, read, setStringSize, stringBytes, stringCapacity, stringReferences, stringSize, wide, wordProduct, write } from 'koji:unsafe'
+import { isContinuation, isSpace } from 'koji:core'
+import { alphabetic, cased, ignorable, lowerMultiple, lowerSingle, lowercase, numeric, upperMultiple, upperSingle, uppercase } from 'koji:unicode'
 
 extern function memcpy(target: Address, source: Address, size: CSize): Address
 extern function memcmp(a: Address, b: Address, size: CSize): CInt
@@ -388,4 +390,418 @@ function codeAt(bytes: Address, at: int): int {
     }
 
     return code
+}
+
+// The methods of strings that need the tables of Unicode (std/koji/unicode.kj, as Rust has them).
+// A table is read from its text the first time it is needed.
+
+// The mappings of upper and lower case: runs of 4 ints (the first and last characters, a stride and
+// the character of the first), in order; a negative character `t` is the record -1 - t of the
+// table of multiple mappings. And the last run found, as a text keeps to a few alphabets.
+mut upperRuns = nullAddress()
+mut upperCount = 0
+mut upperLast = 0
+mut lowerRuns = nullAddress()
+mut lowerCount = 0
+mut lowerLast = 0
+// The tables of ranges (pairs of ints), with their numbers of ranges: `alphabetic`, `numeric`,
+// `lowercase`, `uppercase`, `cased` and `ignorable`.
+immut rangeTables = zeroed(6 * 16)
+
+function zeroed(size: int): Address {
+    immut block = allocate(size)
+
+    for i in range(size / 8) {
+        write(block, i * 8, 0)
+    }
+
+    return block
+}
+
+// `text.upper()`.
+extern function koji_std_string_upper(text: string): string {
+    return withCase(text, true)
+}
+
+// `text.lower()`.
+extern function koji_std_string_lower(text: string): string {
+    return withCase(text, false)
+}
+
+// The upper or the lower case of a text, in a string that grows when a character becomes longer.
+function withCase(text: string, upper: boolean): string {
+    immut bytes = stringBytes(text)
+    immut size = stringSize(text)
+    mut capacity = size + 16
+    mut out = blankString(capacity, capacity)
+    mut place = stringBytes(out)
+    mut written = 0
+    mut at = 0
+
+    while (at < size) {
+        if (written + 12 > capacity) {
+            capacity = capacity * 2
+            immut grown = blankString(capacity, capacity)
+            memcpy(stringBytes(grown), place, written)
+            out = grown
+            place = stringBytes(out)
+        }
+
+        immut first: byte = read(bytes, at)
+
+        if (first < 0x80) {
+            write(place, written, asciiCase(first, upper))
+            written += 1
+            at += 1
+            continue
+        }
+
+        immut code = codeAt(bytes, at)
+        immut mapped = mappingOf(code, upper)
+
+        // `Σ` at the end of a word is `ς`.
+        if (mapped == 0x3C3 and code == 0x3A3 and not upper and finalSigma(bytes, at, size)) {
+            written += encode(offset(place, written), 0x3C2)
+        } else {
+            written += putMapped(offset(place, written), mapped, upper)
+        }
+
+        at += widthOf(first)
+    }
+
+    setStringSize(out, written)
+    return out
+}
+
+function asciiCase(b: byte, upper: boolean): byte {
+    if (upper) { return if (b >= 97 and b <= 122) { b - 32 } else { b } }
+
+    return if (b >= 65 and b <= 90) { b + 32 } else { b }
+}
+
+// Writes the character or the characters of a mapping at `place`: the bytes written.
+function putMapped(place: Address, mapped: int, upper: boolean): int {
+    if (mapped >= 0) { return encode(place, mapped) }
+
+    immut many = if (upper) { upperMultiple } else { lowerMultiple }
+    immut digits = stringBytes(many)
+    immut record = (-1 - mapped) * 25
+    mut written = 0
+
+    for i in range(hexAt(digits, record + 6, 1)) {
+        written += encode(offset(place, written), hexAt(digits, record + 7 + i * 6, 6))
+    }
+
+    return written
+}
+
+// The case of a character: a character, or a negative number for several (see `upperRuns`).
+function mappingOf(code: int, upper: boolean): int {
+    if (upper and isNull(upperRuns)) { upperRuns = decodeRuns(upperSingle, upperMultiple, mut upperCount) }
+
+    if (not upper and isNull(lowerRuns)) { lowerRuns = decodeRuns(lowerSingle, lowerMultiple, mut lowerCount) }
+
+    immut runs = if (upper) { upperRuns } else { lowerRuns }
+    immut index = runOf(runs, if (upper) { upperCount } else { lowerCount }, code, if (upper) { upperLast } else { lowerLast })
+
+    if (index < 0) { return code }
+
+    if (upper) {
+        upperLast = index
+    } else {
+        lowerLast = index
+    }
+
+    immut start: int = read(runs, index * 32)
+    immut stride: int = read(runs, index * 32 + 16)
+    immut target: int = read(runs, index * 32 + 24)
+
+    if (target < 0) { return target }
+
+    if ((code - start) % stride != 0) { return code }
+
+    return target + code - start
+}
+
+// The run of `code`, or -1: the run `hint` first.
+function runOf(runs: Address, count: int, code: int, hint: int): int {
+    if (hint < count) {
+        immut start: int = read(runs, hint * 32)
+        immut end: int = read(runs, hint * 32 + 8)
+
+        if (code >= start and code <= end) { return hint }
+    }
+
+    // The first run that starts after `code`, and the one before it.
+    mut low = 0
+    mut high = count
+
+    while (low < high) {
+        immut middle = (low + high) >> 1
+        immut start: int = read(runs, middle * 32)
+
+        if (start <= code) {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+
+    if (low == 0) { return -1 }
+
+    immut end: int = read(runs, (low - 1) * 32 + 8)
+    return if (code <= end) { low - 1 } else { -1 }
+}
+
+// The runs of a table of single mappings (a start, an end, a stride and the character of the start)
+// and of multiple mappings (the character, their number and three characters), in order.
+function decodeRuns(single: string, many: string, mut count: int): Address {
+    immut singleDigits = stringBytes(single)
+    immut manyDigits = stringBytes(many)
+    immut singles = stringSize(single) / 19
+    immut multiples = stringSize(many) / 25
+    immut runs = allocate((singles + multiples) * 32)
+    mut i = 0
+    mut j = 0
+    count = 0
+
+    while (i < singles or j < multiples) {
+        immut at = count * 32
+
+        if (j >= multiples or (i < singles and hexAt(singleDigits, i * 19, 6) < hexAt(manyDigits, j * 25, 6))) {
+            write(runs, at, hexAt(singleDigits, i * 19, 6))
+            write(runs, at + 8, hexAt(singleDigits, i * 19 + 6, 6))
+            write(runs, at + 16, hexAt(singleDigits, i * 19 + 12, 1))
+            write(runs, at + 24, hexAt(singleDigits, i * 19 + 13, 6))
+            i += 1
+        } else {
+            immut code = hexAt(manyDigits, j * 25, 6)
+            write(runs, at, code)
+            write(runs, at + 8, code)
+            write(runs, at + 16, 1)
+            write(runs, at + 24, -1 - j)
+            j += 1
+        }
+
+        count += 1
+    }
+
+    return runs
+}
+
+// Whether the `Σ` at `at` ends a word: after a cased character and before none, the characters
+// that case ignores aside (as Rust's `to_lowercase`).
+function finalSigma(bytes: Address, at: int, size: int): boolean {
+    mut before = at
+    mut casedBefore = false
+
+    while (before > 0) {
+        mut start = before - 1
+
+        while (isContinuation(bytes, start)) {
+            start -= 1
+        }
+
+        immut code = codeAt(bytes, start)
+
+        if (not inTable(5, code)) {
+            casedBefore = inTable(4, code)
+            break
+        }
+
+        before = start
+    }
+
+    if (not casedBefore) { return false }
+
+    mut after = at + 2
+
+    while (after < size) {
+        immut code = codeAt(bytes, after)
+
+        if (not inTable(5, code)) { return not inTable(4, code) }
+
+        immut first: byte = read(bytes, after)
+        after += widthOf(first)
+    }
+
+    return true
+}
+
+// The `is...` methods: `test` is 0 `isSpace`, 1 `isNumeric`, 2 `isAlpha`, 3 `isAlphaNumeric`,
+// 4 `isUpper`, 5 `isLower`, 6 `isTitle`.
+extern function koji_std_string_is(text: string, test: CInt): boolean {
+    immut bytes = stringBytes(text)
+    immut size = stringSize(text)
+
+    if (test == 6) { return isTitle(bytes, size) }
+
+    if (test <= 3 and size == 0) { return false }
+
+    mut hasCase = false
+    mut at = 0
+
+    while (at < size) {
+        immut first: byte = read(bytes, at)
+        immut code = if (first < 0x80) { int(first) } else { codeAt(bytes, at) }
+        at += widthOf(first)
+
+        if (test == 0 and not isSpace(code)) { return false }
+
+        if (test == 1 and not isNumeric(code)) { return false }
+
+        if (test == 2 and not isAlphabetic(code)) { return false }
+
+        if (test == 3 and not isAlphabetic(code) and not isNumeric(code)) { return false }
+
+        if (test == 4) {
+            if (isLower(code)) { return false }
+
+            if (isUpper(code)) { hasCase = true }
+        }
+
+        if (test == 5) {
+            if (isUpper(code)) { return false }
+
+            if (isLower(code)) { hasCase = true }
+        }
+    }
+
+    return test <= 3 or hasCase
+}
+
+// Every word starts with an upper case letter, followed by lower case ones (as Python's `istitle`).
+function isTitle(bytes: Address, size: int): boolean {
+    mut hasCase = false
+    mut previous = false
+    mut at = 0
+
+    while (at < size) {
+        immut first: byte = read(bytes, at)
+        immut code = if (first < 0x80) { int(first) } else { codeAt(bytes, at) }
+        at += widthOf(first)
+
+        if (isUpper(code)) {
+            if (previous) { return false }
+
+            previous = true
+            hasCase = true
+            continue
+        }
+
+        if (isLower(code)) {
+            if (not previous) { return false }
+
+            hasCase = true
+            continue
+        }
+
+        previous = false
+    }
+
+    return hasCase
+}
+
+function isAlphabetic(code: int): boolean {
+    if (code < 0x80) { return (code >= 65 and code <= 90) or (code >= 97 and code <= 122) }
+
+    return inTable(0, code)
+}
+
+function isNumeric(code: int): boolean {
+    if (code < 0x80) { return code >= 48 and code <= 57 }
+
+    return inTable(1, code)
+}
+
+function isLower(code: int): boolean {
+    if (code < 0x80) { return code >= 97 and code <= 122 }
+
+    return inTable(2, code)
+}
+
+function isUpper(code: int): boolean {
+    if (code < 0x80) { return code >= 65 and code <= 90 }
+
+    return inTable(3, code)
+}
+
+// The bytes of the character whose first byte is `first`.
+function widthOf(first: byte): int {
+    if (first < 0x80) { return 1 }
+
+    if (first < 0xE0) { return 2 }
+
+    return if (first < 0xF0) { 3 } else { 4 }
+}
+
+// Whether `code` is in the table of ranges `id` (see `rangeTables`).
+function inTable(id: int, code: int): boolean {
+    mut ranges: Address = read(rangeTables, id * 16)
+
+    if (isNull(ranges)) { ranges = decodeRanges(id) }
+
+    mut low = 0
+    mut high: int = read(rangeTables, id * 16 + 8)
+
+    while (low < high) {
+        immut middle = (low + high) >> 1
+        immut start: int = read(ranges, middle * 16)
+
+        if (code < start) {
+            high = middle
+            continue
+        }
+
+        immut end: int = read(ranges, middle * 16 + 8)
+
+        if (code > end) {
+            low = middle + 1
+            continue
+        }
+
+        return true
+    }
+
+    return false
+}
+
+// The ranges of a table (a start and an end, 6 digits each), as ints.
+function decodeRanges(id: int): Address {
+    immut table = rangeText(id)
+    immut digits = stringBytes(table)
+    immut count = stringSize(table) / 12
+    immut ranges = allocate(count * 16 + 16)
+
+    for i in range(count) {
+        write(ranges, i * 16, hexAt(digits, i * 12, 6))
+        write(ranges, i * 16 + 8, hexAt(digits, i * 12 + 6, 6))
+    }
+
+    write(rangeTables, id * 16, ranges)
+    write(rangeTables, id * 16 + 8, count)
+    return ranges
+}
+
+function rangeText(id: int): string {
+    return match (id) {
+        0 => alphabetic
+        1 => numeric
+        2 => lowercase
+        3 => uppercase
+        4 => cased
+        _ => ignorable
+    }
+}
+
+// The number written in `count` hexadecimal digits at `at`.
+function hexAt(digits: Address, at: int, count: int): int {
+    mut value = 0
+
+    for i in range(count) {
+        immut b: byte = read(digits, at + i)
+        value = (value << 4) | int(if (b <= 57) { b - 48 } else { b - 87 })
+    }
+
+    return value
 }

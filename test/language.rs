@@ -423,6 +423,13 @@ fn string_methods() {
         run(source),
         "'ção' ['ção', 'é', ''] ['', '', ''] ['']\néãéã abc ba\nSome(4) Some(0) None true true false\n"
     );
+    // The cases and the properties of Unicode (std/koji/unicode.kj): a character may become
+    // several, and `Σ` at the end of a word is `ς`.
+    let source = r#"
+        print('straße ﬃ ŉ'.upper(), 'İSTANBUL'.lower().length(), 'ΟΔΥΣΣΕΥΣ, ΣΑΣ. Σ'.lower(), 'Ǆungla'.lower())
+        print('ção'.isAlpha(), '٣٤'.isNumeric(), 'Ⅻ'.isNumeric(), 'ÉCOLE'.isUpper(), 'école1'.isLower(), 'Élan Vital'.isTitle(), '　'.isSpace())
+    "#;
+    assert_eq!(run(source), "STRASSE FFI ʼN 9 οδυσσευς, σας. σ ǆungla\ntrue true true true true true true\n");
     assert_error("print('a'.split(''))", "panic: test.kj:1: split() separator cannot be empty");
     assert_error("print('a'.replace('', 'b'))", "panic: test.kj:1: replace() needs a non-empty text to replace");
 }
