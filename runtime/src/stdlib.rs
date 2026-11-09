@@ -42,7 +42,6 @@ pub fn error_message(type_name: &str, variant: &str, texts: &[String]) -> Option
         "FileError",
         "HttpError",
         "DateError",
-        "RegexError",
         "SystemError",
     ];
     if !ERROR_TYPES.contains(&type_name) {
@@ -74,9 +73,6 @@ pub fn error_message(type_name: &str, variant: &str, texts: &[String]) -> Option
         "InvalidResponse" => format!("invalid response from '{}': {}", text(0), text(1)),
         "PatternMismatch" => format!("'{}' does not match the pattern '{}'", text(0), text(1)),
         "InvalidDate" => format!("'{}' is not a valid date", text(0)),
-        "InvalidPattern" => format!("invalid regular expression '{}': {}", text(0), text(1)),
-        "Unsupported" => format!("unsupported regular expression '{}': {}", text(0), text(1)),
-        "TooLarge" => format!("regular expression '{}' is too large", text(0)),
         _ => return None,
     })
 }

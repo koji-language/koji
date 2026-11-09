@@ -1,0 +1,1481 @@
+// The `regex` module: regular expressions (see doc/standard-library/regex.md). A pattern is parsed
+// into a tree, compiled into a program for a Pike machine (a Thompson automaton run with one
+// thread per state), and matched in a time proportional to the length of the text: no
+// backtracking. The first match is the leftmost one, and among those the one that the pattern
+// prefers (the first branch of `|`, the longest repetition unless it is lazy).
+
+// A compiled regular expression: built by `compile` only.
+export opaque type Regex = {
+    pattern: string
+    program: Instruction[]
+    // The capture groups, the whole match being group 0, and the names of the named ones.
+    groups: int
+    names: Map[string, int]
+    // The program can only match at the start of the text (`^...`, `\A...`).
+    anchored: boolean
+    // The instructions that can read the first character of a match, when every match reads one
+    // (`prefilter`): a search skips the positions where none of them matches.
+    firsts: Instruction[]
+    prefilter: boolean
+}
+
+// A match: its text and its positions in characters (`end` excluded).
+export type Match = {
+    value: string
+    start: int
+    end: int
+}
+
+export type RegexError = {
+    // The syntax is wrong: `(abc`.
+    InvalidPattern(pattern: string, message: string)
+    // Valid, but not supported: look-around, backreferences.
+    Unsupported(pattern: string, message: string)
+    // Too large to compile: `a{1000}{1000}`.
+    TooLarge(pattern: string)
+}
+
+function RegexError.display(self): string {
+    return match (self) {
+        InvalidPattern(pattern, message) => `invalid regular expression '${pattern}': ${message}`
+        Unsupported(pattern, message) => `unsupported regular expression '${pattern}': ${message}`
+        TooLarge(pattern) => `regular expression '${pattern}' is too large`
+    }
+}
+
+function Regex.display(self): string {
+    return `<regex '${self.pattern}'>`
+}
+
+// The tree of a pattern.
+type Node = {
+    Empty
+    // A character, compared without case when `fold`.
+    Literal(c: char, fold: boolean)
+    // `.`: any character, or any but a line break.
+    Dot(all: boolean)
+    Set(set: CharClass, fold: boolean)
+    Look(kind: int)
+    Capture(index: int, inner: Node)
+    Concat(items: Node[])
+    Alternate(items: Node[])
+    // `max` -1 for no limit.
+    Repeat(inner: Node, min: int, max: int, greedy: boolean)
+}
+
+// The assertions (`Look`).
+immut startText = 0
+immut endText = 1
+immut startLine = 2
+immut endLine = 3
+immut wordBoundary = 4
+immut notWordBoundary = 5
+immut wordStart = 6
+immut wordEnd = 7
+
+// A set of characters (`[a-z]`, `\d`): ranges of codes, classes of Unicode, and their unions,
+// intersections, differences and complements.
+type CharClass = {
+    Ranges(ranges: CharRange[])
+    Category(kind: int)
+    Union(items: CharClass[])
+    Intersect(left: CharClass, right: CharClass)
+    Subtract(left: CharClass, right: CharClass)
+    Either(left: CharClass, right: CharClass)
+    Complement(inner: CharClass)
+}
+
+type CharRange = {
+    low: int
+    high: int
+}
+
+// The classes of Unicode (`Category`).
+immut digitClass = 0
+immut wordClass = 1
+immut spaceClass = 2
+immut letterClass = 3
+immut upperClass = 4
+immut lowerClass = 5
+immut numberClass = 6
+
+// The instructions of the machine.
+type Instruction = {
+    // Consumes a character equal to `c` (without case when `fold`: `c` is lowercase).
+    CharIns(c: char, fold: boolean)
+    AnyIns(all: boolean)
+    SetIns(set: CharClass, fold: boolean)
+    // Continues at both, `first` preferred.
+    SplitIns(first: int, second: int)
+    JumpIns(target: int)
+    SaveIns(slot: int)
+    LookIns(kind: int)
+    MatchIns
+}
+
+// The modes of `(?imsxU)`.
+type Flags = {
+    fold: boolean
+    multiline: boolean
+    dotAll: boolean
+    extended: boolean
+    lazy: boolean
+}
+
+type Parser = {
+    pattern: string
+    chars: char[]
+    position: int
+    groups: int
+    names: Map[string, int]
+}
+
+// The most instructions a program may have.
+immut largest = 500000
+
+// The regular expression `pattern`, compiled.
+export function compile(pattern: string): Result[Regex, RegexError] {
+    mut parser: Parser = { pattern: pattern, chars: pattern.chars(), position: 0, groups: 1, names: [:] }
+    mut flags: Flags = { fold: false, multiline: false, dotAll: false, extended: false, lazy: false }
+    immut tree = parser.alternation(mut flags, 0)?
+
+    if (parser.position < parser.chars.length()) { return Err(parser.invalid('unopened group')) }
+
+    if (size(tree) > largest) { return Err(TooLarge(pattern)) }
+
+    mut program: Instruction[] = [SaveIns(0)]
+    emit(tree, mut program)
+    program.push(SaveIns(1))
+    program.push(MatchIns)
+    mut firsts: Instruction[] = []
+    immut prefilter = firstInstructions(program, mut firsts)
+    return Ok({
+        pattern: pattern, program: program, groups: parser.groups, names: parser.names, anchored: startsAnchored(tree),
+        firsts: firsts, prefilter: prefilter
+    })
+}
+
+// The instructions that read the first character of a match, in `firsts`; false when a match can
+// read none (it is empty, or starts with an assertion).
+function firstInstructions(program: Instruction[], mut firsts: Instruction[]): boolean {
+    mut seen: boolean[] = []
+
+    for i in range(program.length()) {
+        seen.push(false)
+    }
+
+    mut pending = [0]
+
+    while (true) {
+        immut pc = match (pending.pop()) {
+            Some(found) => found
+            None => break
+        }
+
+        if (seen[pc]) { continue }
+
+        seen[pc] = true
+
+        match (program[pc]) {
+            JumpIns(target) => pending.push(target)
+            SplitIns(first, second) => {
+                pending.push(first)
+                pending.push(second)
+            }
+            SaveIns(_) => pending.push(pc + 1)
+            LookIns(_) => return false
+            MatchIns => return false
+            other => firsts.push(other)
+        }
+    }
+
+    return true
+}
+
+// Parsing
+
+function Parser.invalid(self, message: string): RegexError {
+    return InvalidPattern(self.pattern, message)
+}
+
+function Parser.unsupported(self, message: string): RegexError {
+    return Unsupported(self.pattern, message)
+}
+
+function Parser.done(self): boolean {
+    return self.position >= self.chars.length()
+}
+
+function Parser.peek(self): char {
+    return self.chars[self.position]
+}
+
+function Parser.at(self, c: char): boolean {
+    return self.position < self.chars.length() and self.chars[self.position] == c
+}
+
+// Spaces and `#` comments, in the extended mode `(?x)`.
+function Parser.skipExtended(mut self, flags: Flags) {
+    if (not flags.extended) { return }
+
+    while (not self.done()) {
+        immut c = self.peek()
+
+        if (c == '#') {
+            while (not self.done() and self.peek() != '\n') {
+                self.position += 1
+            }
+
+            continue
+        }
+
+        if (not isSpace(c)) { return }
+
+        self.position += 1
+    }
+}
+
+// `a|b|c` until `)` (inside a group, `depth` > 0) or the end.
+function Parser.alternation(mut self, mut flags: Flags, depth: int): Result[Node, RegexError] {
+    mut branches = [self.concatenation(mut flags, depth)?]
+
+    while (self.at('|')) {
+        self.position += 1
+        branches.push(self.concatenation(mut flags, depth)?)
+    }
+
+    if (branches.length() == 1) { return Ok(branches[0]) }
+
+    return Ok(Alternate(branches))
+}
+
+function Parser.concatenation(mut self, mut flags: Flags, depth: int): Result[Node, RegexError] {
+    mut items: Node[] = []
+
+    while (true) {
+        self.skipExtended(flags)
+
+        if (self.done() or self.at('|')) { break }
+
+        if (self.at(')')) {
+            if (depth == 0) { return Err(self.invalid('unopened group')) }
+
+            break
+        }
+
+        immut c = self.peek()
+
+        if (c == '*' or c == '+' or c == '?' or c == '{') {
+            if (items.length() == 0) { return Err(self.invalid('repetition operator missing expression')) }
+
+            immut last = items.pop()
+
+            match (last) {
+                Some(node) => items.push(self.repetition(node, flags)?)
+                None => {}
+            }
+
+            continue
+        }
+
+        match (self.atom(mut flags, depth)?) {
+            Some(node) => items.push(node)
+            None => {}
+        }
+    }
+
+    if (items.length() == 0) { return Ok(Empty) }
+
+    if (items.length() == 1) { return Ok(items[0]) }
+
+    return Ok(Concat(items))
+}
+
+// `*`, `+`, `?` or `{n,m}` after `node`, and `?` for a lazy one.
+function Parser.repetition(mut self, node: Node, flags: Flags): Result[Node, RegexError] {
+    immut c = self.peek()
+    self.position += 1
+    mut min = 0
+    mut max = -1
+
+    if (c == '+') { min = 1 }
+
+    if (c == '?') { max = 1 }
+
+    if (c == '{') {
+        min = self.decimal()?
+        max = min
+
+        if (self.at(',')) {
+            self.position += 1
+            max = -1
+
+            if (not self.at('}')) { max = self.decimal()? }
+        }
+
+        if (not self.at('}')) { return Err(self.invalid('unclosed counted repetition')) }
+
+        self.position += 1
+
+        if (max != -1 and min > max) { return Err(self.invalid('invalid repetition count range, the start must be <= the end')) }
+    }
+
+    mut greedy = not flags.lazy
+
+    if (self.at('?')) {
+        self.position += 1
+        greedy = not greedy
+    }
+
+    return Ok(Repeat(node, min, max, greedy))
+}
+
+function Parser.decimal(mut self): Result[int, RegexError] {
+    mut value = 0
+    mut digits = 0
+
+    while (not self.done() and self.peek() >= '0' and self.peek() <= '9') {
+        value = value * 10 + (self.peek().code() - 48)
+        digits += 1
+        self.position += 1
+
+        if (value > 4294967295) { return Err(self.invalid('repetition quantifier expects a valid decimal')) }
+    }
+
+    if (digits == 0) {
+        if (self.done()) { return Err(self.invalid('unclosed counted repetition')) }
+
+        return Err(self.invalid('repetition quantifier expects a valid decimal'))
+    }
+
+    return Ok(value)
+}
+
+// One element: a character, a class, a group, an assertion. `None` for a group that only sets
+// flags (`(?i)`).
+function Parser.atom(mut self, mut flags: Flags, depth: int): Result[Option[Node], RegexError] {
+    immut c = self.peek()
+    self.position += 1
+
+    if (c == '(') { return self.group(mut flags, depth) }
+
+    if (c == '[') { return Ok(Some(Set(self.charClass()?, flags.fold))) }
+
+    if (c == '.') { return Ok(Some(Dot(flags.dotAll))) }
+
+    if (c == '^') { return Ok(Some(Look(if (flags.multiline) { startLine } else { startText }))) }
+
+    if (c == '$') { return Ok(Some(Look(if (flags.multiline) { endLine } else { endText }))) }
+
+    if (c == '\\') { return Ok(Some(self.escape(flags)?)) }
+
+    return Ok(Some(literal(c, flags.fold)))
+}
+
+function literal(c: char, fold: boolean): Node {
+    if (fold and lowered(c) != uppered(c)) { return Literal(lowered(c), true) }
+
+    return Literal(c, false)
+}
+
+function Parser.group(mut self, mut flags: Flags, depth: int): Result[Option[Node], RegexError] {
+    if (not self.at('?')) {
+        immut index = self.groups
+        self.groups += 1
+        return Ok(Some(Capture(index, self.groupBody(flags, depth)?)))
+    }
+
+    self.position += 1
+
+    if (self.done()) { return Err(self.invalid('unclosed group')) }
+
+    immut c = self.peek()
+
+    if (c == '=' or c == '!') { return Err(self.unsupported('look-around, including look-ahead and look-behind, is not supported')) }
+
+    if (c == '<' and self.position + 1 < self.chars.length() and (self.chars[self.position + 1] == '=' or self.chars[self.position + 1] == '!')) {
+        return Err(self.unsupported('look-around, including look-ahead and look-behind, is not supported'))
+    }
+
+    if (c == 'P' and self.position + 1 < self.chars.length() and self.chars[self.position + 1] == '=') {
+        return Err(self.unsupported('backreferences are not supported'))
+    }
+
+    // `(?P<name>...)` or `(?<name>...)`.
+    if (c == '<' or (c == 'P' and self.position + 1 < self.chars.length() and self.chars[self.position + 1] == '<')) {
+        self.position += if (c == 'P') { 2 } else { 1 }
+        immut name = self.groupName()?
+
+        if (self.names.has(name)) { return Err(self.invalid('duplicate capture group name')) }
+
+        immut index = self.groups
+        self.groups += 1
+        self.names[name] = index
+        return Ok(Some(Capture(index, self.groupBody(flags, depth)?)))
+    }
+
+    // Flags, for the rest of the group (`(?i)`) or for a group of their own (`(?i:...)`).
+    mut changed = flags
+    mut negated = false
+
+    while (true) {
+        if (self.done()) { return Err(self.invalid('expected flag but got end of regex')) }
+
+        immut flag = self.peek()
+        self.position += 1
+
+        if (flag == ')') {
+            flags = changed
+            return Ok(None)
+        }
+
+        if (flag == ':') { return Ok(Some(self.groupBody(changed, depth)?)) }
+
+        if (flag == '-') {
+            negated = true
+            continue
+        }
+
+        immut value = not negated
+
+        match (flag) {
+            'i' => changed.fold = value
+            'm' => changed.multiline = value
+            's' => changed.dotAll = value
+            'x' => changed.extended = value
+            'U' => changed.lazy = value
+            'u' => {}
+            'R' => {}
+            _ => return Err(self.invalid('unrecognized flag'))
+        }
+    }
+
+    return Ok(None)
+}
+
+// The pattern of a group, until its `)`; its flags end with it.
+function Parser.groupBody(mut self, flags: Flags, depth: int): Result[Node, RegexError] {
+    mut inner = flags
+    immut body = self.alternation(mut inner, depth + 1)?
+
+    if (not self.at(')')) { return Err(self.invalid('unclosed group')) }
+
+    self.position += 1
+    return Ok(body)
+}
+
+function Parser.groupName(mut self): Result[string, RegexError] {
+    mut name = ''
+
+    while (true) {
+        if (self.done()) { return Err(self.invalid('unclosed capture group name')) }
+
+        immut c = self.peek()
+        self.position += 1
+
+        if (c == '>') { break }
+
+        immut first = name == ''
+        immut valid = c == '_' or isAsciiLetter(c) or (not first and ((c >= '0' and c <= '9') or c == '.' or c == '[' or c == ']'))
+
+        if (not valid) { return Err(self.invalid('invalid capture group character')) }
+
+        name += string(c)
+    }
+
+    if (name == '') { return Err(self.invalid('empty capture group name')) }
+
+    return Ok(name)
+}
+
+// After `\`, outside a class.
+function Parser.escape(mut self, flags: Flags): Result[Node, RegexError] {
+    if (self.done()) { return Err(self.invalid('incomplete escape sequence, reached end of pattern prematurely')) }
+
+    immut c = self.peek()
+
+    if (c >= '1' and c <= '9') { return Err(self.unsupported('backreferences are not supported')) }
+
+    match (c) {
+        'b' => {
+            self.position += 1
+            return Ok(Look(wordBoundary))
+        }
+        'B' => {
+            self.position += 1
+            return Ok(Look(notWordBoundary))
+        }
+        'A' => {
+            self.position += 1
+            return Ok(Look(startText))
+        }
+        'z' => {
+            self.position += 1
+            return Ok(Look(endText))
+        }
+        '<' => {
+            self.position += 1
+            return Ok(Look(wordStart))
+        }
+        '>' => {
+            self.position += 1
+            return Ok(Look(wordEnd))
+        }
+        _ => {}
+    }
+
+    match (self.classEscape()?) {
+        Some(set) => return Ok(Set(set, flags.fold))
+        None => {}
+    }
+
+    return Ok(literal(self.escapedChar()?, flags.fold))
+}
+
+// `\d`, `\w`, `\s`, `\p{...}` and their complements, if the escape is one (after `\`).
+function Parser.classEscape(mut self): Result[Option[CharClass], RegexError] {
+    immut c = self.peek()
+    immut kind = match (c) {
+        'd' => digitClass
+        'D' => digitClass
+        'w' => wordClass
+        'W' => wordClass
+        's' => spaceClass
+        'S' => spaceClass
+        'p' => -1
+        'P' => -1
+        _ => return Ok(None)
+    }
+    self.position += 1
+    immut negated = c == 'D' or c == 'W' or c == 'S' or c == 'P'
+    mut set = Category(kind)
+
+    if (kind == -1) { set = self.property()? }
+
+    if (negated) { return Ok(Some(Complement(set))) }
+
+    return Ok(Some(set))
+}
+
+// `{Letter}` or `L` after `\p`.
+function Parser.property(mut self): Result[CharClass, RegexError] {
+    mut name = ''
+
+    if (self.at('{')) {
+        self.position += 1
+
+        while (not self.at('}')) {
+            if (self.done()) { return Err(self.invalid('Unicode escape not closed')) }
+
+            name += string(self.peek())
+            self.position += 1
+        }
+
+        self.position += 1
+    } else {
+        if (self.done()) { return Err(self.invalid('Unicode escape not closed')) }
+
+        name = string(self.peek())
+        self.position += 1
+    }
+
+    immut kind = match (name.lower().replace('_', '').replace(' ', '')) {
+        'l' => letterClass
+        'letter' => letterClass
+        'alphabetic' => letterClass
+        'alpha' => letterClass
+        'lu' => upperClass
+        'uppercaseletter' => upperClass
+        'uppercase' => upperClass
+        'upper' => upperClass
+        'll' => lowerClass
+        'lowercaseletter' => lowerClass
+        'lowercase' => lowerClass
+        'lower' => lowerClass
+        'n' => numberClass
+        'number' => numberClass
+        'nd' => digitClass
+        'decimalnumber' => digitClass
+        'digit' => digitClass
+        'whitespace' => spaceClass
+        'space' => spaceClass
+        _ => -1
+    }
+
+    if (kind == -1) { return Err(self.unsupported(`the Unicode property '${name}' is not supported`)) }
+
+    return Ok(Category(kind))
+}
+
+// The character of an escape that stands for one (after `\`).
+function Parser.escapedChar(mut self): Result[char, RegexError] {
+    immut c = self.peek()
+    self.position += 1
+
+    match (c) {
+        'n' => return Ok('\n')
+        't' => return Ok('\t')
+        'r' => return Ok('\r')
+        'f' => return Ok(charOf(12))
+        'v' => return Ok(charOf(11))
+        'a' => return Ok(charOf(7))
+        'x' => return self.hexChar(2)
+        'u' => return self.hexChar(4)
+        'U' => return self.hexChar(8)
+        _ => {}
+    }
+
+    // Any ASCII character that is not a letter or a digit stands for itself.
+    immut code = c.code()
+
+    if (code < 128 and not isAsciiLetter(c) and not (c >= '0' and c <= '9') and code > 32) { return Ok(c) }
+
+    if (c == ' ') { return Ok(c) }
+
+    return Err(self.invalid('unrecognized escape sequence'))
+}
+
+// `\x41` (`digits` hexadecimal digits) or `\x{1F600}`.
+function Parser.hexChar(mut self, digits: int): Result[char, RegexError] {
+    mut text = ''
+
+    if (self.at('{')) {
+        self.position += 1
+
+        while (not self.at('}')) {
+            if (self.done()) { return Err(self.invalid('unclosed hexadecimal literal')) }
+
+            text += string(self.peek())
+            self.position += 1
+        }
+
+        self.position += 1
+
+        if (text == '') { return Err(self.invalid('empty hexadecimal literal')) }
+    } else {
+        for i in range(digits) {
+            if (self.done()) { return Err(self.invalid('incomplete escape sequence, reached end of pattern prematurely')) }
+
+            text += string(self.peek())
+            self.position += 1
+        }
+    }
+
+    mut value = 0
+
+    for digit in text {
+        match ('0123456789abcdef'.indexOf(string(digit).lower())) {
+            Some(found) => value = value * 16 + found
+            None => return Err(self.invalid('invalid hexadecimal digit'))
+        }
+
+        if (value > 1114111) { return Err(self.invalid('hexadecimal literal is not a Unicode scalar value')) }
+    }
+
+    return match (char(value)) {
+        Some(found) => Ok(found)
+        None => Err(self.invalid('hexadecimal literal is not a Unicode scalar value'))
+    }
+}
+
+// A class `[...]` (after its `[`).
+function Parser.charClass(mut self): Result[CharClass, RegexError] {
+    mut negated = false
+
+    if (self.at('^')) {
+        self.position += 1
+        negated = true
+    }
+
+    mut set = self.classUnion(true)?
+
+    while (true) {
+        if (self.done()) { return Err(self.invalid('unclosed character class')) }
+
+        if (self.at(']')) {
+            self.position += 1
+            break
+        }
+
+        immut operator = self.classOperator()
+
+        if (operator == '') { return Err(self.invalid('unclosed character class')) }
+
+        immut right = self.classUnion(false)?
+        set = match (operator) {
+            '&&' => Intersect(set, right)
+            '--' => Subtract(set, right)
+            _ => Either(set, right)
+        }
+    }
+
+    if (negated) { return Ok(Complement(set)) }
+
+    return Ok(set)
+}
+
+// `&&`, `--` or `~~` at the position (read), or `''`.
+function Parser.classOperator(mut self): string {
+    if (self.position + 1 >= self.chars.length()) { return '' }
+
+    immut pair = `${self.chars[self.position]}${self.chars[self.position + 1]}`
+
+    if (pair == '&&' or pair == '--' or pair == '~~') {
+        self.position += 2
+        return pair
+    }
+
+    return ''
+}
+
+// The items of a class until `]` or an operator; a `]` first stands for itself.
+function Parser.classUnion(mut self, first: boolean): Result[CharClass, RegexError] {
+    mut ranges: CharRange[] = []
+    mut items: CharClass[] = []
+    mut start = first
+
+    while (true) {
+        if (self.done()) { return Err(self.invalid('unclosed character class')) }
+
+        immut c = self.peek()
+
+        if (c == ']' and not start) { break }
+
+        if (self.position + 1 < self.chars.length()) {
+            immut pair = `${c}${self.chars[self.position + 1]}`
+
+            if ((pair == '&&' or pair == '--' or pair == '~~') and not start) { break }
+        }
+
+        start = false
+
+        // `[:alpha:]`
+        if (c == '[' and self.position + 1 < self.chars.length() and self.chars[self.position + 1] == ':') {
+            match (self.posixClass()) {
+                Some(set) => {
+                    items.push(set)
+                    continue
+                }
+                None => {}
+            }
+        }
+
+        if (c == '[') {
+            self.position += 1
+            items.push(self.charClass()?)
+            continue
+        }
+
+        immut low = match (self.classChar()?) {
+            ClassSet(set) => {
+                items.push(set)
+                continue
+            }
+            ClassChar(found) => found
+        }
+
+        // A range `a-z`; a `-` before `]` stands for itself.
+        if (self.at('-') and self.position + 1 < self.chars.length() and self.chars[self.position + 1] != ']' and self.chars[self.position + 1] != '-') {
+            self.position += 1
+
+            immut high = match (self.classChar()?) {
+                ClassChar(found) => found
+                ClassSet(_) => return Err(self.invalid('invalid character class range'))
+            }
+
+            if (high.code() < low.code()) { return Err(self.invalid('invalid character class range, the start must be <= the end')) }
+
+            ranges.push({ low: low.code(), high: high.code() })
+            continue
+        }
+
+        ranges.push({ low: low.code(), high: low.code() })
+    }
+
+    if (items.length() == 0) { return Ok(Ranges(ranges)) }
+
+    if (ranges.length() > 0) { items.push(Ranges(ranges)) }
+
+    if (items.length() == 1) { return Ok(items[0]) }
+
+    return Ok(Union(items))
+}
+
+// A character of a class, or a class escape (`\d`).
+type ClassItem = {
+    ClassChar(c: char)
+    ClassSet(set: CharClass)
+}
+
+function Parser.classChar(mut self): Result[ClassItem, RegexError] {
+    immut c = self.peek()
+    self.position += 1
+
+    if (c != '\\') { return Ok(ClassChar(c)) }
+
+    if (self.done()) { return Err(self.invalid('incomplete escape sequence, reached end of pattern prematurely')) }
+
+    match (self.classEscape()?) {
+        Some(set) => return Ok(ClassSet(set))
+        None => {}
+    }
+
+    immut escaped = self.peek()
+
+    if (escaped == 'b') {
+        self.position += 1
+        return Ok(ClassChar(charOf(8)))
+    }
+
+    return Ok(ClassChar(self.escapedChar()?))
+}
+
+// `[:alpha:]` (ASCII) at the position, read if it is one.
+function Parser.posixClass(mut self): Option[CharClass] {
+    mut end = self.position + 2
+    mut name = ''
+
+    while (end < self.chars.length() and self.chars[end] != ':') {
+        name += string(self.chars[end])
+        end += 1
+    }
+
+    if (end + 1 >= self.chars.length() or self.chars[end + 1] != ']') { return None }
+
+    immut negated = name.startsWith('^')
+    immut plain = if (negated) { name[1..] } else { name }
+    immut ranges: CharRange[] = match (plain) {
+        'alnum' => [span('0', '9'), span('A', 'Z'), span('a', 'z')]
+        'alpha' => [span('A', 'Z'), span('a', 'z')]
+        'ascii' => [{ low: 0, high: 127 }]
+        'blank' => [span('\t', '\t'), span(' ', ' ')]
+        'cntrl' => [{ low: 0, high: 31 }, { low: 127, high: 127 }]
+        'digit' => [span('0', '9')]
+        'graph' => [{ low: 33, high: 126 }]
+        'lower' => [span('a', 'z')]
+        'print' => [{ low: 32, high: 126 }]
+        'punct' => [{ low: 33, high: 47 }, { low: 58, high: 64 }, { low: 91, high: 96 }, { low: 123, high: 126 }]
+        'space' => [span('\t', '\r'), span(' ', ' ')]
+        'upper' => [span('A', 'Z')]
+        'word' => [span('0', '9'), span('A', 'Z'), span('_', '_'), span('a', 'z')]
+        'xdigit' => [span('0', '9'), span('A', 'F'), span('a', 'f')]
+        _ => return None
+    }
+    self.position = end + 2
+
+    if (negated) { return Some(Complement(Ranges(ranges))) }
+
+    return Some(Ranges(ranges))
+}
+
+function span(low: char, high: char): CharRange {
+    return { low: low.code(), high: high.code() }
+}
+
+// Compiling
+
+// The instructions `node` compiles to (an upper bound, to refuse a pattern too large before
+// building it).
+function size(node: Node): int {
+    return match (node) {
+        Empty => 0
+        Capture(_, inner) => size(inner) + 2
+        Concat(items) => {
+            mut total = 0
+
+            for item in items {
+                total += size(item)
+
+                if (total > largest) { return total }
+            }
+
+            total
+        }
+        Alternate(items) => {
+            mut total = 0
+
+            for item in items {
+                total += size(item) + 2
+
+                if (total > largest) { return total }
+            }
+
+            total
+        }
+        Repeat(inner, min, max, _) => {
+            immut copies = if (max == -1) { min + 1 } else { max }
+            immut one = size(inner) + 2
+
+            if (copies > 0 and one > (largest + 1) / copies) { return largest + 1 }
+
+            one * copies
+        }
+        _ => 1
+    }
+}
+
+function emit(node: Node, mut program: Instruction[]) {
+    match (node) {
+        Empty => {}
+        Literal(c, fold) => program.push(CharIns(c, fold))
+        Dot(all) => program.push(AnyIns(all))
+        Set(set, fold) => program.push(SetIns(set, fold))
+        Look(kind) => program.push(LookIns(kind))
+        Capture(index, inner) => {
+            program.push(SaveIns(index * 2))
+            emit(inner, mut program)
+            program.push(SaveIns(index * 2 + 1))
+        }
+        Concat(items) => {
+            for item in items {
+                emit(item, mut program)
+            }
+        }
+        Alternate(items) => emitAlternation(items, 0, mut program)
+        Repeat(inner, min, max, greedy) => {
+            for i in range(min) {
+                emit(inner, mut program)
+            }
+
+            if (max == -1) {
+                emitStar(inner, greedy, mut program)
+                return
+            }
+
+            emitOptional(inner, max - min, greedy, mut program)
+        }
+    }
+}
+
+// `items[index] | items[index + 1] | ...`: each branch preferred to the ones after it.
+function emitAlternation(items: Node[], index: int, mut program: Instruction[]) {
+    if (index == items.length() - 1) {
+        emit(items[index], mut program)
+        return
+    }
+
+    immut split = program.length()
+    program.push(SplitIns(0, 0))
+    emit(items[index], mut program)
+    immut jump = program.length()
+    program.push(JumpIns(0))
+    immut next = program.length()
+    emitAlternation(items, index + 1, mut program)
+    program[split] = SplitIns(split + 1, next)
+    program[jump] = JumpIns(program.length())
+}
+
+// `inner*`.
+function emitStar(inner: Node, greedy: boolean, mut program: Instruction[]) {
+    immut split = program.length()
+    program.push(SplitIns(0, 0))
+    emit(inner, mut program)
+    program.push(JumpIns(split))
+    immut after = program.length()
+    program[split] = if (greedy) { SplitIns(split + 1, after) } else { SplitIns(after, split + 1) }
+}
+
+// `(inner(inner(...)?)?)?`, `count` times.
+function emitOptional(inner: Node, count: int, greedy: boolean, mut program: Instruction[]) {
+    mut splits: int[] = []
+
+    for i in range(count) {
+        splits.push(program.length())
+        program.push(SplitIns(0, 0))
+        emit(inner, mut program)
+    }
+
+    immut after = program.length()
+
+    for split in splits {
+        program[split] = if (greedy) { SplitIns(split + 1, after) } else { SplitIns(after, split + 1) }
+    }
+}
+
+// Whether every match of `node` starts at the start of the text.
+function startsAnchored(node: Node): boolean {
+    return match (node) {
+        Look(kind) => kind == startText
+        Capture(_, inner) => startsAnchored(inner)
+        Concat(items) => items.length() > 0 and startsAnchored(items[0])
+        Alternate(items) => {
+            for item in items {
+                if (not startsAnchored(item)) { return false }
+            }
+
+            true
+        }
+        Repeat(inner, min, _, _) => min > 0 and startsAnchored(inner)
+        _ => false
+    }
+}
+
+// Matching
+
+// A thread of the machine: where it is in the program, and the positions of the groups so far.
+type Thread = {
+    pc: int
+    slots: int[]
+}
+
+// The slots (start and end of each group, -1 when it did not match) of the first match of the
+// program in `chars` from `start`, if there is one.
+function Regex.search(self, chars: char[], start: int): Option[int[]] {
+    immut count = chars.length()
+    mut empty: int[] = []
+
+    for i in range(self.groups * 2) {
+        empty.push(-1)
+    }
+
+    // `seen[pc] == step`: the state is already in the list of the step.
+    mut seen: int[] = []
+
+    for i in range(self.program.length()) {
+        seen.push(-1)
+    }
+
+    mut current: Thread[] = []
+    mut found: Option[int[]] = None
+    mut position = start
+    mut step = 0
+
+    if (self.prefilter and not self.anchored) {
+        while (position < count and not self.canStart(chars[position])) {
+            position += 1
+        }
+
+        if (position >= count) { return None }
+    }
+
+    while (true) {
+        // A new thread at each position, after the others: they started earlier.
+        if (found is None and (not self.anchored or position == 0)) {
+            self.follow(mut current, mut seen, step, { pc: 0, slots: empty }, chars, position)
+        }
+
+        step += 1
+
+        // No thread here: the next position, unless a match is found or the text has ended.
+        if (current.length() == 0) {
+            if (found is Some or position >= count or self.anchored) { break }
+
+            position += 1
+
+            // Up to a character that a match can start with.
+            if (self.prefilter) {
+                while (position < count and not self.canStart(chars[position])) {
+                    position += 1
+                }
+
+                if (position >= count) { break }
+            }
+
+            continue
+        }
+
+        mut next: Thread[] = []
+
+        for thread in current {
+            immut instruction = self.program[thread.pc]
+
+            if (instruction is MatchIns) {
+                found = Some(thread.slots)
+                // The threads after this one are less preferred.
+                break
+            }
+
+            if (position < count and consumes(instruction, chars[position])) {
+                self.follow(mut next, mut seen, step, { pc: thread.pc + 1, slots: thread.slots }, chars, position + 1)
+            }
+        }
+
+        current = next
+
+        if (position >= count) { break }
+
+        position += 1
+    }
+
+    return found
+}
+
+// Adds `thread` to `list`, through the instructions that consume nothing, in the order of
+// preference. `seen` and `step` keep each state once per step.
+function Regex.follow(self, mut list: Thread[], mut seen: int[], step: int, thread: Thread, chars: char[], position: int) {
+    if (seen[thread.pc] == step) { return }
+
+    // Most often the next instruction reads a character: the thread waits for it.
+    if (readsChar(self.program[thread.pc])) {
+        seen[thread.pc] = step
+        list.push(thread)
+        return
+    }
+
+    mut pending: Thread[] = [thread]
+
+    while (true) {
+        immut current = match (pending.pop()) {
+            Some(found) => found
+            None => break
+        }
+
+        if (seen[current.pc] == step) { continue }
+
+        seen[current.pc] = step
+
+        match (self.program[current.pc]) {
+            JumpIns(target) => pending.push({ pc: target, slots: current.slots })
+            // The first is preferred: it is taken from the stack first.
+            SplitIns(first, second) => {
+                pending.push({ pc: second, slots: current.slots })
+                pending.push({ pc: first, slots: current.slots })
+            }
+            SaveIns(slot) => {
+                mut slots = current.slots
+                slots[slot] = position
+                pending.push({ pc: current.pc + 1, slots: slots })
+            }
+            LookIns(kind) => {
+                if (holds(kind, chars, position)) { pending.push({ pc: current.pc + 1, slots: current.slots }) }
+            }
+            _ => list.push(current)
+        }
+    }
+}
+
+function readsChar(instruction: Instruction): boolean {
+    return match (instruction) {
+        CharIns(_, _) => true
+        AnyIns(_) => true
+        SetIns(_, _) => true
+        _ => false
+    }
+}
+
+function Regex.canStart(self, c: char): boolean {
+    for instruction in self.firsts {
+        if (consumes(instruction, c)) { return true }
+    }
+
+    return false
+}
+
+function consumes(instruction: Instruction, c: char): boolean {
+    return match (instruction) {
+        CharIns(expected, fold) => if (fold) { lowered(c) == expected } else { c == expected }
+        AnyIns(all) => all or c != '\n'
+        SetIns(set, fold) => {
+            if (contains(set, c)) { return true }
+
+            fold and (contains(set, lowered(c)) or contains(set, uppered(c)))
+        }
+        _ => false
+    }
+}
+
+function contains(set: CharClass, c: char): boolean {
+    return match (set) {
+        Ranges(ranges) => {
+            immut code = c.code()
+
+            for range in ranges {
+                if (code >= range.low and code <= range.high) { return true }
+            }
+
+            false
+        }
+        Category(kind) => inCategory(kind, c)
+        Union(items) => {
+            for item in items {
+                if (contains(item, c)) { return true }
+            }
+
+            false
+        }
+        Intersect(left, right) => contains(left, c) and contains(right, c)
+        Subtract(left, right) => contains(left, c) and not contains(right, c)
+        Either(left, right) => contains(left, c) != contains(right, c)
+        Complement(inner) => not contains(inner, c)
+    }
+}
+
+// The classes of Unicode, by the classifications of strings (exact for ASCII).
+function inCategory(kind: int, c: char): boolean {
+    immut code = c.code()
+
+    if (code < 128) {
+        return match (kind) {
+            0 => c >= '0' and c <= '9'
+            1 => isAsciiLetter(c) or (c >= '0' and c <= '9') or c == '_'
+            2 => c == ' ' or (code >= 9 and code <= 13)
+            3 => isAsciiLetter(c)
+            4 => c >= 'A' and c <= 'Z'
+            5 => c >= 'a' and c <= 'z'
+            _ => c >= '0' and c <= '9'
+        }
+    }
+
+    immut text = string(c)
+
+    return match (kind) {
+        0 => text.isNumeric()
+        1 => text.isAlphaNumeric()
+        2 => text.isSpace()
+        3 => text.isAlpha()
+        4 => text.isAlpha() and text.isUpper()
+        5 => text.isAlpha() and text.isLower()
+        _ => text.isNumeric()
+    }
+}
+
+function holds(kind: int, chars: char[], position: int): boolean {
+    immut count = chars.length()
+
+    if (kind == startText) { return position == 0 }
+
+    if (kind == endText) { return position == count }
+
+    if (kind == startLine) { return position == 0 or chars[position - 1] == '\n' }
+
+    if (kind == endLine) { return position == count or chars[position] == '\n' }
+
+    immut before = position > 0 and isWord(chars[position - 1])
+    immut after = position < count and isWord(chars[position])
+
+    if (kind == wordBoundary) { return before != after }
+
+    if (kind == notWordBoundary) { return before == after }
+
+    if (kind == wordStart) { return not before and after }
+
+    return before and not after
+}
+
+function isWord(c: char): boolean {
+    return inCategory(wordClass, c)
+}
+
+// The methods
+
+// Whether the pattern matches anywhere in `input`.
+function Regex.test(self, input: string): boolean {
+    return self.search(input.chars(), 0) is Some
+}
+
+// The first match.
+function Regex.find(self, input: string): Option[Match] {
+    immut chars = input.chars()
+
+    return match (self.search(chars, 0)) {
+        Some(slots) => Some(matchOf(chars, slots))
+        None => None
+    }
+}
+
+function matchOf(chars: char[], slots: int[]): Match {
+    return { value: piece(chars, slots[0], slots[1]), start: slots[0], end: slots[1] }
+}
+
+// The text of `chars[start..end]` (from the characters: slicing the string would count them from
+// its start each time).
+function piece(chars: char[], start: int, end: int): string {
+    mut text = ''
+
+    for i in range(start, end) {
+        text += string(chars[i])
+    }
+
+    return text
+}
+
+// Every match, one after the other: an empty match right after the end of the previous one is
+// skipped.
+function Regex.matches(self, chars: char[]): int[][] {
+    mut found: int[][] = []
+    mut position = 0
+    mut lastEnd = -1
+
+    while (position <= chars.length()) {
+        immut slots = match (self.search(chars, position)) {
+            Some(slots) => slots
+            None => break
+        }
+
+        if (slots[0] == slots[1] and slots[1] == lastEnd) {
+            position = slots[1] + 1
+            continue
+        }
+
+        found.push(slots)
+        position = slots[1]
+        lastEnd = slots[1]
+    }
+
+    return found
+}
+
+// Every match.
+function Regex.findAll(self, input: string): Match[] {
+    mut found: Match[] = []
+    immut chars = input.chars()
+
+    for slots in self.matches(chars) {
+        found.push(matchOf(chars, slots))
+    }
+
+    return found
+}
+
+// `input` with its first match replaced by `replacement`: `$1` or `${1}` is the text of a group,
+// `$name` or `${name}` that of a named group, `$$` a `$`.
+function Regex.replace(self, input: string, replacement: string): string {
+    immut chars = input.chars()
+
+    return match (self.search(chars, 0)) {
+        Some(slots) => piece(chars, 0, slots[0]) + self.expand(chars, slots, replacement) + piece(chars, slots[1], chars.length())
+        None => input
+    }
+}
+
+// `input` with every match replaced by `replacement`.
+function Regex.replaceAll(self, input: string, replacement: string): string {
+    mut out = ''
+    mut last = 0
+    immut chars = input.chars()
+
+    for slots in self.matches(chars) {
+        for i in range(last, slots[0]) {
+            out += string(chars[i])
+        }
+
+        out += self.expand(chars, slots, replacement)
+        last = slots[1]
+    }
+
+    for i in range(last, chars.length()) {
+        out += string(chars[i])
+    }
+
+    return out
+}
+
+// The pieces of `input` between its matches.
+function Regex.split(self, input: string): string[] {
+    mut pieces: string[] = []
+    mut last = 0
+    immut chars = input.chars()
+
+    for slots in self.matches(chars) {
+        pieces.push(piece(chars, last, slots[0]))
+        last = slots[1]
+    }
+
+    pieces.push(piece(chars, last, chars.length()))
+    return pieces
+}
+
+// `replacement` with its `$` references replaced by the groups of a match.
+function Regex.expand(self, input: char[], slots: int[], replacement: string): string {
+    immut chars = replacement.chars()
+    mut out = ''
+    mut i = 0
+
+    while (i < chars.length()) {
+        immut c = chars[i]
+        i += 1
+
+        if (c != '$' or i >= chars.length()) {
+            out += string(c)
+            continue
+        }
+
+        if (chars[i] == '$') {
+            out += '$'
+            i += 1
+            continue
+        }
+
+        mut name = ''
+
+        if (chars[i] == '{') {
+            mut end = i + 1
+
+            while (end < chars.length() and chars[end] != '}') {
+                end += 1
+            }
+
+            if (end >= chars.length()) {
+                out += '$'
+                continue
+            }
+
+            name = replacement[i + 1..end]
+            i = end + 1
+        } else {
+            while (i < chars.length() and (chars[i] == '_' or isAsciiLetter(chars[i]) or (chars[i] >= '0' and chars[i] <= '9'))) {
+                name += string(chars[i])
+                i += 1
+            }
+
+            if (name == '') {
+                out += '$'
+                continue
+            }
+        }
+
+        out += self.group(input, slots, name)
+    }
+
+    return out
+}
+
+// The text of the group `name` (a number or a name) of a match, or `''`.
+function Regex.group(self, input: char[], slots: int[], name: string): string {
+    immut index = match (int(name)) {
+        Ok(number) => number
+        Err(_) => match (self.names.get(name)) {
+            Some(found) => found
+            None => return ''
+        }
+    }
+
+    if (index < 0 or index >= self.groups or slots[index * 2] < 0) { return '' }
+
+    return piece(input, slots[index * 2], slots[index * 2 + 1])
+}
+
+// Characters
+
+function isAsciiLetter(c: char): boolean {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
+}
+
+function isSpace(c: char): boolean {
+    return inCategory(spaceClass, c)
+}
+
+function lowered(c: char): char {
+    if (c >= 'A' and c <= 'Z') { return charOf(c.code() + 32) }
+
+    if (c.code() < 128) { return c }
+
+    immut text = string(c).lower()
+    return if (text.length() == 1) { text.chars()[0] } else { c }
+}
+
+function uppered(c: char): char {
+    if (c >= 'a' and c <= 'z') { return charOf(c.code() - 32) }
+
+    if (c.code() < 128) { return c }
+
+    immut text = string(c).upper()
+    return if (text.length() == 1) { text.chars()[0] } else { c }
+}
+
+function charOf(code: int): char {
+    return match (char(code)) {
+        Some(c) => c
+        None => ' '
+    }
+}

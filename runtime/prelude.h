@@ -330,20 +330,6 @@ KojiString *koji_std_datetime_today(void);
 KojiString *koji_std_datetime_format(KojiDecimal timestamp, const KojiString *pattern);
 KojiRecord *koji_std_datetime_parse(const KojiString *text, const KojiString *pattern, const KojiRecordType *result);
 
-typedef struct KojiRegex KojiRegex;
-
-void koji_regex_retain(const KojiRegex *regex);
-void koji_regex_release(KojiRegex *regex);
-KojiString *koji_regex_repr(const KojiRegex *regex);
-KojiRecord *koji_std_regex_compile(const KojiString *pattern, const KojiRecordType *result);
-bool koji_std_regex_test(const KojiRegex *regex, const KojiString *input);
-KojiRecord *koji_std_regex_find(const KojiRegex *regex, const KojiString *input, const KojiRecordType *option);
-KojiList *koji_std_regex_find_all(const KojiRegex *regex, const KojiString *input, const KojiElementType *element,
-                                  const KojiRecordType *type);
-KojiString *koji_std_regex_replace(const KojiRegex *regex, const KojiString *input, const KojiString *replacement,
-                                   bool all);
-KojiList *koji_std_regex_split(const KojiRegex *regex, const KojiString *input, const KojiElementType *element);
-
 KojiRecord *koji_std_http_request(int32_t method, const KojiString *url, const KojiString *body,
                                   const KojiRecordType *result);
 
@@ -450,17 +436,6 @@ KOJI_INLINE void koji_file_set_variable(KojiFile **variable, KojiFile *value) {
 KOJI_INLINE KojiFile *koji_file_share(KojiFile *file) {
     koji_file_retain(file);
     return file;
-}
-
-KOJI_INLINE void koji_regex_set_variable(KojiRegex **variable, KojiRegex *value) {
-    KojiRegex *old = *variable;
-    *variable = value;
-    koji_regex_release(old);
-}
-
-KOJI_INLINE KojiRegex *koji_regex_share(KojiRegex *regex) {
-    koji_regex_retain(regex);
-    return regex;
 }
 
 KOJI_INLINE void koji_closure_set_variable(KojiClosure **variable, KojiClosure *value) {
@@ -600,15 +575,6 @@ static uint64_t koji_hash_file(const void *slot) { return (uint64_t)(uintptr_t)*
 static const KojiElementType koji_element_file = {
     sizeof(KojiFile *), koji_retain_file, koji_release_file, koji_repr_file, koji_equal_file, NULL, koji_hash_file,
     NULL};
-
-static void koji_retain_regex(const void *slot) { koji_regex_retain(*(KojiRegex *const *)slot); }
-static void koji_release_regex(const void *slot) { koji_regex_release(*(KojiRegex *const *)slot); }
-static KojiString *koji_repr_regex(const void *slot) { return koji_regex_repr(*(KojiRegex *const *)slot); }
-static bool koji_equal_regex(const void *a, const void *b) { return *(KojiRegex *const *)a == *(KojiRegex *const *)b; }
-static uint64_t koji_hash_regex(const void *slot) { return (uint64_t)(uintptr_t)*(KojiRegex *const *)slot; }
-static const KojiElementType koji_element_regex = {
-    sizeof(KojiRegex *), koji_retain_regex, koji_release_regex, koji_repr_regex, koji_equal_regex, NULL,
-    koji_hash_regex, NULL};
 
 /* The `void` in `Ok(void)`: no bytes. */
 static KojiString *koji_repr_void(const void *slot) { (void)slot; return koji_string_new("void", 4); }

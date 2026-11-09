@@ -1771,52 +1771,119 @@ function f10 lastDot(l0: Str): Int
     l3 = l12
     goto b3
 ==== test/ir/cases.txt #18
-string s0 = "invalid JSON at line "
-string s1 = ", column "
-string s2 = ": "
-string s3 = "the number "
-string s4 = " at line "
-string s5 = " is too large"
-string s6 = "unexpected character after the JSON value"
-string s7 = "expected '"
-string s8 = "'"
-string s9 = "invalid literal"
-string s10 = "unexpected end of input"
-string s11 = "true"
-string s12 = "false"
-string s13 = "null"
-string s14 = "unexpected character '"
-string s15 = "expected ',' or '}'"
-string s16 = "expected ',' or ']'"
-string s17 = ""
-string s18 = "invalid number '"
-string s19 = "."
-string s20 = "e"
-string s21 = "E"
-string s22 = "expected a string"
-string s23 = "unterminated string"
-string s24 = "\n"
-string s25 = "\t"
-string s26 = "\r"
-string s27 = "0123456789abcdef"
-string s28 = "invalid escape '\\u"
-string s29 = ".0"
-string s30 = "["
-string s31 = ","
-string s32 = "]"
-string s33 = "{"
-string s34 = ":"
-string s35 = "}"
-string s36 = "\""
-string s37 = "\\\""
-string s38 = "\\\\"
-string s39 = "\\n"
-string s40 = "\\r"
-string s41 = "\\t"
-string s42 = "\\u00"
-string s43 = "[1]"
-string s44 = " "
-string s45 = "a+"
+string s0 = "invalid regular expression '"
+string s1 = "': "
+string s2 = "unsupported regular expression '"
+string s3 = "regular expression '"
+string s4 = "' is too large"
+string s5 = "<regex '"
+string s6 = "'>"
+string s7 = "unopened group"
+string s8 = "repetition operator missing expression"
+string s9 = "unclosed counted repetition"
+string s10 = "invalid repetition count range, the start must be <= the end"
+string s11 = "repetition quantifier expects a valid decimal"
+string s12 = "unclosed group"
+string s13 = "look-around, including look-ahead and look-behind, is not supported"
+string s14 = "backreferences are not supported"
+string s15 = "duplicate capture group name"
+string s16 = "expected flag but got end of regex"
+string s17 = "unrecognized flag"
+string s18 = ""
+string s19 = "unclosed capture group name"
+string s20 = "invalid capture group character"
+string s21 = "empty capture group name"
+string s22 = "incomplete escape sequence, reached end of pattern prematurely"
+string s23 = "Unicode escape not closed"
+string s24 = "_"
+string s25 = " "
+string s26 = "l"
+string s27 = "letter"
+string s28 = "alphabetic"
+string s29 = "alpha"
+string s30 = "lu"
+string s31 = "uppercaseletter"
+string s32 = "uppercase"
+string s33 = "upper"
+string s34 = "ll"
+string s35 = "lowercaseletter"
+string s36 = "lowercase"
+string s37 = "lower"
+string s38 = "n"
+string s39 = "number"
+string s40 = "nd"
+string s41 = "decimalnumber"
+string s42 = "digit"
+string s43 = "whitespace"
+string s44 = "space"
+string s45 = "the Unicode property '"
+string s46 = "' is not supported"
+string s47 = "unrecognized escape sequence"
+string s48 = "unclosed hexadecimal literal"
+string s49 = "empty hexadecimal literal"
+string s50 = "0123456789abcdef"
+string s51 = "invalid hexadecimal digit"
+string s52 = "hexadecimal literal is not a Unicode scalar value"
+string s53 = "unclosed character class"
+string s54 = "&&"
+string s55 = "--"
+string s56 = "~~"
+string s57 = "invalid character class range"
+string s58 = "invalid character class range, the start must be <= the end"
+string s59 = "^"
+string s60 = "alnum"
+string s61 = "ascii"
+string s62 = "blank"
+string s63 = "cntrl"
+string s64 = "graph"
+string s65 = "print"
+string s66 = "punct"
+string s67 = "word"
+string s68 = "xdigit"
+string s69 = "$"
+string s70 = "invalid JSON at line "
+string s71 = ", column "
+string s72 = ": "
+string s73 = "the number "
+string s74 = " at line "
+string s75 = " is too large"
+string s76 = "unexpected character after the JSON value"
+string s77 = "expected '"
+string s78 = "'"
+string s79 = "invalid literal"
+string s80 = "unexpected end of input"
+string s81 = "true"
+string s82 = "false"
+string s83 = "null"
+string s84 = "unexpected character '"
+string s85 = "expected ',' or '}'"
+string s86 = "expected ',' or ']'"
+string s87 = "invalid number '"
+string s88 = "."
+string s89 = "e"
+string s90 = "E"
+string s91 = "expected a string"
+string s92 = "unterminated string"
+string s93 = "\n"
+string s94 = "\t"
+string s95 = "\r"
+string s96 = "invalid escape '\\u"
+string s97 = ".0"
+string s98 = "["
+string s99 = ","
+string s100 = "]"
+string s101 = "{"
+string s102 = ":"
+string s103 = "}"
+string s104 = "\""
+string s105 = "\\\""
+string s106 = "\\\\"
+string s107 = "\\n"
+string s108 = "\\r"
+string s109 = "\\t"
+string s110 = "\\u00"
+string s111 = "[1]"
+string s112 = "a+"
 record r0 JsonError
     Syntax (message: Str, line: Int, column: Int)
     NumberOutOfRange (text: Str, line: Int, column: Int)
@@ -1869,23 +1936,121 @@ record r14 Option[decimal]
 record r15 Option[boolean]
     Some (value: Bool)
     None ()
-record r16 ParseError
-    InvalidNumber (text: Str)
-    OutOfRange (text: Str)
-record r17 Result[int, ParseError]
-    Ok (value: Int)
-    Err (error: Record(16))
-record r18 Result[decimal, ParseError]
-    Ok (value: Decimal)
-    Err (error: Record(16))
-record r19 RegexError
+record r16 RegexError
     InvalidPattern (pattern: Str, message: Str)
     Unsupported (pattern: Str, message: Str)
     TooLarge (pattern: Str)
-record r20 Result[Regex, RegexError]
-    Ok (value: Regex)
-    Err (error: Record(19))
+record r17 Regex
+    {} (pattern: Str, program: List(Record(18)), groups: Int, names: Map(Str, Int), anchored: Bool, firsts: List(Record(18)), prefilter: Bool)
+record r18 Instruction
+    CharIns (c: Char, fold: Bool)
+    AnyIns (all: Bool)
+    SetIns (set: Record(19), fold: Bool)
+    SplitIns (first: Int, second: Int)
+    JumpIns (target: Int)
+    SaveIns (slot: Int)
+    LookIns (kind: Int)
+    MatchIns ()
+record r19 CharClass
+    Ranges (ranges: List(Record(20)))
+    Category (kind: Int)
+    Union (items: List(Record(19)))
+    Intersect (left: Record(19), right: Record(19))
+    Subtract (left: Record(19), right: Record(19))
+    Either (left: Record(19), right: Record(19))
+    Complement (inner: Record(19))
+record r20 CharRange
+    {} (low: Int, high: Int)
+record r21 Result[Regex, RegexError]
+    Ok (value: Record(17))
+    Err (error: Record(16))
+record r22 Parser
+    {} (pattern: Str, chars: List(Char), position: Int, groups: Int, names: Map(Str, Int))
+record r23 Flags
+    {} (fold: Bool, multiline: Bool, dotAll: Bool, extended: Bool, lazy: Bool)
+record r24 Node
+    Empty ()
+    Literal (c: Char, fold: Bool)
+    Dot (all: Bool)
+    Set (set: Record(19), fold: Bool)
+    Look (kind: Int)
+    Capture (index: Int, inner: Record(24))
+    Concat (items: List(Record(24)))
+    Alternate (items: List(Record(24)))
+    Repeat (inner: Record(24), min: Int, max: Int, greedy: Bool)
+record r25 Result[Node, RegexError]
+    Ok (value: Record(24))
+    Err (error: Record(16))
+record r26 Result[int, RegexError]
+    Ok (value: Int)
+    Err (error: Record(16))
+record r27 Option[Node]
+    Some (value: Record(24))
+    None ()
+record r28 Result[Option[Node], RegexError]
+    Ok (value: Record(27))
+    Err (error: Record(16))
+record r29 Result[string, RegexError]
+    Ok (value: Str)
+    Err (error: Record(16))
+record r30 Option[CharClass]
+    Some (value: Record(19))
+    None ()
+record r31 Result[Option[CharClass], RegexError]
+    Ok (value: Record(30))
+    Err (error: Record(16))
+record r32 Result[CharClass, RegexError]
+    Ok (value: Record(19))
+    Err (error: Record(16))
+record r33 Result[char, RegexError]
+    Ok (value: Char)
+    Err (error: Record(16))
+record r34 ClassItem
+    ClassChar (c: Char)
+    ClassSet (set: Record(19))
+record r35 Result[ClassItem, RegexError]
+    Ok (value: Record(34))
+    Err (error: Record(16))
+record r36 Option[int[]]
+    Some (value: List(Int))
+    None ()
+record r37 Thread
+    {} (pc: Int, slots: List(Int))
+record r38 Match
+    {} (value: Str, start: Int, end: Int)
+record r39 Option[Match]
+    Some (value: Record(38))
+    None ()
+record r40 Option[Thread]
+    Some (value: Record(37))
+    None ()
+record r41 ParseError
+    InvalidNumber (text: Str)
+    OutOfRange (text: Str)
+record r42 Result[int, ParseError]
+    Ok (value: Int)
+    Err (error: Record(41))
+record r43 Result[decimal, ParseError]
+    Ok (value: Decimal)
+    Err (error: Record(41))
 global g0: Bool // json initialized
+global g1: Bool // regex initialized
+global g2: Int // startText
+global g3: Int // endText
+global g4: Int // startLine
+global g5: Int // endLine
+global g6: Int // wordBoundary
+global g7: Int // notWordBoundary
+global g8: Int // wordStart
+global g9: Int // wordEnd
+global g10: Int // digitClass
+global g11: Int // wordClass
+global g12: Int // spaceClass
+global g13: Int // letterClass
+global g14: Int // upperClass
+global g15: Int // lowerClass
+global g16: Int // numberClass
+global g17: Int // largest
 
 function f0 main(): Void
     local l0: Record(2)
@@ -1894,21 +2059,22 @@ function f0 main(): Void
     local l3: Str
     local l4: Str
     local l5: Str
-    local l6: Record(20)
+    local l6: Record(21)
     local l7: Str
     local l8: Str
     local l9: Str
   b0:
     call f1()
-    l0 = call f3(s43)
+    call f2()
+    l0 = call f4(s111)
     l1 = RecordToStr l0
     l2 = record variant 2 (1)
-    l3 = call f22(l2)
-    l4 = StrConcat l1, s44
+    l3 = call f23(l2)
+    l4 = StrConcat l1, s25
     l5 = StrConcat l4, l3
-    l6 = koji_std_regex_compile([Value(Str(45)), Record(20)])
+    l6 = call f34(s112)
     l7 = RecordToStr l6
-    l8 = StrConcat l5, s44
+    l8 = StrConcat l5, s25
     l9 = StrConcat l8, l7
     print l9
     return
@@ -1922,7 +2088,32 @@ function f1 json (module)(): Void
     g0 = true
     return
 
-function f2 JsonError.display(l0: Record(0)): Str
+function f2 regex (module)(): Void
+  b0:
+    branch g1, b1, b2
+  b1:
+    return
+  b2:
+    g1 = true
+    g2 = 0
+    g3 = 1
+    g4 = 2
+    g5 = 3
+    g6 = 4
+    g7 = 5
+    g8 = 6
+    g9 = 7
+    g10 = 0
+    g11 = 1
+    g12 = 2
+    g13 = 3
+    g14 = 4
+    g15 = 5
+    g16 = 6
+    g17 = 500000
+    return
+
+function f3 JsonError.display(l0: Record(0)): Str
     local l1: Str
     local l2: Record(0)
     local l3: Int
@@ -1975,11 +2166,11 @@ function f2 JsonError.display(l0: Record(0)): Str
     l9 = l2.2
     l10 = l9
     l11 = IntToStr l8
-    l12 = StrConcat s0, l11
-    l13 = StrConcat l12, s1
+    l12 = StrConcat s70, l11
+    l13 = StrConcat l12, s71
     l14 = IntToStr l10
     l15 = StrConcat l13, l14
-    l16 = StrConcat l15, s2
+    l16 = StrConcat l15, s72
     l17 = StrConcat l16, l6
     l1 = l17
     goto b1
@@ -1992,18 +2183,18 @@ function f2 JsonError.display(l0: Record(0)): Str
     l23 = l22
     l24 = l2.2
     l25 = l24
-    l26 = StrConcat s3, l21
-    l27 = StrConcat l26, s4
+    l26 = StrConcat s73, l21
+    l27 = StrConcat l26, s74
     l28 = IntToStr l23
     l29 = StrConcat l27, l28
-    l30 = StrConcat l29, s1
+    l30 = StrConcat l29, s71
     l31 = IntToStr l25
     l32 = StrConcat l30, l31
-    l33 = StrConcat l32, s5
+    l33 = StrConcat l32, s75
     l1 = l33
     goto b1
 
-function f3 parse(l0: Str): Record(2)
+function f4 parse(l0: Str): Record(2)
     local l1: List(Char)
     local l2: List(Char)
     local l3: Int
@@ -2038,7 +2229,7 @@ function f3 parse(l0: Str): Record(2)
     l3 = 0
     l4 = record variant 0 (l2, l3)
     l5 = l4
-    l6 = call f11(l5) writeback 0 -> l5
+    l6 = call f12(l5) writeback 0 -> l5
     l7 = l6
     l8 = RecordTag l7
     l9 = IntCompare(Equal) l8, 0
@@ -2052,7 +2243,7 @@ function f3 parse(l0: Str): Record(2)
   b3:
     l10 = l7.0
     l11 = l10
-    call f8(l5) writeback 0 -> l5
+    call f9(l5) writeback 0 -> l5
     l12 = l5.1
     l13 = l5.0
     l14 = ListLength l13
@@ -2064,8 +2255,8 @@ function f3 parse(l0: Str): Record(2)
   b5:
     l17 = l5.0
     l18 = l5.1
-    l19 = record variant 0 (s6, l18)
-    l20 = call f4(l17, l19)
+    l19 = record variant 0 (s76, l18)
+    l20 = call f5(l17, l19)
     l21 = record variant 1 (l20)
     return l21
   b6:
@@ -2074,11 +2265,11 @@ function f3 parse(l0: Str): Record(2)
     l24 = l7.0
     l25 = l24
     l26 = l5.0
-    l27 = call f4(l26, l25)
+    l27 = call f5(l26, l25)
     l28 = record variant 1 (l27)
     return l28
 
-function f4 located(l0: List(Char), l1: Record(3)): Record(0)
+function f5 located(l0: List(Char), l1: Record(3)): Record(0)
     local l2: Int
     local l3: Record(3)
     local l4: Int
@@ -2204,7 +2395,7 @@ function f4 located(l0: List(Char), l1: Record(3)): Record(0)
     l29 = l40
     goto b15
 
-function f5 Parser.syntax(l0: Record(4), l1: Str): Record(3)
+function f6 Parser.syntax(l0: Record(4), l1: Str): Record(3)
     local l2: Int
     local l3: Record(3)
   b0:
@@ -2212,7 +2403,7 @@ function f5 Parser.syntax(l0: Record(4), l1: Str): Record(3)
     l3 = record variant 0 (l1, l2)
     return l3
 
-function f6 Parser.current(l0: Record(4)): Record(5)
+function f7 Parser.current(l0: Record(4)): Record(5)
     local l1: Int
     local l2: List(Char)
     local l3: Int
@@ -2238,7 +2429,7 @@ function f6 Parser.current(l0: Record(4)): Record(5)
     l9 = record variant 1 ()
     return l9
 
-function f7 Parser.at(l0: Record(4), l1: Char): Bool
+function f8 Parser.at(l0: Record(4), l1: Char): Bool
     local l2: Bool
     local l3: Int
     local l4: List(Char)
@@ -2265,7 +2456,7 @@ function f7 Parser.at(l0: Record(4), l1: Char): Bool
   b2:
     return l2
 
-function f8 Parser.skipWhitespace(l0: Record(4)): Void
+function f9 Parser.skipWhitespace(l0: Record(4)): Void
     local l1: Bool
     local l2: Int
     local l3: List(Char)
@@ -2305,7 +2496,7 @@ function f8 Parser.skipWhitespace(l0: Record(4)): Void
   b5:
     branch l1, b2, b3
 
-function f9 Parser.expect(l0: Record(4), l1: Char): Record(6)
+function f10 Parser.expect(l0: Record(4), l1: Char): Record(6)
     local l2: Bool
     local l3: Bool
     local l4: Str
@@ -2317,15 +2508,15 @@ function f9 Parser.expect(l0: Record(4), l1: Char): Record(6)
     local l10: Int
     local l11: Record(6)
   b0:
-    call f8(l0) writeback 0 -> l0
-    l2 = call f7(l0, l1)
+    call f9(l0) writeback 0 -> l0
+    l2 = call f8(l0, l1)
     l3 = Not l2
     branch l3, b1, b2
   b1:
     l4 = CharToStr l1
-    l5 = StrConcat s7, l4
-    l6 = StrConcat l5, s8
-    l7 = call f5(l0, l6)
+    l5 = StrConcat s77, l4
+    l6 = StrConcat l5, s78
+    l7 = call f6(l0, l6)
     l8 = record variant 1 (l7)
     return l8
   b2:
@@ -2335,7 +2526,7 @@ function f9 Parser.expect(l0: Record(4), l1: Char): Record(6)
     l11 = record variant 0 (0)
     return l11
 
-function f10 Parser.literal(l0: Record(4), l1: Str, l2: Record(1)): Record(7)
+function f11 Parser.literal(l0: Record(4), l1: Str, l2: Record(1)): Record(7)
     local l3: List(Char)
     local l4: List(Char)
     local l5: Int
@@ -2361,7 +2552,7 @@ function f10 Parser.literal(l0: Record(4), l1: Str, l2: Record(1)): Record(7)
     branch l7, b2, b4
   b2:
     l9 = l4[l6]
-    l10 = call f7(l0, l9)
+    l10 = call f8(l0, l9)
     l11 = Not l10
     branch l11, b5, b6
   b3:
@@ -2372,7 +2563,7 @@ function f10 Parser.literal(l0: Record(4), l1: Str, l2: Record(1)): Record(7)
     l16 = record variant 0 (l2)
     return l16
   b5:
-    l12 = call f5(l0, s9)
+    l12 = call f6(l0, s79)
     l13 = record variant 1 (l12)
     return l13
   b6:
@@ -2381,7 +2572,7 @@ function f10 Parser.literal(l0: Record(4), l1: Str, l2: Record(1)): Record(7)
     l0.1 = l15
     goto b3
 
-function f11 Parser.value(l0: Record(4)): Record(7)
+function f12 Parser.value(l0: Record(4)): Record(7)
     local l1: Char
     local l2: Record(5)
     local l3: Record(5)
@@ -2429,8 +2620,8 @@ function f11 Parser.value(l0: Record(4)): Record(7)
     local l45: Record(3)
     local l46: Record(7)
   b0:
-    call f8(l0) writeback 0 -> l0
-    l2 = call f6(l0)
+    call f9(l0) writeback 0 -> l0
+    l2 = call f7(l0)
     l3 = l2
     l4 = RecordTag l3
     l5 = IntCompare(Equal) l4, 0
@@ -2451,23 +2642,23 @@ function f11 Parser.value(l0: Record(4)): Record(7)
   b4:
     unreachable
   b5:
-    l10 = call f5(l0, s10)
+    l10 = call f6(l0, s80)
     l11 = record variant 1 (l10)
     return l11
   b6:
-    l14 = call f12(l0) writeback 0 -> l0
+    l14 = call f13(l0) writeback 0 -> l0
     return l14
   b7:
     l15 = CharCompare(Equal) l12, '['
     branch l15, b8, b9
   b8:
-    l16 = call f13(l0) writeback 0 -> l0
+    l16 = call f14(l0) writeback 0 -> l0
     return l16
   b9:
     l17 = CharCompare(Equal) l12, '"'
     branch l17, b10, b11
   b10:
-    l18 = call f18(l0) writeback 0 -> l0
+    l18 = call f19(l0) writeback 0 -> l0
     l19 = l18
     l20 = RecordTag l19
     l21 = IntCompare(Equal) l20, 0
@@ -2486,21 +2677,21 @@ function f11 Parser.value(l0: Record(4)): Record(7)
     return l26
   b14:
     l28 = record variant 1 (true)
-    l29 = call f10(l0, s11, l28) writeback 0 -> l0
+    l29 = call f11(l0, s81, l28) writeback 0 -> l0
     return l29
   b15:
     l30 = CharCompare(Equal) l12, 'f'
     branch l30, b16, b17
   b16:
     l31 = record variant 1 (false)
-    l32 = call f10(l0, s12, l31) writeback 0 -> l0
+    l32 = call f11(l0, s82, l31) writeback 0 -> l0
     return l32
   b17:
     l33 = CharCompare(Equal) l12, 'n'
     branch l33, b18, b19
   b18:
     l34 = record variant 0 ()
-    l35 = call f10(l0, s13, l34) writeback 0 -> l0
+    l35 = call f11(l0, s83, l34) writeback 0 -> l0
     return l35
   b19:
     l37 = CharCompare(Equal) l12, '-'
@@ -2520,17 +2711,17 @@ function f11 Parser.value(l0: Record(4)): Record(7)
     l36 = l38
     goto b21
   b24:
-    l41 = call f14(l0) writeback 0 -> l0
+    l41 = call f15(l0) writeback 0 -> l0
     return l41
   b25:
     l42 = CharToStr l12
-    l43 = StrConcat s14, l42
-    l44 = StrConcat l43, s8
-    l45 = call f5(l0, l44)
+    l43 = StrConcat s84, l42
+    l44 = StrConcat l43, s78
+    l45 = call f6(l0, l44)
     l46 = record variant 1 (l45)
     return l46
 
-function f12 Parser.object(l0: Record(4)): Record(7)
+function f13 Parser.object(l0: Record(4)): Record(7)
     local l1: Int
     local l2: Int
     local l3: Map(Str, Record(1))
@@ -2580,8 +2771,8 @@ function f12 Parser.object(l0: Record(4)): Record(7)
     l0.1 = l2
     l3 = map []
     l4 = l3
-    call f8(l0) writeback 0 -> l0
-    l5 = call f7(l0, '}')
+    call f9(l0) writeback 0 -> l0
+    l5 = call f8(l0, '}')
     branch l5, b1, b2
   b1:
     l6 = l0.1
@@ -2595,8 +2786,8 @@ function f12 Parser.object(l0: Record(4)): Record(7)
   b3:
     branch true, b4, b5
   b4:
-    call f8(l0) writeback 0 -> l0
-    l10 = call f18(l0) writeback 0 -> l0
+    call f9(l0) writeback 0 -> l0
+    l10 = call f19(l0) writeback 0 -> l0
     l11 = l10
     l12 = RecordTag l11
     l13 = IntCompare(Equal) l12, 0
@@ -2612,7 +2803,7 @@ function f12 Parser.object(l0: Record(4)): Record(7)
   b7:
     l16 = l11.0
     l17 = l16
-    l18 = call f9(l0, ':') writeback 0 -> l0
+    l18 = call f10(l0, ':') writeback 0 -> l0
     l19 = l18
     l20 = RecordTag l19
     l21 = IntCompare(Equal) l20, 0
@@ -2623,7 +2814,7 @@ function f12 Parser.object(l0: Record(4)): Record(7)
     return l23
   b9:
     l24 = l17
-    l25 = call f11(l0) writeback 0 -> l0
+    l25 = call f12(l0) writeback 0 -> l0
     l26 = l25
     l27 = RecordTag l26
     l28 = IntCompare(Equal) l27, 0
@@ -2635,8 +2826,8 @@ function f12 Parser.object(l0: Record(4)): Record(7)
   b11:
     l31 = l26.0
     l4{l24} = l31
-    call f8(l0) writeback 0 -> l0
-    l32 = call f7(l0, ',')
+    call f9(l0) writeback 0 -> l0
+    l32 = call f8(l0, ',')
     branch l32, b12, b13
   b12:
     l33 = l0.1
@@ -2644,7 +2835,7 @@ function f12 Parser.object(l0: Record(4)): Record(7)
     l0.1 = l34
     goto b3
   b13:
-    l35 = call f7(l0, '}')
+    l35 = call f8(l0, '}')
     branch l35, b14, b15
   b14:
     l36 = l0.1
@@ -2654,11 +2845,11 @@ function f12 Parser.object(l0: Record(4)): Record(7)
     l39 = record variant 0 (l38)
     return l39
   b15:
-    l40 = call f5(l0, s15)
+    l40 = call f6(l0, s85)
     l41 = record variant 1 (l40)
     return l41
 
-function f13 Parser.array(l0: Record(4)): Record(7)
+function f14 Parser.array(l0: Record(4)): Record(7)
     local l1: Int
     local l2: Int
     local l3: List(Record(1))
@@ -2693,8 +2884,8 @@ function f13 Parser.array(l0: Record(4)): Record(7)
     l0.1 = l2
     l3 = list []
     l4 = l3
-    call f8(l0) writeback 0 -> l0
-    l5 = call f7(l0, ']')
+    call f9(l0) writeback 0 -> l0
+    l5 = call f8(l0, ']')
     branch l5, b1, b2
   b1:
     l6 = l0.1
@@ -2708,7 +2899,7 @@ function f13 Parser.array(l0: Record(4)): Record(7)
   b3:
     branch true, b4, b5
   b4:
-    l10 = call f11(l0) writeback 0 -> l0
+    l10 = call f12(l0) writeback 0 -> l0
     l11 = l10
     l12 = RecordTag l11
     l13 = IntCompare(Equal) l12, 0
@@ -2724,8 +2915,8 @@ function f13 Parser.array(l0: Record(4)): Record(7)
   b7:
     l16 = l11.0
     push l4, l16
-    call f8(l0) writeback 0 -> l0
-    l17 = call f7(l0, ',')
+    call f9(l0) writeback 0 -> l0
+    l17 = call f8(l0, ',')
     branch l17, b8, b9
   b8:
     l18 = l0.1
@@ -2733,7 +2924,7 @@ function f13 Parser.array(l0: Record(4)): Record(7)
     l0.1 = l19
     goto b3
   b9:
-    l20 = call f7(l0, ']')
+    l20 = call f8(l0, ']')
     branch l20, b10, b11
   b10:
     l21 = l0.1
@@ -2743,11 +2934,11 @@ function f13 Parser.array(l0: Record(4)): Record(7)
     l24 = record variant 0 (l23)
     return l24
   b11:
-    l25 = call f5(l0, s16)
+    l25 = call f6(l0, s86)
     l26 = record variant 1 (l25)
     return l26
 
-function f14 Parser.number(l0: Record(4)): Record(7)
+function f15 Parser.number(l0: Record(4)): Record(7)
     local l1: Int
     local l2: Int // start
     local l3: Str // text
@@ -2780,8 +2971,8 @@ function f14 Parser.number(l0: Record(4)): Record(7)
     local l30: Bool
     local l31: Bool
     local l32: Record(7)
-    local l33: Record(17)
-    local l34: Record(17)
+    local l33: Record(42)
+    local l34: Record(42)
     local l35: Int
     local l36: Bool
     local l37: Int
@@ -2793,8 +2984,8 @@ function f14 Parser.number(l0: Record(4)): Record(7)
     local l43: Record(3)
     local l44: Record(7)
     local l45: Record(7)
-    local l46: Record(18)
-    local l47: Record(18)
+    local l46: Record(43)
+    local l47: Record(43)
     local l48: Int
     local l49: Bool
     local l50: Decimal
@@ -2803,7 +2994,7 @@ function f14 Parser.number(l0: Record(4)): Record(7)
     local l53: Record(7)
     local l54: Int
     local l55: Bool
-    local l56: Record(16)
+    local l56: Record(41)
     local l57: Int
     local l58: Bool
     local l59: Record(3)
@@ -2817,7 +3008,7 @@ function f14 Parser.number(l0: Record(4)): Record(7)
   b0:
     l1 = l0.1
     l2 = l1
-    l3 = s17
+    l3 = s18
     goto b1
   b1:
     l5 = l0.1
@@ -2838,50 +3029,50 @@ function f14 Parser.number(l0: Record(4)): Record(7)
     l0.1 = l19
     goto b1
   b3:
-    l20 = call f16(l3)
+    l20 = call f17(l3)
     l21 = Not l20
     branch l21, b6, b7
   b4:
     l9 = l0.0
     l10 = l0.1
     l11 = l9[l10]
-    l12 = call f15(l11)
+    l12 = call f16(l11)
     l4 = l12
     goto b5
   b5:
     branch l4, b2, b3
   b6:
-    l22 = StrConcat s18, l3
-    l23 = StrConcat l22, s8
+    l22 = StrConcat s87, l3
+    l23 = StrConcat l22, s78
     l24 = record variant 0 (l23, l2)
     l25 = record variant 1 (l24)
     return l25
   b7:
-    l28 = StrContains s19, l3
+    l28 = StrContains s88, l3
     l27 = l28
     branch l27, b9, b8
   b8:
-    l29 = StrContains s20, l3
+    l29 = StrContains s89, l3
     l27 = l29
     goto b9
   b9:
     l26 = l27
     branch l26, b11, b10
   b10:
-    l30 = StrContains s21, l3
+    l30 = StrContains s90, l3
     l26 = l30
     goto b11
   b11:
     l31 = Not l26
     branch l31, b12, b13
   b12:
-    l33 = koji_std_int_from_string([Value(Local(3)), Record(17)])
+    l33 = koji_std_int_from_string([Value(Local(3)), Record(42)])
     l34 = l33
     l35 = RecordTag l34
     l36 = IntCompare(Equal) l35, 0
     branch l36, b16, b15
   b13:
-    l46 = koji_std_decimal_from_string([Value(Local(3)), Record(18)])
+    l46 = koji_std_decimal_from_string([Value(Local(3)), Record(43)])
     l47 = l46
     l48 = RecordTag l47
     l49 = IntCompare(Equal) l48, 0
@@ -2936,14 +3127,14 @@ function f14 Parser.number(l0: Record(4)): Record(7)
   b25:
     unreachable
   b26:
-    l63 = StrConcat s18, l3
-    l64 = StrConcat l63, s8
+    l63 = StrConcat s87, l3
+    l64 = StrConcat l63, s78
     l65 = record variant 0 (l64, l2)
     l66 = record variant 1 (l65)
     l45 = l66
     goto b19
 
-function f15 isNumberChar(l0: Char): Bool
+function f16 isNumberChar(l0: Char): Bool
     local l1: Bool
     local l2: Bool
     local l3: Bool
@@ -3003,7 +3194,7 @@ function f15 isNumberChar(l0: Char): Bool
   b12:
     return l1
 
-function f16 jsonNumber(l0: Str): Bool
+function f17 jsonNumber(l0: Str): Bool
     local l1: List(Char)
     local l2: List(Char) // chars
     local l3: Int // i
@@ -3075,7 +3266,7 @@ function f16 jsonNumber(l0: Str): Bool
     goto b4
   b4:
     l10 = l3
-    l11 = call f17(l2, l3)
+    l11 = call f18(l2, l3)
     l3 = l11
     l13 = IntCompare(Equal) l3, l10
     l12 = l13
@@ -3112,7 +3303,7 @@ function f16 jsonNumber(l0: Str): Bool
   b13:
     l24 = IntAdd l3, 1
     l25 = l24
-    l26 = call f17(l2, l25)
+    l26 = call f18(l2, l25)
     l3 = l26
     l27 = IntCompare(Equal) l3, l25
     branch l27, b15, b16
@@ -3172,7 +3363,7 @@ function f16 jsonNumber(l0: Str): Bool
     goto b28
   b28:
     l46 = l3
-    l47 = call f17(l2, l46)
+    l47 = call f18(l2, l46)
     l3 = l47
     l48 = IntCompare(Equal) l3, l46
     branch l48, b29, b30
@@ -3181,7 +3372,7 @@ function f16 jsonNumber(l0: Str): Bool
   b30:
     goto b22
 
-function f17 digitsFrom(l0: List(Char), l1: Int): Int
+function f18 digitsFrom(l0: List(Char), l1: Int): Int
     local l2: Int // i
     local l3: Bool
     local l4: Bool
@@ -3222,7 +3413,7 @@ function f17 digitsFrom(l0: List(Char), l1: Int): Int
   b7:
     branch l3, b2, b3
 
-function f18 Parser.string(l0: Record(4)): Record(8)
+function f19 Parser.string(l0: Record(4)): Record(8)
     local l1: Bool
     local l2: Bool
     local l3: Record(3)
@@ -3312,23 +3503,23 @@ function f18 Parser.string(l0: Record(4)): Record(8)
     local l87: Record(8)
     local l88: Record(8)
   b0:
-    l1 = call f7(l0, '"')
+    l1 = call f8(l0, '"')
     l2 = Not l1
     branch l2, b1, b2
   b1:
-    l3 = call f5(l0, s22)
+    l3 = call f6(l0, s91)
     l4 = record variant 1 (l3)
     return l4
   b2:
     l5 = l0.1
     l6 = IntAdd l5, 1
     l0.1 = l6
-    l7 = s17
+    l7 = s18
     goto b3
   b3:
     branch true, b4, b5
   b4:
-    l9 = call f6(l0)
+    l9 = call f7(l0)
     l10 = l9
     l11 = RecordTag l10
     l12 = IntCompare(Equal) l11, 0
@@ -3352,7 +3543,7 @@ function f18 Parser.string(l0: Record(4)): Record(8)
   b9:
     unreachable
   b10:
-    l17 = call f5(l0, s23)
+    l17 = call f6(l0, s92)
     l18 = record variant 1 (l17)
     return l18
   b11:
@@ -3376,7 +3567,7 @@ function f18 Parser.string(l0: Record(4)): Record(8)
     l29 = l0.1
     l30 = IntAdd l29, 1
     l0.1 = l30
-    l31 = call f6(l0)
+    l31 = call f7(l0)
     l32 = l31
     l33 = l0.1
     l34 = IntAdd l33, 1
@@ -3396,7 +3587,7 @@ function f18 Parser.string(l0: Record(4)): Record(8)
     l39 = CharCompare(Equal) l38, 'n'
     branch l39, b18, b16
   b18:
-    l40 = StrConcat l7, s24
+    l40 = StrConcat l7, s93
     l7 = l40
     goto b15
   b19:
@@ -3408,7 +3599,7 @@ function f18 Parser.string(l0: Record(4)): Record(8)
     l44 = CharCompare(Equal) l43, 't'
     branch l44, b21, b19
   b21:
-    l45 = StrConcat l7, s25
+    l45 = StrConcat l7, s94
     l7 = l45
     goto b15
   b22:
@@ -3420,7 +3611,7 @@ function f18 Parser.string(l0: Record(4)): Record(8)
     l49 = CharCompare(Equal) l48, 'r'
     branch l49, b24, b22
   b24:
-    l50 = StrConcat l7, s26
+    l50 = StrConcat l7, s95
     l7 = l50
     goto b15
   b25:
@@ -3432,7 +3623,7 @@ function f18 Parser.string(l0: Record(4)): Record(8)
     l54 = CharCompare(Equal) l53, 'b'
     branch l54, b27, b25
   b27:
-    l55 = call f20(8)
+    l55 = call f21(8)
     l56 = CharToStr l55
     l57 = StrConcat l7, l56
     l7 = l57
@@ -3446,7 +3637,7 @@ function f18 Parser.string(l0: Record(4)): Record(8)
     l61 = CharCompare(Equal) l60, 'f'
     branch l61, b30, b28
   b30:
-    l62 = call f20(12)
+    l62 = call f21(12)
     l63 = CharToStr l62
     l64 = StrConcat l7, l63
     l7 = l64
@@ -3460,7 +3651,7 @@ function f18 Parser.string(l0: Record(4)): Record(8)
     l68 = CharCompare(Equal) l67, 'u'
     branch l68, b33, b31
   b33:
-    l69 = call f19(l0) writeback 0 -> l0
+    l69 = call f20(l0) writeback 0 -> l0
     l70 = l69
     l71 = RecordTag l70
     l72 = IntCompare(Equal) l71, 0
@@ -3489,11 +3680,11 @@ function f18 Parser.string(l0: Record(4)): Record(8)
   b38:
     unreachable
   b39:
-    l86 = call f5(l0, s23)
+    l86 = call f6(l0, s92)
     l87 = record variant 1 (l86)
     return l87
 
-function f19 Parser.unicodeEscape(l0: Record(4)): Record(9)
+function f20 Parser.unicodeEscape(l0: Record(4)): Record(9)
     local l1: Record(10)
     local l2: Record(10)
     local l3: Int
@@ -3539,7 +3730,7 @@ function f19 Parser.unicodeEscape(l0: Record(4)): Record(9)
     local l43: Char
     local l44: Record(9)
   b0:
-    l1 = call f21(l0) writeback 0 -> l0
+    l1 = call f22(l0) writeback 0 -> l0
     l2 = l1
     l3 = RecordTag l2
     l4 = IntCompare(Equal) l3, 0
@@ -3562,7 +3753,7 @@ function f19 Parser.unicodeEscape(l0: Record(4)): Record(9)
     l11 = l12
     branch l11, b5, b6
   b5:
-    l15 = call f7(l0, '\\')
+    l15 = call f8(l0, '\\')
     l11 = l15
     goto b6
   b6:
@@ -3593,13 +3784,13 @@ function f19 Parser.unicodeEscape(l0: Record(4)): Record(9)
     l26 = l0.1
     l27 = IntAdd l26, 2
     l0.1 = l27
-    l28 = call f21(l0) writeback 0 -> l0
+    l28 = call f22(l0) writeback 0 -> l0
     l29 = l28
     l30 = RecordTag l29
     l31 = IntCompare(Equal) l30, 0
     branch l31, b14, b13
   b12:
-    l43 = call f20(l8)
+    l43 = call f21(l8)
     l44 = record variant 0 (l43)
     return l44
   b13:
@@ -3614,11 +3805,11 @@ function f19 Parser.unicodeEscape(l0: Record(4)): Record(9)
     l38 = IntAdd 65536, l37
     l39 = IntSub l35, 56320
     l40 = IntAdd l38, l39
-    l41 = call f20(l40)
+    l41 = call f21(l40)
     l42 = record variant 0 (l41)
     return l42
 
-function f20 charOf(l0: Int): Char
+function f21 charOf(l0: Int): Char
     local l1: Char
     local l2: Record(5)
     local l3: Record(5)
@@ -3680,7 +3871,7 @@ function f20 charOf(l0: Int): Char
     l10 = ' '
     goto b6
 
-function f21 Parser.hex4(l0: Record(4)): Record(10)
+function f22 Parser.hex4(l0: Record(4)): Record(10)
     local l1: Str // text
     local l2: Int // value
     local l3: Bool // valid
@@ -3722,7 +3913,7 @@ function f21 Parser.hex4(l0: Record(4)): Record(10)
     local l39: Int
     local l40: Record(10)
   b0:
-    l1 = s17
+    l1 = s18
     l2 = 0
     l3 = true
     l4 = 4
@@ -3757,7 +3948,7 @@ function f21 Parser.hex4(l0: Record(4)): Record(10)
     l1 = l20
     l21 = CharToStr l18
     l22 = koji_std_string_lower([Value(Local(21))])
-    l23 = koji_std_string_index_of([Value(Str(27)), Value(Local(22)), Record(13)])
+    l23 = koji_std_string_index_of([Value(Str(50)), Value(Local(22)), Record(13)])
     l24 = l23
     l25 = RecordTag l24
     l26 = IntCompare(Equal) l25, 0
@@ -3781,9 +3972,9 @@ function f21 Parser.hex4(l0: Record(4)): Record(10)
     l3 = false
     goto b6
   b11:
-    l34 = StrConcat s28, l1
-    l35 = StrConcat l34, s8
-    l36 = call f5(l0, l35)
+    l34 = StrConcat s96, l1
+    l35 = StrConcat l34, s78
+    l36 = call f6(l0, l35)
     l37 = record variant 1 (l36)
     return l37
   b12:
@@ -3793,14 +3984,14 @@ function f21 Parser.hex4(l0: Record(4)): Record(10)
     l40 = record variant 0 (l2)
     return l40
 
-function f22 stringify(l0: Record(1)): Str
+function f23 stringify(l0: Record(1)): Str
     local l1: Str // out
   b0:
-    l1 = s17
-    call f23(l0, l1) writeback 1 -> l1
+    l1 = s18
+    call f24(l0, l1) writeback 1 -> l1
     return l1
 
-function f23 write(l0: Record(1), l1: Str): Void
+function f24 write(l0: Record(1), l1: Str): Void
     local l2: Record(1)
     local l3: Int
     local l4: Bool
@@ -3878,7 +4069,7 @@ function f23 write(l0: Record(1), l1: Str): Void
     l7 = IntCompare(Equal) l6, 1
     branch l7, b5, b4
   b3:
-    l5 = StrConcat l1, s13
+    l5 = StrConcat l1, s83
     l1 = l5
     goto b1
   b4:
@@ -3914,18 +4105,18 @@ function f23 write(l0: Record(1), l1: Str): Void
     l23 = l22
     l24 = StrConcat l1, l23
     l1 = l24
-    l26 = StrContains s19, l23
+    l26 = StrContains s88, l23
     l25 = l26
     branch l25, b11, b10
   b10:
-    l27 = StrContains s20, l23
+    l27 = StrContains s89, l23
     l25 = l27
     goto b11
   b11:
     l28 = Not l25
     branch l28, b12, b13
   b12:
-    l29 = StrConcat l1, s29
+    l29 = StrConcat l1, s97
     l1 = l29
     goto b13
   b13:
@@ -3937,7 +4128,7 @@ function f23 write(l0: Record(1), l1: Str): Void
   b15:
     l32 = l2.0
     l33 = l32
-    call f24(l33, l1) writeback 1 -> l1
+    call f25(l33, l1) writeback 1 -> l1
     goto b1
   b16:
     l49 = RecordTag l2
@@ -3946,7 +4137,7 @@ function f23 write(l0: Record(1), l1: Str): Void
   b17:
     l36 = l2.0
     l37 = l36
-    l38 = StrConcat l1, s30
+    l38 = StrConcat l1, s98
     l1 = l38
     l39 = ListLength l37
     l40 = l39
@@ -3961,23 +4152,23 @@ function f23 write(l0: Record(1), l1: Str): Void
     l45 = IntCompare(Greater) l44, 0
     branch l45, b21, b22
   b20:
-    l48 = StrConcat l1, s32
+    l48 = StrConcat l1, s100
     l1 = l48
     goto b1
   b21:
-    l46 = StrConcat l1, s31
+    l46 = StrConcat l1, s99
     l1 = l46
     goto b22
   b22:
     l47 = l37[l44]
-    call f23(l47, l1) writeback 1 -> l1
+    call f24(l47, l1) writeback 1 -> l1
     goto b18
   b23:
     unreachable
   b24:
     l51 = l2.0
     l52 = l51
-    l53 = StrConcat l1, s33
+    l53 = StrConcat l1, s101
     l1 = l53
     l54 = true
     l55 = MapKeys l52
@@ -3997,23 +4188,23 @@ function f23 write(l0: Record(1), l1: Str): Void
     l58 = l60
     goto b25
   b28:
-    l66 = StrConcat l1, s35
+    l66 = StrConcat l1, s103
     l1 = l66
     goto b1
   b29:
-    l63 = StrConcat l1, s31
+    l63 = StrConcat l1, s99
     l1 = l63
     goto b30
   b30:
     l54 = false
-    call f24(l61, l1) writeback 1 -> l1
-    l64 = StrConcat l1, s34
+    call f25(l61, l1) writeback 1 -> l1
+    l64 = StrConcat l1, s102
     l1 = l64
     l65 = l52{l61}
-    call f23(l65, l1) writeback 1 -> l1
+    call f24(l65, l1) writeback 1 -> l1
     goto b27
 
-function f24 writeString(l0: Str, l1: Str): Void
+function f25 writeString(l0: Str, l1: Str): Void
     local l2: Str
     local l3: List(Char)
     local l4: List(Char)
@@ -4030,7 +4221,7 @@ function f24 writeString(l0: Str, l1: Str): Void
     local l15: Str
     local l16: Str
   b0:
-    l2 = StrConcat l1, s36
+    l2 = StrConcat l1, s104
     l1 = l2
     l3 = koji_std_string_chars([Value(Local(0)), Element(Char)])
     l4 = l3
@@ -4049,11 +4240,11 @@ function f24 writeString(l0: Str, l1: Str): Void
     l6 = l8
     goto b1
   b4:
-    l16 = StrConcat l1, s36
+    l16 = StrConcat l1, s104
     l1 = l16
     return
   b5:
-    l11 = StrConcat l1, s37
+    l11 = StrConcat l1, s105
     l1 = l11
     goto b7
   b6:
@@ -4062,18 +4253,18 @@ function f24 writeString(l0: Str, l1: Str): Void
   b7:
     goto b3
   b8:
-    l13 = StrConcat l1, s38
+    l13 = StrConcat l1, s106
     l1 = l13
     goto b10
   b9:
-    l14 = call f25(l9)
+    l14 = call f26(l9)
     l15 = StrConcat l1, l14
     l1 = l15
     goto b10
   b10:
     goto b7
 
-function f25 escape(l0: Char): Str
+function f26 escape(l0: Char): Str
     local l1: Bool
     local l2: Bool
     local l3: Bool
@@ -4093,17 +4284,17 @@ function f25 escape(l0: Char): Str
     l1 = CharCompare(Equal) l0, '\n'
     branch l1, b1, b2
   b1:
-    return s39
+    return s107
   b2:
     l2 = CharCompare(Equal) l0, '\r'
     branch l2, b3, b4
   b3:
-    return s40
+    return s108
   b4:
     l3 = CharCompare(Equal) l0, '\t'
     branch l3, b5, b6
   b5:
-    return s41
+    return s109
   b6:
     l4 = CharCode l0
     l5 = l4
@@ -4111,11 +4302,11 @@ function f25 escape(l0: Char): Str
     branch l6, b7, b8
   b7:
     l7 = IntDiv l5, 16
-    l8 = koji_std_string_char_at([Value(Str(27)), Value(Local(7)), Location(456)])
+    l8 = koji_std_string_char_at([Value(Str(50)), Value(Local(7)), Location(456)])
     l9 = CharToStr l8
-    l10 = StrConcat s42, l9
+    l10 = StrConcat s110, l9
     l11 = IntRem l5, 16
-    l12 = koji_std_string_char_at([Value(Str(27)), Value(Local(11)), Location(456)])
+    l12 = koji_std_string_char_at([Value(Str(50)), Value(Local(11)), Location(456)])
     l13 = CharToStr l12
     l14 = StrConcat l10, l13
     return l14
@@ -4123,7 +4314,7 @@ function f25 escape(l0: Char): Str
     l15 = CharToStr l0
     return l15
 
-function f26 get(l0: Record(1), l1: Str): Record(11)
+function f27 get(l0: Record(1), l1: Str): Record(11)
     local l2: Record(11)
     local l3: Record(1)
     local l4: Int
@@ -4152,7 +4343,7 @@ function f26 get(l0: Record(1), l1: Str): Record(11)
   b4:
     unreachable
 
-function f27 asString(l0: Record(1)): Record(12)
+function f28 asString(l0: Record(1)): Record(12)
     local l1: Record(12)
     local l2: Record(1)
     local l3: Int
@@ -4181,7 +4372,7 @@ function f27 asString(l0: Record(1)): Record(12)
   b4:
     unreachable
 
-function f28 asInt(l0: Record(1)): Record(13)
+function f29 asInt(l0: Record(1)): Record(13)
     local l1: Record(13)
     local l2: Record(1)
     local l3: Int
@@ -4210,7 +4401,7 @@ function f28 asInt(l0: Record(1)): Record(13)
   b4:
     unreachable
 
-function f29 asDecimal(l0: Record(1)): Record(14)
+function f30 asDecimal(l0: Record(1)): Record(14)
     local l1: Record(14)
     local l2: Record(1)
     local l3: Int
@@ -4256,7 +4447,7 @@ function f29 asDecimal(l0: Record(1)): Record(14)
   b6:
     unreachable
 
-function f30 asBool(l0: Record(1)): Record(15)
+function f31 asBool(l0: Record(1)): Record(15)
     local l1: Record(15)
     local l2: Record(1)
     local l3: Int
@@ -4284,6 +4475,6964 @@ function f30 asBool(l0: Record(1)): Record(15)
     goto b1
   b4:
     unreachable
+
+function f32 RegexError.display(l0: Record(16)): Str
+    local l1: Str
+    local l2: Record(16)
+    local l3: Int
+    local l4: Bool
+    local l5: Str
+    local l6: Str // pattern
+    local l7: Str
+    local l8: Str // message
+    local l9: Str
+    local l10: Str
+    local l11: Str
+    local l12: Int
+    local l13: Bool
+    local l14: Str
+    local l15: Str // pattern
+    local l16: Str
+    local l17: Str // message
+    local l18: Str
+    local l19: Str
+    local l20: Str
+    local l21: Int
+    local l22: Bool
+    local l23: Str
+    local l24: Str // pattern
+    local l25: Str
+    local l26: Str
+  b0:
+    l2 = l0
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 0
+    branch l4, b3, b2
+  b1:
+    return l1
+  b2:
+    l12 = RecordTag l2
+    l13 = IntCompare(Equal) l12, 1
+    branch l13, b5, b4
+  b3:
+    l5 = l2.0
+    l6 = l5
+    l7 = l2.1
+    l8 = l7
+    l9 = StrConcat s0, l6
+    l10 = StrConcat l9, s1
+    l11 = StrConcat l10, l8
+    l1 = l11
+    goto b1
+  b4:
+    l21 = RecordTag l2
+    l22 = IntCompare(Equal) l21, 2
+    branch l22, b7, b6
+  b5:
+    l14 = l2.0
+    l15 = l14
+    l16 = l2.1
+    l17 = l16
+    l18 = StrConcat s2, l15
+    l19 = StrConcat l18, s1
+    l20 = StrConcat l19, l17
+    l1 = l20
+    goto b1
+  b6:
+    unreachable
+  b7:
+    l23 = l2.0
+    l24 = l23
+    l25 = StrConcat s3, l24
+    l26 = StrConcat l25, s4
+    l1 = l26
+    goto b1
+
+function f33 Regex.display(l0: Record(17)): Str
+    local l1: Str
+    local l2: Str
+    local l3: Str
+  b0:
+    l1 = l0.0
+    l2 = StrConcat s5, l1
+    l3 = StrConcat l2, s6
+    return l3
+
+function f34 compile(l0: Str): Record(21)
+    local l1: Str
+    local l2: List(Char)
+    local l3: List(Char)
+    local l4: Int
+    local l5: Int
+    local l6: Map(Str, Int)
+    local l7: Map(Str, Int)
+    local l8: Record(22)
+    local l9: Record(22) // parser
+    local l10: Bool
+    local l11: Bool
+    local l12: Bool
+    local l13: Bool
+    local l14: Bool
+    local l15: Record(23)
+    local l16: Record(23) // flags
+    local l17: Record(25)
+    local l18: Record(25)
+    local l19: Int
+    local l20: Bool
+    local l21: Record(16)
+    local l22: Record(21)
+    local l23: Record(24)
+    local l24: Record(24) // tree
+    local l25: Int
+    local l26: List(Char)
+    local l27: Int
+    local l28: Bool
+    local l29: Record(16)
+    local l30: Record(21)
+    local l31: Int
+    local l32: Bool
+    local l33: Record(16)
+    local l34: Record(21)
+    local l35: Record(18)
+    local l36: List(Record(18))
+    local l37: List(Record(18)) // program
+    local l38: Record(18)
+    local l39: Record(18)
+    local l40: List(Record(18))
+    local l41: List(Record(18)) // firsts
+    local l42: Bool
+    local l43: Bool // prefilter
+    local l44: Str
+    local l45: List(Record(18))
+    local l46: Int
+    local l47: Int
+    local l48: Map(Str, Int)
+    local l49: Map(Str, Int)
+    local l50: Bool
+    local l51: Bool
+    local l52: List(Record(18))
+    local l53: Bool
+    local l54: Record(17)
+    local l55: Record(21)
+  b0:
+    l1 = l0
+    l2 = koji_std_string_chars([Value(Local(0)), Element(Char)])
+    l3 = l2
+    l4 = 0
+    l5 = 1
+    l6 = map []
+    l7 = l6
+    l8 = record variant 0 (l1, l3, l4, l5, l7)
+    l9 = l8
+    l10 = false
+    l11 = false
+    l12 = false
+    l13 = false
+    l14 = false
+    l15 = record variant 0 (l10, l11, l12, l13, l14)
+    l16 = l15
+    l17 = call f42(l9, l16, 0) writeback 0 -> l9, 1 -> l16
+    l18 = l17
+    l19 = RecordTag l18
+    l20 = IntCompare(Equal) l19, 0
+    branch l20, b2, b1
+  b1:
+    l21 = l18.0
+    l22 = record variant 1 (l21)
+    return l22
+  b2:
+    l23 = l18.0
+    l24 = l23
+    l25 = l9.2
+    l26 = l9.1
+    l27 = ListLength l26
+    l28 = IntCompare(Less) l25, l27
+    branch l28, b3, b4
+  b3:
+    l29 = call f36(l9, s7)
+    l30 = record variant 1 (l29)
+    return l30
+  b4:
+    l31 = call f62(l24)
+    l32 = IntCompare(Greater) l31, g17
+    branch l32, b5, b6
+  b5:
+    l33 = record variant 2 (l0)
+    l34 = record variant 1 (l33)
+    return l34
+  b6:
+    l35 = record variant 5 (0)
+    l36 = list [l35]
+    l37 = l36
+    call f63(l24, l37) writeback 1 -> l37
+    l38 = record variant 5 (1)
+    push l37, l38
+    l39 = record variant 7 ()
+    push l37, l39
+    l40 = list []
+    l41 = l40
+    l42 = call f35(l37, l41) writeback 1 -> l41
+    l43 = l42
+    l44 = l0
+    l45 = l37
+    l46 = l9.3
+    l47 = l46
+    l48 = l9.4
+    l49 = l48
+    l50 = call f67(l24)
+    l51 = l50
+    l52 = l41
+    l53 = l43
+    l54 = record variant 0 (l44, l45, l47, l49, l51, l52, l53)
+    l55 = record variant 0 (l54)
+    return l55
+
+function f35 firstInstructions(l0: List(Record(18)), l1: List(Record(18))): Bool
+    local l2: List(Bool)
+    local l3: List(Bool) // seen
+    local l4: Int
+    local l5: Int
+    local l6: Int
+    local l7: Bool
+    local l8: Bool
+    local l9: Int // i
+    local l10: List(Int)
+    local l11: List(Int) // pending
+    local l12: Int
+    local l13: Record(13)
+    local l14: Record(13)
+    local l15: Int
+    local l16: Bool
+    local l17: Int
+    local l18: Int // found
+    local l19: Int
+    local l20: Bool
+    local l21: Int // pc
+    local l22: Bool
+    local l23: Int
+    local l24: Record(18)
+    local l25: Record(18)
+    local l26: Int
+    local l27: Bool
+    local l28: Int
+    local l29: Int // target
+    local l30: Int
+    local l31: Bool
+    local l32: Int
+    local l33: Int // first
+    local l34: Int
+    local l35: Int // second
+    local l36: Int
+    local l37: Bool
+    local l38: Int
+    local l39: Int
+    local l40: Bool
+    local l41: Int
+    local l42: Bool
+    local l43: Record(18) // other
+  b0:
+    l2 = list []
+    l3 = l2
+    l4 = ListLength l0
+    l5 = l4
+    range_check 1
+    l6 = 0
+    l7 = false
+    goto b1
+  b1:
+    l8, l9 = range_next l6, l5, 1, l7
+    branch l8, b2, b3
+  b2:
+    push l3, false
+    goto b1
+  b3:
+    l10 = list [0]
+    l11 = l10
+    goto b4
+  b4:
+    branch true, b5, b6
+  b5:
+    l13 = pop l11
+    l14 = l13
+    l15 = RecordTag l14
+    l16 = IntCompare(Equal) l15, 0
+    branch l16, b9, b8
+  b6:
+    return true
+  b7:
+    l21 = l12
+    l22 = l3[l21]
+    branch l22, b12, b13
+  b8:
+    l19 = RecordTag l14
+    l20 = IntCompare(Equal) l19, 1
+    branch l20, b11, b10
+  b9:
+    l17 = l14.0
+    l18 = l17
+    l12 = l18
+    goto b7
+  b10:
+    unreachable
+  b11:
+    goto b6
+  b12:
+    goto b4
+  b13:
+    l23 = l21
+    l3[l23] = true
+    l24 = l0[l21]
+    l25 = l24
+    l26 = RecordTag l25
+    l27 = IntCompare(Equal) l26, 4
+    branch l27, b16, b15
+  b14:
+    goto b4
+  b15:
+    l30 = RecordTag l25
+    l31 = IntCompare(Equal) l30, 3
+    branch l31, b18, b17
+  b16:
+    l28 = l25.0
+    l29 = l28
+    push l11, l29
+    goto b14
+  b17:
+    l36 = RecordTag l25
+    l37 = IntCompare(Equal) l36, 5
+    branch l37, b20, b19
+  b18:
+    l32 = l25.0
+    l33 = l32
+    l34 = l25.1
+    l35 = l34
+    push l11, l33
+    push l11, l35
+    goto b14
+  b19:
+    l39 = RecordTag l25
+    l40 = IntCompare(Equal) l39, 6
+    branch l40, b22, b21
+  b20:
+    l38 = IntAdd l21, 1
+    push l11, l38
+    goto b14
+  b21:
+    l41 = RecordTag l25
+    l42 = IntCompare(Equal) l41, 7
+    branch l42, b24, b23
+  b22:
+    return false
+  b23:
+    l43 = l25
+    push l1, l43
+    goto b14
+  b24:
+    return false
+  b25:
+    unreachable
+
+function f36 Parser.invalid(l0: Record(22), l1: Str): Record(16)
+    local l2: Str
+    local l3: Record(16)
+  b0:
+    l2 = l0.0
+    l3 = record variant 0 (l2, l1)
+    return l3
+
+function f37 Parser.unsupported(l0: Record(22), l1: Str): Record(16)
+    local l2: Str
+    local l3: Record(16)
+  b0:
+    l2 = l0.0
+    l3 = record variant 1 (l2, l1)
+    return l3
+
+function f38 Parser.done(l0: Record(22)): Bool
+    local l1: Int
+    local l2: List(Char)
+    local l3: Int
+    local l4: Bool
+  b0:
+    l1 = l0.2
+    l2 = l0.1
+    l3 = ListLength l2
+    l4 = IntCompare(GreaterEqual) l1, l3
+    return l4
+
+function f39 Parser.peek(l0: Record(22)): Char
+    local l1: List(Char)
+    local l2: Int
+    local l3: Char
+  b0:
+    l1 = l0.1
+    l2 = l0.2
+    l3 = l1[l2]
+    return l3
+
+function f40 Parser.at(l0: Record(22), l1: Char): Bool
+    local l2: Bool
+    local l3: Int
+    local l4: List(Char)
+    local l5: Int
+    local l6: Bool
+    local l7: List(Char)
+    local l8: Int
+    local l9: Char
+    local l10: Bool
+  b0:
+    l3 = l0.2
+    l4 = l0.1
+    l5 = ListLength l4
+    l6 = IntCompare(Less) l3, l5
+    l2 = l6
+    branch l2, b1, b2
+  b1:
+    l7 = l0.1
+    l8 = l0.2
+    l9 = l7[l8]
+    l10 = CharCompare(Equal) l9, l1
+    l2 = l10
+    goto b2
+  b2:
+    return l2
+
+function f41 Parser.skipExtended(l0: Record(22), l1: Record(23)): Void
+    local l2: Bool
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Char
+    local l7: Char // c
+    local l8: Bool
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Char
+    local l13: Bool
+    local l14: Int
+    local l15: Int
+    local l16: Bool
+    local l17: Bool
+    local l18: Int
+    local l19: Int
+  b0:
+    l2 = l1.3
+    l3 = Not l2
+    branch l3, b1, b2
+  b1:
+    return
+  b2:
+    goto b3
+  b3:
+    l4 = call f38(l0)
+    l5 = Not l4
+    branch l5, b4, b5
+  b4:
+    l6 = call f39(l0)
+    l7 = l6
+    l8 = CharCompare(Equal) l7, '#'
+    branch l8, b6, b7
+  b5:
+    return
+  b6:
+    goto b8
+  b7:
+    l16 = call f89(l7)
+    l17 = Not l16
+    branch l17, b13, b14
+  b8:
+    l10 = call f38(l0)
+    l11 = Not l10
+    l9 = l11
+    branch l9, b11, b12
+  b9:
+    l14 = l0.2
+    l15 = IntAdd l14, 1
+    l0.2 = l15
+    goto b8
+  b10:
+    goto b3
+  b11:
+    l12 = call f39(l0)
+    l13 = CharCompare(NotEqual) l12, '\n'
+    l9 = l13
+    goto b12
+  b12:
+    branch l9, b9, b10
+  b13:
+    return
+  b14:
+    l18 = l0.2
+    l19 = IntAdd l18, 1
+    l0.2 = l19
+    goto b3
+
+function f42 Parser.alternation(l0: Record(22), l1: Record(23), l2: Int): Record(25)
+    local l3: Record(25)
+    local l4: Record(25)
+    local l5: Int
+    local l6: Bool
+    local l7: Record(16)
+    local l8: Record(25)
+    local l9: Record(24)
+    local l10: List(Record(24))
+    local l11: List(Record(24)) // branches
+    local l12: Bool
+    local l13: Int
+    local l14: Int
+    local l15: Record(25)
+    local l16: Record(25)
+    local l17: Int
+    local l18: Bool
+    local l19: Record(16)
+    local l20: Record(25)
+    local l21: Record(24)
+    local l22: Int
+    local l23: Bool
+    local l24: Record(24)
+    local l25: Record(25)
+    local l26: Record(24)
+    local l27: Record(25)
+  b0:
+    l3 = call f43(l0, l1, l2) writeback 0 -> l0, 1 -> l1
+    l4 = l3
+    l5 = RecordTag l4
+    l6 = IntCompare(Equal) l5, 0
+    branch l6, b2, b1
+  b1:
+    l7 = l4.0
+    l8 = record variant 1 (l7)
+    return l8
+  b2:
+    l9 = l4.0
+    l10 = list [l9]
+    l11 = l10
+    goto b3
+  b3:
+    l12 = call f40(l0, '|')
+    branch l12, b4, b5
+  b4:
+    l13 = l0.2
+    l14 = IntAdd l13, 1
+    l0.2 = l14
+    l15 = call f43(l0, l1, l2) writeback 0 -> l0, 1 -> l1
+    l16 = l15
+    l17 = RecordTag l16
+    l18 = IntCompare(Equal) l17, 0
+    branch l18, b7, b6
+  b5:
+    l22 = ListLength l11
+    l23 = IntCompare(Equal) l22, 1
+    branch l23, b8, b9
+  b6:
+    l19 = l16.0
+    l20 = record variant 1 (l19)
+    return l20
+  b7:
+    l21 = l16.0
+    push l11, l21
+    goto b3
+  b8:
+    l24 = l11[0]
+    l25 = record variant 0 (l24)
+    return l25
+  b9:
+    l26 = record variant 7 (l11)
+    l27 = record variant 0 (l26)
+    return l27
+
+function f43 Parser.concatenation(l0: Record(22), l1: Record(23), l2: Int): Record(25)
+    local l3: List(Record(24))
+    local l4: List(Record(24)) // items
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Record(16)
+    local l11: Record(25)
+    local l12: Char
+    local l13: Char // c
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Bool
+    local l19: Bool
+    local l20: Bool
+    local l21: Int
+    local l22: Bool
+    local l23: Record(16)
+    local l24: Record(25)
+    local l25: Record(27)
+    local l26: Record(27) // last
+    local l27: Record(27)
+    local l28: Int
+    local l29: Bool
+    local l30: Record(24)
+    local l31: Record(24) // node
+    local l32: Record(25)
+    local l33: Record(25)
+    local l34: Int
+    local l35: Bool
+    local l36: Record(16)
+    local l37: Record(25)
+    local l38: Record(24)
+    local l39: Int
+    local l40: Bool
+    local l41: Record(28)
+    local l42: Record(28)
+    local l43: Int
+    local l44: Bool
+    local l45: Record(16)
+    local l46: Record(25)
+    local l47: Record(27)
+    local l48: Record(27)
+    local l49: Int
+    local l50: Bool
+    local l51: Record(24)
+    local l52: Record(24) // node
+    local l53: Int
+    local l54: Bool
+    local l55: Int
+    local l56: Bool
+    local l57: Record(24)
+    local l58: Record(25)
+    local l59: Int
+    local l60: Bool
+    local l61: Record(24)
+    local l62: Record(25)
+    local l63: Record(24)
+    local l64: Record(25)
+  b0:
+    l3 = list []
+    l4 = l3
+    goto b1
+  b1:
+    branch true, b2, b3
+  b2:
+    call f41(l0, l1) writeback 0 -> l0
+    l6 = call f38(l0)
+    l5 = l6
+    branch l5, b5, b4
+  b3:
+    l55 = ListLength l4
+    l56 = IntCompare(Equal) l55, 0
+    branch l56, b36, b37
+  b4:
+    l7 = call f40(l0, '|')
+    l5 = l7
+    goto b5
+  b5:
+    branch l5, b6, b7
+  b6:
+    goto b3
+  b7:
+    l8 = call f40(l0, ')')
+    branch l8, b8, b9
+  b8:
+    l9 = IntCompare(Equal) l2, 0
+    branch l9, b10, b11
+  b9:
+    l12 = call f39(l0)
+    l13 = l12
+    l17 = CharCompare(Equal) l13, '*'
+    l16 = l17
+    branch l16, b13, b12
+  b10:
+    l10 = call f36(l0, s7)
+    l11 = record variant 1 (l10)
+    return l11
+  b11:
+    goto b3
+  b12:
+    l18 = CharCompare(Equal) l13, '+'
+    l16 = l18
+    goto b13
+  b13:
+    l15 = l16
+    branch l15, b15, b14
+  b14:
+    l19 = CharCompare(Equal) l13, '?'
+    l15 = l19
+    goto b15
+  b15:
+    l14 = l15
+    branch l14, b17, b16
+  b16:
+    l20 = CharCompare(Equal) l13, '{'
+    l14 = l20
+    goto b17
+  b17:
+    branch l14, b18, b19
+  b18:
+    l21 = ListLength l4
+    l22 = IntCompare(Equal) l21, 0
+    branch l22, b20, b21
+  b19:
+    l41 = call f46(l0, l1, l2) writeback 0 -> l0, 1 -> l1
+    l42 = l41
+    l43 = RecordTag l42
+    l44 = IntCompare(Equal) l43, 0
+    branch l44, b30, b29
+  b20:
+    l23 = call f36(l0, s8)
+    l24 = record variant 1 (l23)
+    return l24
+  b21:
+    l25 = pop l4
+    l26 = l25
+    l27 = l26
+    l28 = RecordTag l27
+    l29 = IntCompare(Equal) l28, 0
+    branch l29, b24, b23
+  b22:
+    goto b1
+  b23:
+    l39 = RecordTag l27
+    l40 = IntCompare(Equal) l39, 1
+    branch l40, b28, b27
+  b24:
+    l30 = l27.0
+    l31 = l30
+    l32 = call f44(l0, l31, l1) writeback 0 -> l0
+    l33 = l32
+    l34 = RecordTag l33
+    l35 = IntCompare(Equal) l34, 0
+    branch l35, b26, b25
+  b25:
+    l36 = l33.0
+    l37 = record variant 1 (l36)
+    return l37
+  b26:
+    l38 = l33.0
+    push l4, l38
+    goto b22
+  b27:
+    unreachable
+  b28:
+    goto b22
+  b29:
+    l45 = l42.0
+    l46 = record variant 1 (l45)
+    return l46
+  b30:
+    l47 = l42.0
+    l48 = l47
+    l49 = RecordTag l48
+    l50 = IntCompare(Equal) l49, 0
+    branch l50, b33, b32
+  b31:
+    goto b1
+  b32:
+    l53 = RecordTag l48
+    l54 = IntCompare(Equal) l53, 1
+    branch l54, b35, b34
+  b33:
+    l51 = l48.0
+    l52 = l51
+    push l4, l52
+    goto b31
+  b34:
+    unreachable
+  b35:
+    goto b31
+  b36:
+    l57 = record variant 0 ()
+    l58 = record variant 0 (l57)
+    return l58
+  b37:
+    l59 = ListLength l4
+    l60 = IntCompare(Equal) l59, 1
+    branch l60, b38, b39
+  b38:
+    l61 = l4[0]
+    l62 = record variant 0 (l61)
+    return l62
+  b39:
+    l63 = record variant 6 (l4)
+    l64 = record variant 0 (l63)
+    return l64
+
+function f44 Parser.repetition(l0: Record(22), l1: Record(24), l2: Record(23)): Record(25)
+    local l3: Char
+    local l4: Char // c
+    local l5: Int
+    local l6: Int
+    local l7: Int // min
+    local l8: Int
+    local l9: Int // max
+    local l10: Bool
+    local l11: Bool
+    local l12: Bool
+    local l13: Record(26)
+    local l14: Record(26)
+    local l15: Int
+    local l16: Bool
+    local l17: Record(16)
+    local l18: Record(25)
+    local l19: Int
+    local l20: Bool
+    local l21: Int
+    local l22: Int
+    local l23: Int
+    local l24: Bool
+    local l25: Bool
+    local l26: Record(26)
+    local l27: Record(26)
+    local l28: Int
+    local l29: Bool
+    local l30: Record(16)
+    local l31: Record(25)
+    local l32: Int
+    local l33: Bool
+    local l34: Bool
+    local l35: Record(16)
+    local l36: Record(25)
+    local l37: Int
+    local l38: Int
+    local l39: Bool
+    local l40: Int
+    local l41: Bool
+    local l42: Bool
+    local l43: Record(16)
+    local l44: Record(25)
+    local l45: Bool
+    local l46: Bool
+    local l47: Bool // greedy
+    local l48: Bool
+    local l49: Int
+    local l50: Int
+    local l51: Bool
+    local l52: Record(24)
+    local l53: Record(25)
+  b0:
+    l3 = call f39(l0)
+    l4 = l3
+    l5 = l0.2
+    l6 = IntAdd l5, 1
+    l0.2 = l6
+    l7 = 0
+    l8 = IntNeg 1
+    l9 = l8
+    l10 = CharCompare(Equal) l4, '+'
+    branch l10, b1, b2
+  b1:
+    l7 = 1
+    goto b2
+  b2:
+    l11 = CharCompare(Equal) l4, '?'
+    branch l11, b3, b4
+  b3:
+    l9 = 1
+    goto b4
+  b4:
+    l12 = CharCompare(Equal) l4, '{'
+    branch l12, b5, b6
+  b5:
+    l13 = call f45(l0) writeback 0 -> l0
+    l14 = l13
+    l15 = RecordTag l14
+    l16 = IntCompare(Equal) l15, 0
+    branch l16, b8, b7
+  b6:
+    l45 = l2.4
+    l46 = Not l45
+    l47 = l46
+    l48 = call f40(l0, '?')
+    branch l48, b21, b22
+  b7:
+    l17 = l14.0
+    l18 = record variant 1 (l17)
+    return l18
+  b8:
+    l19 = l14.0
+    l7 = l19
+    l9 = l7
+    l20 = call f40(l0, ',')
+    branch l20, b9, b10
+  b9:
+    l21 = l0.2
+    l22 = IntAdd l21, 1
+    l0.2 = l22
+    l23 = IntNeg 1
+    l9 = l23
+    l24 = call f40(l0, '}')
+    l25 = Not l24
+    branch l25, b11, b12
+  b10:
+    l33 = call f40(l0, '}')
+    l34 = Not l33
+    branch l34, b15, b16
+  b11:
+    l26 = call f45(l0) writeback 0 -> l0
+    l27 = l26
+    l28 = RecordTag l27
+    l29 = IntCompare(Equal) l28, 0
+    branch l29, b14, b13
+  b12:
+    goto b10
+  b13:
+    l30 = l27.0
+    l31 = record variant 1 (l30)
+    return l31
+  b14:
+    l32 = l27.0
+    l9 = l32
+    goto b12
+  b15:
+    l35 = call f36(l0, s9)
+    l36 = record variant 1 (l35)
+    return l36
+  b16:
+    l37 = l0.2
+    l38 = IntAdd l37, 1
+    l0.2 = l38
+    l40 = IntNeg 1
+    l41 = IntCompare(NotEqual) l9, l40
+    l39 = l41
+    branch l39, b17, b18
+  b17:
+    l42 = IntCompare(Greater) l7, l9
+    l39 = l42
+    goto b18
+  b18:
+    branch l39, b19, b20
+  b19:
+    l43 = call f36(l0, s10)
+    l44 = record variant 1 (l43)
+    return l44
+  b20:
+    goto b6
+  b21:
+    l49 = l0.2
+    l50 = IntAdd l49, 1
+    l0.2 = l50
+    l51 = Not l47
+    l47 = l51
+    goto b22
+  b22:
+    l52 = record variant 8 (l1, l7, l9, l47)
+    l53 = record variant 0 (l52)
+    return l53
+
+function f45 Parser.decimal(l0: Record(22)): Record(26)
+    local l1: Int // value
+    local l2: Int // digits
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Bool
+    local l7: Char
+    local l8: Bool
+    local l9: Char
+    local l10: Bool
+    local l11: Int
+    local l12: Char
+    local l13: Int
+    local l14: Int
+    local l15: Int
+    local l16: Int
+    local l17: Int
+    local l18: Int
+    local l19: Bool
+    local l20: Record(16)
+    local l21: Record(26)
+    local l22: Bool
+    local l23: Bool
+    local l24: Record(16)
+    local l25: Record(26)
+    local l26: Record(16)
+    local l27: Record(26)
+    local l28: Record(26)
+  b0:
+    l1 = 0
+    l2 = 0
+    goto b1
+  b1:
+    l5 = call f38(l0)
+    l6 = Not l5
+    l4 = l6
+    branch l4, b4, b5
+  b2:
+    l11 = IntMul l1, 10
+    l12 = call f39(l0)
+    l13 = CharCode l12
+    l14 = IntSub l13, 48
+    l15 = IntAdd l11, l14
+    l1 = l15
+    l16 = IntAdd l2, 1
+    l2 = l16
+    l17 = l0.2
+    l18 = IntAdd l17, 1
+    l0.2 = l18
+    l19 = IntCompare(Greater) l1, 4294967295
+    branch l19, b8, b9
+  b3:
+    l22 = IntCompare(Equal) l2, 0
+    branch l22, b10, b11
+  b4:
+    l7 = call f39(l0)
+    l8 = CharCompare(GreaterEqual) l7, '0'
+    l4 = l8
+    goto b5
+  b5:
+    l3 = l4
+    branch l3, b6, b7
+  b6:
+    l9 = call f39(l0)
+    l10 = CharCompare(LessEqual) l9, '9'
+    l3 = l10
+    goto b7
+  b7:
+    branch l3, b2, b3
+  b8:
+    l20 = call f36(l0, s11)
+    l21 = record variant 1 (l20)
+    return l21
+  b9:
+    goto b1
+  b10:
+    l23 = call f38(l0)
+    branch l23, b12, b13
+  b11:
+    l28 = record variant 0 (l1)
+    return l28
+  b12:
+    l24 = call f36(l0, s9)
+    l25 = record variant 1 (l24)
+    return l25
+  b13:
+    l26 = call f36(l0, s11)
+    l27 = record variant 1 (l26)
+    return l27
+
+function f46 Parser.atom(l0: Record(22), l1: Record(23), l2: Int): Record(28)
+    local l3: Char
+    local l4: Char // c
+    local l5: Int
+    local l6: Int
+    local l7: Bool
+    local l8: Record(28)
+    local l9: Bool
+    local l10: Record(32)
+    local l11: Record(32)
+    local l12: Int
+    local l13: Bool
+    local l14: Record(16)
+    local l15: Record(28)
+    local l16: Record(19)
+    local l17: Bool
+    local l18: Record(24)
+    local l19: Record(27)
+    local l20: Record(28)
+    local l21: Bool
+    local l22: Bool
+    local l23: Record(24)
+    local l24: Record(27)
+    local l25: Record(28)
+    local l26: Bool
+    local l27: Int
+    local l28: Bool
+    local l29: Record(24)
+    local l30: Record(27)
+    local l31: Record(28)
+    local l32: Bool
+    local l33: Int
+    local l34: Bool
+    local l35: Record(24)
+    local l36: Record(27)
+    local l37: Record(28)
+    local l38: Bool
+    local l39: Record(25)
+    local l40: Record(25)
+    local l41: Int
+    local l42: Bool
+    local l43: Record(16)
+    local l44: Record(28)
+    local l45: Record(24)
+    local l46: Record(27)
+    local l47: Record(28)
+    local l48: Bool
+    local l49: Record(24)
+    local l50: Record(27)
+    local l51: Record(28)
+  b0:
+    l3 = call f39(l0)
+    l4 = l3
+    l5 = l0.2
+    l6 = IntAdd l5, 1
+    l0.2 = l6
+    l7 = CharCompare(Equal) l4, '('
+    branch l7, b1, b2
+  b1:
+    l8 = call f48(l0, l1, l2) writeback 0 -> l0, 1 -> l1
+    return l8
+  b2:
+    l9 = CharCompare(Equal) l4, '['
+    branch l9, b3, b4
+  b3:
+    l10 = call f56(l0) writeback 0 -> l0
+    l11 = l10
+    l12 = RecordTag l11
+    l13 = IntCompare(Equal) l12, 0
+    branch l13, b6, b5
+  b4:
+    l21 = CharCompare(Equal) l4, '.'
+    branch l21, b7, b8
+  b5:
+    l14 = l11.0
+    l15 = record variant 1 (l14)
+    return l15
+  b6:
+    l16 = l11.0
+    l17 = l1.0
+    l18 = record variant 3 (l16, l17)
+    l19 = record variant 0 (l18)
+    l20 = record variant 0 (l19)
+    return l20
+  b7:
+    l22 = l1.2
+    l23 = record variant 2 (l22)
+    l24 = record variant 0 (l23)
+    l25 = record variant 0 (l24)
+    return l25
+  b8:
+    l26 = CharCompare(Equal) l4, '^'
+    branch l26, b9, b10
+  b9:
+    l28 = l1.1
+    branch l28, b11, b12
+  b10:
+    l32 = CharCompare(Equal) l4, '$'
+    branch l32, b14, b15
+  b11:
+    l27 = g4
+    goto b13
+  b12:
+    l27 = g2
+    goto b13
+  b13:
+    l29 = record variant 4 (l27)
+    l30 = record variant 0 (l29)
+    l31 = record variant 0 (l30)
+    return l31
+  b14:
+    l34 = l1.1
+    branch l34, b16, b17
+  b15:
+    l38 = CharCompare(Equal) l4, '\\'
+    branch l38, b19, b20
+  b16:
+    l33 = g5
+    goto b18
+  b17:
+    l33 = g3
+    goto b18
+  b18:
+    l35 = record variant 4 (l33)
+    l36 = record variant 0 (l35)
+    l37 = record variant 0 (l36)
+    return l37
+  b19:
+    l39 = call f51(l0, l1) writeback 0 -> l0
+    l40 = l39
+    l41 = RecordTag l40
+    l42 = IntCompare(Equal) l41, 0
+    branch l42, b22, b21
+  b20:
+    l48 = l1.0
+    l49 = call f47(l4, l48)
+    l50 = record variant 0 (l49)
+    l51 = record variant 0 (l50)
+    return l51
+  b21:
+    l43 = l40.0
+    l44 = record variant 1 (l43)
+    return l44
+  b22:
+    l45 = l40.0
+    l46 = record variant 0 (l45)
+    l47 = record variant 0 (l46)
+    return l47
+
+function f47 literal(l0: Char, l1: Bool): Record(24)
+    local l2: Bool
+    local l3: Char
+    local l4: Char
+    local l5: Bool
+    local l6: Char
+    local l7: Record(24)
+    local l8: Record(24)
+  b0:
+    l2 = l1
+    branch l2, b1, b2
+  b1:
+    l3 = call f90(l0)
+    l4 = call f91(l0)
+    l5 = CharCompare(NotEqual) l3, l4
+    l2 = l5
+    goto b2
+  b2:
+    branch l2, b3, b4
+  b3:
+    l6 = call f90(l0)
+    l7 = record variant 1 (l6, true)
+    return l7
+  b4:
+    l8 = record variant 1 (l0, false)
+    return l8
+
+function f48 Parser.group(l0: Record(22), l1: Record(23), l2: Int): Record(28)
+    local l3: Bool
+    local l4: Bool
+    local l5: Int
+    local l6: Int // index
+    local l7: Int
+    local l8: Int
+    local l9: Record(25)
+    local l10: Record(25)
+    local l11: Int
+    local l12: Bool
+    local l13: Record(16)
+    local l14: Record(28)
+    local l15: Record(24)
+    local l16: Record(24)
+    local l17: Record(27)
+    local l18: Record(28)
+    local l19: Int
+    local l20: Int
+    local l21: Bool
+    local l22: Record(16)
+    local l23: Record(28)
+    local l24: Char
+    local l25: Char // c
+    local l26: Bool
+    local l27: Bool
+    local l28: Bool
+    local l29: Record(16)
+    local l30: Record(28)
+    local l31: Bool
+    local l32: Bool
+    local l33: Bool
+    local l34: Int
+    local l35: Int
+    local l36: List(Char)
+    local l37: Int
+    local l38: Bool
+    local l39: Bool
+    local l40: List(Char)
+    local l41: Int
+    local l42: Int
+    local l43: Char
+    local l44: Bool
+    local l45: List(Char)
+    local l46: Int
+    local l47: Int
+    local l48: Char
+    local l49: Bool
+    local l50: Record(16)
+    local l51: Record(28)
+    local l52: Bool
+    local l53: Bool
+    local l54: Bool
+    local l55: Int
+    local l56: Int
+    local l57: List(Char)
+    local l58: Int
+    local l59: Bool
+    local l60: List(Char)
+    local l61: Int
+    local l62: Int
+    local l63: Char
+    local l64: Bool
+    local l65: Record(16)
+    local l66: Record(28)
+    local l67: Bool
+    local l68: Bool
+    local l69: Bool
+    local l70: Bool
+    local l71: Bool
+    local l72: Int
+    local l73: Int
+    local l74: List(Char)
+    local l75: Int
+    local l76: Bool
+    local l77: List(Char)
+    local l78: Int
+    local l79: Int
+    local l80: Char
+    local l81: Bool
+    local l82: Int
+    local l83: Int
+    local l84: Bool
+    local l85: Int
+    local l86: Record(29)
+    local l87: Record(29)
+    local l88: Int
+    local l89: Bool
+    local l90: Record(16)
+    local l91: Record(28)
+    local l92: Str
+    local l93: Str // name
+    local l94: Map(Str, Int)
+    local l95: Bool
+    local l96: Record(16)
+    local l97: Record(28)
+    local l98: Int
+    local l99: Int // index
+    local l100: Int
+    local l101: Int
+    local l102: Str
+    local l103: Record(25)
+    local l104: Record(25)
+    local l105: Int
+    local l106: Bool
+    local l107: Record(16)
+    local l108: Record(28)
+    local l109: Record(24)
+    local l110: Record(24)
+    local l111: Record(27)
+    local l112: Record(28)
+    local l113: Record(23) // changed
+    local l114: Bool // negated
+    local l115: Bool
+    local l116: Record(16)
+    local l117: Record(28)
+    local l118: Char
+    local l119: Char // flag
+    local l120: Int
+    local l121: Int
+    local l122: Bool
+    local l123: Record(27)
+    local l124: Record(28)
+    local l125: Bool
+    local l126: Record(25)
+    local l127: Record(25)
+    local l128: Int
+    local l129: Bool
+    local l130: Record(16)
+    local l131: Record(28)
+    local l132: Record(24)
+    local l133: Record(27)
+    local l134: Record(28)
+    local l135: Bool
+    local l136: Bool
+    local l137: Bool // value
+    local l138: Char
+    local l139: Bool
+    local l140: Bool
+    local l141: Bool
+    local l142: Bool
+    local l143: Bool
+    local l144: Bool
+    local l145: Bool
+    local l146: Record(16)
+    local l147: Record(28)
+    local l148: Record(27)
+    local l149: Record(28)
+  b0:
+    l3 = call f40(l0, '?')
+    l4 = Not l3
+    branch l4, b1, b2
+  b1:
+    l5 = l0.3
+    l6 = l5
+    l7 = l0.3
+    l8 = IntAdd l7, 1
+    l0.3 = l8
+    l9 = call f49(l0, l1, l2) writeback 0 -> l0
+    l10 = l9
+    l11 = RecordTag l10
+    l12 = IntCompare(Equal) l11, 0
+    branch l12, b4, b3
+  b2:
+    l19 = l0.2
+    l20 = IntAdd l19, 1
+    l0.2 = l20
+    l21 = call f38(l0)
+    branch l21, b5, b6
+  b3:
+    l13 = l10.0
+    l14 = record variant 1 (l13)
+    return l14
+  b4:
+    l15 = l10.0
+    l16 = record variant 5 (l6, l15)
+    l17 = record variant 0 (l16)
+    l18 = record variant 0 (l17)
+    return l18
+  b5:
+    l22 = call f36(l0, s12)
+    l23 = record variant 1 (l22)
+    return l23
+  b6:
+    l24 = call f39(l0)
+    l25 = l24
+    l27 = CharCompare(Equal) l25, '='
+    l26 = l27
+    branch l26, b8, b7
+  b7:
+    l28 = CharCompare(Equal) l25, '!'
+    l26 = l28
+    goto b8
+  b8:
+    branch l26, b9, b10
+  b9:
+    l29 = call f37(l0, s13)
+    l30 = record variant 1 (l29)
+    return l30
+  b10:
+    l33 = CharCompare(Equal) l25, '<'
+    l32 = l33
+    branch l32, b11, b12
+  b11:
+    l34 = l0.2
+    l35 = IntAdd l34, 1
+    l36 = l0.1
+    l37 = ListLength l36
+    l38 = IntCompare(Less) l35, l37
+    l32 = l38
+    goto b12
+  b12:
+    l31 = l32
+    branch l31, b13, b14
+  b13:
+    l40 = l0.1
+    l41 = l0.2
+    l42 = IntAdd l41, 1
+    l43 = l40[l42]
+    l44 = CharCompare(Equal) l43, '='
+    l39 = l44
+    branch l39, b16, b15
+  b14:
+    branch l31, b17, b18
+  b15:
+    l45 = l0.1
+    l46 = l0.2
+    l47 = IntAdd l46, 1
+    l48 = l45[l47]
+    l49 = CharCompare(Equal) l48, '!'
+    l39 = l49
+    goto b16
+  b16:
+    l31 = l39
+    goto b14
+  b17:
+    l50 = call f37(l0, s13)
+    l51 = record variant 1 (l50)
+    return l51
+  b18:
+    l54 = CharCompare(Equal) l25, 'P'
+    l53 = l54
+    branch l53, b19, b20
+  b19:
+    l55 = l0.2
+    l56 = IntAdd l55, 1
+    l57 = l0.1
+    l58 = ListLength l57
+    l59 = IntCompare(Less) l56, l58
+    l53 = l59
+    goto b20
+  b20:
+    l52 = l53
+    branch l52, b21, b22
+  b21:
+    l60 = l0.1
+    l61 = l0.2
+    l62 = IntAdd l61, 1
+    l63 = l60[l62]
+    l64 = CharCompare(Equal) l63, '='
+    l52 = l64
+    goto b22
+  b22:
+    branch l52, b23, b24
+  b23:
+    l65 = call f37(l0, s14)
+    l66 = record variant 1 (l65)
+    return l66
+  b24:
+    l68 = CharCompare(Equal) l25, '<'
+    l67 = l68
+    branch l67, b26, b25
+  b25:
+    l71 = CharCompare(Equal) l25, 'P'
+    l70 = l71
+    branch l70, b27, b28
+  b26:
+    branch l67, b31, b32
+  b27:
+    l72 = l0.2
+    l73 = IntAdd l72, 1
+    l74 = l0.1
+    l75 = ListLength l74
+    l76 = IntCompare(Less) l73, l75
+    l70 = l76
+    goto b28
+  b28:
+    l69 = l70
+    branch l69, b29, b30
+  b29:
+    l77 = l0.1
+    l78 = l0.2
+    l79 = IntAdd l78, 1
+    l80 = l77[l79]
+    l81 = CharCompare(Equal) l80, '<'
+    l69 = l81
+    goto b30
+  b30:
+    l67 = l69
+    goto b26
+  b31:
+    l82 = l0.2
+    l84 = CharCompare(Equal) l25, 'P'
+    branch l84, b33, b34
+  b32:
+    l113 = l1
+    l114 = false
+    goto b42
+  b33:
+    l83 = 2
+    goto b35
+  b34:
+    l83 = 1
+    goto b35
+  b35:
+    l85 = IntAdd l82, l83
+    l0.2 = l85
+    l86 = call f50(l0) writeback 0 -> l0
+    l87 = l86
+    l88 = RecordTag l87
+    l89 = IntCompare(Equal) l88, 0
+    branch l89, b37, b36
+  b36:
+    l90 = l87.0
+    l91 = record variant 1 (l90)
+    return l91
+  b37:
+    l92 = l87.0
+    l93 = l92
+    l94 = l0.4
+    l95 = MapContains l93, l94
+    branch l95, b38, b39
+  b38:
+    l96 = call f36(l0, s15)
+    l97 = record variant 1 (l96)
+    return l97
+  b39:
+    l98 = l0.3
+    l99 = l98
+    l100 = l0.3
+    l101 = IntAdd l100, 1
+    l0.3 = l101
+    l102 = l93
+    l0[.4]{l102} = l99
+    l103 = call f49(l0, l1, l2) writeback 0 -> l0
+    l104 = l103
+    l105 = RecordTag l104
+    l106 = IntCompare(Equal) l105, 0
+    branch l106, b41, b40
+  b40:
+    l107 = l104.0
+    l108 = record variant 1 (l107)
+    return l108
+  b41:
+    l109 = l104.0
+    l110 = record variant 5 (l99, l109)
+    l111 = record variant 0 (l110)
+    l112 = record variant 0 (l111)
+    return l112
+  b42:
+    branch true, b43, b44
+  b43:
+    l115 = call f38(l0)
+    branch l115, b45, b46
+  b44:
+    l148 = record variant 1 ()
+    l149 = record variant 0 (l148)
+    return l149
+  b45:
+    l116 = call f36(l0, s16)
+    l117 = record variant 1 (l116)
+    return l117
+  b46:
+    l118 = call f39(l0)
+    l119 = l118
+    l120 = l0.2
+    l121 = IntAdd l120, 1
+    l0.2 = l121
+    l122 = CharCompare(Equal) l119, ')'
+    branch l122, b47, b48
+  b47:
+    l1 = l113
+    l123 = record variant 1 ()
+    l124 = record variant 0 (l123)
+    return l124
+  b48:
+    l125 = CharCompare(Equal) l119, ':'
+    branch l125, b49, b50
+  b49:
+    l126 = call f49(l0, l113, l2) writeback 0 -> l0
+    l127 = l126
+    l128 = RecordTag l127
+    l129 = IntCompare(Equal) l128, 0
+    branch l129, b52, b51
+  b50:
+    l135 = CharCompare(Equal) l119, '-'
+    branch l135, b53, b54
+  b51:
+    l130 = l127.0
+    l131 = record variant 1 (l130)
+    return l131
+  b52:
+    l132 = l127.0
+    l133 = record variant 0 (l132)
+    l134 = record variant 0 (l133)
+    return l134
+  b53:
+    l114 = true
+    goto b42
+  b54:
+    l136 = Not l114
+    l137 = l136
+    l138 = l119
+    l139 = CharCompare(Equal) l138, 'i'
+    branch l139, b57, b56
+  b55:
+    goto b42
+  b56:
+    l140 = CharCompare(Equal) l138, 'm'
+    branch l140, b59, b58
+  b57:
+    l113.0 = l137
+    goto b55
+  b58:
+    l141 = CharCompare(Equal) l138, 's'
+    branch l141, b61, b60
+  b59:
+    l113.1 = l137
+    goto b55
+  b60:
+    l142 = CharCompare(Equal) l138, 'x'
+    branch l142, b63, b62
+  b61:
+    l113.2 = l137
+    goto b55
+  b62:
+    l143 = CharCompare(Equal) l138, 'U'
+    branch l143, b65, b64
+  b63:
+    l113.3 = l137
+    goto b55
+  b64:
+    l144 = CharCompare(Equal) l138, 'u'
+    branch l144, b67, b66
+  b65:
+    l113.4 = l137
+    goto b55
+  b66:
+    l145 = CharCompare(Equal) l138, 'R'
+    branch l145, b69, b68
+  b67:
+    goto b55
+  b68:
+    l146 = call f36(l0, s17)
+    l147 = record variant 1 (l146)
+    return l147
+  b69:
+    goto b55
+  b70:
+    unreachable
+
+function f49 Parser.groupBody(l0: Record(22), l1: Record(23), l2: Int): Record(25)
+    local l3: Record(23) // inner
+    local l4: Int
+    local l5: Record(25)
+    local l6: Record(25)
+    local l7: Int
+    local l8: Bool
+    local l9: Record(16)
+    local l10: Record(25)
+    local l11: Record(24)
+    local l12: Record(24) // body
+    local l13: Bool
+    local l14: Bool
+    local l15: Record(16)
+    local l16: Record(25)
+    local l17: Int
+    local l18: Int
+    local l19: Record(25)
+  b0:
+    l3 = l1
+    l4 = IntAdd l2, 1
+    l5 = call f42(l0, l3, l4) writeback 0 -> l0, 1 -> l3
+    l6 = l5
+    l7 = RecordTag l6
+    l8 = IntCompare(Equal) l7, 0
+    branch l8, b2, b1
+  b1:
+    l9 = l6.0
+    l10 = record variant 1 (l9)
+    return l10
+  b2:
+    l11 = l6.0
+    l12 = l11
+    l13 = call f40(l0, ')')
+    l14 = Not l13
+    branch l14, b3, b4
+  b3:
+    l15 = call f36(l0, s12)
+    l16 = record variant 1 (l15)
+    return l16
+  b4:
+    l17 = l0.2
+    l18 = IntAdd l17, 1
+    l0.2 = l18
+    l19 = record variant 0 (l12)
+    return l19
+
+function f50 Parser.groupName(l0: Record(22)): Record(29)
+    local l1: Str // name
+    local l2: Bool
+    local l3: Record(16)
+    local l4: Record(29)
+    local l5: Char
+    local l6: Char // c
+    local l7: Int
+    local l8: Int
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool // first
+    local l12: Bool
+    local l13: Bool
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Bool
+    local l19: Bool
+    local l20: Bool
+    local l21: Bool
+    local l22: Bool
+    local l23: Bool
+    local l24: Bool
+    local l25: Bool
+    local l26: Bool
+    local l27: Bool // valid
+    local l28: Bool
+    local l29: Record(16)
+    local l30: Record(29)
+    local l31: Str
+    local l32: Str
+    local l33: Bool
+    local l34: Record(16)
+    local l35: Record(29)
+    local l36: Record(29)
+  b0:
+    l1 = s18
+    goto b1
+  b1:
+    branch true, b2, b3
+  b2:
+    l2 = call f38(l0)
+    branch l2, b4, b5
+  b3:
+    l33 = StrCompare(Equal) l1, s18
+    branch l33, b24, b25
+  b4:
+    l3 = call f36(l0, s19)
+    l4 = record variant 1 (l3)
+    return l4
+  b5:
+    l5 = call f39(l0)
+    l6 = l5
+    l7 = l0.2
+    l8 = IntAdd l7, 1
+    l0.2 = l8
+    l9 = CharCompare(Equal) l6, '>'
+    branch l9, b6, b7
+  b6:
+    goto b3
+  b7:
+    l10 = StrCompare(Equal) l1, s18
+    l11 = l10
+    l14 = CharCompare(Equal) l6, '_'
+    l13 = l14
+    branch l13, b9, b8
+  b8:
+    l15 = call f88(l6)
+    l13 = l15
+    goto b9
+  b9:
+    l12 = l13
+    branch l12, b11, b10
+  b10:
+    l17 = Not l11
+    l16 = l17
+    branch l16, b12, b13
+  b11:
+    l27 = l12
+    l28 = Not l27
+    branch l28, b22, b23
+  b12:
+    l22 = CharCompare(GreaterEqual) l6, '0'
+    l21 = l22
+    branch l21, b14, b15
+  b13:
+    l12 = l16
+    goto b11
+  b14:
+    l23 = CharCompare(LessEqual) l6, '9'
+    l21 = l23
+    goto b15
+  b15:
+    l20 = l21
+    branch l20, b17, b16
+  b16:
+    l24 = CharCompare(Equal) l6, '.'
+    l20 = l24
+    goto b17
+  b17:
+    l19 = l20
+    branch l19, b19, b18
+  b18:
+    l25 = CharCompare(Equal) l6, '['
+    l19 = l25
+    goto b19
+  b19:
+    l18 = l19
+    branch l18, b21, b20
+  b20:
+    l26 = CharCompare(Equal) l6, ']'
+    l18 = l26
+    goto b21
+  b21:
+    l16 = l18
+    goto b13
+  b22:
+    l29 = call f36(l0, s20)
+    l30 = record variant 1 (l29)
+    return l30
+  b23:
+    l31 = CharToStr l6
+    l32 = StrConcat l1, l31
+    l1 = l32
+    goto b1
+  b24:
+    l34 = call f36(l0, s21)
+    l35 = record variant 1 (l34)
+    return l35
+  b25:
+    l36 = record variant 0 (l1)
+    return l36
+
+function f51 Parser.escape(l0: Record(22), l1: Record(23)): Record(25)
+    local l2: Bool
+    local l3: Record(16)
+    local l4: Record(25)
+    local l5: Char
+    local l6: Char // c
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Record(16)
+    local l11: Record(25)
+    local l12: Char
+    local l13: Bool
+    local l14: Int
+    local l15: Int
+    local l16: Record(24)
+    local l17: Record(25)
+    local l18: Bool
+    local l19: Int
+    local l20: Int
+    local l21: Record(24)
+    local l22: Record(25)
+    local l23: Bool
+    local l24: Int
+    local l25: Int
+    local l26: Record(24)
+    local l27: Record(25)
+    local l28: Bool
+    local l29: Int
+    local l30: Int
+    local l31: Record(24)
+    local l32: Record(25)
+    local l33: Bool
+    local l34: Int
+    local l35: Int
+    local l36: Record(24)
+    local l37: Record(25)
+    local l38: Bool
+    local l39: Int
+    local l40: Int
+    local l41: Record(24)
+    local l42: Record(25)
+    local l43: Record(31)
+    local l44: Record(31)
+    local l45: Int
+    local l46: Bool
+    local l47: Record(16)
+    local l48: Record(25)
+    local l49: Record(30)
+    local l50: Record(30)
+    local l51: Int
+    local l52: Bool
+    local l53: Record(19)
+    local l54: Record(19) // set
+    local l55: Bool
+    local l56: Record(24)
+    local l57: Record(25)
+    local l58: Int
+    local l59: Bool
+    local l60: Record(33)
+    local l61: Record(33)
+    local l62: Int
+    local l63: Bool
+    local l64: Record(16)
+    local l65: Record(25)
+    local l66: Char
+    local l67: Bool
+    local l68: Record(24)
+    local l69: Record(25)
+  b0:
+    l2 = call f38(l0)
+    branch l2, b1, b2
+  b1:
+    l3 = call f36(l0, s22)
+    l4 = record variant 1 (l3)
+    return l4
+  b2:
+    l5 = call f39(l0)
+    l6 = l5
+    l8 = CharCompare(GreaterEqual) l6, '1'
+    l7 = l8
+    branch l7, b3, b4
+  b3:
+    l9 = CharCompare(LessEqual) l6, '9'
+    l7 = l9
+    goto b4
+  b4:
+    branch l7, b5, b6
+  b5:
+    l10 = call f37(l0, s14)
+    l11 = record variant 1 (l10)
+    return l11
+  b6:
+    l12 = l6
+    l13 = CharCompare(Equal) l12, 'b'
+    branch l13, b9, b8
+  b7:
+    l43 = call f52(l0) writeback 0 -> l0
+    l44 = l43
+    l45 = RecordTag l44
+    l46 = IntCompare(Equal) l45, 0
+    branch l46, b22, b21
+  b8:
+    l18 = CharCompare(Equal) l12, 'B'
+    branch l18, b11, b10
+  b9:
+    l14 = l0.2
+    l15 = IntAdd l14, 1
+    l0.2 = l15
+    l16 = record variant 4 (g6)
+    l17 = record variant 0 (l16)
+    return l17
+  b10:
+    l23 = CharCompare(Equal) l12, 'A'
+    branch l23, b13, b12
+  b11:
+    l19 = l0.2
+    l20 = IntAdd l19, 1
+    l0.2 = l20
+    l21 = record variant 4 (g7)
+    l22 = record variant 0 (l21)
+    return l22
+  b12:
+    l28 = CharCompare(Equal) l12, 'z'
+    branch l28, b15, b14
+  b13:
+    l24 = l0.2
+    l25 = IntAdd l24, 1
+    l0.2 = l25
+    l26 = record variant 4 (g2)
+    l27 = record variant 0 (l26)
+    return l27
+  b14:
+    l33 = CharCompare(Equal) l12, '<'
+    branch l33, b17, b16
+  b15:
+    l29 = l0.2
+    l30 = IntAdd l29, 1
+    l0.2 = l30
+    l31 = record variant 4 (g3)
+    l32 = record variant 0 (l31)
+    return l32
+  b16:
+    l38 = CharCompare(Equal) l12, '>'
+    branch l38, b19, b18
+  b17:
+    l34 = l0.2
+    l35 = IntAdd l34, 1
+    l0.2 = l35
+    l36 = record variant 4 (g8)
+    l37 = record variant 0 (l36)
+    return l37
+  b18:
+    goto b7
+  b19:
+    l39 = l0.2
+    l40 = IntAdd l39, 1
+    l0.2 = l40
+    l41 = record variant 4 (g9)
+    l42 = record variant 0 (l41)
+    return l42
+  b20:
+    unreachable
+  b21:
+    l47 = l44.0
+    l48 = record variant 1 (l47)
+    return l48
+  b22:
+    l49 = l44.0
+    l50 = l49
+    l51 = RecordTag l50
+    l52 = IntCompare(Equal) l51, 0
+    branch l52, b25, b24
+  b23:
+    l60 = call f54(l0) writeback 0 -> l0
+    l61 = l60
+    l62 = RecordTag l61
+    l63 = IntCompare(Equal) l62, 0
+    branch l63, b29, b28
+  b24:
+    l58 = RecordTag l50
+    l59 = IntCompare(Equal) l58, 1
+    branch l59, b27, b26
+  b25:
+    l53 = l50.0
+    l54 = l53
+    l55 = l1.0
+    l56 = record variant 3 (l54, l55)
+    l57 = record variant 0 (l56)
+    return l57
+  b26:
+    unreachable
+  b27:
+    goto b23
+  b28:
+    l64 = l61.0
+    l65 = record variant 1 (l64)
+    return l65
+  b29:
+    l66 = l61.0
+    l67 = l1.0
+    l68 = call f47(l66, l67)
+    l69 = record variant 0 (l68)
+    return l69
+
+function f52 Parser.classEscape(l0: Record(22)): Record(31)
+    local l1: Char
+    local l2: Char // c
+    local l3: Int
+    local l4: Char
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Int
+    local l13: Bool
+    local l14: Int
+    local l15: Record(30)
+    local l16: Record(31)
+    local l17: Int // kind
+    local l18: Int
+    local l19: Int
+    local l20: Bool
+    local l21: Bool
+    local l22: Bool
+    local l23: Bool
+    local l24: Bool
+    local l25: Bool
+    local l26: Bool
+    local l27: Bool // negated
+    local l28: Record(19)
+    local l29: Record(19) // set
+    local l30: Int
+    local l31: Bool
+    local l32: Record(32)
+    local l33: Record(32)
+    local l34: Int
+    local l35: Bool
+    local l36: Record(16)
+    local l37: Record(31)
+    local l38: Record(19)
+    local l39: Record(19)
+    local l40: Record(30)
+    local l41: Record(31)
+    local l42: Record(30)
+    local l43: Record(31)
+  b0:
+    l1 = call f39(l0)
+    l2 = l1
+    l4 = l2
+    l5 = CharCompare(Equal) l4, 'd'
+    branch l5, b3, b2
+  b1:
+    l17 = l3
+    l18 = l0.2
+    l19 = IntAdd l18, 1
+    l0.2 = l19
+    l23 = CharCompare(Equal) l2, 'D'
+    l22 = l23
+    branch l22, b20, b19
+  b2:
+    l6 = CharCompare(Equal) l4, 'D'
+    branch l6, b5, b4
+  b3:
+    l3 = g10
+    goto b1
+  b4:
+    l7 = CharCompare(Equal) l4, 'w'
+    branch l7, b7, b6
+  b5:
+    l3 = g10
+    goto b1
+  b6:
+    l8 = CharCompare(Equal) l4, 'W'
+    branch l8, b9, b8
+  b7:
+    l3 = g11
+    goto b1
+  b8:
+    l9 = CharCompare(Equal) l4, 's'
+    branch l9, b11, b10
+  b9:
+    l3 = g11
+    goto b1
+  b10:
+    l10 = CharCompare(Equal) l4, 'S'
+    branch l10, b13, b12
+  b11:
+    l3 = g12
+    goto b1
+  b12:
+    l11 = CharCompare(Equal) l4, 'p'
+    branch l11, b15, b14
+  b13:
+    l3 = g12
+    goto b1
+  b14:
+    l13 = CharCompare(Equal) l4, 'P'
+    branch l13, b17, b16
+  b15:
+    l12 = IntNeg 1
+    l3 = l12
+    goto b1
+  b16:
+    l15 = record variant 1 ()
+    l16 = record variant 0 (l15)
+    return l16
+  b17:
+    l14 = IntNeg 1
+    l3 = l14
+    goto b1
+  b18:
+    unreachable
+  b19:
+    l24 = CharCompare(Equal) l2, 'W'
+    l22 = l24
+    goto b20
+  b20:
+    l21 = l22
+    branch l21, b22, b21
+  b21:
+    l25 = CharCompare(Equal) l2, 'S'
+    l21 = l25
+    goto b22
+  b22:
+    l20 = l21
+    branch l20, b24, b23
+  b23:
+    l26 = CharCompare(Equal) l2, 'P'
+    l20 = l26
+    goto b24
+  b24:
+    l27 = l20
+    l28 = record variant 1 (l17)
+    l29 = l28
+    l30 = IntNeg 1
+    l31 = IntCompare(Equal) l17, l30
+    branch l31, b25, b26
+  b25:
+    l32 = call f53(l0) writeback 0 -> l0
+    l33 = l32
+    l34 = RecordTag l33
+    l35 = IntCompare(Equal) l34, 0
+    branch l35, b28, b27
+  b26:
+    branch l27, b29, b30
+  b27:
+    l36 = l33.0
+    l37 = record variant 1 (l36)
+    return l37
+  b28:
+    l38 = l33.0
+    l29 = l38
+    goto b26
+  b29:
+    l39 = record variant 6 (l29)
+    l40 = record variant 0 (l39)
+    l41 = record variant 0 (l40)
+    return l41
+  b30:
+    l42 = record variant 0 (l29)
+    l43 = record variant 0 (l42)
+    return l43
+
+function f53 Parser.property(l0: Record(22)): Record(32)
+    local l1: Str // name
+    local l2: Bool
+    local l3: Int
+    local l4: Int
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+    local l8: Record(16)
+    local l9: Record(32)
+    local l10: Char
+    local l11: Str
+    local l12: Str
+    local l13: Int
+    local l14: Int
+    local l15: Int
+    local l16: Int
+    local l17: Bool
+    local l18: Record(16)
+    local l19: Record(32)
+    local l20: Char
+    local l21: Str
+    local l22: Int
+    local l23: Int
+    local l24: Int
+    local l25: Str
+    local l26: Str
+    local l27: Str
+    local l28: Str
+    local l29: Bool
+    local l30: Bool
+    local l31: Bool
+    local l32: Bool
+    local l33: Bool
+    local l34: Bool
+    local l35: Bool
+    local l36: Bool
+    local l37: Bool
+    local l38: Bool
+    local l39: Bool
+    local l40: Bool
+    local l41: Bool
+    local l42: Bool
+    local l43: Bool
+    local l44: Bool
+    local l45: Bool
+    local l46: Bool
+    local l47: Bool
+    local l48: Int
+    local l49: Int // kind
+    local l50: Int
+    local l51: Bool
+    local l52: Str
+    local l53: Str
+    local l54: Record(16)
+    local l55: Record(32)
+    local l56: Record(19)
+    local l57: Record(32)
+  b0:
+    l1 = s18
+    l2 = call f40(l0, '{')
+    branch l2, b1, b2
+  b1:
+    l3 = l0.2
+    l4 = IntAdd l3, 1
+    l0.2 = l4
+    goto b4
+  b2:
+    l17 = call f38(l0)
+    branch l17, b9, b10
+  b3:
+    l25 = koji_std_string_lower([Value(Local(1))])
+    l26 = koji_std_string_replace([Value(Local(25)), Value(Str(24)), Value(Str(18)), Location(582)])
+    l27 = koji_std_string_replace([Value(Local(26)), Value(Str(25)), Value(Str(18)), Location(582)])
+    l28 = l27
+    l29 = StrCompare(Equal) l28, s26
+    branch l29, b13, b12
+  b4:
+    l5 = call f40(l0, '}')
+    l6 = Not l5
+    branch l6, b5, b6
+  b5:
+    l7 = call f38(l0)
+    branch l7, b7, b8
+  b6:
+    l15 = l0.2
+    l16 = IntAdd l15, 1
+    l0.2 = l16
+    goto b3
+  b7:
+    l8 = call f36(l0, s23)
+    l9 = record variant 1 (l8)
+    return l9
+  b8:
+    l10 = call f39(l0)
+    l11 = CharToStr l10
+    l12 = StrConcat l1, l11
+    l1 = l12
+    l13 = l0.2
+    l14 = IntAdd l13, 1
+    l0.2 = l14
+    goto b4
+  b9:
+    l18 = call f36(l0, s23)
+    l19 = record variant 1 (l18)
+    return l19
+  b10:
+    l20 = call f39(l0)
+    l21 = CharToStr l20
+    l1 = l21
+    l22 = l0.2
+    l23 = IntAdd l22, 1
+    l0.2 = l23
+    goto b3
+  b11:
+    l49 = l24
+    l50 = IntNeg 1
+    l51 = IntCompare(Equal) l49, l50
+    branch l51, b51, b52
+  b12:
+    l30 = StrCompare(Equal) l28, s27
+    branch l30, b15, b14
+  b13:
+    l24 = g13
+    goto b11
+  b14:
+    l31 = StrCompare(Equal) l28, s28
+    branch l31, b17, b16
+  b15:
+    l24 = g13
+    goto b11
+  b16:
+    l32 = StrCompare(Equal) l28, s29
+    branch l32, b19, b18
+  b17:
+    l24 = g13
+    goto b11
+  b18:
+    l33 = StrCompare(Equal) l28, s30
+    branch l33, b21, b20
+  b19:
+    l24 = g13
+    goto b11
+  b20:
+    l34 = StrCompare(Equal) l28, s31
+    branch l34, b23, b22
+  b21:
+    l24 = g14
+    goto b11
+  b22:
+    l35 = StrCompare(Equal) l28, s32
+    branch l35, b25, b24
+  b23:
+    l24 = g14
+    goto b11
+  b24:
+    l36 = StrCompare(Equal) l28, s33
+    branch l36, b27, b26
+  b25:
+    l24 = g14
+    goto b11
+  b26:
+    l37 = StrCompare(Equal) l28, s34
+    branch l37, b29, b28
+  b27:
+    l24 = g14
+    goto b11
+  b28:
+    l38 = StrCompare(Equal) l28, s35
+    branch l38, b31, b30
+  b29:
+    l24 = g15
+    goto b11
+  b30:
+    l39 = StrCompare(Equal) l28, s36
+    branch l39, b33, b32
+  b31:
+    l24 = g15
+    goto b11
+  b32:
+    l40 = StrCompare(Equal) l28, s37
+    branch l40, b35, b34
+  b33:
+    l24 = g15
+    goto b11
+  b34:
+    l41 = StrCompare(Equal) l28, s38
+    branch l41, b37, b36
+  b35:
+    l24 = g15
+    goto b11
+  b36:
+    l42 = StrCompare(Equal) l28, s39
+    branch l42, b39, b38
+  b37:
+    l24 = g16
+    goto b11
+  b38:
+    l43 = StrCompare(Equal) l28, s40
+    branch l43, b41, b40
+  b39:
+    l24 = g16
+    goto b11
+  b40:
+    l44 = StrCompare(Equal) l28, s41
+    branch l44, b43, b42
+  b41:
+    l24 = g10
+    goto b11
+  b42:
+    l45 = StrCompare(Equal) l28, s42
+    branch l45, b45, b44
+  b43:
+    l24 = g10
+    goto b11
+  b44:
+    l46 = StrCompare(Equal) l28, s43
+    branch l46, b47, b46
+  b45:
+    l24 = g10
+    goto b11
+  b46:
+    l47 = StrCompare(Equal) l28, s44
+    branch l47, b49, b48
+  b47:
+    l24 = g12
+    goto b11
+  b48:
+    l48 = IntNeg 1
+    l24 = l48
+    goto b11
+  b49:
+    l24 = g12
+    goto b11
+  b50:
+    unreachable
+  b51:
+    l52 = StrConcat s45, l1
+    l53 = StrConcat l52, s46
+    l54 = call f37(l0, l53)
+    l55 = record variant 1 (l54)
+    return l55
+  b52:
+    l56 = record variant 1 (l49)
+    l57 = record variant 0 (l56)
+    return l57
+
+function f54 Parser.escapedChar(l0: Record(22)): Record(33)
+    local l1: Char
+    local l2: Char // c
+    local l3: Int
+    local l4: Int
+    local l5: Char
+    local l6: Bool
+    local l7: Record(33)
+    local l8: Bool
+    local l9: Record(33)
+    local l10: Bool
+    local l11: Record(33)
+    local l12: Bool
+    local l13: Char
+    local l14: Record(33)
+    local l15: Bool
+    local l16: Char
+    local l17: Record(33)
+    local l18: Bool
+    local l19: Char
+    local l20: Record(33)
+    local l21: Bool
+    local l22: Record(33)
+    local l23: Bool
+    local l24: Record(33)
+    local l25: Bool
+    local l26: Record(33)
+    local l27: Int
+    local l28: Int // code
+    local l29: Bool
+    local l30: Bool
+    local l31: Bool
+    local l32: Bool
+    local l33: Bool
+    local l34: Bool
+    local l35: Bool
+    local l36: Bool
+    local l37: Bool
+    local l38: Bool
+    local l39: Bool
+    local l40: Record(33)
+    local l41: Bool
+    local l42: Record(33)
+    local l43: Record(16)
+    local l44: Record(33)
+  b0:
+    l1 = call f39(l0)
+    l2 = l1
+    l3 = l0.2
+    l4 = IntAdd l3, 1
+    l0.2 = l4
+    l5 = l2
+    l6 = CharCompare(Equal) l5, 'n'
+    branch l6, b3, b2
+  b1:
+    l27 = CharCode l2
+    l28 = l27
+    l32 = IntCompare(Less) l28, 128
+    l31 = l32
+    branch l31, b21, b22
+  b2:
+    l8 = CharCompare(Equal) l5, 't'
+    branch l8, b5, b4
+  b3:
+    l7 = record variant 0 ('\n')
+    return l7
+  b4:
+    l10 = CharCompare(Equal) l5, 'r'
+    branch l10, b7, b6
+  b5:
+    l9 = record variant 0 ('\t')
+    return l9
+  b6:
+    l12 = CharCompare(Equal) l5, 'f'
+    branch l12, b9, b8
+  b7:
+    l11 = record variant 0 ('\r')
+    return l11
+  b8:
+    l15 = CharCompare(Equal) l5, 'v'
+    branch l15, b11, b10
+  b9:
+    l13 = call f92(12)
+    l14 = record variant 0 (l13)
+    return l14
+  b10:
+    l18 = CharCompare(Equal) l5, 'a'
+    branch l18, b13, b12
+  b11:
+    l16 = call f92(11)
+    l17 = record variant 0 (l16)
+    return l17
+  b12:
+    l21 = CharCompare(Equal) l5, 'x'
+    branch l21, b15, b14
+  b13:
+    l19 = call f92(7)
+    l20 = record variant 0 (l19)
+    return l20
+  b14:
+    l23 = CharCompare(Equal) l5, 'u'
+    branch l23, b17, b16
+  b15:
+    l22 = call f55(l0, 2) writeback 0 -> l0
+    return l22
+  b16:
+    l25 = CharCompare(Equal) l5, 'U'
+    branch l25, b19, b18
+  b17:
+    l24 = call f55(l0, 4) writeback 0 -> l0
+    return l24
+  b18:
+    goto b1
+  b19:
+    l26 = call f55(l0, 8) writeback 0 -> l0
+    return l26
+  b20:
+    unreachable
+  b21:
+    l33 = call f88(l2)
+    l34 = Not l33
+    l31 = l34
+    goto b22
+  b22:
+    l30 = l31
+    branch l30, b23, b24
+  b23:
+    l36 = CharCompare(GreaterEqual) l2, '0'
+    l35 = l36
+    branch l35, b25, b26
+  b24:
+    l29 = l30
+    branch l29, b27, b28
+  b25:
+    l37 = CharCompare(LessEqual) l2, '9'
+    l35 = l37
+    goto b26
+  b26:
+    l38 = Not l35
+    l30 = l38
+    goto b24
+  b27:
+    l39 = IntCompare(Greater) l28, 32
+    l29 = l39
+    goto b28
+  b28:
+    branch l29, b29, b30
+  b29:
+    l40 = record variant 0 (l2)
+    return l40
+  b30:
+    l41 = CharCompare(Equal) l2, ' '
+    branch l41, b31, b32
+  b31:
+    l42 = record variant 0 (l2)
+    return l42
+  b32:
+    l43 = call f36(l0, s47)
+    l44 = record variant 1 (l43)
+    return l44
+
+function f55 Parser.hexChar(l0: Record(22), l1: Int): Record(33)
+    local l2: Str // text
+    local l3: Bool
+    local l4: Int
+    local l5: Int
+    local l6: Bool
+    local l7: Bool
+    local l8: Bool
+    local l9: Record(16)
+    local l10: Record(33)
+    local l11: Char
+    local l12: Str
+    local l13: Str
+    local l14: Int
+    local l15: Int
+    local l16: Int
+    local l17: Int
+    local l18: Bool
+    local l19: Record(16)
+    local l20: Record(33)
+    local l21: Int
+    local l22: Int
+    local l23: Bool
+    local l24: Bool
+    local l25: Int // i
+    local l26: Bool
+    local l27: Record(16)
+    local l28: Record(33)
+    local l29: Char
+    local l30: Str
+    local l31: Str
+    local l32: Int
+    local l33: Int
+    local l34: Int // value
+    local l35: List(Char)
+    local l36: List(Char)
+    local l37: Int
+    local l38: Int
+    local l39: Bool
+    local l40: Int
+    local l41: Char // digit
+    local l42: Str
+    local l43: Str
+    local l44: Record(13)
+    local l45: Record(13)
+    local l46: Int
+    local l47: Bool
+    local l48: Int
+    local l49: Int // found
+    local l50: Int
+    local l51: Int
+    local l52: Int
+    local l53: Bool
+    local l54: Record(16)
+    local l55: Record(33)
+    local l56: Bool
+    local l57: Record(16)
+    local l58: Record(33)
+    local l59: Record(33)
+    local l60: Record(5)
+    local l61: Record(5)
+    local l62: Int
+    local l63: Bool
+    local l64: Char
+    local l65: Char // found
+    local l66: Record(33)
+    local l67: Int
+    local l68: Bool
+    local l69: Record(16)
+    local l70: Record(33)
+  b0:
+    l2 = s18
+    l3 = call f40(l0, '{')
+    branch l3, b1, b2
+  b1:
+    l4 = l0.2
+    l5 = IntAdd l4, 1
+    l0.2 = l5
+    goto b4
+  b2:
+    l21 = l1
+    range_check 1
+    l22 = 0
+    l23 = false
+    goto b11
+  b3:
+    l34 = 0
+    l35 = koji_std_string_chars([Value(Local(2)), Element(Char)])
+    l36 = l35
+    l37 = ListLength l36
+    l38 = 0
+    goto b16
+  b4:
+    l6 = call f40(l0, '}')
+    l7 = Not l6
+    branch l7, b5, b6
+  b5:
+    l8 = call f38(l0)
+    branch l8, b7, b8
+  b6:
+    l16 = l0.2
+    l17 = IntAdd l16, 1
+    l0.2 = l17
+    l18 = StrCompare(Equal) l2, s18
+    branch l18, b9, b10
+  b7:
+    l9 = call f36(l0, s48)
+    l10 = record variant 1 (l9)
+    return l10
+  b8:
+    l11 = call f39(l0)
+    l12 = CharToStr l11
+    l13 = StrConcat l2, l12
+    l2 = l13
+    l14 = l0.2
+    l15 = IntAdd l14, 1
+    l0.2 = l15
+    goto b4
+  b9:
+    l19 = call f36(l0, s49)
+    l20 = record variant 1 (l19)
+    return l20
+  b10:
+    goto b3
+  b11:
+    l24, l25 = range_next l22, l21, 1, l23
+    branch l24, b12, b13
+  b12:
+    l26 = call f38(l0)
+    branch l26, b14, b15
+  b13:
+    goto b3
+  b14:
+    l27 = call f36(l0, s22)
+    l28 = record variant 1 (l27)
+    return l28
+  b15:
+    l29 = call f39(l0)
+    l30 = CharToStr l29
+    l31 = StrConcat l2, l30
+    l2 = l31
+    l32 = l0.2
+    l33 = IntAdd l32, 1
+    l0.2 = l33
+    goto b11
+  b16:
+    l39 = IntCompare(Less) l38, l37
+    branch l39, b17, b19
+  b17:
+    l41 = l36[l38]
+    l42 = CharToStr l41
+    l43 = koji_std_string_lower([Value(Local(42))])
+    l44 = koji_std_string_index_of([Value(Str(50)), Value(Local(43)), Record(13)])
+    l45 = l44
+    l46 = RecordTag l45
+    l47 = IntCompare(Equal) l46, 0
+    branch l47, b22, b21
+  b18:
+    l40 = IntAdd l38, 1
+    l38 = l40
+    goto b16
+  b19:
+    l60 = koji_std_char([Value(Local(34)), Record(5)])
+    l61 = l60
+    l62 = RecordTag l61
+    l63 = IntCompare(Equal) l62, 0
+    branch l63, b29, b28
+  b20:
+    l56 = IntCompare(Greater) l34, 1114111
+    branch l56, b25, b26
+  b21:
+    l52 = RecordTag l45
+    l53 = IntCompare(Equal) l52, 1
+    branch l53, b24, b23
+  b22:
+    l48 = l45.0
+    l49 = l48
+    l50 = IntMul l34, 16
+    l51 = IntAdd l50, l49
+    l34 = l51
+    goto b20
+  b23:
+    unreachable
+  b24:
+    l54 = call f36(l0, s51)
+    l55 = record variant 1 (l54)
+    return l55
+  b25:
+    l57 = call f36(l0, s52)
+    l58 = record variant 1 (l57)
+    return l58
+  b26:
+    goto b18
+  b27:
+    return l59
+  b28:
+    l67 = RecordTag l61
+    l68 = IntCompare(Equal) l67, 1
+    branch l68, b31, b30
+  b29:
+    l64 = l61.0
+    l65 = l64
+    l66 = record variant 0 (l65)
+    l59 = l66
+    goto b27
+  b30:
+    unreachable
+  b31:
+    l69 = call f36(l0, s52)
+    l70 = record variant 1 (l69)
+    l59 = l70
+    goto b27
+
+function f56 Parser.charClass(l0: Record(22)): Record(32)
+    local l1: Bool // negated
+    local l2: Bool
+    local l3: Int
+    local l4: Int
+    local l5: Record(32)
+    local l6: Record(32)
+    local l7: Int
+    local l8: Bool
+    local l9: Record(16)
+    local l10: Record(32)
+    local l11: Record(19)
+    local l12: Record(19) // set
+    local l13: Bool
+    local l14: Record(16)
+    local l15: Record(32)
+    local l16: Bool
+    local l17: Int
+    local l18: Int
+    local l19: Str
+    local l20: Str // operator
+    local l21: Bool
+    local l22: Record(16)
+    local l23: Record(32)
+    local l24: Record(32)
+    local l25: Record(32)
+    local l26: Int
+    local l27: Bool
+    local l28: Record(16)
+    local l29: Record(32)
+    local l30: Record(19)
+    local l31: Record(19) // right
+    local l32: Record(19)
+    local l33: Str
+    local l34: Bool
+    local l35: Record(19)
+    local l36: Bool
+    local l37: Record(19)
+    local l38: Record(19)
+    local l39: Record(19)
+    local l40: Record(32)
+    local l41: Record(32)
+  b0:
+    l1 = false
+    l2 = call f40(l0, '^')
+    branch l2, b1, b2
+  b1:
+    l3 = l0.2
+    l4 = IntAdd l3, 1
+    l0.2 = l4
+    l1 = true
+    goto b2
+  b2:
+    l5 = call f58(l0, true) writeback 0 -> l0
+    l6 = l5
+    l7 = RecordTag l6
+    l8 = IntCompare(Equal) l7, 0
+    branch l8, b4, b3
+  b3:
+    l9 = l6.0
+    l10 = record variant 1 (l9)
+    return l10
+  b4:
+    l11 = l6.0
+    l12 = l11
+    goto b5
+  b5:
+    branch true, b6, b7
+  b6:
+    l13 = call f38(l0)
+    branch l13, b8, b9
+  b7:
+    branch l1, b22, b23
+  b8:
+    l14 = call f36(l0, s53)
+    l15 = record variant 1 (l14)
+    return l15
+  b9:
+    l16 = call f40(l0, ']')
+    branch l16, b10, b11
+  b10:
+    l17 = l0.2
+    l18 = IntAdd l17, 1
+    l0.2 = l18
+    goto b7
+  b11:
+    l19 = call f57(l0) writeback 0 -> l0
+    l20 = l19
+    l21 = StrCompare(Equal) l20, s18
+    branch l21, b12, b13
+  b12:
+    l22 = call f36(l0, s53)
+    l23 = record variant 1 (l22)
+    return l23
+  b13:
+    l24 = call f58(l0, false) writeback 0 -> l0
+    l25 = l24
+    l26 = RecordTag l25
+    l27 = IntCompare(Equal) l26, 0
+    branch l27, b15, b14
+  b14:
+    l28 = l25.0
+    l29 = record variant 1 (l28)
+    return l29
+  b15:
+    l30 = l25.0
+    l31 = l30
+    l33 = l20
+    l34 = StrCompare(Equal) l33, s54
+    branch l34, b18, b17
+  b16:
+    l12 = l32
+    goto b5
+  b17:
+    l36 = StrCompare(Equal) l33, s55
+    branch l36, b20, b19
+  b18:
+    l35 = record variant 3 (l12, l31)
+    l32 = l35
+    goto b16
+  b19:
+    l38 = record variant 5 (l12, l31)
+    l32 = l38
+    goto b16
+  b20:
+    l37 = record variant 4 (l12, l31)
+    l32 = l37
+    goto b16
+  b21:
+    unreachable
+  b22:
+    l39 = record variant 6 (l12)
+    l40 = record variant 0 (l39)
+    return l40
+  b23:
+    l41 = record variant 0 (l12)
+    return l41
+
+function f57 Parser.classOperator(l0: Record(22)): Str
+    local l1: Int
+    local l2: Int
+    local l3: List(Char)
+    local l4: Int
+    local l5: Bool
+    local l6: List(Char)
+    local l7: Int
+    local l8: Char
+    local l9: Str
+    local l10: List(Char)
+    local l11: Int
+    local l12: Int
+    local l13: Char
+    local l14: Str
+    local l15: Str
+    local l16: Str // pair
+    local l17: Bool
+    local l18: Bool
+    local l19: Bool
+    local l20: Bool
+    local l21: Bool
+    local l22: Int
+    local l23: Int
+  b0:
+    l1 = l0.2
+    l2 = IntAdd l1, 1
+    l3 = l0.1
+    l4 = ListLength l3
+    l5 = IntCompare(GreaterEqual) l2, l4
+    branch l5, b1, b2
+  b1:
+    return s18
+  b2:
+    l6 = l0.1
+    l7 = l0.2
+    l8 = l6[l7]
+    l9 = CharToStr l8
+    l10 = l0.1
+    l11 = l0.2
+    l12 = IntAdd l11, 1
+    l13 = l10[l12]
+    l14 = CharToStr l13
+    l15 = StrConcat l9, l14
+    l16 = l15
+    l19 = StrCompare(Equal) l16, s54
+    l18 = l19
+    branch l18, b4, b3
+  b3:
+    l20 = StrCompare(Equal) l16, s55
+    l18 = l20
+    goto b4
+  b4:
+    l17 = l18
+    branch l17, b6, b5
+  b5:
+    l21 = StrCompare(Equal) l16, s56
+    l17 = l21
+    goto b6
+  b6:
+    branch l17, b7, b8
+  b7:
+    l22 = l0.2
+    l23 = IntAdd l22, 2
+    l0.2 = l23
+    return l16
+  b8:
+    return s18
+
+function f58 Parser.classUnion(l0: Record(22), l1: Bool): Record(32)
+    local l2: List(Record(20))
+    local l3: List(Record(20)) // ranges
+    local l4: List(Record(19))
+    local l5: List(Record(19)) // items
+    local l6: Bool // start
+    local l7: Bool
+    local l8: Record(16)
+    local l9: Record(32)
+    local l10: Char
+    local l11: Char // c
+    local l12: Bool
+    local l13: Bool
+    local l14: Bool
+    local l15: Int
+    local l16: Int
+    local l17: List(Char)
+    local l18: Int
+    local l19: Bool
+    local l20: Str
+    local l21: List(Char)
+    local l22: Int
+    local l23: Int
+    local l24: Char
+    local l25: Str
+    local l26: Str
+    local l27: Str // pair
+    local l28: Bool
+    local l29: Bool
+    local l30: Bool
+    local l31: Bool
+    local l32: Bool
+    local l33: Bool
+    local l34: Bool
+    local l35: Bool
+    local l36: Bool
+    local l37: Bool
+    local l38: Int
+    local l39: Int
+    local l40: List(Char)
+    local l41: Int
+    local l42: Bool
+    local l43: List(Char)
+    local l44: Int
+    local l45: Int
+    local l46: Char
+    local l47: Bool
+    local l48: Record(30)
+    local l49: Record(30)
+    local l50: Int
+    local l51: Bool
+    local l52: Record(19)
+    local l53: Record(19) // set
+    local l54: Int
+    local l55: Bool
+    local l56: Bool
+    local l57: Int
+    local l58: Int
+    local l59: Record(32)
+    local l60: Record(32)
+    local l61: Int
+    local l62: Bool
+    local l63: Record(16)
+    local l64: Record(32)
+    local l65: Record(19)
+    local l66: Char
+    local l67: Record(35)
+    local l68: Record(35)
+    local l69: Int
+    local l70: Bool
+    local l71: Record(16)
+    local l72: Record(32)
+    local l73: Record(34)
+    local l74: Record(34)
+    local l75: Int
+    local l76: Bool
+    local l77: Record(19)
+    local l78: Record(19) // set
+    local l79: Int
+    local l80: Bool
+    local l81: Char
+    local l82: Char // found
+    local l83: Char // low
+    local l84: Bool
+    local l85: Bool
+    local l86: Bool
+    local l87: Bool
+    local l88: Int
+    local l89: Int
+    local l90: List(Char)
+    local l91: Int
+    local l92: Bool
+    local l93: List(Char)
+    local l94: Int
+    local l95: Int
+    local l96: Char
+    local l97: Bool
+    local l98: List(Char)
+    local l99: Int
+    local l100: Int
+    local l101: Char
+    local l102: Bool
+    local l103: Int
+    local l104: Int
+    local l105: Char
+    local l106: Record(35)
+    local l107: Record(35)
+    local l108: Int
+    local l109: Bool
+    local l110: Record(16)
+    local l111: Record(32)
+    local l112: Record(34)
+    local l113: Record(34)
+    local l114: Int
+    local l115: Bool
+    local l116: Char
+    local l117: Char // found
+    local l118: Int
+    local l119: Bool
+    local l120: Record(16)
+    local l121: Record(32)
+    local l122: Char // high
+    local l123: Int
+    local l124: Int
+    local l125: Bool
+    local l126: Record(16)
+    local l127: Record(32)
+    local l128: Int
+    local l129: Int
+    local l130: Int
+    local l131: Int
+    local l132: Record(20)
+    local l133: Int
+    local l134: Int
+    local l135: Int
+    local l136: Int
+    local l137: Record(20)
+    local l138: Int
+    local l139: Bool
+    local l140: Record(19)
+    local l141: Record(32)
+    local l142: Int
+    local l143: Bool
+    local l144: Record(19)
+    local l145: Int
+    local l146: Bool
+    local l147: Record(19)
+    local l148: Record(32)
+    local l149: Record(19)
+    local l150: Record(32)
+  b0:
+    l2 = list []
+    l3 = l2
+    l4 = list []
+    l5 = l4
+    l6 = l1
+    goto b1
+  b1:
+    branch true, b2, b3
+  b2:
+    l7 = call f38(l0)
+    branch l7, b4, b5
+  b3:
+    l138 = ListLength l5
+    l139 = IntCompare(Equal) l138, 0
+    branch l139, b59, b60
+  b4:
+    l8 = call f36(l0, s53)
+    l9 = record variant 1 (l8)
+    return l9
+  b5:
+    l10 = call f39(l0)
+    l11 = l10
+    l13 = CharCompare(Equal) l11, ']'
+    l12 = l13
+    branch l12, b6, b7
+  b6:
+    l14 = Not l6
+    l12 = l14
+    goto b7
+  b7:
+    branch l12, b8, b9
+  b8:
+    goto b3
+  b9:
+    l15 = l0.2
+    l16 = IntAdd l15, 1
+    l17 = l0.1
+    l18 = ListLength l17
+    l19 = IntCompare(Less) l16, l18
+    branch l19, b10, b11
+  b10:
+    l20 = CharToStr l11
+    l21 = l0.1
+    l22 = l0.2
+    l23 = IntAdd l22, 1
+    l24 = l21[l23]
+    l25 = CharToStr l24
+    l26 = StrConcat l20, l25
+    l27 = l26
+    l31 = StrCompare(Equal) l27, s54
+    l30 = l31
+    branch l30, b13, b12
+  b11:
+    l6 = false
+    l37 = CharCompare(Equal) l11, '['
+    l36 = l37
+    branch l36, b20, b21
+  b12:
+    l32 = StrCompare(Equal) l27, s55
+    l30 = l32
+    goto b13
+  b13:
+    l29 = l30
+    branch l29, b15, b14
+  b14:
+    l33 = StrCompare(Equal) l27, s56
+    l29 = l33
+    goto b15
+  b15:
+    l28 = l29
+    branch l28, b16, b17
+  b16:
+    l34 = Not l6
+    l28 = l34
+    goto b17
+  b17:
+    branch l28, b18, b19
+  b18:
+    goto b3
+  b19:
+    goto b11
+  b20:
+    l38 = l0.2
+    l39 = IntAdd l38, 1
+    l40 = l0.1
+    l41 = ListLength l40
+    l42 = IntCompare(Less) l39, l41
+    l36 = l42
+    goto b21
+  b21:
+    l35 = l36
+    branch l35, b22, b23
+  b22:
+    l43 = l0.1
+    l44 = l0.2
+    l45 = IntAdd l44, 1
+    l46 = l43[l45]
+    l47 = CharCompare(Equal) l46, ':'
+    l35 = l47
+    goto b23
+  b23:
+    branch l35, b24, b25
+  b24:
+    l48 = call f60(l0) writeback 0 -> l0
+    l49 = l48
+    l50 = RecordTag l49
+    l51 = IntCompare(Equal) l50, 0
+    branch l51, b28, b27
+  b25:
+    l56 = CharCompare(Equal) l11, '['
+    branch l56, b31, b32
+  b26:
+    goto b25
+  b27:
+    l54 = RecordTag l49
+    l55 = IntCompare(Equal) l54, 1
+    branch l55, b30, b29
+  b28:
+    l52 = l49.0
+    l53 = l52
+    push l5, l53
+    goto b1
+  b29:
+    unreachable
+  b30:
+    goto b26
+  b31:
+    l57 = l0.2
+    l58 = IntAdd l57, 1
+    l0.2 = l58
+    l59 = call f56(l0) writeback 0 -> l0
+    l60 = l59
+    l61 = RecordTag l60
+    l62 = IntCompare(Equal) l61, 0
+    branch l62, b34, b33
+  b32:
+    l67 = call f59(l0) writeback 0 -> l0
+    l68 = l67
+    l69 = RecordTag l68
+    l70 = IntCompare(Equal) l69, 0
+    branch l70, b36, b35
+  b33:
+    l63 = l60.0
+    l64 = record variant 1 (l63)
+    return l64
+  b34:
+    l65 = l60.0
+    push l5, l65
+    goto b1
+  b35:
+    l71 = l68.0
+    l72 = record variant 1 (l71)
+    return l72
+  b36:
+    l73 = l68.0
+    l74 = l73
+    l75 = RecordTag l74
+    l76 = IntCompare(Equal) l75, 1
+    branch l76, b39, b38
+  b37:
+    l83 = l66
+    l87 = call f40(l0, '-')
+    l86 = l87
+    branch l86, b42, b43
+  b38:
+    l79 = RecordTag l74
+    l80 = IntCompare(Equal) l79, 0
+    branch l80, b41, b40
+  b39:
+    l77 = l74.0
+    l78 = l77
+    push l5, l78
+    goto b1
+  b40:
+    unreachable
+  b41:
+    l81 = l74.0
+    l82 = l81
+    l66 = l82
+    goto b37
+  b42:
+    l88 = l0.2
+    l89 = IntAdd l88, 1
+    l90 = l0.1
+    l91 = ListLength l90
+    l92 = IntCompare(Less) l89, l91
+    l86 = l92
+    goto b43
+  b43:
+    l85 = l86
+    branch l85, b44, b45
+  b44:
+    l93 = l0.1
+    l94 = l0.2
+    l95 = IntAdd l94, 1
+    l96 = l93[l95]
+    l97 = CharCompare(NotEqual) l96, ']'
+    l85 = l97
+    goto b45
+  b45:
+    l84 = l85
+    branch l84, b46, b47
+  b46:
+    l98 = l0.1
+    l99 = l0.2
+    l100 = IntAdd l99, 1
+    l101 = l98[l100]
+    l102 = CharCompare(NotEqual) l101, '-'
+    l84 = l102
+    goto b47
+  b47:
+    branch l84, b48, b49
+  b48:
+    l103 = l0.2
+    l104 = IntAdd l103, 1
+    l0.2 = l104
+    l106 = call f59(l0) writeback 0 -> l0
+    l107 = l106
+    l108 = RecordTag l107
+    l109 = IntCompare(Equal) l108, 0
+    branch l109, b51, b50
+  b49:
+    l133 = CharCode l83
+    l134 = l133
+    l135 = CharCode l83
+    l136 = l135
+    l137 = record variant 0 (l134, l136)
+    push l3, l137
+    goto b1
+  b50:
+    l110 = l107.0
+    l111 = record variant 1 (l110)
+    return l111
+  b51:
+    l112 = l107.0
+    l113 = l112
+    l114 = RecordTag l113
+    l115 = IntCompare(Equal) l114, 0
+    branch l115, b54, b53
+  b52:
+    l122 = l105
+    l123 = CharCode l122
+    l124 = CharCode l83
+    l125 = IntCompare(Less) l123, l124
+    branch l125, b57, b58
+  b53:
+    l118 = RecordTag l113
+    l119 = IntCompare(Equal) l118, 1
+    branch l119, b56, b55
+  b54:
+    l116 = l113.0
+    l117 = l116
+    l105 = l117
+    goto b52
+  b55:
+    unreachable
+  b56:
+    l120 = call f36(l0, s57)
+    l121 = record variant 1 (l120)
+    return l121
+  b57:
+    l126 = call f36(l0, s58)
+    l127 = record variant 1 (l126)
+    return l127
+  b58:
+    l128 = CharCode l83
+    l129 = l128
+    l130 = CharCode l122
+    l131 = l130
+    l132 = record variant 0 (l129, l131)
+    push l3, l132
+    goto b1
+  b59:
+    l140 = record variant 0 (l3)
+    l141 = record variant 0 (l140)
+    return l141
+  b60:
+    l142 = ListLength l3
+    l143 = IntCompare(Greater) l142, 0
+    branch l143, b61, b62
+  b61:
+    l144 = record variant 0 (l3)
+    push l5, l144
+    goto b62
+  b62:
+    l145 = ListLength l5
+    l146 = IntCompare(Equal) l145, 1
+    branch l146, b63, b64
+  b63:
+    l147 = l5[0]
+    l148 = record variant 0 (l147)
+    return l148
+  b64:
+    l149 = record variant 2 (l5)
+    l150 = record variant 0 (l149)
+    return l150
+
+function f59 Parser.classChar(l0: Record(22)): Record(35)
+    local l1: Char
+    local l2: Char // c
+    local l3: Int
+    local l4: Int
+    local l5: Bool
+    local l6: Record(34)
+    local l7: Record(35)
+    local l8: Bool
+    local l9: Record(16)
+    local l10: Record(35)
+    local l11: Record(31)
+    local l12: Record(31)
+    local l13: Int
+    local l14: Bool
+    local l15: Record(16)
+    local l16: Record(35)
+    local l17: Record(30)
+    local l18: Record(30)
+    local l19: Int
+    local l20: Bool
+    local l21: Record(19)
+    local l22: Record(19) // set
+    local l23: Record(34)
+    local l24: Record(35)
+    local l25: Int
+    local l26: Bool
+    local l27: Char
+    local l28: Char // escaped
+    local l29: Bool
+    local l30: Int
+    local l31: Int
+    local l32: Char
+    local l33: Record(34)
+    local l34: Record(35)
+    local l35: Record(33)
+    local l36: Record(33)
+    local l37: Int
+    local l38: Bool
+    local l39: Record(16)
+    local l40: Record(35)
+    local l41: Char
+    local l42: Record(34)
+    local l43: Record(35)
+  b0:
+    l1 = call f39(l0)
+    l2 = l1
+    l3 = l0.2
+    l4 = IntAdd l3, 1
+    l0.2 = l4
+    l5 = CharCompare(NotEqual) l2, '\\'
+    branch l5, b1, b2
+  b1:
+    l6 = record variant 0 (l2)
+    l7 = record variant 0 (l6)
+    return l7
+  b2:
+    l8 = call f38(l0)
+    branch l8, b3, b4
+  b3:
+    l9 = call f36(l0, s22)
+    l10 = record variant 1 (l9)
+    return l10
+  b4:
+    l11 = call f52(l0) writeback 0 -> l0
+    l12 = l11
+    l13 = RecordTag l12
+    l14 = IntCompare(Equal) l13, 0
+    branch l14, b6, b5
+  b5:
+    l15 = l12.0
+    l16 = record variant 1 (l15)
+    return l16
+  b6:
+    l17 = l12.0
+    l18 = l17
+    l19 = RecordTag l18
+    l20 = IntCompare(Equal) l19, 0
+    branch l20, b9, b8
+  b7:
+    l27 = call f39(l0)
+    l28 = l27
+    l29 = CharCompare(Equal) l28, 'b'
+    branch l29, b12, b13
+  b8:
+    l25 = RecordTag l18
+    l26 = IntCompare(Equal) l25, 1
+    branch l26, b11, b10
+  b9:
+    l21 = l18.0
+    l22 = l21
+    l23 = record variant 1 (l22)
+    l24 = record variant 0 (l23)
+    return l24
+  b10:
+    unreachable
+  b11:
+    goto b7
+  b12:
+    l30 = l0.2
+    l31 = IntAdd l30, 1
+    l0.2 = l31
+    l32 = call f92(8)
+    l33 = record variant 0 (l32)
+    l34 = record variant 0 (l33)
+    return l34
+  b13:
+    l35 = call f54(l0) writeback 0 -> l0
+    l36 = l35
+    l37 = RecordTag l36
+    l38 = IntCompare(Equal) l37, 0
+    branch l38, b15, b14
+  b14:
+    l39 = l36.0
+    l40 = record variant 1 (l39)
+    return l40
+  b15:
+    l41 = l36.0
+    l42 = record variant 0 (l41)
+    l43 = record variant 0 (l42)
+    return l43
+
+function f60 Parser.posixClass(l0: Record(22)): Record(30)
+    local l1: Int
+    local l2: Int
+    local l3: Int // end
+    local l4: Str // name
+    local l5: Bool
+    local l6: List(Char)
+    local l7: Int
+    local l8: Bool
+    local l9: List(Char)
+    local l10: Char
+    local l11: Bool
+    local l12: List(Char)
+    local l13: Char
+    local l14: Str
+    local l15: Str
+    local l16: Int
+    local l17: Bool
+    local l18: Int
+    local l19: List(Char)
+    local l20: Int
+    local l21: Bool
+    local l22: List(Char)
+    local l23: Int
+    local l24: Char
+    local l25: Bool
+    local l26: Record(30)
+    local l27: Bool
+    local l28: Bool // negated
+    local l29: Str
+    local l30: Str
+    local l31: Str // plain
+    local l32: List(Record(20))
+    local l33: Str
+    local l34: Bool
+    local l35: Record(20)
+    local l36: Record(20)
+    local l37: Record(20)
+    local l38: List(Record(20))
+    local l39: Bool
+    local l40: Record(20)
+    local l41: Record(20)
+    local l42: List(Record(20))
+    local l43: Bool
+    local l44: Int
+    local l45: Int
+    local l46: Record(20)
+    local l47: List(Record(20))
+    local l48: Bool
+    local l49: Record(20)
+    local l50: Record(20)
+    local l51: List(Record(20))
+    local l52: Bool
+    local l53: Int
+    local l54: Int
+    local l55: Record(20)
+    local l56: Int
+    local l57: Int
+    local l58: Record(20)
+    local l59: List(Record(20))
+    local l60: Bool
+    local l61: Record(20)
+    local l62: List(Record(20))
+    local l63: Bool
+    local l64: Int
+    local l65: Int
+    local l66: Record(20)
+    local l67: List(Record(20))
+    local l68: Bool
+    local l69: Record(20)
+    local l70: List(Record(20))
+    local l71: Bool
+    local l72: Int
+    local l73: Int
+    local l74: Record(20)
+    local l75: List(Record(20))
+    local l76: Bool
+    local l77: Int
+    local l78: Int
+    local l79: Record(20)
+    local l80: Int
+    local l81: Int
+    local l82: Record(20)
+    local l83: Int
+    local l84: Int
+    local l85: Record(20)
+    local l86: Int
+    local l87: Int
+    local l88: Record(20)
+    local l89: List(Record(20))
+    local l90: Bool
+    local l91: Record(20)
+    local l92: Record(20)
+    local l93: List(Record(20))
+    local l94: Bool
+    local l95: Record(20)
+    local l96: List(Record(20))
+    local l97: Bool
+    local l98: Record(20)
+    local l99: Record(20)
+    local l100: Record(20)
+    local l101: Record(20)
+    local l102: List(Record(20))
+    local l103: Bool
+    local l104: Record(20)
+    local l105: Record(20)
+    local l106: Record(20)
+    local l107: List(Record(20))
+    local l108: Record(30)
+    local l109: List(Record(20)) // ranges
+    local l110: Int
+    local l111: Record(19)
+    local l112: Record(19)
+    local l113: Record(30)
+    local l114: Record(19)
+    local l115: Record(30)
+  b0:
+    l1 = l0.2
+    l2 = IntAdd l1, 2
+    l3 = l2
+    l4 = s18
+    goto b1
+  b1:
+    l6 = l0.1
+    l7 = ListLength l6
+    l8 = IntCompare(Less) l3, l7
+    l5 = l8
+    branch l5, b4, b5
+  b2:
+    l12 = l0.1
+    l13 = l12[l3]
+    l14 = CharToStr l13
+    l15 = StrConcat l4, l14
+    l4 = l15
+    l16 = IntAdd l3, 1
+    l3 = l16
+    goto b1
+  b3:
+    l18 = IntAdd l3, 1
+    l19 = l0.1
+    l20 = ListLength l19
+    l21 = IntCompare(GreaterEqual) l18, l20
+    l17 = l21
+    branch l17, b7, b6
+  b4:
+    l9 = l0.1
+    l10 = l9[l3]
+    l11 = CharCompare(NotEqual) l10, ':'
+    l5 = l11
+    goto b5
+  b5:
+    branch l5, b2, b3
+  b6:
+    l22 = l0.1
+    l23 = IntAdd l3, 1
+    l24 = l22[l23]
+    l25 = CharCompare(NotEqual) l24, ']'
+    l17 = l25
+    goto b7
+  b7:
+    branch l17, b8, b9
+  b8:
+    l26 = record variant 1 ()
+    return l26
+  b9:
+    l27 = koji_std_string_starts_with([Value(Local(4)), Value(Str(59))])
+    l28 = l27
+    branch l28, b10, b11
+  b10:
+    l30 = koji_std_string_slice([Value(Local(4)), Mode(1), Value(Int(1)), Mode(0), Value(Int(0)), Location(846)])
+    l29 = l30
+    goto b12
+  b11:
+    l29 = l4
+    goto b12
+  b12:
+    l31 = l29
+    l33 = l31
+    l34 = StrCompare(Equal) l33, s60
+    branch l34, b15, b14
+  b13:
+    l109 = l32
+    l110 = IntAdd l3, 2
+    l0.2 = l110
+    branch l28, b43, b44
+  b14:
+    l39 = StrCompare(Equal) l33, s29
+    branch l39, b17, b16
+  b15:
+    l35 = call f61('0', '9')
+    l36 = call f61('A', 'Z')
+    l37 = call f61('a', 'z')
+    l38 = list [l35, l36, l37]
+    l32 = l38
+    goto b13
+  b16:
+    l43 = StrCompare(Equal) l33, s61
+    branch l43, b19, b18
+  b17:
+    l40 = call f61('A', 'Z')
+    l41 = call f61('a', 'z')
+    l42 = list [l40, l41]
+    l32 = l42
+    goto b13
+  b18:
+    l48 = StrCompare(Equal) l33, s62
+    branch l48, b21, b20
+  b19:
+    l44 = 0
+    l45 = 127
+    l46 = record variant 0 (l44, l45)
+    l47 = list [l46]
+    l32 = l47
+    goto b13
+  b20:
+    l52 = StrCompare(Equal) l33, s63
+    branch l52, b23, b22
+  b21:
+    l49 = call f61('\t', '\t')
+    l50 = call f61(' ', ' ')
+    l51 = list [l49, l50]
+    l32 = l51
+    goto b13
+  b22:
+    l60 = StrCompare(Equal) l33, s42
+    branch l60, b25, b24
+  b23:
+    l53 = 0
+    l54 = 31
+    l55 = record variant 0 (l53, l54)
+    l56 = 127
+    l57 = 127
+    l58 = record variant 0 (l56, l57)
+    l59 = list [l55, l58]
+    l32 = l59
+    goto b13
+  b24:
+    l63 = StrCompare(Equal) l33, s64
+    branch l63, b27, b26
+  b25:
+    l61 = call f61('0', '9')
+    l62 = list [l61]
+    l32 = l62
+    goto b13
+  b26:
+    l68 = StrCompare(Equal) l33, s37
+    branch l68, b29, b28
+  b27:
+    l64 = 33
+    l65 = 126
+    l66 = record variant 0 (l64, l65)
+    l67 = list [l66]
+    l32 = l67
+    goto b13
+  b28:
+    l71 = StrCompare(Equal) l33, s65
+    branch l71, b31, b30
+  b29:
+    l69 = call f61('a', 'z')
+    l70 = list [l69]
+    l32 = l70
+    goto b13
+  b30:
+    l76 = StrCompare(Equal) l33, s66
+    branch l76, b33, b32
+  b31:
+    l72 = 32
+    l73 = 126
+    l74 = record variant 0 (l72, l73)
+    l75 = list [l74]
+    l32 = l75
+    goto b13
+  b32:
+    l90 = StrCompare(Equal) l33, s44
+    branch l90, b35, b34
+  b33:
+    l77 = 33
+    l78 = 47
+    l79 = record variant 0 (l77, l78)
+    l80 = 58
+    l81 = 64
+    l82 = record variant 0 (l80, l81)
+    l83 = 91
+    l84 = 96
+    l85 = record variant 0 (l83, l84)
+    l86 = 123
+    l87 = 126
+    l88 = record variant 0 (l86, l87)
+    l89 = list [l79, l82, l85, l88]
+    l32 = l89
+    goto b13
+  b34:
+    l94 = StrCompare(Equal) l33, s33
+    branch l94, b37, b36
+  b35:
+    l91 = call f61('\t', '\r')
+    l92 = call f61(' ', ' ')
+    l93 = list [l91, l92]
+    l32 = l93
+    goto b13
+  b36:
+    l97 = StrCompare(Equal) l33, s67
+    branch l97, b39, b38
+  b37:
+    l95 = call f61('A', 'Z')
+    l96 = list [l95]
+    l32 = l96
+    goto b13
+  b38:
+    l103 = StrCompare(Equal) l33, s68
+    branch l103, b41, b40
+  b39:
+    l98 = call f61('0', '9')
+    l99 = call f61('A', 'Z')
+    l100 = call f61('_', '_')
+    l101 = call f61('a', 'z')
+    l102 = list [l98, l99, l100, l101]
+    l32 = l102
+    goto b13
+  b40:
+    l108 = record variant 1 ()
+    return l108
+  b41:
+    l104 = call f61('0', '9')
+    l105 = call f61('A', 'F')
+    l106 = call f61('a', 'f')
+    l107 = list [l104, l105, l106]
+    l32 = l107
+    goto b13
+  b42:
+    unreachable
+  b43:
+    l111 = record variant 0 (l109)
+    l112 = record variant 6 (l111)
+    l113 = record variant 0 (l112)
+    return l113
+  b44:
+    l114 = record variant 0 (l109)
+    l115 = record variant 0 (l114)
+    return l115
+
+function f61 span(l0: Char, l1: Char): Record(20)
+    local l2: Int
+    local l3: Int
+    local l4: Int
+    local l5: Int
+    local l6: Record(20)
+  b0:
+    l2 = CharCode l0
+    l3 = l2
+    l4 = CharCode l1
+    l5 = l4
+    l6 = record variant 0 (l3, l5)
+    return l6
+
+function f62 size(l0: Record(24)): Int
+    local l1: Int
+    local l2: Record(24)
+    local l3: Int
+    local l4: Bool
+    local l5: Int
+    local l6: Bool
+    local l7: Record(24)
+    local l8: Record(24) // inner
+    local l9: Int
+    local l10: Int
+    local l11: Int
+    local l12: Bool
+    local l13: List(Record(24))
+    local l14: List(Record(24)) // items
+    local l15: Int // total
+    local l16: List(Record(24))
+    local l17: Int
+    local l18: Int
+    local l19: Bool
+    local l20: Int
+    local l21: Record(24) // item
+    local l22: Int
+    local l23: Int
+    local l24: Bool
+    local l25: Int
+    local l26: Bool
+    local l27: List(Record(24))
+    local l28: List(Record(24)) // items
+    local l29: Int // total
+    local l30: List(Record(24))
+    local l31: Int
+    local l32: Int
+    local l33: Bool
+    local l34: Int
+    local l35: Record(24) // item
+    local l36: Int
+    local l37: Int
+    local l38: Int
+    local l39: Bool
+    local l40: Int
+    local l41: Bool
+    local l42: Record(24)
+    local l43: Record(24) // inner
+    local l44: Int
+    local l45: Int // min
+    local l46: Int
+    local l47: Int // max
+    local l48: Int
+    local l49: Int
+    local l50: Bool
+    local l51: Int
+    local l52: Int // copies
+    local l53: Int
+    local l54: Int
+    local l55: Int // one
+    local l56: Bool
+    local l57: Bool
+    local l58: Int
+    local l59: Int
+    local l60: Bool
+    local l61: Int
+    local l62: Int
+  b0:
+    l2 = l0
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 0
+    branch l4, b3, b2
+  b1:
+    return l1
+  b2:
+    l5 = RecordTag l2
+    l6 = IntCompare(Equal) l5, 5
+    branch l6, b5, b4
+  b3:
+    l1 = 0
+    goto b1
+  b4:
+    l11 = RecordTag l2
+    l12 = IntCompare(Equal) l11, 6
+    branch l12, b7, b6
+  b5:
+    l7 = l2.1
+    l8 = l7
+    l9 = call f62(l8)
+    l10 = IntAdd l9, 2
+    l1 = l10
+    goto b1
+  b6:
+    l25 = RecordTag l2
+    l26 = IntCompare(Equal) l25, 7
+    branch l26, b15, b14
+  b7:
+    l13 = l2.0
+    l14 = l13
+    l15 = 0
+    l16 = l14
+    l17 = ListLength l16
+    l18 = 0
+    goto b8
+  b8:
+    l19 = IntCompare(Less) l18, l17
+    branch l19, b9, b11
+  b9:
+    l21 = l16[l18]
+    l22 = call f62(l21)
+    l23 = IntAdd l15, l22
+    l15 = l23
+    l24 = IntCompare(Greater) l15, g17
+    branch l24, b12, b13
+  b10:
+    l20 = IntAdd l18, 1
+    l18 = l20
+    goto b8
+  b11:
+    l1 = l15
+    goto b1
+  b12:
+    return l15
+  b13:
+    goto b10
+  b14:
+    l40 = RecordTag l2
+    l41 = IntCompare(Equal) l40, 8
+    branch l41, b23, b22
+  b15:
+    l27 = l2.0
+    l28 = l27
+    l29 = 0
+    l30 = l28
+    l31 = ListLength l30
+    l32 = 0
+    goto b16
+  b16:
+    l33 = IntCompare(Less) l32, l31
+    branch l33, b17, b19
+  b17:
+    l35 = l30[l32]
+    l36 = call f62(l35)
+    l37 = IntAdd l36, 2
+    l38 = IntAdd l29, l37
+    l29 = l38
+    l39 = IntCompare(Greater) l29, g17
+    branch l39, b20, b21
+  b18:
+    l34 = IntAdd l32, 1
+    l32 = l34
+    goto b16
+  b19:
+    l1 = l29
+    goto b1
+  b20:
+    return l29
+  b21:
+    goto b18
+  b22:
+    l1 = 1
+    goto b1
+  b23:
+    l42 = l2.0
+    l43 = l42
+    l44 = l2.1
+    l45 = l44
+    l46 = l2.2
+    l47 = l46
+    l49 = IntNeg 1
+    l50 = IntCompare(Equal) l47, l49
+    branch l50, b24, b25
+  b24:
+    l51 = IntAdd l45, 1
+    l48 = l51
+    goto b26
+  b25:
+    l48 = l47
+    goto b26
+  b26:
+    l52 = l48
+    l53 = call f62(l43)
+    l54 = IntAdd l53, 2
+    l55 = l54
+    l57 = IntCompare(Greater) l52, 0
+    l56 = l57
+    branch l56, b27, b28
+  b27:
+    l58 = IntAdd g17, 1
+    l59 = IntDiv l58, l52
+    l60 = IntCompare(Greater) l55, l59
+    l56 = l60
+    goto b28
+  b28:
+    branch l56, b29, b30
+  b29:
+    l61 = IntAdd g17, 1
+    return l61
+  b30:
+    l62 = IntMul l55, l52
+    l1 = l62
+    goto b1
+  b31:
+    unreachable
+
+function f63 emit(l0: Record(24), l1: List(Record(18))): Void
+    local l2: Record(24)
+    local l3: Int
+    local l4: Bool
+    local l5: Int
+    local l6: Bool
+    local l7: Char
+    local l8: Char // c
+    local l9: Bool
+    local l10: Bool // fold
+    local l11: Record(18)
+    local l12: Int
+    local l13: Bool
+    local l14: Bool
+    local l15: Bool // all
+    local l16: Record(18)
+    local l17: Int
+    local l18: Bool
+    local l19: Record(19)
+    local l20: Record(19) // set
+    local l21: Bool
+    local l22: Bool // fold
+    local l23: Record(18)
+    local l24: Int
+    local l25: Bool
+    local l26: Int
+    local l27: Int // kind
+    local l28: Record(18)
+    local l29: Int
+    local l30: Bool
+    local l31: Int
+    local l32: Int // index
+    local l33: Record(24)
+    local l34: Record(24) // inner
+    local l35: Int
+    local l36: Record(18)
+    local l37: Int
+    local l38: Int
+    local l39: Record(18)
+    local l40: Int
+    local l41: Bool
+    local l42: List(Record(24))
+    local l43: List(Record(24)) // items
+    local l44: List(Record(24))
+    local l45: Int
+    local l46: Int
+    local l47: Bool
+    local l48: Int
+    local l49: Record(24) // item
+    local l50: Int
+    local l51: Bool
+    local l52: List(Record(24))
+    local l53: List(Record(24)) // items
+    local l54: Int
+    local l55: Bool
+    local l56: Record(24)
+    local l57: Record(24) // inner
+    local l58: Int
+    local l59: Int // min
+    local l60: Int
+    local l61: Int // max
+    local l62: Bool
+    local l63: Bool // greedy
+    local l64: Int
+    local l65: Int
+    local l66: Bool
+    local l67: Bool
+    local l68: Int // i
+    local l69: Int
+    local l70: Bool
+    local l71: Int
+  b0:
+    l2 = l0
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 0
+    branch l4, b3, b2
+  b1:
+    return
+  b2:
+    l5 = RecordTag l2
+    l6 = IntCompare(Equal) l5, 1
+    branch l6, b5, b4
+  b3:
+    goto b1
+  b4:
+    l12 = RecordTag l2
+    l13 = IntCompare(Equal) l12, 2
+    branch l13, b7, b6
+  b5:
+    l7 = l2.0
+    l8 = l7
+    l9 = l2.1
+    l10 = l9
+    l11 = record variant 0 (l8, l10)
+    push l1, l11
+    goto b1
+  b6:
+    l17 = RecordTag l2
+    l18 = IntCompare(Equal) l17, 3
+    branch l18, b9, b8
+  b7:
+    l14 = l2.0
+    l15 = l14
+    l16 = record variant 1 (l15)
+    push l1, l16
+    goto b1
+  b8:
+    l24 = RecordTag l2
+    l25 = IntCompare(Equal) l24, 4
+    branch l25, b11, b10
+  b9:
+    l19 = l2.0
+    l20 = l19
+    l21 = l2.1
+    l22 = l21
+    l23 = record variant 2 (l20, l22)
+    push l1, l23
+    goto b1
+  b10:
+    l29 = RecordTag l2
+    l30 = IntCompare(Equal) l29, 5
+    branch l30, b13, b12
+  b11:
+    l26 = l2.0
+    l27 = l26
+    l28 = record variant 6 (l27)
+    push l1, l28
+    goto b1
+  b12:
+    l40 = RecordTag l2
+    l41 = IntCompare(Equal) l40, 6
+    branch l41, b15, b14
+  b13:
+    l31 = l2.0
+    l32 = l31
+    l33 = l2.1
+    l34 = l33
+    l35 = IntMul l32, 2
+    l36 = record variant 5 (l35)
+    push l1, l36
+    call f63(l34, l1) writeback 1 -> l1
+    l37 = IntMul l32, 2
+    l38 = IntAdd l37, 1
+    l39 = record variant 5 (l38)
+    push l1, l39
+    goto b1
+  b14:
+    l50 = RecordTag l2
+    l51 = IntCompare(Equal) l50, 7
+    branch l51, b21, b20
+  b15:
+    l42 = l2.0
+    l43 = l42
+    l44 = l43
+    l45 = ListLength l44
+    l46 = 0
+    goto b16
+  b16:
+    l47 = IntCompare(Less) l46, l45
+    branch l47, b17, b19
+  b17:
+    l49 = l44[l46]
+    call f63(l49, l1) writeback 1 -> l1
+    goto b18
+  b18:
+    l48 = IntAdd l46, 1
+    l46 = l48
+    goto b16
+  b19:
+    goto b1
+  b20:
+    l54 = RecordTag l2
+    l55 = IntCompare(Equal) l54, 8
+    branch l55, b23, b22
+  b21:
+    l52 = l2.0
+    l53 = l52
+    call f64(l53, 0, l1) writeback 2 -> l1
+    goto b1
+  b22:
+    unreachable
+  b23:
+    l56 = l2.0
+    l57 = l56
+    l58 = l2.1
+    l59 = l58
+    l60 = l2.2
+    l61 = l60
+    l62 = l2.3
+    l63 = l62
+    l64 = l59
+    range_check 1
+    l65 = 0
+    l66 = false
+    goto b24
+  b24:
+    l67, l68 = range_next l65, l64, 1, l66
+    branch l67, b25, b26
+  b25:
+    call f63(l57, l1) writeback 1 -> l1
+    goto b24
+  b26:
+    l69 = IntNeg 1
+    l70 = IntCompare(Equal) l61, l69
+    branch l70, b27, b28
+  b27:
+    call f65(l57, l63, l1) writeback 2 -> l1
+    return
+  b28:
+    l71 = IntSub l61, l59
+    call f66(l57, l71, l63, l1) writeback 3 -> l1
+    goto b1
+
+function f64 emitAlternation(l0: List(Record(24)), l1: Int, l2: List(Record(18))): Void
+    local l3: Int
+    local l4: Int
+    local l5: Bool
+    local l6: Record(24)
+    local l7: Int
+    local l8: Int // split
+    local l9: Record(18)
+    local l10: Record(24)
+    local l11: Int
+    local l12: Int // jump
+    local l13: Record(18)
+    local l14: Int
+    local l15: Int // next
+    local l16: Int
+    local l17: Int
+    local l18: Int
+    local l19: Record(18)
+    local l20: Int
+    local l21: Int
+    local l22: Record(18)
+  b0:
+    l3 = ListLength l0
+    l4 = IntSub l3, 1
+    l5 = IntCompare(Equal) l1, l4
+    branch l5, b1, b2
+  b1:
+    l6 = l0[l1]
+    call f63(l6, l2) writeback 1 -> l2
+    return
+  b2:
+    l7 = ListLength l2
+    l8 = l7
+    l9 = record variant 3 (0, 0)
+    push l2, l9
+    l10 = l0[l1]
+    call f63(l10, l2) writeback 1 -> l2
+    l11 = ListLength l2
+    l12 = l11
+    l13 = record variant 4 (0)
+    push l2, l13
+    l14 = ListLength l2
+    l15 = l14
+    l16 = IntAdd l1, 1
+    call f64(l0, l16, l2) writeback 2 -> l2
+    l17 = l8
+    l18 = IntAdd l8, 1
+    l19 = record variant 3 (l18, l15)
+    l2[l17] = l19
+    l20 = l12
+    l21 = ListLength l2
+    l22 = record variant 4 (l21)
+    l2[l20] = l22
+    return
+
+function f65 emitStar(l0: Record(24), l1: Bool, l2: List(Record(18))): Void
+    local l3: Int
+    local l4: Int // split
+    local l5: Record(18)
+    local l6: Record(18)
+    local l7: Int
+    local l8: Int // after
+    local l9: Int
+    local l10: Record(18)
+    local l11: Int
+    local l12: Record(18)
+    local l13: Int
+    local l14: Record(18)
+  b0:
+    l3 = ListLength l2
+    l4 = l3
+    l5 = record variant 3 (0, 0)
+    push l2, l5
+    call f63(l0, l2) writeback 1 -> l2
+    l6 = record variant 4 (l4)
+    push l2, l6
+    l7 = ListLength l2
+    l8 = l7
+    l9 = l4
+    branch l1, b1, b2
+  b1:
+    l11 = IntAdd l4, 1
+    l12 = record variant 3 (l11, l8)
+    l10 = l12
+    goto b3
+  b2:
+    l13 = IntAdd l4, 1
+    l14 = record variant 3 (l8, l13)
+    l10 = l14
+    goto b3
+  b3:
+    l2[l9] = l10
+    return
+
+function f66 emitOptional(l0: Record(24), l1: Int, l2: Bool, l3: List(Record(18))): Void
+    local l4: List(Int)
+    local l5: List(Int) // splits
+    local l6: Int
+    local l7: Int
+    local l8: Bool
+    local l9: Bool
+    local l10: Int // i
+    local l11: Int
+    local l12: Record(18)
+    local l13: Int
+    local l14: Int // after
+    local l15: List(Int)
+    local l16: Int
+    local l17: Int
+    local l18: Bool
+    local l19: Int
+    local l20: Int // split
+    local l21: Int
+    local l22: Record(18)
+    local l23: Int
+    local l24: Record(18)
+    local l25: Int
+    local l26: Record(18)
+  b0:
+    l4 = list []
+    l5 = l4
+    l6 = l1
+    range_check 1
+    l7 = 0
+    l8 = false
+    goto b1
+  b1:
+    l9, l10 = range_next l7, l6, 1, l8
+    branch l9, b2, b3
+  b2:
+    l11 = ListLength l3
+    push l5, l11
+    l12 = record variant 3 (0, 0)
+    push l3, l12
+    call f63(l0, l3) writeback 1 -> l3
+    goto b1
+  b3:
+    l13 = ListLength l3
+    l14 = l13
+    l15 = l5
+    l16 = ListLength l15
+    l17 = 0
+    goto b4
+  b4:
+    l18 = IntCompare(Less) l17, l16
+    branch l18, b5, b7
+  b5:
+    l20 = l15[l17]
+    l21 = l20
+    branch l2, b8, b9
+  b6:
+    l19 = IntAdd l17, 1
+    l17 = l19
+    goto b4
+  b7:
+    return
+  b8:
+    l23 = IntAdd l20, 1
+    l24 = record variant 3 (l23, l14)
+    l22 = l24
+    goto b10
+  b9:
+    l25 = IntAdd l20, 1
+    l26 = record variant 3 (l14, l25)
+    l22 = l26
+    goto b10
+  b10:
+    l3[l21] = l22
+    goto b6
+
+function f67 startsAnchored(l0: Record(24)): Bool
+    local l1: Bool
+    local l2: Record(24)
+    local l3: Int
+    local l4: Bool
+    local l5: Int
+    local l6: Int // kind
+    local l7: Bool
+    local l8: Int
+    local l9: Bool
+    local l10: Record(24)
+    local l11: Record(24) // inner
+    local l12: Bool
+    local l13: Int
+    local l14: Bool
+    local l15: List(Record(24))
+    local l16: List(Record(24)) // items
+    local l17: Bool
+    local l18: Int
+    local l19: Bool
+    local l20: Record(24)
+    local l21: Bool
+    local l22: Int
+    local l23: Bool
+    local l24: List(Record(24))
+    local l25: List(Record(24)) // items
+    local l26: List(Record(24))
+    local l27: Int
+    local l28: Int
+    local l29: Bool
+    local l30: Int
+    local l31: Record(24) // item
+    local l32: Bool
+    local l33: Bool
+    local l34: Int
+    local l35: Bool
+    local l36: Record(24)
+    local l37: Record(24) // inner
+    local l38: Int
+    local l39: Int // min
+    local l40: Bool
+    local l41: Bool
+    local l42: Bool
+  b0:
+    l2 = l0
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 4
+    branch l4, b3, b2
+  b1:
+    return l1
+  b2:
+    l8 = RecordTag l2
+    l9 = IntCompare(Equal) l8, 5
+    branch l9, b5, b4
+  b3:
+    l5 = l2.0
+    l6 = l5
+    l7 = IntCompare(Equal) l6, g2
+    l1 = l7
+    goto b1
+  b4:
+    l13 = RecordTag l2
+    l14 = IntCompare(Equal) l13, 6
+    branch l14, b7, b6
+  b5:
+    l10 = l2.1
+    l11 = l10
+    l12 = call f67(l11)
+    l1 = l12
+    goto b1
+  b6:
+    l22 = RecordTag l2
+    l23 = IntCompare(Equal) l22, 7
+    branch l23, b11, b10
+  b7:
+    l15 = l2.0
+    l16 = l15
+    l18 = ListLength l16
+    l19 = IntCompare(Greater) l18, 0
+    l17 = l19
+    branch l17, b8, b9
+  b8:
+    l20 = l16[0]
+    l21 = call f67(l20)
+    l17 = l21
+    goto b9
+  b9:
+    l1 = l17
+    goto b1
+  b10:
+    l34 = RecordTag l2
+    l35 = IntCompare(Equal) l34, 8
+    branch l35, b19, b18
+  b11:
+    l24 = l2.0
+    l25 = l24
+    l26 = l25
+    l27 = ListLength l26
+    l28 = 0
+    goto b12
+  b12:
+    l29 = IntCompare(Less) l28, l27
+    branch l29, b13, b15
+  b13:
+    l31 = l26[l28]
+    l32 = call f67(l31)
+    l33 = Not l32
+    branch l33, b16, b17
+  b14:
+    l30 = IntAdd l28, 1
+    l28 = l30
+    goto b12
+  b15:
+    l1 = true
+    goto b1
+  b16:
+    return false
+  b17:
+    goto b14
+  b18:
+    l1 = false
+    goto b1
+  b19:
+    l36 = l2.0
+    l37 = l36
+    l38 = l2.1
+    l39 = l38
+    l41 = IntCompare(Greater) l39, 0
+    l40 = l41
+    branch l40, b20, b21
+  b20:
+    l42 = call f67(l37)
+    l40 = l42
+    goto b21
+  b21:
+    l1 = l40
+    goto b1
+  b22:
+    unreachable
+
+function f68 Regex.search(l0: Record(17), l1: List(Char), l2: Int): Record(36)
+    local l3: Int
+    local l4: Int // count
+    local l5: List(Int)
+    local l6: List(Int) // empty
+    local l7: Int
+    local l8: Int
+    local l9: Int
+    local l10: Int
+    local l11: Bool
+    local l12: Bool
+    local l13: Int // i
+    local l14: Int
+    local l15: List(Int)
+    local l16: List(Int) // seen
+    local l17: List(Record(18))
+    local l18: Int
+    local l19: Int
+    local l20: Int
+    local l21: Bool
+    local l22: Bool
+    local l23: Int // i
+    local l24: Int
+    local l25: List(Record(37))
+    local l26: List(Record(37)) // current
+    local l27: Record(36)
+    local l28: Record(36) // found
+    local l29: Int // position
+    local l30: Int // step
+    local l31: Bool
+    local l32: Bool
+    local l33: Bool
+    local l34: Bool
+    local l35: Bool
+    local l36: Bool
+    local l37: Char
+    local l38: Bool
+    local l39: Bool
+    local l40: Int
+    local l41: Bool
+    local l42: Record(36)
+    local l43: Bool
+    local l44: Int
+    local l45: Bool
+    local l46: Bool
+    local l47: Bool
+    local l48: Bool
+    local l49: Bool
+    local l50: Int
+    local l51: List(Int)
+    local l52: Record(37)
+    local l53: Int
+    local l54: Int
+    local l55: Bool
+    local l56: Bool
+    local l57: Bool
+    local l58: Int
+    local l59: Bool
+    local l60: Bool
+    local l61: Bool
+    local l62: Int
+    local l63: Bool
+    local l64: Bool
+    local l65: Bool
+    local l66: Char
+    local l67: Bool
+    local l68: Bool
+    local l69: Int
+    local l70: Bool
+    local l71: List(Record(37))
+    local l72: List(Record(37)) // next
+    local l73: List(Record(37))
+    local l74: Int
+    local l75: Int
+    local l76: Bool
+    local l77: Int
+    local l78: Record(37) // thread
+    local l79: List(Record(18))
+    local l80: Int
+    local l81: Record(18)
+    local l82: Record(18) // instruction
+    local l83: Int
+    local l84: Bool
+    local l85: List(Int)
+    local l86: Record(36)
+    local l87: Bool
+    local l88: Bool
+    local l89: Char
+    local l90: Bool
+    local l91: Int
+    local l92: Int
+    local l93: Int
+    local l94: List(Int)
+    local l95: List(Int)
+    local l96: Record(37)
+    local l97: Int
+    local l98: Bool
+    local l99: Int
+  b0:
+    l3 = ListLength l1
+    l4 = l3
+    l5 = list []
+    l6 = l5
+    l7 = l0.2
+    l8 = IntMul l7, 2
+    l9 = l8
+    range_check 1
+    l10 = 0
+    l11 = false
+    goto b1
+  b1:
+    l12, l13 = range_next l10, l9, 1, l11
+    branch l12, b2, b3
+  b2:
+    l14 = IntNeg 1
+    push l6, l14
+    goto b1
+  b3:
+    l15 = list []
+    l16 = l15
+    l17 = l0.1
+    l18 = ListLength l17
+    l19 = l18
+    range_check 1
+    l20 = 0
+    l21 = false
+    goto b4
+  b4:
+    l22, l23 = range_next l20, l19, 1, l21
+    branch l22, b5, b6
+  b5:
+    l24 = IntNeg 1
+    push l16, l24
+    goto b4
+  b6:
+    l25 = list []
+    l26 = l25
+    l27 = record variant 1 ()
+    l28 = l27
+    l29 = l2
+    l30 = 0
+    l32 = l0.6
+    l31 = l32
+    branch l31, b7, b8
+  b7:
+    l33 = l0.4
+    l34 = Not l33
+    l31 = l34
+    goto b8
+  b8:
+    branch l31, b9, b10
+  b9:
+    goto b11
+  b10:
+    goto b18
+  b11:
+    l36 = IntCompare(Less) l29, l4
+    l35 = l36
+    branch l35, b14, b15
+  b12:
+    l40 = IntAdd l29, 1
+    l29 = l40
+    goto b11
+  b13:
+    l41 = IntCompare(GreaterEqual) l29, l4
+    branch l41, b16, b17
+  b14:
+    l37 = l1[l29]
+    l38 = call f71(l0, l37)
+    l39 = Not l38
+    l35 = l39
+    goto b15
+  b15:
+    branch l35, b12, b13
+  b16:
+    l42 = record variant 1 ()
+    return l42
+  b17:
+    goto b10
+  b18:
+    branch true, b19, b20
+  b19:
+    l44 = RecordTag l28
+    l45 = IntCompare(Equal) l44, 1
+    l43 = l45
+    branch l43, b21, b22
+  b20:
+    return l28
+  b21:
+    l47 = l0.4
+    l48 = Not l47
+    l46 = l48
+    branch l46, b24, b23
+  b22:
+    branch l43, b25, b26
+  b23:
+    l49 = IntCompare(Equal) l29, 0
+    l46 = l49
+    goto b24
+  b24:
+    l43 = l46
+    goto b22
+  b25:
+    l50 = 0
+    l51 = l6
+    l52 = record variant 0 (l50, l51)
+    call f69(l0, l26, l16, l30, l52, l1, l29) writeback 1 -> l26, 2 -> l16
+    goto b26
+  b26:
+    l53 = IntAdd l30, 1
+    l30 = l53
+    l54 = ListLength l26
+    l55 = IntCompare(Equal) l54, 0
+    branch l55, b27, b28
+  b27:
+    l58 = RecordTag l28
+    l59 = IntCompare(Equal) l58, 0
+    l57 = l59
+    branch l57, b30, b29
+  b28:
+    l71 = list []
+    l72 = l71
+    l73 = l26
+    l74 = ListLength l73
+    l75 = 0
+    goto b44
+  b29:
+    l60 = IntCompare(GreaterEqual) l29, l4
+    l57 = l60
+    goto b30
+  b30:
+    l56 = l57
+    branch l56, b32, b31
+  b31:
+    l61 = l0.4
+    l56 = l61
+    goto b32
+  b32:
+    branch l56, b33, b34
+  b33:
+    goto b20
+  b34:
+    l62 = IntAdd l29, 1
+    l29 = l62
+    l63 = l0.6
+    branch l63, b35, b36
+  b35:
+    goto b37
+  b36:
+    goto b18
+  b37:
+    l65 = IntCompare(Less) l29, l4
+    l64 = l65
+    branch l64, b40, b41
+  b38:
+    l69 = IntAdd l29, 1
+    l29 = l69
+    goto b37
+  b39:
+    l70 = IntCompare(GreaterEqual) l29, l4
+    branch l70, b42, b43
+  b40:
+    l66 = l1[l29]
+    l67 = call f71(l0, l66)
+    l68 = Not l67
+    l64 = l68
+    goto b41
+  b41:
+    branch l64, b38, b39
+  b42:
+    goto b20
+  b43:
+    goto b36
+  b44:
+    l76 = IntCompare(Less) l75, l74
+    branch l76, b45, b47
+  b45:
+    l78 = l73[l75]
+    l79 = l0.1
+    l80 = l78.0
+    l81 = l79[l80]
+    l82 = l81
+    l83 = RecordTag l82
+    l84 = IntCompare(Equal) l83, 7
+    branch l84, b48, b49
+  b46:
+    l77 = IntAdd l75, 1
+    l75 = l77
+    goto b44
+  b47:
+    l26 = l72
+    l98 = IntCompare(GreaterEqual) l29, l4
+    branch l98, b54, b55
+  b48:
+    l85 = l78.1
+    l86 = record variant 0 (l85)
+    l28 = l86
+    goto b47
+  b49:
+    l88 = IntCompare(Less) l29, l4
+    l87 = l88
+    branch l87, b50, b51
+  b50:
+    l89 = l1[l29]
+    l90 = call f72(l82, l89)
+    l87 = l90
+    goto b51
+  b51:
+    branch l87, b52, b53
+  b52:
+    l91 = l78.0
+    l92 = IntAdd l91, 1
+    l93 = l92
+    l94 = l78.1
+    l95 = l94
+    l96 = record variant 0 (l93, l95)
+    l97 = IntAdd l29, 1
+    call f69(l0, l72, l16, l30, l96, l1, l97) writeback 1 -> l72, 2 -> l16
+    goto b53
+  b53:
+    goto b46
+  b54:
+    goto b20
+  b55:
+    l99 = IntAdd l29, 1
+    l29 = l99
+    goto b18
+
+function f69 Regex.follow(l0: Record(17), l1: List(Record(37)), l2: List(Int), l3: Int, l4: Record(37), l5: List(Char), l6: Int): Void
+    local l7: Int
+    local l8: Int
+    local l9: Bool
+    local l10: List(Record(18))
+    local l11: Int
+    local l12: Record(18)
+    local l13: Bool
+    local l14: Int
+    local l15: Int
+    local l16: List(Record(37))
+    local l17: List(Record(37)) // pending
+    local l18: Record(37)
+    local l19: Record(40)
+    local l20: Record(40)
+    local l21: Int
+    local l22: Bool
+    local l23: Record(37)
+    local l24: Record(37) // found
+    local l25: Int
+    local l26: Bool
+    local l27: Record(37) // current
+    local l28: Int
+    local l29: Int
+    local l30: Bool
+    local l31: Int
+    local l32: Int
+    local l33: List(Record(18))
+    local l34: Int
+    local l35: Record(18)
+    local l36: Record(18)
+    local l37: Int
+    local l38: Bool
+    local l39: Int
+    local l40: Int // target
+    local l41: Int
+    local l42: List(Int)
+    local l43: List(Int)
+    local l44: Record(37)
+    local l45: Int
+    local l46: Bool
+    local l47: Int
+    local l48: Int // first
+    local l49: Int
+    local l50: Int // second
+    local l51: Int
+    local l52: List(Int)
+    local l53: List(Int)
+    local l54: Record(37)
+    local l55: Int
+    local l56: List(Int)
+    local l57: List(Int)
+    local l58: Record(37)
+    local l59: Int
+    local l60: Bool
+    local l61: Int
+    local l62: Int // slot
+    local l63: List(Int)
+    local l64: List(Int) // slots
+    local l65: Int
+    local l66: Int
+    local l67: Int
+    local l68: Int
+    local l69: List(Int)
+    local l70: Record(37)
+    local l71: Int
+    local l72: Bool
+    local l73: Int
+    local l74: Int // kind
+    local l75: Bool
+    local l76: Int
+    local l77: Int
+    local l78: Int
+    local l79: List(Int)
+    local l80: List(Int)
+    local l81: Record(37)
+  b0:
+    l7 = l4.0
+    l8 = l2[l7]
+    l9 = IntCompare(Equal) l8, l3
+    branch l9, b1, b2
+  b1:
+    return
+  b2:
+    l10 = l0.1
+    l11 = l4.0
+    l12 = l10[l11]
+    l13 = call f70(l12)
+    branch l13, b3, b4
+  b3:
+    l14 = l4.0
+    l15 = l14
+    l2[l15] = l3
+    push l1, l4
+    return
+  b4:
+    l16 = list [l4]
+    l17 = l16
+    goto b5
+  b5:
+    branch true, b6, b7
+  b6:
+    l19 = pop l17
+    l20 = l19
+    l21 = RecordTag l20
+    l22 = IntCompare(Equal) l21, 0
+    branch l22, b10, b9
+  b7:
+    return
+  b8:
+    l27 = l18
+    l28 = l27.0
+    l29 = l2[l28]
+    l30 = IntCompare(Equal) l29, l3
+    branch l30, b13, b14
+  b9:
+    l25 = RecordTag l20
+    l26 = IntCompare(Equal) l25, 1
+    branch l26, b12, b11
+  b10:
+    l23 = l20.0
+    l24 = l23
+    l18 = l24
+    goto b8
+  b11:
+    unreachable
+  b12:
+    goto b7
+  b13:
+    goto b5
+  b14:
+    l31 = l27.0
+    l32 = l31
+    l2[l32] = l3
+    l33 = l0.1
+    l34 = l27.0
+    l35 = l33[l34]
+    l36 = l35
+    l37 = RecordTag l36
+    l38 = IntCompare(Equal) l37, 4
+    branch l38, b17, b16
+  b15:
+    goto b5
+  b16:
+    l45 = RecordTag l36
+    l46 = IntCompare(Equal) l45, 3
+    branch l46, b19, b18
+  b17:
+    l39 = l36.0
+    l40 = l39
+    l41 = l40
+    l42 = l27.1
+    l43 = l42
+    l44 = record variant 0 (l41, l43)
+    push l17, l44
+    goto b15
+  b18:
+    l59 = RecordTag l36
+    l60 = IntCompare(Equal) l59, 5
+    branch l60, b21, b20
+  b19:
+    l47 = l36.0
+    l48 = l47
+    l49 = l36.1
+    l50 = l49
+    l51 = l50
+    l52 = l27.1
+    l53 = l52
+    l54 = record variant 0 (l51, l53)
+    push l17, l54
+    l55 = l48
+    l56 = l27.1
+    l57 = l56
+    l58 = record variant 0 (l55, l57)
+    push l17, l58
+    goto b15
+  b20:
+    l71 = RecordTag l36
+    l72 = IntCompare(Equal) l71, 6
+    branch l72, b23, b22
+  b21:
+    l61 = l36.0
+    l62 = l61
+    l63 = l27.1
+    l64 = l63
+    l65 = l62
+    l64[l65] = l6
+    l66 = l27.0
+    l67 = IntAdd l66, 1
+    l68 = l67
+    l69 = l64
+    l70 = record variant 0 (l68, l69)
+    push l17, l70
+    goto b15
+  b22:
+    push l1, l27
+    goto b15
+  b23:
+    l73 = l36.0
+    l74 = l73
+    l75 = call f75(l74, l5, l6)
+    branch l75, b24, b25
+  b24:
+    l76 = l27.0
+    l77 = IntAdd l76, 1
+    l78 = l77
+    l79 = l27.1
+    l80 = l79
+    l81 = record variant 0 (l78, l80)
+    push l17, l81
+    goto b25
+  b25:
+    goto b15
+  b26:
+    unreachable
+
+function f70 readsChar(l0: Record(18)): Bool
+    local l1: Bool
+    local l2: Record(18)
+    local l3: Int
+    local l4: Bool
+    local l5: Int
+    local l6: Bool
+    local l7: Int
+    local l8: Bool
+  b0:
+    l2 = l0
+    l3 = RecordTag l2
+    l4 = IntCompare(Equal) l3, 0
+    branch l4, b3, b2
+  b1:
+    return l1
+  b2:
+    l5 = RecordTag l2
+    l6 = IntCompare(Equal) l5, 1
+    branch l6, b5, b4
+  b3:
+    l1 = true
+    goto b1
+  b4:
+    l7 = RecordTag l2
+    l8 = IntCompare(Equal) l7, 2
+    branch l8, b7, b6
+  b5:
+    l1 = true
+    goto b1
+  b6:
+    l1 = false
+    goto b1
+  b7:
+    l1 = true
+    goto b1
+  b8:
+    unreachable
+
+function f71 Regex.canStart(l0: Record(17), l1: Char): Bool
+    local l2: List(Record(18))
+    local l3: List(Record(18))
+    local l4: Int
+    local l5: Int
+    local l6: Bool
+    local l7: Int
+    local l8: Record(18) // instruction
+    local l9: Bool
+  b0:
+    l2 = l0.5
+    l3 = l2
+    l4 = ListLength l3
+    l5 = 0
+    goto b1
+  b1:
+    l6 = IntCompare(Less) l5, l4
+    branch l6, b2, b4
+  b2:
+    l8 = l3[l5]
+    l9 = call f72(l8, l1)
+    branch l9, b5, b6
+  b3:
+    l7 = IntAdd l5, 1
+    l5 = l7
+    goto b1
+  b4:
+    return false
+  b5:
+    return true
+  b6:
+    goto b3
+
+function f72 consumes(l0: Record(18), l1: Char): Bool
+    local l2: Bool
+    local l3: Record(18)
+    local l4: Int
+    local l5: Bool
+    local l6: Char
+    local l7: Char // expected
+    local l8: Bool
+    local l9: Bool // fold
+    local l10: Bool
+    local l11: Char
+    local l12: Bool
+    local l13: Bool
+    local l14: Int
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool // all
+    local l18: Bool
+    local l19: Bool
+    local l20: Int
+    local l21: Bool
+    local l22: Record(19)
+    local l23: Record(19) // set
+    local l24: Bool
+    local l25: Bool // fold
+    local l26: Bool
+    local l27: Bool
+    local l28: Bool
+    local l29: Char
+    local l30: Bool
+    local l31: Char
+    local l32: Bool
+  b0:
+    l3 = l0
+    l4 = RecordTag l3
+    l5 = IntCompare(Equal) l4, 0
+    branch l5, b3, b2
+  b1:
+    return l2
+  b2:
+    l14 = RecordTag l3
+    l15 = IntCompare(Equal) l14, 1
+    branch l15, b8, b7
+  b3:
+    l6 = l3.0
+    l7 = l6
+    l8 = l3.1
+    l9 = l8
+    branch l9, b4, b5
+  b4:
+    l11 = call f90(l1)
+    l12 = CharCompare(Equal) l11, l7
+    l10 = l12
+    goto b6
+  b5:
+    l13 = CharCompare(Equal) l1, l7
+    l10 = l13
+    goto b6
+  b6:
+    l2 = l10
+    goto b1
+  b7:
+    l20 = RecordTag l3
+    l21 = IntCompare(Equal) l20, 2
+    branch l21, b12, b11
+  b8:
+    l16 = l3.0
+    l17 = l16
+    l18 = l17
+    branch l18, b10, b9
+  b9:
+    l19 = CharCompare(NotEqual) l1, '\n'
+    l18 = l19
+    goto b10
+  b10:
+    l2 = l18
+    goto b1
+  b11:
+    l2 = false
+    goto b1
+  b12:
+    l22 = l3.0
+    l23 = l22
+    l24 = l3.1
+    l25 = l24
+    l26 = call f73(l23, l1)
+    branch l26, b13, b14
+  b13:
+    return true
+  b14:
+    l27 = l25
+    branch l27, b15, b16
+  b15:
+    l29 = call f90(l1)
+    l30 = call f73(l23, l29)
+    l28 = l30
+    branch l28, b18, b17
+  b16:
+    l2 = l27
+    goto b1
+  b17:
+    l31 = call f91(l1)
+    l32 = call f73(l23, l31)
+    l28 = l32
+    goto b18
+  b18:
+    l27 = l28
+    goto b16
+  b19:
+    unreachable
+
+function f73 contains(l0: Record(19), l1: Char): Bool
+    local l2: Bool
+    local l3: Record(19)
+    local l4: Int
+    local l5: Bool
+    local l6: List(Record(20))
+    local l7: List(Record(20)) // ranges
+    local l8: Int
+    local l9: Int // code
+    local l10: List(Record(20))
+    local l11: Int
+    local l12: Int
+    local l13: Bool
+    local l14: Int
+    local l15: Record(20) // range
+    local l16: Bool
+    local l17: Int
+    local l18: Bool
+    local l19: Int
+    local l20: Bool
+    local l21: Int
+    local l22: Bool
+    local l23: Int
+    local l24: Int // kind
+    local l25: Bool
+    local l26: Int
+    local l27: Bool
+    local l28: List(Record(19))
+    local l29: List(Record(19)) // items
+    local l30: List(Record(19))
+    local l31: Int
+    local l32: Int
+    local l33: Bool
+    local l34: Int
+    local l35: Record(19) // item
+    local l36: Bool
+    local l37: Int
+    local l38: Bool
+    local l39: Record(19)
+    local l40: Record(19) // left
+    local l41: Record(19)
+    local l42: Record(19) // right
+    local l43: Bool
+    local l44: Bool
+    local l45: Bool
+    local l46: Int
+    local l47: Bool
+    local l48: Record(19)
+    local l49: Record(19) // left
+    local l50: Record(19)
+    local l51: Record(19) // right
+    local l52: Bool
+    local l53: Bool
+    local l54: Bool
+    local l55: Bool
+    local l56: Int
+    local l57: Bool
+    local l58: Record(19)
+    local l59: Record(19) // left
+    local l60: Record(19)
+    local l61: Record(19) // right
+    local l62: Bool
+    local l63: Bool
+    local l64: Bool
+    local l65: Int
+    local l66: Bool
+    local l67: Record(19)
+    local l68: Record(19) // inner
+    local l69: Bool
+    local l70: Bool
+  b0:
+    l3 = l0
+    l4 = RecordTag l3
+    l5 = IntCompare(Equal) l4, 0
+    branch l5, b3, b2
+  b1:
+    return l2
+  b2:
+    l21 = RecordTag l3
+    l22 = IntCompare(Equal) l21, 1
+    branch l22, b13, b12
+  b3:
+    l6 = l3.0
+    l7 = l6
+    l8 = CharCode l1
+    l9 = l8
+    l10 = l7
+    l11 = ListLength l10
+    l12 = 0
+    goto b4
+  b4:
+    l13 = IntCompare(Less) l12, l11
+    branch l13, b5, b7
+  b5:
+    l15 = l10[l12]
+    l17 = l15.0
+    l18 = IntCompare(GreaterEqual) l9, l17
+    l16 = l18
+    branch l16, b8, b9
+  b6:
+    l14 = IntAdd l12, 1
+    l12 = l14
+    goto b4
+  b7:
+    l2 = false
+    goto b1
+  b8:
+    l19 = l15.1
+    l20 = IntCompare(LessEqual) l9, l19
+    l16 = l20
+    goto b9
+  b9:
+    branch l16, b10, b11
+  b10:
+    return true
+  b11:
+    goto b6
+  b12:
+    l26 = RecordTag l3
+    l27 = IntCompare(Equal) l26, 2
+    branch l27, b15, b14
+  b13:
+    l23 = l3.0
+    l24 = l23
+    l25 = call f74(l24, l1)
+    l2 = l25
+    goto b1
+  b14:
+    l37 = RecordTag l3
+    l38 = IntCompare(Equal) l37, 3
+    branch l38, b23, b22
+  b15:
+    l28 = l3.0
+    l29 = l28
+    l30 = l29
+    l31 = ListLength l30
+    l32 = 0
+    goto b16
+  b16:
+    l33 = IntCompare(Less) l32, l31
+    branch l33, b17, b19
+  b17:
+    l35 = l30[l32]
+    l36 = call f73(l35, l1)
+    branch l36, b20, b21
+  b18:
+    l34 = IntAdd l32, 1
+    l32 = l34
+    goto b16
+  b19:
+    l2 = false
+    goto b1
+  b20:
+    return true
+  b21:
+    goto b18
+  b22:
+    l46 = RecordTag l3
+    l47 = IntCompare(Equal) l46, 4
+    branch l47, b27, b26
+  b23:
+    l39 = l3.0
+    l40 = l39
+    l41 = l3.1
+    l42 = l41
+    l44 = call f73(l40, l1)
+    l43 = l44
+    branch l43, b24, b25
+  b24:
+    l45 = call f73(l42, l1)
+    l43 = l45
+    goto b25
+  b25:
+    l2 = l43
+    goto b1
+  b26:
+    l56 = RecordTag l3
+    l57 = IntCompare(Equal) l56, 5
+    branch l57, b31, b30
+  b27:
+    l48 = l3.0
+    l49 = l48
+    l50 = l3.1
+    l51 = l50
+    l53 = call f73(l49, l1)
+    l52 = l53
+    branch l52, b28, b29
+  b28:
+    l54 = call f73(l51, l1)
+    l55 = Not l54
+    l52 = l55
+    goto b29
+  b29:
+    l2 = l52
+    goto b1
+  b30:
+    l65 = RecordTag l3
+    l66 = IntCompare(Equal) l65, 6
+    branch l66, b33, b32
+  b31:
+    l58 = l3.0
+    l59 = l58
+    l60 = l3.1
+    l61 = l60
+    l62 = call f73(l59, l1)
+    l63 = call f73(l61, l1)
+    l64 = BoolCompare(NotEqual) l62, l63
+    l2 = l64
+    goto b1
+  b32:
+    unreachable
+  b33:
+    l67 = l3.0
+    l68 = l67
+    l69 = call f73(l68, l1)
+    l70 = Not l69
+    l2 = l70
+    goto b1
+
+function f74 inCategory(l0: Int, l1: Char): Bool
+    local l2: Int
+    local l3: Int // code
+    local l4: Bool
+    local l5: Bool
+    local l6: Int
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Bool
+    local l13: Bool
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Bool
+    local l19: Bool
+    local l20: Bool
+    local l21: Bool
+    local l22: Bool
+    local l23: Bool
+    local l24: Bool
+    local l25: Bool
+    local l26: Bool
+    local l27: Bool
+    local l28: Bool
+    local l29: Bool
+    local l30: Bool
+    local l31: Bool
+    local l32: Bool
+    local l33: Bool
+    local l34: Bool
+    local l35: Bool
+    local l36: Bool
+    local l37: Bool
+    local l38: Str
+    local l39: Str // text
+    local l40: Bool
+    local l41: Int
+    local l42: Bool
+    local l43: Bool
+    local l44: Bool
+    local l45: Bool
+    local l46: Bool
+    local l47: Bool
+    local l48: Bool
+    local l49: Bool
+    local l50: Bool
+    local l51: Bool
+    local l52: Bool
+    local l53: Bool
+    local l54: Bool
+    local l55: Bool
+    local l56: Bool
+    local l57: Bool
+    local l58: Bool
+  b0:
+    l2 = CharCode l1
+    l3 = l2
+    l4 = IntCompare(Less) l3, 128
+    branch l4, b1, b2
+  b1:
+    l6 = l0
+    l7 = IntCompare(Equal) l6, 0
+    branch l7, b5, b4
+  b2:
+    l38 = CharToStr l1
+    l39 = l38
+    l41 = l0
+    l42 = IntCompare(Equal) l41, 0
+    branch l42, b37, b36
+  b3:
+    return l5
+  b4:
+    l11 = IntCompare(Equal) l6, 1
+    branch l11, b9, b8
+  b5:
+    l9 = CharCompare(GreaterEqual) l1, '0'
+    l8 = l9
+    branch l8, b6, b7
+  b6:
+    l10 = CharCompare(LessEqual) l1, '9'
+    l8 = l10
+    goto b7
+  b7:
+    l5 = l8
+    goto b3
+  b8:
+    l19 = IntCompare(Equal) l6, 2
+    branch l19, b17, b16
+  b9:
+    l14 = call f88(l1)
+    l13 = l14
+    branch l13, b11, b10
+  b10:
+    l16 = CharCompare(GreaterEqual) l1, '0'
+    l15 = l16
+    branch l15, b12, b13
+  b11:
+    l12 = l13
+    branch l12, b15, b14
+  b12:
+    l17 = CharCompare(LessEqual) l1, '9'
+    l15 = l17
+    goto b13
+  b13:
+    l13 = l15
+    goto b11
+  b14:
+    l18 = CharCompare(Equal) l1, '_'
+    l12 = l18
+    goto b15
+  b15:
+    l5 = l12
+    goto b3
+  b16:
+    l25 = IntCompare(Equal) l6, 3
+    branch l25, b23, b22
+  b17:
+    l21 = CharCompare(Equal) l1, ' '
+    l20 = l21
+    branch l20, b19, b18
+  b18:
+    l23 = IntCompare(GreaterEqual) l3, 9
+    l22 = l23
+    branch l22, b20, b21
+  b19:
+    l5 = l20
+    goto b3
+  b20:
+    l24 = IntCompare(LessEqual) l3, 13
+    l22 = l24
+    goto b21
+  b21:
+    l20 = l22
+    goto b19
+  b22:
+    l27 = IntCompare(Equal) l6, 4
+    branch l27, b25, b24
+  b23:
+    l26 = call f88(l1)
+    l5 = l26
+    goto b3
+  b24:
+    l31 = IntCompare(Equal) l6, 5
+    branch l31, b29, b28
+  b25:
+    l29 = CharCompare(GreaterEqual) l1, 'A'
+    l28 = l29
+    branch l28, b26, b27
+  b26:
+    l30 = CharCompare(LessEqual) l1, 'Z'
+    l28 = l30
+    goto b27
+  b27:
+    l5 = l28
+    goto b3
+  b28:
+    l36 = CharCompare(GreaterEqual) l1, '0'
+    l35 = l36
+    branch l35, b33, b34
+  b29:
+    l33 = CharCompare(GreaterEqual) l1, 'a'
+    l32 = l33
+    branch l32, b30, b31
+  b30:
+    l34 = CharCompare(LessEqual) l1, 'z'
+    l32 = l34
+    goto b31
+  b31:
+    l5 = l32
+    goto b3
+  b32:
+    unreachable
+  b33:
+    l37 = CharCompare(LessEqual) l1, '9'
+    l35 = l37
+    goto b34
+  b34:
+    l5 = l35
+    goto b3
+  b35:
+    return l40
+  b36:
+    l44 = IntCompare(Equal) l41, 1
+    branch l44, b39, b38
+  b37:
+    l43 = koji_std_string_is([Value(Local(39)), Mode(1)])
+    l40 = l43
+    goto b35
+  b38:
+    l46 = IntCompare(Equal) l41, 2
+    branch l46, b41, b40
+  b39:
+    l45 = koji_std_string_is([Value(Local(39)), Mode(3)])
+    l40 = l45
+    goto b35
+  b40:
+    l48 = IntCompare(Equal) l41, 3
+    branch l48, b43, b42
+  b41:
+    l47 = koji_std_string_is([Value(Local(39)), Mode(0)])
+    l40 = l47
+    goto b35
+  b42:
+    l50 = IntCompare(Equal) l41, 4
+    branch l50, b45, b44
+  b43:
+    l49 = koji_std_string_is([Value(Local(39)), Mode(2)])
+    l40 = l49
+    goto b35
+  b44:
+    l54 = IntCompare(Equal) l41, 5
+    branch l54, b49, b48
+  b45:
+    l52 = koji_std_string_is([Value(Local(39)), Mode(2)])
+    l51 = l52
+    branch l51, b46, b47
+  b46:
+    l53 = koji_std_string_is([Value(Local(39)), Mode(4)])
+    l51 = l53
+    goto b47
+  b47:
+    l40 = l51
+    goto b35
+  b48:
+    l58 = koji_std_string_is([Value(Local(39)), Mode(1)])
+    l40 = l58
+    goto b35
+  b49:
+    l56 = koji_std_string_is([Value(Local(39)), Mode(2)])
+    l55 = l56
+    branch l55, b50, b51
+  b50:
+    l57 = koji_std_string_is([Value(Local(39)), Mode(5)])
+    l55 = l57
+    goto b51
+  b51:
+    l40 = l55
+    goto b35
+  b52:
+    unreachable
+
+function f75 holds(l0: Int, l1: List(Char), l2: Int): Bool
+    local l3: Int
+    local l4: Int // count
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+    local l8: Bool
+    local l9: Bool
+    local l10: Bool
+    local l11: Bool
+    local l12: Int
+    local l13: Char
+    local l14: Bool
+    local l15: Bool
+    local l16: Bool
+    local l17: Bool
+    local l18: Char
+    local l19: Bool
+    local l20: Bool
+    local l21: Bool
+    local l22: Int
+    local l23: Char
+    local l24: Bool
+    local l25: Bool // before
+    local l26: Bool
+    local l27: Bool
+    local l28: Char
+    local l29: Bool
+    local l30: Bool // after
+    local l31: Bool
+    local l32: Bool
+    local l33: Bool
+    local l34: Bool
+    local l35: Bool
+    local l36: Bool
+    local l37: Bool
+    local l38: Bool
+    local l39: Bool
+  b0:
+    l3 = ListLength l1
+    l4 = l3
+    l5 = IntCompare(Equal) l0, g2
+    branch l5, b1, b2
+  b1:
+    l6 = IntCompare(Equal) l2, 0
+    return l6
+  b2:
+    l7 = IntCompare(Equal) l0, g3
+    branch l7, b3, b4
+  b3:
+    l8 = IntCompare(Equal) l2, l4
+    return l8
+  b4:
+    l9 = IntCompare(Equal) l0, g4
+    branch l9, b5, b6
+  b5:
+    l11 = IntCompare(Equal) l2, 0
+    l10 = l11
+    branch l10, b8, b7
+  b6:
+    l15 = IntCompare(Equal) l0, g5
+    branch l15, b9, b10
+  b7:
+    l12 = IntSub l2, 1
+    l13 = l1[l12]
+    l14 = CharCompare(Equal) l13, '\n'
+    l10 = l14
+    goto b8
+  b8:
+    return l10
+  b9:
+    l17 = IntCompare(Equal) l2, l4
+    l16 = l17
+    branch l16, b12, b11
+  b10:
+    l21 = IntCompare(Greater) l2, 0
+    l20 = l21
+    branch l20, b13, b14
+  b11:
+    l18 = l1[l2]
+    l19 = CharCompare(Equal) l18, '\n'
+    l16 = l19
+    goto b12
+  b12:
+    return l16
+  b13:
+    l22 = IntSub l2, 1
+    l23 = l1[l22]
+    l24 = call f76(l23)
+    l20 = l24
+    goto b14
+  b14:
+    l25 = l20
+    l27 = IntCompare(Less) l2, l4
+    l26 = l27
+    branch l26, b15, b16
+  b15:
+    l28 = l1[l2]
+    l29 = call f76(l28)
+    l26 = l29
+    goto b16
+  b16:
+    l30 = l26
+    l31 = IntCompare(Equal) l0, g6
+    branch l31, b17, b18
+  b17:
+    l32 = BoolCompare(NotEqual) l25, l30
+    return l32
+  b18:
+    l33 = IntCompare(Equal) l0, g7
+    branch l33, b19, b20
+  b19:
+    l34 = BoolCompare(Equal) l25, l30
+    return l34
+  b20:
+    l35 = IntCompare(Equal) l0, g8
+    branch l35, b21, b22
+  b21:
+    l37 = Not l25
+    l36 = l37
+    branch l36, b23, b24
+  b22:
+    l38 = l25
+    branch l38, b25, b26
+  b23:
+    l36 = l30
+    goto b24
+  b24:
+    return l36
+  b25:
+    l39 = Not l30
+    l38 = l39
+    goto b26
+  b26:
+    return l38
+
+function f76 isWord(l0: Char): Bool
+    local l1: Bool
+  b0:
+    l1 = call f74(g11, l0)
+    return l1
+
+function f77 Regex.test(l0: Record(17), l1: Str): Bool
+    local l2: List(Char)
+    local l3: Record(36)
+    local l4: Int
+    local l5: Bool
+  b0:
+    l2 = koji_std_string_chars([Value(Local(1)), Element(Char)])
+    l3 = call f68(l0, l2, 0)
+    l4 = RecordTag l3
+    l5 = IntCompare(Equal) l4, 0
+    return l5
+
+function f78 Regex.find(l0: Record(17), l1: Str): Record(39)
+    local l2: List(Char)
+    local l3: List(Char) // chars
+    local l4: Record(39)
+    local l5: Record(36)
+    local l6: Record(36)
+    local l7: Int
+    local l8: Bool
+    local l9: List(Int)
+    local l10: List(Int) // slots
+    local l11: Record(38)
+    local l12: Record(39)
+    local l13: Int
+    local l14: Bool
+    local l15: Record(39)
+  b0:
+    l2 = koji_std_string_chars([Value(Local(1)), Element(Char)])
+    l3 = l2
+    l5 = call f68(l0, l3, 0)
+    l6 = l5
+    l7 = RecordTag l6
+    l8 = IntCompare(Equal) l7, 0
+    branch l8, b3, b2
+  b1:
+    return l4
+  b2:
+    l13 = RecordTag l6
+    l14 = IntCompare(Equal) l13, 1
+    branch l14, b5, b4
+  b3:
+    l9 = l6.0
+    l10 = l9
+    l11 = call f79(l3, l10)
+    l12 = record variant 0 (l11)
+    l4 = l12
+    goto b1
+  b4:
+    unreachable
+  b5:
+    l15 = record variant 1 ()
+    l4 = l15
+    goto b1
+
+function f79 matchOf(l0: List(Char), l1: List(Int)): Record(38)
+    local l2: Int
+    local l3: Int
+    local l4: Str
+    local l5: Str
+    local l6: Int
+    local l7: Int
+    local l8: Int
+    local l9: Int
+    local l10: Record(38)
+  b0:
+    l2 = l1[0]
+    l3 = l1[1]
+    l4 = call f80(l0, l2, l3)
+    l5 = l4
+    l6 = l1[0]
+    l7 = l6
+    l8 = l1[1]
+    l9 = l8
+    l10 = record variant 0 (l5, l7, l9)
+    return l10
+
+function f80 piece(l0: List(Char), l1: Int, l2: Int): Str
+    local l3: Str // text
+    local l4: Int
+    local l5: Int
+    local l6: Int
+    local l7: Bool
+    local l8: Bool
+    local l9: Int // i
+    local l10: Char
+    local l11: Str
+    local l12: Str
+  b0:
+    l3 = s18
+    l4 = l1
+    l5 = l2
+    range_check 1
+    l6 = l4
+    l7 = false
+    goto b1
+  b1:
+    l8, l9 = range_next l6, l5, 1, l7
+    branch l8, b2, b3
+  b2:
+    l10 = l0[l9]
+    l11 = CharToStr l10
+    l12 = StrConcat l3, l11
+    l3 = l12
+    goto b1
+  b3:
+    return l3
+
+function f81 Regex.matches(l0: Record(17), l1: List(Char)): List(List(Int))
+    local l2: List(List(Int))
+    local l3: List(List(Int)) // found
+    local l4: Int // position
+    local l5: Int
+    local l6: Int // lastEnd
+    local l7: Int
+    local l8: Bool
+    local l9: List(Int)
+    local l10: Record(36)
+    local l11: Record(36)
+    local l12: Int
+    local l13: Bool
+    local l14: List(Int)
+    local l15: List(Int) // slots
+    local l16: Int
+    local l17: Bool
+    local l18: List(Int) // slots
+    local l19: Bool
+    local l20: Int
+    local l21: Int
+    local l22: Bool
+    local l23: Int
+    local l24: Bool
+    local l25: Int
+    local l26: Int
+    local l27: Int
+    local l28: Int
+  b0:
+    l2 = list []
+    l3 = l2
+    l4 = 0
+    l5 = IntNeg 1
+    l6 = l5
+    goto b1
+  b1:
+    l7 = ListLength l1
+    l8 = IntCompare(LessEqual) l4, l7
+    branch l8, b2, b3
+  b2:
+    l10 = call f68(l0, l1, l4)
+    l11 = l10
+    l12 = RecordTag l11
+    l13 = IntCompare(Equal) l12, 0
+    branch l13, b6, b5
+  b3:
+    return l3
+  b4:
+    l18 = l9
+    l20 = l18[0]
+    l21 = l18[1]
+    l22 = IntCompare(Equal) l20, l21
+    l19 = l22
+    branch l19, b9, b10
+  b5:
+    l16 = RecordTag l11
+    l17 = IntCompare(Equal) l16, 1
+    branch l17, b8, b7
+  b6:
+    l14 = l11.0
+    l15 = l14
+    l9 = l15
+    goto b4
+  b7:
+    unreachable
+  b8:
+    goto b3
+  b9:
+    l23 = l18[1]
+    l24 = IntCompare(Equal) l23, l6
+    l19 = l24
+    goto b10
+  b10:
+    branch l19, b11, b12
+  b11:
+    l25 = l18[1]
+    l26 = IntAdd l25, 1
+    l4 = l26
+    goto b1
+  b12:
+    push l3, l18
+    l27 = l18[1]
+    l4 = l27
+    l28 = l18[1]
+    l6 = l28
+    goto b1
+
+function f82 Regex.findAll(l0: Record(17), l1: Str): List(Record(38))
+    local l2: List(Record(38))
+    local l3: List(Record(38)) // found
+    local l4: List(Char)
+    local l5: List(Char) // chars
+    local l6: List(List(Int))
+    local l7: List(List(Int))
+    local l8: Int
+    local l9: Int
+    local l10: Bool
+    local l11: Int
+    local l12: List(Int) // slots
+    local l13: Record(38)
+  b0:
+    l2 = list []
+    l3 = l2
+    l4 = koji_std_string_chars([Value(Local(1)), Element(Char)])
+    l5 = l4
+    l6 = call f81(l0, l5)
+    l7 = l6
+    l8 = ListLength l7
+    l9 = 0
+    goto b1
+  b1:
+    l10 = IntCompare(Less) l9, l8
+    branch l10, b2, b4
+  b2:
+    l12 = l7[l9]
+    l13 = call f79(l5, l12)
+    push l3, l13
+    goto b3
+  b3:
+    l11 = IntAdd l9, 1
+    l9 = l11
+    goto b1
+  b4:
+    return l3
+
+function f83 Regex.replace(l0: Record(17), l1: Str, l2: Str): Str
+    local l3: List(Char)
+    local l4: List(Char) // chars
+    local l5: Str
+    local l6: Record(36)
+    local l7: Record(36)
+    local l8: Int
+    local l9: Bool
+    local l10: List(Int)
+    local l11: List(Int) // slots
+    local l12: Int
+    local l13: Str
+    local l14: Str
+    local l15: Str
+    local l16: Int
+    local l17: Int
+    local l18: Str
+    local l19: Str
+    local l20: Int
+    local l21: Bool
+  b0:
+    l3 = koji_std_string_chars([Value(Local(1)), Element(Char)])
+    l4 = l3
+    l6 = call f68(l0, l4, 0)
+    l7 = l6
+    l8 = RecordTag l7
+    l9 = IntCompare(Equal) l8, 0
+    branch l9, b3, b2
+  b1:
+    return l5
+  b2:
+    l20 = RecordTag l7
+    l21 = IntCompare(Equal) l20, 1
+    branch l21, b5, b4
+  b3:
+    l10 = l7.0
+    l11 = l10
+    l12 = l11[0]
+    l13 = call f80(l4, 0, l12)
+    l14 = call f86(l0, l4, l11, l2)
+    l15 = StrConcat l13, l14
+    l16 = l11[1]
+    l17 = ListLength l4
+    l18 = call f80(l4, l16, l17)
+    l19 = StrConcat l15, l18
+    l5 = l19
+    goto b1
+  b4:
+    unreachable
+  b5:
+    l5 = l1
+    goto b1
+
+function f84 Regex.replaceAll(l0: Record(17), l1: Str, l2: Str): Str
+    local l3: Str // out
+    local l4: Int // last
+    local l5: List(Char)
+    local l6: List(Char) // chars
+    local l7: List(List(Int))
+    local l8: List(List(Int))
+    local l9: Int
+    local l10: Int
+    local l11: Bool
+    local l12: Int
+    local l13: List(Int) // slots
+    local l14: Int
+    local l15: Int
+    local l16: Int
+    local l17: Int
+    local l18: Bool
+    local l19: Bool
+    local l20: Int // i
+    local l21: Char
+    local l22: Str
+    local l23: Str
+    local l24: Str
+    local l25: Str
+    local l26: Int
+    local l27: Int
+    local l28: Int
+    local l29: Int
+    local l30: Int
+    local l31: Bool
+    local l32: Bool
+    local l33: Int // i
+    local l34: Char
+    local l35: Str
+    local l36: Str
+  b0:
+    l3 = s18
+    l4 = 0
+    l5 = koji_std_string_chars([Value(Local(1)), Element(Char)])
+    l6 = l5
+    l7 = call f81(l0, l6)
+    l8 = l7
+    l9 = ListLength l8
+    l10 = 0
+    goto b1
+  b1:
+    l11 = IntCompare(Less) l10, l9
+    branch l11, b2, b4
+  b2:
+    l13 = l8[l10]
+    l14 = l4
+    l15 = l13[0]
+    l16 = l15
+    range_check 1
+    l17 = l14
+    l18 = false
+    goto b5
+  b3:
+    l12 = IntAdd l10, 1
+    l10 = l12
+    goto b1
+  b4:
+    l27 = l4
+    l28 = ListLength l6
+    l29 = l28
+    range_check 1
+    l30 = l27
+    l31 = false
+    goto b8
+  b5:
+    l19, l20 = range_next l17, l16, 1, l18
+    branch l19, b6, b7
+  b6:
+    l21 = l6[l20]
+    l22 = CharToStr l21
+    l23 = StrConcat l3, l22
+    l3 = l23
+    goto b5
+  b7:
+    l24 = call f86(l0, l6, l13, l2)
+    l25 = StrConcat l3, l24
+    l3 = l25
+    l26 = l13[1]
+    l4 = l26
+    goto b3
+  b8:
+    l32, l33 = range_next l30, l29, 1, l31
+    branch l32, b9, b10
+  b9:
+    l34 = l6[l33]
+    l35 = CharToStr l34
+    l36 = StrConcat l3, l35
+    l3 = l36
+    goto b8
+  b10:
+    return l3
+
+function f85 Regex.split(l0: Record(17), l1: Str): List(Str)
+    local l2: List(Str)
+    local l3: List(Str) // pieces
+    local l4: Int // last
+    local l5: List(Char)
+    local l6: List(Char) // chars
+    local l7: List(List(Int))
+    local l8: List(List(Int))
+    local l9: Int
+    local l10: Int
+    local l11: Bool
+    local l12: Int
+    local l13: List(Int) // slots
+    local l14: Int
+    local l15: Str
+    local l16: Int
+    local l17: Int
+    local l18: Str
+  b0:
+    l2 = list []
+    l3 = l2
+    l4 = 0
+    l5 = koji_std_string_chars([Value(Local(1)), Element(Char)])
+    l6 = l5
+    l7 = call f81(l0, l6)
+    l8 = l7
+    l9 = ListLength l8
+    l10 = 0
+    goto b1
+  b1:
+    l11 = IntCompare(Less) l10, l9
+    branch l11, b2, b4
+  b2:
+    l13 = l8[l10]
+    l14 = l13[0]
+    l15 = call f80(l6, l4, l14)
+    push l3, l15
+    l16 = l13[1]
+    l4 = l16
+    goto b3
+  b3:
+    l12 = IntAdd l10, 1
+    l10 = l12
+    goto b1
+  b4:
+    l17 = ListLength l6
+    l18 = call f80(l6, l4, l17)
+    push l3, l18
+    return l3
+
+function f86 Regex.expand(l0: Record(17), l1: List(Char), l2: List(Int), l3: Str): Str
+    local l4: List(Char)
+    local l5: List(Char) // chars
+    local l6: Str // out
+    local l7: Int // i
+    local l8: Int
+    local l9: Bool
+    local l10: Char
+    local l11: Char // c
+    local l12: Int
+    local l13: Bool
+    local l14: Bool
+    local l15: Int
+    local l16: Bool
+    local l17: Str
+    local l18: Str
+    local l19: Char
+    local l20: Bool
+    local l21: Str
+    local l22: Int
+    local l23: Str // name
+    local l24: Char
+    local l25: Bool
+    local l26: Int
+    local l27: Int // end
+    local l28: Bool
+    local l29: Int
+    local l30: Bool
+    local l31: Char
+    local l32: Bool
+    local l33: Int
+    local l34: Int
+    local l35: Bool
+    local l36: Str
+    local l37: Int
+    local l38: Int
+    local l39: Int
+    local l40: Str
+    local l41: Int
+    local l42: Bool
+    local l43: Int
+    local l44: Bool
+    local l45: Bool
+    local l46: Bool
+    local l47: Char
+    local l48: Bool
+    local l49: Char
+    local l50: Bool
+    local l51: Bool
+    local l52: Char
+    local l53: Bool
+    local l54: Char
+    local l55: Bool
+    local l56: Char
+    local l57: Str
+    local l58: Str
+    local l59: Int
+    local l60: Bool
+    local l61: Str
+    local l62: Str
+    local l63: Str
+  b0:
+    l4 = koji_std_string_chars([Value(Local(3)), Element(Char)])
+    l5 = l4
+    l6 = s18
+    l7 = 0
+    goto b1
+  b1:
+    l8 = ListLength l5
+    l9 = IntCompare(Less) l7, l8
+    branch l9, b2, b3
+  b2:
+    l10 = l5[l7]
+    l11 = l10
+    l12 = IntAdd l7, 1
+    l7 = l12
+    l14 = CharCompare(NotEqual) l11, '$'
+    l13 = l14
+    branch l13, b5, b4
+  b3:
+    return l6
+  b4:
+    l15 = ListLength l5
+    l16 = IntCompare(GreaterEqual) l7, l15
+    l13 = l16
+    goto b5
+  b5:
+    branch l13, b6, b7
+  b6:
+    l17 = CharToStr l11
+    l18 = StrConcat l6, l17
+    l6 = l18
+    goto b1
+  b7:
+    l19 = l5[l7]
+    l20 = CharCompare(Equal) l19, '$'
+    branch l20, b8, b9
+  b8:
+    l21 = StrConcat l6, s69
+    l6 = l21
+    l22 = IntAdd l7, 1
+    l7 = l22
+    goto b1
+  b9:
+    l23 = s18
+    l24 = l5[l7]
+    l25 = CharCompare(Equal) l24, '{'
+    branch l25, b10, b11
+  b10:
+    l26 = IntAdd l7, 1
+    l27 = l26
+    goto b13
+  b11:
+    goto b20
+  b12:
+    l62 = call f87(l0, l1, l2, l23)
+    l63 = StrConcat l6, l62
+    l6 = l63
+    goto b1
+  b13:
+    l29 = ListLength l5
+    l30 = IntCompare(Less) l27, l29
+    l28 = l30
+    branch l28, b16, b17
+  b14:
+    l33 = IntAdd l27, 1
+    l27 = l33
+    goto b13
+  b15:
+    l34 = ListLength l5
+    l35 = IntCompare(GreaterEqual) l27, l34
+    branch l35, b18, b19
+  b16:
+    l31 = l5[l27]
+    l32 = CharCompare(NotEqual) l31, '}'
+    l28 = l32
+    goto b17
+  b17:
+    branch l28, b14, b15
+  b18:
+    l36 = StrConcat l6, s69
+    l6 = l36
+    goto b1
+  b19:
+    l37 = IntAdd l7, 1
+    l38 = l37
+    l39 = l27
+    l40 = koji_std_string_slice([Value(Local(3)), Mode(1), Value(Local(38)), Mode(1), Value(Local(39)), Location(1413)])
+    l23 = l40
+    l41 = IntAdd l27, 1
+    l7 = l41
+    goto b12
+  b20:
+    l43 = ListLength l5
+    l44 = IntCompare(Less) l7, l43
+    l42 = l44
+    branch l42, b23, b24
+  b21:
+    l56 = l5[l7]
+    l57 = CharToStr l56
+    l58 = StrConcat l23, l57
+    l23 = l58
+    l59 = IntAdd l7, 1
+    l7 = l59
+    goto b20
+  b22:
+    l60 = StrCompare(Equal) l23, s18
+    branch l60, b31, b32
+  b23:
+    l47 = l5[l7]
+    l48 = CharCompare(Equal) l47, '_'
+    l46 = l48
+    branch l46, b26, b25
+  b24:
+    branch l42, b21, b22
+  b25:
+    l49 = l5[l7]
+    l50 = call f88(l49)
+    l46 = l50
+    goto b26
+  b26:
+    l45 = l46
+    branch l45, b28, b27
+  b27:
+    l52 = l5[l7]
+    l53 = CharCompare(GreaterEqual) l52, '0'
+    l51 = l53
+    branch l51, b29, b30
+  b28:
+    l42 = l45
+    goto b24
+  b29:
+    l54 = l5[l7]
+    l55 = CharCompare(LessEqual) l54, '9'
+    l51 = l55
+    goto b30
+  b30:
+    l45 = l51
+    goto b28
+  b31:
+    l61 = StrConcat l6, s69
+    l6 = l61
+    goto b1
+  b32:
+    goto b12
+
+function f87 Regex.group(l0: Record(17), l1: List(Char), l2: List(Int), l3: Str): Str
+    local l4: Int
+    local l5: Record(42)
+    local l6: Record(42)
+    local l7: Int
+    local l8: Bool
+    local l9: Int
+    local l10: Int // number
+    local l11: Int
+    local l12: Bool
+    local l13: Int
+    local l14: Map(Str, Int)
+    local l15: Record(13)
+    local l16: Record(13)
+    local l17: Int
+    local l18: Bool
+    local l19: Int
+    local l20: Int // found
+    local l21: Int
+    local l22: Bool
+    local l23: Int // index
+    local l24: Bool
+    local l25: Bool
+    local l26: Bool
+    local l27: Int
+    local l28: Bool
+    local l29: Int
+    local l30: Int
+    local l31: Bool
+    local l32: Int
+    local l33: Int
+    local l34: Int
+    local l35: Int
+    local l36: Int
+    local l37: Str
+  b0:
+    l5 = koji_std_int_from_string([Value(Local(3)), Record(42)])
+    l6 = l5
+    l7 = RecordTag l6
+    l8 = IntCompare(Equal) l7, 0
+    branch l8, b3, b2
+  b1:
+    l23 = l4
+    l26 = IntCompare(Less) l23, 0
+    l25 = l26
+    branch l25, b12, b11
+  b2:
+    l11 = RecordTag l6
+    l12 = IntCompare(Equal) l11, 1
+    branch l12, b5, b4
+  b3:
+    l9 = l6.0
+    l10 = l9
+    l4 = l10
+    goto b1
+  b4:
+    unreachable
+  b5:
+    l14 = l0.3
+    l15 = lookup l14, l3
+    l16 = l15
+    l17 = RecordTag l16
+    l18 = IntCompare(Equal) l17, 0
+    branch l18, b8, b7
+  b6:
+    l4 = l13
+    goto b1
+  b7:
+    l21 = RecordTag l16
+    l22 = IntCompare(Equal) l21, 1
+    branch l22, b10, b9
+  b8:
+    l19 = l16.0
+    l20 = l19
+    l13 = l20
+    goto b6
+  b9:
+    unreachable
+  b10:
+    return s18
+  b11:
+    l27 = l0.2
+    l28 = IntCompare(GreaterEqual) l23, l27
+    l25 = l28
+    goto b12
+  b12:
+    l24 = l25
+    branch l24, b14, b13
+  b13:
+    l29 = IntMul l23, 2
+    l30 = l2[l29]
+    l31 = IntCompare(Less) l30, 0
+    l24 = l31
+    goto b14
+  b14:
+    branch l24, b15, b16
+  b15:
+    return s18
+  b16:
+    l32 = IntMul l23, 2
+    l33 = l2[l32]
+    l34 = IntMul l23, 2
+    l35 = IntAdd l34, 1
+    l36 = l2[l35]
+    l37 = call f80(l1, l33, l36)
+    return l37
+
+function f88 isAsciiLetter(l0: Char): Bool
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+    local l4: Bool
+    local l5: Bool
+    local l6: Bool
+    local l7: Bool
+  b0:
+    l3 = CharCompare(GreaterEqual) l0, 'a'
+    l2 = l3
+    branch l2, b1, b2
+  b1:
+    l4 = CharCompare(LessEqual) l0, 'z'
+    l2 = l4
+    goto b2
+  b2:
+    l1 = l2
+    branch l1, b4, b3
+  b3:
+    l6 = CharCompare(GreaterEqual) l0, 'A'
+    l5 = l6
+    branch l5, b5, b6
+  b4:
+    return l1
+  b5:
+    l7 = CharCompare(LessEqual) l0, 'Z'
+    l5 = l7
+    goto b6
+  b6:
+    l1 = l5
+    goto b4
+
+function f89 isSpace(l0: Char): Bool
+    local l1: Bool
+  b0:
+    l1 = call f74(g12, l0)
+    return l1
+
+function f90 lowered(l0: Char): Char
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+    local l4: Int
+    local l5: Int
+    local l6: Char
+    local l7: Int
+    local l8: Bool
+    local l9: Str
+    local l10: Str
+    local l11: Str // text
+    local l12: Char
+    local l13: Int
+    local l14: Bool
+    local l15: List(Char)
+    local l16: Char
+  b0:
+    l2 = CharCompare(GreaterEqual) l0, 'A'
+    l1 = l2
+    branch l1, b1, b2
+  b1:
+    l3 = CharCompare(LessEqual) l0, 'Z'
+    l1 = l3
+    goto b2
+  b2:
+    branch l1, b3, b4
+  b3:
+    l4 = CharCode l0
+    l5 = IntAdd l4, 32
+    l6 = call f92(l5)
+    return l6
+  b4:
+    l7 = CharCode l0
+    l8 = IntCompare(Less) l7, 128
+    branch l8, b5, b6
+  b5:
+    return l0
+  b6:
+    l9 = CharToStr l0
+    l10 = koji_std_string_lower([Value(Local(9))])
+    l11 = l10
+    l13 = StrLength l11
+    l14 = IntCompare(Equal) l13, 1
+    branch l14, b7, b8
+  b7:
+    l15 = koji_std_string_chars([Value(Local(11)), Element(Char)])
+    l16 = l15[0]
+    l12 = l16
+    goto b9
+  b8:
+    l12 = l0
+    goto b9
+  b9:
+    return l12
+
+function f91 uppered(l0: Char): Char
+    local l1: Bool
+    local l2: Bool
+    local l3: Bool
+    local l4: Int
+    local l5: Int
+    local l6: Char
+    local l7: Int
+    local l8: Bool
+    local l9: Str
+    local l10: Str
+    local l11: Str // text
+    local l12: Char
+    local l13: Int
+    local l14: Bool
+    local l15: List(Char)
+    local l16: Char
+  b0:
+    l2 = CharCompare(GreaterEqual) l0, 'a'
+    l1 = l2
+    branch l1, b1, b2
+  b1:
+    l3 = CharCompare(LessEqual) l0, 'z'
+    l1 = l3
+    goto b2
+  b2:
+    branch l1, b3, b4
+  b3:
+    l4 = CharCode l0
+    l5 = IntSub l4, 32
+    l6 = call f92(l5)
+    return l6
+  b4:
+    l7 = CharCode l0
+    l8 = IntCompare(Less) l7, 128
+    branch l8, b5, b6
+  b5:
+    return l0
+  b6:
+    l9 = CharToStr l0
+    l10 = koji_std_string_upper([Value(Local(9))])
+    l11 = l10
+    l13 = StrLength l11
+    l14 = IntCompare(Equal) l13, 1
+    branch l14, b7, b8
+  b7:
+    l15 = koji_std_string_chars([Value(Local(11)), Element(Char)])
+    l16 = l15[0]
+    l12 = l16
+    goto b9
+  b8:
+    l12 = l0
+    goto b9
+  b9:
+    return l12
+
+function f92 charOf(l0: Int): Char
+    local l1: Char
+    local l2: Record(5)
+    local l3: Record(5)
+    local l4: Int
+    local l5: Bool
+    local l6: Char
+    local l7: Char // c
+    local l8: Int
+    local l9: Bool
+  b0:
+    l2 = koji_std_char([Value(Local(0)), Record(5)])
+    l3 = l2
+    l4 = RecordTag l3
+    l5 = IntCompare(Equal) l4, 0
+    branch l5, b3, b2
+  b1:
+    return l1
+  b2:
+    l8 = RecordTag l3
+    l9 = IntCompare(Equal) l8, 1
+    branch l9, b5, b4
+  b3:
+    l6 = l3.0
+    l7 = l6
+    l1 = l7
+    goto b1
+  b4:
+    unreachable
+  b5:
+    l1 = ' '
+    goto b1
 ==== test/ir/cases.txt #19
 string s0 = "x"
 string s1 = " "

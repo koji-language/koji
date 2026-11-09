@@ -8,7 +8,7 @@ import { decimalLiteral } from 'decimal.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
-immut stdlibModules = ['time', 'file', 'datetime', 'math', 'http', 'regex', 'system']
+immut stdlibModules = ['time', 'file', 'datetime', 'math', 'http', 'system']
 
 type SymbolKind = {
     ValueSymbol
@@ -132,9 +132,6 @@ type Builtins = {
     file: int
     datetime: int
     response: int
-    regexMatch: int
-    regex: int
-    regexError: int
     operatingSystem: int
 }
 
@@ -337,14 +334,6 @@ function builtinSums(): BuiltinSum[] {
             variants: [variant('PatternMismatch', [field('text', 'string'), field('pattern', 'string')]), variant('InvalidDate', text)]
         },
         {
-            name: 'RegexError', module: Some('regex'), params: 0,
-            variants: [
-                variant('InvalidPattern', [field('pattern', 'string'), field('message', 'string')]),
-                variant('Unsupported', [field('pattern', 'string'), field('message', 'string')]),
-                variant('TooLarge', [field('pattern', 'string')])
-            ]
-        },
-        {
             name: 'SystemError', module: Some('system'), params: 0,
             variants: [
                 variant('NotFound', [field('command', 'string')]), variant('PermissionDenied', [field('command', 'string')]),
@@ -366,7 +355,6 @@ function stdlibFunctions(module: string): string[] {
         'datetime' => ['now', 'today', 'format', 'parse']
         'math' => ['abs', 'sqrt', 'pow', 'floor', 'ceil', 'round']
         'http' => ['get', 'post', 'put', 'delete']
-        'regex' => ['compile']
         'system' => ['args', 'env', 'executable', 'exit', 'run', 'capture']
         _ => []
     }
@@ -447,24 +435,12 @@ function Checker.create(): Checker {
     immut output = addType(mut table, 'Output', 0, BuiltinKind([
         { name: 'status', ty: IntType }, { name: 'stdout', ty: StringType }, { name: 'stderr', ty: StringType }
     ], []))
-    immut regexMatch = addType(mut table, 'Match', 0, BuiltinKind([
-        { name: 'value', ty: StringType }, { name: 'start', ty: IntType }, { name: 'end', ty: IntType }
-    ], []))
-    immut matchType = named(regexMatch)
-    immut regex = addType(mut table, 'Regex', 0, BuiltinKind([], [
-        { name: 'test', params: [StringType], returns: BooleanType },
-        { name: 'find', params: [StringType], returns: NamedType(sumId(ids, 'Option'), [matchType]) },
-        { name: 'findAll', params: [StringType], returns: ListType(matchType) },
-        { name: 'replace', params: [StringType, StringType], returns: StringType },
-        { name: 'replaceAll', params: [StringType, StringType], returns: StringType },
-        { name: 'split', params: [StringType], returns: ListType(StringType) }
-    ]))
     immut builtins: Builtins = {
         option: sumId(ids, 'Option'), result: result, parseError: sumId(ids, 'ParseError'),
         mathError: sumId(ids, 'MathError'), fileError: sumId(ids, 'FileError'), fileMode: sumId(ids, 'Mode'),
         httpError: sumId(ids, 'HttpError'), map: map, output: output, systemError: sumId(ids, 'SystemError'),
         set: set, dateError: sumId(ids, 'DateError'), file: file,
-        datetime: datetime, response: response, regexMatch: regexMatch, regex: regex, regexError: sumId(ids, 'RegexError'),
+        datetime: datetime, response: response,
         operatingSystem: sumId(ids, 'OperatingSystem')
     }
     return {
@@ -487,8 +463,7 @@ function Checker.builtinSumId(self, name: string): int {
         'HttpError' => b.httpError
         'DateError' => b.dateError
         'SystemError' => b.systemError
-        'OperatingSystem' => b.operatingSystem
-        _ => b.regexError
+        _ => b.operatingSystem
     }
 }
 
@@ -601,10 +576,6 @@ function Checker.stdlibModule(mut self, name: string): int {
         'datetime' => module.types['DateTime'] = KnownType(named(b.datetime))
         'http' => module.types['Response'] = KnownType(named(b.response))
         'system' => module.types['Output'] = KnownType(named(b.output))
-        'regex' => {
-            module.types['Match'] = KnownType(named(b.regexMatch))
-            module.types['Regex'] = KnownType(named(b.regex))
-        }
         _ => {}
     }
 
@@ -1894,7 +1865,7 @@ function Checker.equatableIn(mut self, ty: Type, mut visited: Set[int]): boolean
 
     match (self.table[parts.id].kind) {
         ParamKind(constraint) => return constraint >= equatable
-        BuiltinKind(_, _) => return parts.id == b.datetime or parts.id == b.response or parts.id == b.regexMatch
+        BuiltinKind(_, _) => return parts.id == b.datetime or parts.id == b.response
         _ => {}
     }
 
@@ -4800,10 +4771,6 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[]): Result[
         other if (other == 'http.post' or other == 'http.put') => {
             self.checkExactly(name, types, [s, s])?
             return Ok(self.resultWith(named(b.response), b.httpError))
-        }
-        'regex.compile' => {
-            self.checkExactly(name, types, [s])?
-            return Ok(self.resultWith(named(b.regex), b.regexError))
         }
         other => return Err(self.failure(`unknown built-in function '${other}'`))
     }

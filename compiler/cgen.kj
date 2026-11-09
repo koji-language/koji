@@ -53,7 +53,6 @@ function cType(ty: Ty): string {
         SetTy(_) => 'KojiMap *'
         FunctionTy(_, _) => 'KojiClosure *'
         FileTy => 'KojiFile *'
-        RegexTy => 'KojiRegex *'
         VoidTy => 'void'
     }
 }
@@ -68,7 +67,6 @@ function kind(ty: Ty): Option[string] {
         SetTy(_) => Some('map')
         FunctionTy(_, _) => Some('closure')
         FileTy => Some('file')
-        RegexTy => Some('regex')
         _ => None
     }
 }
@@ -127,7 +125,6 @@ function elementType(ty: Ty): string {
         SetTy(_) => '&koji_element_map'
         FunctionTy(_, _) => '&koji_element_closure'
         FileTy => '&koji_element_file'
-        RegexTy => '&koji_element_regex'
         VoidTy => '&koji_element_void'
     }
 }
@@ -688,7 +685,6 @@ function unaryExpression(op: string, value: string, location: string): string {
         'BoolToStr' => `koji_string_from_bool(${value})`
         'CharToStr' => `koji_string_from_char(${value})`
         'FileToStr' => `koji_file_repr(${value})`
-        'RegexToStr' => `koji_regex_repr(${value})`
         'CharRepr' => `koji_char_repr(${value})`
         'CharCode' => `(int64_t)${value}`
         'ListToStr' => `koji_list_repr(${value})`

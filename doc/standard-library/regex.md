@@ -1,6 +1,6 @@
 # Regex
 
-The `regex` module provides regular expressions for searching, validation, and string manipulation.
+The `regex` module provides regular expressions for searching, validation, and string manipulation. `Regex` is an [opaque type](../modules-and-imports.md#opaque-types): it is made by `compile` only, and shown as `<regex '[0-9]+'>`.
 
 ## Import
 
@@ -99,4 +99,8 @@ Match {
 ## Notes
 
 -   The regex syntax is Perl-style (character classes, groups, quantifiers, anchors). Look-around and backreferences are not supported.
+-   The module is written in Koji (`std/regex.kj`). A pattern is compiled for a Pike machine, so matching takes a time proportional to the length of the text (times the size of the pattern), never exponential: there is no backtracking. The first match is the leftmost one, and among those the one the pattern prefers (the first branch of `|`, the longest repetition unless it is lazy). After a match, an empty match right at its end is skipped.
+-   Supported: classes with ranges, `[^...]`, nested classes, `&&`, `--` and `~~`, `[[:alpha:]]` (ASCII); `\d`, `\w`, `\s` and their complements, which follow Unicode; `\p{L}` (`Letter`, `Alphabetic`), `\p{Lu}` (`Uppercase`), `\p{Ll}` (`Lowercase`), `\p{N}` (`Number`), `\p{Nd}` (`Digit`), `\p{White_Space}` and their `\P` complements; `^`, `$`, `\A`, `\z`, `\b`, `\B`, `\<`, `\>`; `(?:...)`, `(?P<name>...)`, `(?<name>...)`; the flags `i`, `m`, `s`, `x` and `U`, as `(?i)` or `(?i:...)`; `*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}` and their lazy forms (`*?`); the escapes `\n`, `\t`, `\x41`, `\x{1F600}`, `\u0041` and any escaped punctuation.
+-   Other Unicode properties (`\p{Greek}`) are not supported: compiling gives `Unsupported`. Outside ASCII, `\d` and `\p{Nd}` match every numeric character, and `\w` letters and numbers (and `_`), as `isNumeric` and `isAlphaNumeric` do.
+-   A pattern is too large (`TooLarge`) when it would compile to more than 500,000 instructions: `a{1000}{1000}`.
 -   To learn more about regex syntax, visit: [https://regex101.com/](https://regex101.com/)
