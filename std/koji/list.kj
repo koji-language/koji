@@ -21,6 +21,7 @@ extern function koji_element_equal(element: Address, a: Address, b: Address): bo
 extern function koji_element_orderable(element: Address): boolean
 extern function koji_element_compare(element: Address, a: Address, b: Address): CInt
 extern function koji_element_hash(element: Address, slot: Address): int
+extern function koji_call_before(call: Address, comparison: Address, a: Address, b: Address): boolean
 extern function memcpy(target: Address, source: Address, size: CSize): Address
 extern function memmove(target: Address, source: Address, size: CSize): Address
 
@@ -455,4 +456,82 @@ extern function koji_list_hash(list: Address): int {
     }
 
     return lowWord(hash)
+}
+
+// `items.sortBy(comparison)`: a stable merge sort, where `call(comparison, a, b)` says whether `a`
+// goes before `b`. The halves and the calls of the comparison are those of the runtime in Rust (a
+// comparison may print): the first half of a part has its floor half, and an item of the right
+// half goes first only when it goes strictly before.
+extern function koji_list_sort_by(variable: Address, comparison: Address, call: Address) {
+    immut list = unshared(variable)
+    immut length = lengthOf(list)
+
+    if (length < 2) { return }
+
+    // The positions of the items, sorted, then the items in their order.
+    immut order = koji_memory_take(length)
+    immut spare = koji_memory_take(length)
+
+    for i in range(length) {
+        write(order, i * 8, i)
+    }
+
+    mergeSort(list, order, spare, 0, length, comparison, call)
+    immut size = strideOf(list) * 8
+    immut words = length * strideOf(list)
+    immut sorted = koji_memory_take(words)
+
+    for i in range(length) {
+        immut position: int = read(order, i * 8)
+        memcpy(offset(sorted, i * size), slotOf(list, position), size)
+    }
+
+    koji_memory_give(itemsOf(list), capacityOf(list))
+    write(list, 24, sorted)
+    write(list, 40, words)
+    koji_memory_give(order, length)
+    koji_memory_give(spare, length)
+}
+
+// Sorts the positions from `start` to `end` of `order`, through `spare`.
+function mergeSort(list: Address, order: Address, spare: Address, start: int, end: int, comparison: Address, call: Address) {
+    if (end - start <= 1) { return }
+
+    immut middle = start + (end - start) / 2
+    mergeSort(list, order, spare, start, middle, comparison, call)
+    mergeSort(list, order, spare, middle, end, comparison, call)
+    mut left = start
+    mut right = middle
+    mut at = start
+
+    while (left < middle and right < end) {
+        immut a: int = read(order, left * 8)
+        immut b: int = read(order, right * 8)
+
+        if (koji_call_before(call, comparison, slotOf(list, b), slotOf(list, a))) {
+            write(spare, at * 8, b)
+            right += 1
+        } else {
+            write(spare, at * 8, a)
+            left += 1
+        }
+
+        at += 1
+    }
+
+    while (left < middle) {
+        immut a: int = read(order, left * 8)
+        write(spare, at * 8, a)
+        left += 1
+        at += 1
+    }
+
+    while (right < end) {
+        immut b: int = read(order, right * 8)
+        write(spare, at * 8, b)
+        right += 1
+        at += 1
+    }
+
+    memcpy(offset(order, start * 8), offset(spare, start * 8), (end - start) * 8)
 }

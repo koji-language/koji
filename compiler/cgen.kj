@@ -1465,7 +1465,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                 _ => {}
             }
 
-            self.line(`    koji_list_sort_by(${self.target(list, line)}, ${operand(comparison)}, koji_before_${before});`)
+            self.line(`    koji_list_sort_by(${self.target(list, line)}, ${operand(comparison)}, (const void *)koji_before_${before});`)
         }
         MapNewIns(dest, entries) => {
             immut ty = routine.locals[dest].ty

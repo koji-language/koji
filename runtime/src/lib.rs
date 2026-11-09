@@ -5,10 +5,7 @@
 //! in `prelude.h`, which starts every C file the compiler generates (the compiler written in Koji
 //! has its lines in `compiler/prelude.kj`).
 
-mod closure;
-mod hash;
 mod http;
-mod list;
 mod record;
 mod stdlib;
 mod pool;
@@ -17,4 +14,3 @@ mod system;
 
 pub use string::repr_string;
 pub use http::{http_request, HttpOutcome};
-pub use stdlib::error_message;

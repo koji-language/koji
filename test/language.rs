@@ -755,6 +755,25 @@ fn shape_types() {
 }
 
 #[test]
+fn sort_by_calls_its_comparison_in_a_known_order() {
+    // A stable merge sort (std/koji/list.kj): the calls of the comparison, which may print, are
+    // part of what a program does.
+    let source = r#"
+        type Person = { name: string, age: int }
+        mut people: Person[] = [{ name: 'Ana', age: 30 }, { name: 'Bo', age: 25 }, { name: 'Cy', age: 30 }]
+        people.sortBy((a: Person, b: Person) => {
+            print(`${a.name} ${b.name}`)
+            return a.age < b.age
+        })
+        print(people)
+    "#;
+    assert_eq!(
+        run(source),
+        "Cy Bo\nBo Ana\nCy Ana\n[{ name: 'Bo', age: 25 }, { name: 'Ana', age: 30 }, { name: 'Cy', age: 30 }]\n"
+    );
+}
+
+#[test]
 fn appending_to_a_top_level_string() {
     // In place when no one else sees the string; a copy when another variable shares it.
     let source = r#"

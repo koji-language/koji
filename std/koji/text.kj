@@ -702,13 +702,13 @@ function isTitle(bytes: Address, size: int): boolean {
     return hasCase
 }
 
-function isAlphabetic(code: int): boolean {
+export function isAlphabetic(code: int): boolean {
     if (code < 0x80) { return (code >= 65 and code <= 90) or (code >= 97 and code <= 122) }
 
     return inTable(0, code)
 }
 
-function isNumeric(code: int): boolean {
+export function isNumeric(code: int): boolean {
     if (code < 0x80) { return code >= 48 and code <= 57 }
 
     return inTable(1, code)

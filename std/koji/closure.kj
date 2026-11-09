@@ -1,0 +1,40 @@
+// `koji:closure`: closures, a function with the values it captured, in the library of the runtime
+// written in Koji (C calls these functions by their names). A closure is 4 words (runtime/prelude.h,
+// which counts its references and reads its code and environment inline): the count of
+// references, the code of the function, its environment (a record of the captured values, which
+// the generated code gives it as the first argument, or none) and the name of the function.
+
+import { Address, distance, read, write } from 'koji:unsafe'
+import { cText } from 'koji:core'
+
+extern function koji_memory_take(words: int): Address
+extern function koji_memory_give(block: Address, words: int)
+extern function koji_record_drop(record: Address)
+
+// A new closure: it takes the caller's reference to `environment`.
+extern function koji_closure_new(code: Address, environment: Address, name: Address): Address {
+    immut closure = koji_memory_take(4)
+    write(closure, 0, 1)
+    write(closure, 8, code)
+    write(closure, 16, environment)
+    write(closure, 24, name)
+    return closure
+}
+
+// Releases the environment of a closure without references, and frees it.
+extern function koji_closure_free(closure: Address) {
+    immut environment: Address = read(closure, 16)
+    koji_record_drop(environment)
+    koji_memory_give(closure, 4)
+}
+
+// `<function double>`.
+extern function koji_closure_repr(closure: Address): string {
+    immut name: Address = read(closure, 24)
+    return `<function ${cText(name)}>`
+}
+
+// The same closure (functions have no other equality).
+extern function koji_closure_equal(a: Address, b: Address): boolean {
+    return distance(a, b) == 0
+}

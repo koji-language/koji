@@ -94,6 +94,11 @@ KOJI_INLINE KojiString *koji_element_repr(const void *element, const void *slot)
 KOJI_INLINE bool koji_element_equal(const void *element, const void *a, const void *b) {
     return ((const KojiElementType *)element)->equal(a, b);
 }
+/* The text `print` shows of an item: its `display`, or else as written in code. */
+KOJI_INLINE KojiString *koji_element_text(const void *element, const void *slot) {
+    const KojiElementType *type = (const KojiElementType *)element;
+    return type->display ? type->display(slot) : type->repr(slot);
+}
 KOJI_INLINE bool koji_element_orderable(const void *element) { return ((const KojiElementType *)element)->compare != NULL; }
 KOJI_INLINE int koji_element_compare(const void *element, const void *a, const void *b) {
     return ((const KojiElementType *)element)->compare(a, b);
@@ -353,16 +358,15 @@ struct KojiRecordType {
     KojiString *(*display)(const KojiRecord *record);
 };
 
-/* A record (runtime/src/record.rs): the words of its fields follow it, in the same allocation, at
-   the offsets of its variant. Its fields, its tag and its references are read here, inline. */
+/* A record: the words of its fields follow it, in the same allocation, at the offsets of its
+   variant. It is made, its fields set and read, and its references counted here, inline; the rest
+   is in std/koji/record.kj. */
 struct KojiRecord {
     size_t references;
     const KojiRecordType *type;
     size_t tag;
     uint64_t words[];
 };
-
-KojiRecord *koji_record_new(const KojiRecordType *type, size_t tag);
 
 /* A new record of variant `tag`, of `words` words of fields, with one reference and its fields
    zero (the generated code writes them next), in `memory` (on the stack of a function, for a
@@ -380,10 +384,27 @@ KOJI_INLINE KojiRecord *koji_record_make(const KojiRecordType *type, size_t tag,
     return koji_record_at(koji_pool_take(3 + words), type, tag, words);
 }
 
-void koji_record_init(KojiRecord *record, size_t index, const void *value);
-void koji_record_free(KojiRecord *record);
+/* The words of the fields of a variant. */
+KOJI_INLINE size_t koji_variant_words(const KojiVariantType *variant) {
+    return variant->field_offsets ? variant->field_offsets[variant->field_count] : variant->field_count;
+}
+
+/* A new record of variant `tag`, with its fields zero: the generated code sets them next. */
+KOJI_INLINE KojiRecord *koji_record_new(const KojiRecordType *type, size_t tag) {
+    return koji_record_make(type, tag, koji_variant_words(&type->variants[tag]));
+}
+
+/* Sets a field of a new record (with its own reference to the value). */
+KOJI_INLINE void koji_record_init(KojiRecord *record, size_t index, const void *value) {
+    const KojiVariantType *variant = &record->type->variants[record->tag];
+    const KojiElementType *field = variant->field_types[index];
+    void *slot = &record->words[variant->field_offsets ? variant->field_offsets[index] : index];
+    __builtin_memcpy(slot, value, field->size);
+    if (field->retain) field->retain(slot);
+}
+
 /* Copies the record in `variable` when it is shared, so that it can be changed in place. */
-void koji_record_unshare(KojiRecord **variable);
+void koji_record_unshare(const void *variable);
 
 KOJI_INLINE void koji_record_retain(const KojiRecord *record) {
     if (record) ((KojiRecord *)record)->references++;
@@ -403,12 +424,39 @@ KOJI_INLINE const void *koji_record_get(const KojiRecord *record, size_t index) 
     return &record->words[offsets ? offsets[index] : index];
 }
 
-void *koji_record_slot(KojiRecord **variable, size_t index);
-void koji_record_set(KojiRecord **variable, size_t index, const void *value);
-bool koji_record_equal(const KojiRecord *a, const KojiRecord *b);
-KojiString *koji_record_repr(const KojiRecord *record);
-KojiString *koji_record_display(const KojiRecord *record);
-uint64_t koji_record_hash(const KojiRecord *record);
+void *koji_record_slot(const void *variable, size_t index);
+void koji_record_set(const void *variable, size_t index, const void *value);
+bool koji_record_equal(const void *a, const void *b);
+KojiString *koji_record_repr(const void *record);
+KojiString *koji_record_display(const void *record);
+int64_t koji_record_hash(const void *record);
+
+/* For std/koji/record.kj, with the types of its `extern` declarations: what the type of a record
+   says of it. */
+KOJI_INLINE const KojiVariantType *koji_variant_of(const void *record) {
+    const KojiRecord *value = (const KojiRecord *)record;
+    return &value->type->variants[value->tag];
+}
+KOJI_INLINE int64_t koji_record_words(const void *record) { return (int64_t)koji_variant_words(koji_variant_of(record)); }
+KOJI_INLINE int64_t koji_record_field_count(const void *record) { return (int64_t)koji_variant_of(record)->field_count; }
+KOJI_INLINE void *koji_record_field_type(const void *record, int64_t index) {
+    return (void *)koji_variant_of(record)->field_types[index];
+}
+KOJI_INLINE void *koji_record_field_slot(const void *record, int64_t index) {
+    return (void *)koji_record_get((const KojiRecord *)record, (size_t)index);
+}
+KOJI_INLINE void *koji_record_field_name(const void *record, int64_t index) {
+    return (void *)koji_variant_of(record)->field_names[index];
+}
+/* The name of the variant, or NULL for an object type; the name of the type. */
+KOJI_INLINE void *koji_record_variant_name(const void *record) { return (void *)koji_variant_of(record)->name; }
+KOJI_INLINE void *koji_record_type_name(const void *record) { return (void *)((const KojiRecord *)record)->type->name; }
+/* An opaque type shows its values by its `display` method. */
+KOJI_INLINE bool koji_record_opaque(const void *record) { return ((const KojiRecord *)record)->type->display != NULL; }
+KOJI_INLINE KojiString *koji_record_shown(const void *record) {
+    return ((const KojiRecord *)record)->type->display((const KojiRecord *)record);
+}
+KOJI_INLINE void koji_record_drop(const void *record) { koji_record_release((KojiRecord *)record); }
 
 typedef struct KojiMap KojiMap;
 
@@ -438,15 +486,26 @@ KojiString *koji_map_repr(const void *map);
 
 typedef struct KojiClosure KojiClosure;
 
-KojiClosure *koji_closure_new(const void *code, KojiRecord *environment, const char *name);
-void koji_closure_retain(const KojiClosure *closure);
-void koji_closure_release(KojiClosure *closure);
-const void *koji_closure_code(const KojiClosure *closure);
-KojiRecord *koji_closure_environment(const KojiClosure *closure);
-KojiString *koji_closure_repr(const KojiClosure *closure);
-bool koji_closure_equal(const KojiClosure *a, const KojiClosure *b);
-void koji_list_sort_by(KojiList **variable, const KojiClosure *comparison,
-                       bool (*call)(const KojiClosure *, const void *, const void *));
+/* Closures (std/koji/closure.kj): 4 words, the count of references, the code, the environment (a
+   record of the captured values, or NULL) and the name of the function. */
+void *koji_closure_new(const void *code, const void *environment, const void *name);
+void koji_closure_free(const void *closure);
+KOJI_INLINE void koji_closure_retain(const KojiClosure *closure) {
+    if (closure) ++*(size_t *)closure;
+}
+KOJI_INLINE void koji_closure_release(KojiClosure *closure) {
+    if (closure && --*(size_t *)closure == 0) koji_closure_free(closure);
+}
+KOJI_INLINE const void *koji_closure_code(const KojiClosure *closure) { return ((const void *const *)closure)[1]; }
+KOJI_INLINE KojiRecord *koji_closure_environment(const KojiClosure *closure) { return ((KojiRecord *const *)closure)[2]; }
+KojiString *koji_closure_repr(const void *closure);
+bool koji_closure_equal(const void *a, const void *b);
+/* `items.sortBy(comparison)`: `call(comparison, a, b)` says whether `a` goes before `b` (the
+   generated code knows the type of the items). */
+void koji_list_sort_by(const void *variable, const void *comparison, const void *call);
+KOJI_INLINE bool koji_call_before(const void *call, const void *comparison, const void *a, const void *b) {
+    return ((bool (*)(const KojiClosure *, const void *, const void *))call)((const KojiClosure *)comparison, a, b);
+}
 
 /* The start of a program (runtime/src/stdlib.rs). */
 void koji_init(int argc, const char *const *argv);
