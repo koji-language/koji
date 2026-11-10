@@ -1,0 +1,317 @@
+// `koji:bignum`: numbers modulo an odd number of up to 8192 bits, by Montgomery's multiplication, in
+// the library of the runtime written in Koji: what the elliptic curves of NIST and RSA compute with.
+// A number is limbs of 64 bits, the lowest first (the bits of ints, at an address); a modulus keeps
+// its limbs, -1/p modulo 2^64 and R^2 modulo p (R = 2^(64 n)). Products are U128: a limb times a
+// limb plus two limbs fits 128 bits. Multiplying, adding and subtracting take the same steps
+// whatever the numbers are (the last subtraction is chosen with a mask).
+
+import { Address, CSize, U128, allocate, free, lowWord, offset, read, wide, wordProduct, write } from 'koji:unsafe'
+
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+
+export type Modulus = {
+    count: int
+    limbs: Address
+    inverse: int
+    squared: Address
+}
+
+export function limb(n: Address, i: int): int {
+    immut value: int = read(n, i * 8)
+    return value
+}
+
+export function setLimb(n: Address, i: int, value: int) {
+    write(n, i * 8, value)
+}
+
+function wordOf(n: Address, i: int): U128 {
+    return wide(limb(n, i), 0)
+}
+
+// A number of `count` limbs, zero.
+export function zeroNumber(count: int): Address {
+    immut n = allocate(count * 8 + 8)
+
+    for i in range(count + 1) {
+        setLimb(n, i, 0)
+    }
+
+    return n
+}
+
+// The number of the big-endian bytes at `bytes` (`size` of them), in `count` limbs (the bytes beyond
+// them are dropped).
+export function fromBytes(bytes: Address, size: int, count: int): Address {
+    immut n = zeroNumber(count)
+
+    for i in range(size) {
+        immut b: byte = read(bytes, size - 1 - i)
+        immut index = i / 8
+
+        if (index < count) { setLimb(n, index, limb(n, index) | (int(b) << (8 * (i % 8)))) }
+    }
+
+    return n
+}
+
+// The `size` big-endian bytes of a number of `count` limbs, at `out`.
+export function toBytes(n: Address, count: int, out: Address, size: int) {
+    for i in range(size) {
+        immut index = i / 8
+        immut value = if (index < count) { (limb(n, index) >> (8 * (i % 8))) & 0xFF } else { 0 }
+        write(out, size - 1 - i, byte(value))
+    }
+}
+
+// -1 / x modulo 2^64, for an odd x (Newton's iteration doubles the correct bits).
+function negativeInverse(x: int): int {
+    mut inverse = 1
+
+    for i in range(6) {
+        // inverse = inverse * (2 - x * inverse)
+        immut product = lowWord(wordProduct(wide(x, 0), wide(inverse, 0)))
+        immut factor = lowWord(wide(2, 0) - wide(product, 0))
+        inverse = lowWord(wordProduct(wide(inverse, 0), wide(factor, 0)))
+    }
+
+    return lowWord(wide(0, 0) - wide(inverse, 0))
+}
+
+// The modulus of the big-endian bytes at `bytes` (an odd number).
+export function modulusOf(bytes: Address, size: int): Modulus {
+    immut count = (size + 7) / 8
+    immut limbs = fromBytes(bytes, size, count)
+    // R^2 modulo p: 1 doubled 128 n times, each time reduced.
+    immut squared = zeroNumber(count)
+    setLimb(squared, 0, 1)
+
+    for i in range(128 * count) {
+        immut carry = shiftLeftOne(squared, count)
+
+        if (carry != 0 or compare(squared, limbs, count) >= 0) { subtractInPlace(squared, limbs, count) }
+    }
+
+    return { count: count, limbs: limbs, inverse: negativeInverse(limb(limbs, 0)), squared: squared }
+}
+
+// n = 2n: the bit that leaves the top.
+function shiftLeftOne(n: Address, count: int): int {
+    mut carry = 0
+
+    for i in range(count) {
+        immut value = limb(n, i)
+        setLimb(n, i, (value << 1) | carry)
+        carry = (value >> 63) & 1
+    }
+
+    return carry
+}
+
+// -1, 0 or 1 (not in constant time: for the setup and for public numbers).
+export function compare(a: Address, b: Address, count: int): int {
+    mut i = count - 1
+
+    while (i >= 0) {
+        immut x = wordOf(a, i)
+        immut y = wordOf(b, i)
+
+        if (x != y) { return if (x < y) { -1 } else { 1 } }
+
+        i -= 1
+    }
+
+    return 0
+}
+
+// a -= b: the borrow out (0 or 1).
+export function subtractInPlace(a: Address, b: Address, count: int): int {
+    mut borrow: U128 = 0
+
+    for i in range(count) {
+        immut difference = wordOf(a, i) - wordOf(b, i) - borrow
+        setLimb(a, i, lowWord(difference))
+        borrow = (difference >> 64) & wide(1, 0)
+    }
+
+    return lowWord(borrow)
+}
+
+// a += b: the carry out.
+export function addInPlace(a: Address, b: Address, count: int): int {
+    mut carry: U128 = 0
+
+    for i in range(count) {
+        immut sum = wordOf(a, i) + wordOf(b, i) + carry
+        setLimb(a, i, lowWord(sum))
+        carry = sum >> 64
+    }
+
+    return lowWord(carry)
+}
+
+// out = a when `choose` is 1, b when it is 0, with masks.
+export function select(out: Address, a: Address, b: Address, count: int, choose: int) {
+    immut mask = 0 - choose
+
+    for i in range(count) {
+        setLimb(out, i, (limb(a, i) & mask) | (limb(b, i) & (mask ^ -1)))
+    }
+}
+
+// out = a * b / R modulo p (out may be a or b); a and b below p. Through `t` (count + 2 limbs).
+export function multiply(m: Modulus, out: Address, a: Address, b: Address, t: Address) {
+    immut count = m.count
+    immut p = m.limbs
+
+    for i in range(count + 2) {
+        setLimb(t, i, 0)
+    }
+
+    for i in range(count) {
+        immut factor = wordOf(b, i)
+        mut carry: U128 = 0
+
+        for j in range(count) {
+            immut sum = wordOf(t, j) + wordProduct(wordOf(a, j), factor) + carry
+            setLimb(t, j, lowWord(sum))
+            carry = sum >> 64
+        }
+
+        immut top = wordOf(t, count) + carry
+        setLimb(t, count, lowWord(top))
+        setLimb(t, count + 1, lowWord(top >> 64))
+        // t + m p, which divides by 2^64: m = t[0] * (-1/p).
+        immut reducer = wide(lowWord(wordProduct(wordOf(t, 0), wide(m.inverse, 0))), 0)
+        carry = (wordOf(t, 0) + wordProduct(reducer, wordOf(p, 0))) >> 64
+
+        for j in range(1, count) {
+            immut sum = wordOf(t, j) + wordProduct(reducer, wordOf(p, j)) + carry
+            setLimb(t, j - 1, lowWord(sum))
+            carry = sum >> 64
+        }
+
+        immut last = wordOf(t, count) + carry
+        setLimb(t, count - 1, lowWord(last))
+        setLimb(t, count, lowWord(wordOf(t, count + 1) + (last >> 64)))
+    }
+
+    // t is below 2p: t - p when that does not borrow (t[count] counted).
+    reduceOnce(m, out, t)
+}
+
+// out = t - p when t (count + 1 limbs) is at least p, else t; chosen with a mask.
+function reduceOnce(m: Modulus, out: Address, t: Address) {
+    immut count = m.count
+    immut difference = zeroNumber(count)
+    memcpy(difference, t, count * 8)
+    immut borrow = subtractInPlace(difference, m.limbs, count)
+    // t >= p when the top limb (0 or 1) covers the borrow; t is kept when it does not.
+    immut keep = borrow & (limb(t, count) ^ 1)
+    select(out, t, difference, count, keep)
+    free(difference)
+}
+
+// out = a + b modulo p, out = a - b modulo p (a and b below p).
+export function addModulo(m: Modulus, out: Address, a: Address, b: Address) {
+    immut count = m.count
+    immut sum = zeroNumber(count)
+    memcpy(sum, a, count * 8)
+    setLimb(sum, count, addInPlace(sum, b, count))
+    reduceOnce(m, out, sum)
+    free(sum)
+}
+
+export function subtractModulo(m: Modulus, out: Address, a: Address, b: Address) {
+    immut count = m.count
+    immut difference = zeroNumber(count)
+    memcpy(difference, a, count * 8)
+    immut borrow = subtractInPlace(difference, b, count)
+    // Below zero: p added back (the mask picks p or zero).
+    immut back = zeroNumber(count)
+    immut nothing = zeroNumber(count)
+    select(back, m.limbs, nothing, count, borrow)
+    addInPlace(difference, back, count)
+    memcpy(out, difference, count * 8)
+    free(nothing)
+    free(back)
+    free(difference)
+}
+
+// Into the form of Montgomery (a R modulo p), and back out of it.
+export function toForm(m: Modulus, out: Address, a: Address, t: Address) {
+    multiply(m, out, a, m.squared, t)
+}
+
+export function fromForm(m: Modulus, out: Address, a: Address, t: Address) {
+    immut one = zeroNumber(m.count)
+    setLimb(one, 0, 1)
+    multiply(m, out, a, one, t)
+    free(one)
+}
+
+// a below p (the number of the bytes of a signature or a point must be).
+export function belowModulus(m: Modulus, a: Address): boolean {
+    return compare(a, m.limbs, m.count) < 0
+}
+
+// out = base^exponent modulo p, with base and out in the form of Montgomery; the exponent is the
+// big-endian bytes at `exponent` (public: its bits decide the steps).
+export function power(m: Modulus, out: Address, base: Address, exponent: Address, size: int, t: Address) {
+    immut count = m.count
+    immut result = zeroNumber(count)
+    // 1 in the form of Montgomery: R modulo p.
+    immut one = zeroNumber(count)
+    setLimb(one, 0, 1)
+    toForm(m, result, one, t)
+    free(one)
+
+    for i in range(size) {
+        immut b: byte = read(exponent, i)
+        mut bit = 7
+
+        while (bit >= 0) {
+            multiply(m, result, result, result, t)
+
+            if ((int(b) >> bit) & 1 == 1) { multiply(m, result, result, base, t) }
+
+            bit -= 1
+        }
+    }
+
+    memcpy(out, result, count * 8)
+    free(result)
+}
+
+// out = 1 / a modulo a prime p (a^(p - 2)), in the form of Montgomery.
+export function invertModulo(m: Modulus, out: Address, a: Address, t: Address) {
+    immut count = m.count
+    immut exponent = zeroNumber(count)
+    memcpy(exponent, m.limbs, count * 8)
+    immut two = zeroNumber(count)
+    setLimb(two, 0, 2)
+    subtractInPlace(exponent, two, count)
+    immut bytes = allocate(count * 8)
+    toBytes(exponent, count, bytes, count * 8)
+    power(m, out, a, bytes, count * 8, t)
+    free(bytes)
+    free(two)
+    free(exponent)
+}
+
+// For C (the tests of the library): base^exponent modulo p, all big-endian bytes of `size` bytes
+// (those of p), at `out`.
+extern function koji_modular_power(base: Address, exponent: Address, exponentSize: CSize, modulus: Address, size: CSize, out: Address) {
+    immut m = modulusOf(modulus, size)
+    immut t = zeroNumber(m.count + 2)
+    immut a = fromBytes(base, size, m.count)
+    immut form = zeroNumber(m.count)
+    toForm(m, form, a, t)
+    power(m, form, form, exponent, exponentSize, t)
+    fromForm(m, a, form, t)
+    toBytes(a, m.count, out, size)
+
+    for each in [t, a, form, m.limbs, m.squared] {
+        free(each)
+    }
+}

@@ -1,0 +1,218 @@
+// `koji:rsa`: the verification of RSA signatures (RFC 8017), in the library of the runtime written in
+// Koji: certificates are signed with PKCS #1 v1.5, and the proof of a server with an RSA key in TLS
+// 1.3 with PSS (its salt as long as the digest). The signature to the power e modulo n (koji:bignum),
+// then its encoding checked. Everything here is public: no constant time is needed.
+
+import { Address, CInt, CSize, allocate, free, offset, read, write } from 'koji:unsafe'
+import { compare, fromBytes, fromForm, modulusOf, power, toBytes, toForm, zeroNumber } from 'koji:bignum'
+import { digest, digestSize } from 'koji:sha'
+
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function memcmp(a: Address, b: Address, size: CSize): CInt
+extern function memset(target: Address, value: CInt, size: CSize): Address
+
+function byteAt(bytes: Address, i: int): int {
+    immut b: byte = read(bytes, i)
+    return int(b)
+}
+
+// The signature to the power e modulo n, as `size` bytes (those of n) at `out`; false when the
+// signature does not have that size or is not below n, or n is not a modulus of RSA (a leading zero
+// byte, or even: Montgomery's multiplication needs an odd one).
+function publicOperation(signature: Address, signatureSize: int, modulus: Address, size: int, exponent: Address, exponentSize: int, out: Address): boolean {
+    if (signatureSize != size or size == 0) { return false }
+
+    if (byteAt(modulus, 0) == 0 or byteAt(modulus, size - 1) & 1 == 0) { return false }
+
+    immut m = modulusOf(modulus, size)
+    immut t = zeroNumber(m.count + 2)
+    immut s = fromBytes(signature, size, m.count)
+    immut below = compare(s, m.limbs, m.count) < 0
+
+    if (below) {
+        toForm(m, s, s, t)
+        power(m, s, s, exponent, exponentSize, t)
+        fromForm(m, s, s, t)
+        toBytes(s, m.count, out, size)
+    }
+
+    for each in [m.limbs, m.squared, t, s] {
+        free(each)
+    }
+
+    return below
+}
+
+// The DER of the DigestInfo of a hash (0 SHA-256, 1 SHA-384, 2 SHA-512), before the digest.
+function digestPrefix(hash: int): string {
+    return match (hash) {
+        0 => '3031300d060960864801650304020105000420'
+        1 => '3041300d060960864801650304020205000430'
+        _ => '3051300d060960864801650304020305000440'
+    }
+}
+
+// PKCS #1 v1.5: 00 01 FF...FF 00, the DigestInfo of the hash and the digest.
+export function verifyPkcs1(hash: int, digestBytes: Address, digestSizeGiven: int, signature: Address, signatureSize: int, modulus: Address, size: int, exponent: Address, exponentSize: int): boolean {
+    if (digestSizeGiven != digestSize(hash)) { return false }
+
+    immut decoded = allocate(size)
+
+    if (not publicOperation(signature, signatureSize, modulus, size, exponent, exponentSize, decoded)) {
+        free(decoded)
+        return false
+    }
+
+    immut prefix = digestPrefix(hash)
+    immut prefixSize = prefix.length() / 2
+    immut tailSize = prefixSize + digestSizeGiven
+    // At least 8 bytes of FF.
+    mut good = size >= tailSize + 11
+    immut expected = allocate(size)
+
+    if (good) {
+        memset(expected, 0xFF, size)
+        write(expected, 0, byte(0))
+        write(expected, 1, byte(1))
+        write(expected, size - tailSize - 1, byte(0))
+
+        for i in range(prefixSize) {
+            write(expected, size - tailSize + i, byte(hexValue(prefix, 2 * i) * 16 + hexValue(prefix, 2 * i + 1)))
+        }
+
+        memcpy(offset(expected, size - digestSizeGiven), digestBytes, digestSizeGiven)
+        good = memcmp(expected, decoded, size) == 0
+    }
+
+    free(expected)
+    free(decoded)
+    return good
+}
+
+function hexValue(text: string, at: int): int {
+    immut c = text[at]
+    return if (c >= 'a') { c.code() - 87 } else { c.code() - 48 }
+}
+
+// MGF1: `size` bytes of mask from `seed`, xored into `target`.
+function maskWith(hash: int, seed: Address, seedSize: int, target: Address, size: int) {
+    immut length = digestSize(hash)
+    immut input = allocate(seedSize + 4)
+    immut block = allocate(length)
+    memcpy(input, seed, seedSize)
+    mut done = 0
+    mut counter = 0
+
+    while (done < size) {
+        for i in range(4) {
+            write(input, seedSize + i, byte((counter >> (24 - 8 * i)) & 0xFF))
+        }
+
+        digest(hash, input, seedSize + 4, block)
+        mut i = 0
+
+        while (i < length and done < size) {
+            write(target, done, byte(byteAt(target, done) ^ byteAt(block, i)))
+            i += 1
+            done += 1
+        }
+
+        counter += 1
+    }
+
+    free(block)
+    free(input)
+}
+
+// The bits of the number of the big-endian bytes at `bytes`.
+function bitLength(bytes: Address, size: int): int {
+    for i in range(size) {
+        immut b = byteAt(bytes, i)
+
+        if (b != 0) {
+            mut bits = 8
+
+            while ((b >> (bits - 1)) & 1 == 0) {
+                bits -= 1
+            }
+
+            return (size - i - 1) * 8 + bits
+        }
+    }
+
+    return 0
+}
+
+// PSS (EMSA-PSS-VERIFY), with MGF1 of the same hash and a salt as long as the digest.
+export function verifyPss(hash: int, digestBytes: Address, digestSizeGiven: int, signature: Address, signatureSize: int, modulus: Address, size: int, exponent: Address, exponentSize: int): boolean {
+    immut length = digestSize(hash)
+
+    if (digestSizeGiven != length) { return false }
+
+    immut decoded = allocate(size)
+
+    if (not publicOperation(signature, signatureSize, modulus, size, exponent, exponentSize, decoded)) {
+        free(decoded)
+        return false
+    }
+
+    // The encoded message has the bits of n but one.
+    immut emBits = bitLength(modulus, size) - 1
+    immut emLength = (emBits + 7) / 8
+    immut start = size - emLength
+    mut good = emLength >= 2 * length + 2
+
+    // A leading byte beyond the encoded message is 0.
+    if (good and start > 0 and byteAt(decoded, 0) != 0) { good = false }
+
+    immut em = offset(decoded, start)
+
+    if (good and byteAt(em, emLength - 1) != 0xBC) { good = false }
+
+    immut dbSize = emLength - length - 1
+    immut topBits = 8 * emLength - emBits
+
+    if (good and topBits > 0 and (byteAt(em, 0) >> (8 - topBits)) != 0) { good = false }
+
+    if (good) {
+        immut db = allocate(dbSize)
+        memcpy(db, em, dbSize)
+        maskWith(hash, offset(em, dbSize), length, db, dbSize)
+
+        if (topBits > 0) { write(db, 0, byte(byteAt(db, 0) & (0xFF >> topBits))) }
+
+        // Zeros, a 1, then the salt.
+        immut zeros = dbSize - length - 1
+
+        for i in range(zeros) {
+            if (byteAt(db, i) != 0) { good = false }
+        }
+
+        if (byteAt(db, zeros) != 1) { good = false }
+
+        if (good) {
+            // H = Hash(8 zeros || mHash || salt)
+            immut message = allocate(8 + 2 * length)
+            memset(message, 0, 8)
+            memcpy(offset(message, 8), digestBytes, length)
+            memcpy(offset(message, 8 + length), offset(db, dbSize - length), length)
+            immut check = allocate(length)
+            digest(hash, message, 8 + 2 * length, check)
+            good = memcmp(check, offset(em, dbSize), length) == 0
+            free(check)
+            free(message)
+        }
+
+        free(db)
+    }
+
+    free(decoded)
+    return good
+}
+
+// For C (the tests of the library): `kind` 0 for PKCS #1 v1.5, 1 for PSS.
+extern function koji_rsa_verify(kind: CInt, hash: CInt, digestBytes: Address, digestSizeGiven: CSize, signature: Address, signatureSize: CSize, modulus: Address, size: CSize, exponent: Address, exponentSize: CSize): boolean {
+    if (kind == 0) { return verifyPkcs1(hash, digestBytes, digestSizeGiven, signature, signatureSize, modulus, size, exponent, exponentSize) }
+
+    return verifyPss(hash, digestBytes, digestSizeGiven, signature, signatureSize, modulus, size, exponent, exponentSize)
+}

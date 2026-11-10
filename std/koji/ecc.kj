@@ -1,0 +1,409 @@
+// `koji:ecc`: the curves P-256 and P-384 of NIST (FIPS 186-4), in the library of the runtime written
+// in Koji: Diffie-Hellman on P-256 (a key exchange of TLS 1.3, for the servers without X25519) and the
+// verification of ECDSA signatures (certificates and their proofs). On the numbers of koji:bignum,
+// in the form of Montgomery. A point is projective (X : Y : Z); it is added by the complete formulas
+// of Renes, Costello and Batina (2016, algorithm 4, for a = -3), which have no case apart (the point
+// at infinity, a point added to itself), so a secret scalar multiplies with the same steps whatever
+// its bits ("double and add always", the sum chosen with a mask).
+
+import { Address, CInt, CSize, allocate, free, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
+import { Modulus, addModulo, belowModulus, compare, fromBytes, fromForm, invertModulo, limb, modulusOf, multiply, select, subtractInPlace, subtractModulo, toBytes, toForm, zeroNumber } from 'koji:bignum'
+
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+
+// The parameters, in hexadecimal: p, b, the order n, and the generator (x, y).
+immut p256Text = 'ffffffff00000001000000000000000000000000ffffffffffffffffffffffff5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604bffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc6325516b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5'
+immut p384Text = 'fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffffb3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aefffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab73617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f'
+
+// A curve: its field and its order, b and the generator in the form of Montgomery, and the bytes of
+// a coordinate.
+export type Curve = {
+    field: Modulus
+    order: Modulus
+    b: Address
+    gx: Address
+    gy: Address
+    size: int
+}
+
+// The curves, made the first time they are needed (an empty list before).
+mut curves: Curve[] = []
+
+// The curve 0 (P-256) or 1 (P-384).
+export function curveOf(which: int): Curve {
+    if (curves.length() == 0) {
+        curves.push(makeCurve(p256Text, 32))
+        curves.push(makeCurve(p384Text, 48))
+    }
+
+    return curves[which]
+}
+
+function makeCurve(text: string, size: int): Curve {
+    immut bytes = allocate(size * 5)
+    immut digits = stringBytes(text)
+
+    for i in range(size * 5) {
+        write(bytes, i, byte(hexDigit(digits, 2 * i) * 16 + hexDigit(digits, 2 * i + 1)))
+    }
+
+    immut field = modulusOf(bytes, size)
+    immut order = modulusOf(offset(bytes, 2 * size), size)
+    immut t = zeroNumber(field.count + 2)
+    immut b = formOf(field, offset(bytes, size), size, t)
+    immut gx = formOf(field, offset(bytes, 3 * size), size, t)
+    immut gy = formOf(field, offset(bytes, 4 * size), size, t)
+    free(t)
+    free(bytes)
+    return { field: field, order: order, b: b, gx: gx, gy: gy, size: size }
+}
+
+function hexDigit(digits: Address, at: int): int {
+    immut b: byte = read(digits, at)
+    return int(if (b <= 57) { b - 48 } else { b - 87 })
+}
+
+// The number of big-endian bytes, in the form of Montgomery of `m`.
+function formOf(m: Modulus, bytes: Address, size: int, t: Address): Address {
+    immut n = fromBytes(bytes, size, m.count)
+    toForm(m, n, n, t)
+    return n
+}
+
+// Points: three numbers (X, Y, Z) of `count` limbs each, one after the other.
+
+function newPoint(count: int): Address {
+    return zeroNumber(3 * count + 2)
+}
+
+function coordinate(point: Address, index: int, count: int): Address {
+    return offset(point, index * count * 8)
+}
+
+// out = a + b (complete: any points, out may be a or b).
+function addPoints(curve: Curve, out: Address, a: Address, b: Address, t: Address) {
+    immut f = curve.field
+    immut count = f.count
+    immut x1 = coordinate(a, 0, count)
+    immut y1 = coordinate(a, 1, count)
+    immut z1 = coordinate(a, 2, count)
+    immut x2 = coordinate(b, 0, count)
+    immut y2 = coordinate(b, 1, count)
+    immut z2 = coordinate(b, 2, count)
+    immut t0 = zeroNumber(count)
+    immut t1 = zeroNumber(count)
+    immut t2 = zeroNumber(count)
+    immut t3 = zeroNumber(count)
+    immut t4 = zeroNumber(count)
+    immut x3 = zeroNumber(count)
+    immut y3 = zeroNumber(count)
+    immut z3 = zeroNumber(count)
+    multiply(f, t0, x1, x2, t)
+    multiply(f, t1, y1, y2, t)
+    multiply(f, t2, z1, z2, t)
+    addModulo(f, t3, x1, y1)
+    addModulo(f, t4, x2, y2)
+    multiply(f, t3, t3, t4, t)
+    addModulo(f, t4, t0, t1)
+    subtractModulo(f, t3, t3, t4)
+    addModulo(f, t4, y1, z1)
+    addModulo(f, x3, y2, z2)
+    multiply(f, t4, t4, x3, t)
+    addModulo(f, x3, t1, t2)
+    subtractModulo(f, t4, t4, x3)
+    addModulo(f, x3, x1, z1)
+    addModulo(f, y3, x2, z2)
+    multiply(f, x3, x3, y3, t)
+    addModulo(f, y3, t0, t2)
+    subtractModulo(f, y3, x3, y3)
+    multiply(f, z3, curve.b, t2, t)
+    subtractModulo(f, x3, y3, z3)
+    addModulo(f, z3, x3, x3)
+    addModulo(f, x3, x3, z3)
+    subtractModulo(f, z3, t1, x3)
+    addModulo(f, x3, t1, x3)
+    multiply(f, y3, curve.b, y3, t)
+    addModulo(f, t1, t2, t2)
+    addModulo(f, t2, t1, t2)
+    subtractModulo(f, y3, y3, t2)
+    subtractModulo(f, y3, y3, t0)
+    addModulo(f, t1, y3, y3)
+    addModulo(f, y3, t1, y3)
+    addModulo(f, t1, t0, t0)
+    addModulo(f, t0, t1, t0)
+    subtractModulo(f, t0, t0, t2)
+    multiply(f, t1, t4, y3, t)
+    multiply(f, t2, t0, y3, t)
+    multiply(f, y3, x3, z3, t)
+    addModulo(f, y3, y3, t2)
+    multiply(f, x3, t3, x3, t)
+    subtractModulo(f, x3, x3, t1)
+    multiply(f, z3, t4, z3, t)
+    multiply(f, t1, t3, t0, t)
+    addModulo(f, z3, z3, t1)
+    memcpy(coordinate(out, 0, count), x3, count * 8)
+    memcpy(coordinate(out, 1, count), y3, count * 8)
+    memcpy(coordinate(out, 2, count), z3, count * 8)
+
+    for each in [t0, t1, t2, t3, t4, x3, y3, z3] {
+        free(each)
+    }
+}
+
+// The point at infinity, (0 : 1 : 0), in the form of Montgomery.
+function setInfinity(curve: Curve, point: Address, t: Address) {
+    immut count = curve.field.count
+
+    for i in range(3 * count) {
+        write(point, i * 8, 0)
+    }
+
+    immut one = zeroNumber(count)
+    write(one, 0, 1)
+    toForm(curve.field, coordinate(point, 1, count), one, t)
+    free(one)
+}
+
+// out = scalar * point, the scalar the big-endian bytes at `scalar` (`size` of them): the same
+// steps for every scalar of that size.
+function multiplyPoint(curve: Curve, out: Address, scalar: Address, size: int, point: Address, t: Address) {
+    immut count = curve.field.count
+    immut result = newPoint(count)
+    immut sum = newPoint(count)
+    setInfinity(curve, result, t)
+
+    for i in range(size) {
+        immut b: byte = read(scalar, i)
+        mut bit = 7
+
+        while (bit >= 0) {
+            addPoints(curve, result, result, result, t)
+            addPoints(curve, sum, result, point, t)
+            select(result, sum, result, 3 * count, (int(b) >> bit) & 1)
+            bit -= 1
+        }
+    }
+
+    memcpy(out, result, 3 * count * 8)
+    free(sum)
+    free(result)
+}
+
+// The affine coordinates (x = X / Z, y = Y / Z) of a point, out of the form of Montgomery, as bytes
+// at `x` and `y`: false for the point at infinity.
+function affine(curve: Curve, point: Address, x: Address, y: Address, t: Address): boolean {
+    immut f = curve.field
+    immut count = f.count
+    immut z = coordinate(point, 2, count)
+    immut zero = zeroNumber(count)
+
+    if (compare(z, zero, count) == 0) {
+        free(zero)
+        return false
+    }
+
+    free(zero)
+    immut inverse = zeroNumber(count)
+    invertModulo(f, inverse, z, t)
+    immut value = zeroNumber(count)
+    multiply(f, value, coordinate(point, 0, count), inverse, t)
+    fromForm(f, value, value, t)
+    toBytes(value, count, x, curve.size)
+    multiply(f, value, coordinate(point, 1, count), inverse, t)
+    fromForm(f, value, value, t)
+    toBytes(value, count, y, curve.size)
+    free(value)
+    free(inverse)
+    return true
+}
+
+// The point of the coordinates (big-endian bytes) when it is on the curve: y^2 = x^3 - 3x + b, both
+// below p. Into `point` (projective, Z = 1); false when it is not.
+function pointOf(curve: Curve, x: Address, y: Address, point: Address, t: Address): boolean {
+    immut f = curve.field
+    immut count = f.count
+    immut px = fromBytes(x, curve.size, count)
+    immut py = fromBytes(y, curve.size, count)
+
+    if (not belowModulus(f, px) or not belowModulus(f, py)) {
+        free(px)
+        free(py)
+        return false
+    }
+
+    toForm(f, px, px, t)
+    toForm(f, py, py, t)
+    immut left = zeroNumber(count)
+    immut right = zeroNumber(count)
+    multiply(f, left, py, py, t)
+    multiply(f, right, px, px, t)
+    multiply(f, right, right, px, t)
+    subtractModulo(f, right, right, px)
+    subtractModulo(f, right, right, px)
+    subtractModulo(f, right, right, px)
+    addModulo(f, right, right, curve.b)
+    immut on = compare(left, right, count) == 0
+    memcpy(coordinate(point, 0, count), px, count * 8)
+    memcpy(coordinate(point, 1, count), py, count * 8)
+    immut one = zeroNumber(count)
+    write(one, 0, 1)
+    toForm(f, coordinate(point, 2, count), one, t)
+
+    for each in [px, py, left, right, one] {
+        free(each)
+    }
+
+    return on
+}
+
+function generator(curve: Curve): Address {
+    immut count = curve.field.count
+    immut point = newPoint(count)
+    immut t = zeroNumber(count + 2)
+    memcpy(coordinate(point, 0, count), curve.gx, count * 8)
+    memcpy(coordinate(point, 1, count), curve.gy, count * 8)
+    immut one = zeroNumber(count)
+    write(one, 0, 1)
+    toForm(curve.field, coordinate(point, 2, count), one, t)
+    free(one)
+    free(t)
+    return point
+}
+
+// Diffie-Hellman: the public key of a secret scalar (`size` bytes, below n), its uncompressed point
+// (04, x, y: 1 + 2 size bytes) at `out`.
+export function publicKey(which: int, secret: Address, out: Address) {
+    immut curve = curveOf(which)
+    immut count = curve.field.count
+    immut t = zeroNumber(count + 2)
+    immut g = generator(curve)
+    immut point = newPoint(count)
+    multiplyPoint(curve, point, secret, curve.size, g, t)
+    write(out, 0, byte(4))
+    affine(curve, point, offset(out, 1), offset(out, 1 + curve.size), t)
+    free(point)
+    free(g)
+    free(t)
+}
+
+// Diffie-Hellman: the shared secret (the x of secret * their point, `size` bytes) at `out`, or false
+// when their point (uncompressed, 1 + 2 size bytes) is not on the curve.
+export function sharedSecret(which: int, secret: Address, theirs: Address, theirsSize: int, out: Address): boolean {
+    immut curve = curveOf(which)
+    immut count = curve.field.count
+
+    if (theirsSize != 1 + 2 * curve.size) { return false }
+
+    immut first: byte = read(theirs, 0)
+
+    if (first != 4) { return false }
+
+    immut t = zeroNumber(count + 2)
+    immut point = newPoint(count)
+    immut on = pointOf(curve, offset(theirs, 1), offset(theirs, 1 + curve.size), point, t)
+    mut good = on
+
+    if (on) {
+        multiplyPoint(curve, point, secret, curve.size, point, t)
+        immut y = allocate(curve.size)
+        good = affine(curve, point, out, y, t)
+        free(y)
+    }
+
+    free(point)
+    free(t)
+    return good
+}
+
+// Verifies an ECDSA signature (r, s: big-endian bytes of `size` each) of the digest of a message
+// (`digestSize` bytes) by the public key (uncompressed point): u1 = e / s, u2 = r / s modulo n, and
+// the x of u1 G + u2 Q modulo n must be r.
+export function verify(which: int, digest: Address, digestSize: int, r: Address, s: Address, key: Address, keySize: int): boolean {
+    immut curve = curveOf(which)
+    immut f = curve.field
+    immut n = curve.order
+    immut count = f.count
+
+    if (keySize != 1 + 2 * curve.size) { return false }
+
+    immut first: byte = read(key, 0)
+
+    if (first != 4) { return false }
+
+    immut t = zeroNumber(count + 2)
+    immut q = newPoint(count)
+    mut good = pointOf(curve, offset(key, 1), offset(key, 1 + curve.size), q, t)
+    immut rn = fromBytes(r, curve.size, count)
+    immut sn = fromBytes(s, curve.size, count)
+    immut zero = zeroNumber(count)
+
+    // 0 < r, s < n
+    if (compare(rn, zero, count) == 0 or compare(sn, zero, count) == 0 or not belowModulus(n, rn) or not belowModulus(n, sn)) { good = false }
+
+    if (good) {
+        // e: the leftmost bits of the digest, as many as n has, then below n.
+        immut taken = if (digestSize < curve.size) { digestSize } else { curve.size }
+        immut e = fromBytes(digest, taken, count)
+
+        if (not belowModulus(n, e)) { subtractInPlace(e, n.limbs, count) }
+
+        immut w = zeroNumber(count)
+        toForm(n, w, sn, t)
+        invertModulo(n, w, w, t)
+        immut u1 = zeroNumber(count)
+        immut u2 = zeroNumber(count)
+        toForm(n, u1, e, t)
+        multiply(n, u1, u1, w, t)
+        fromForm(n, u1, u1, t)
+        toForm(n, u2, rn, t)
+        multiply(n, u2, u2, w, t)
+        fromForm(n, u2, u2, t)
+        immut bytes1 = allocate(curve.size)
+        immut bytes2 = allocate(curve.size)
+        toBytes(u1, count, bytes1, curve.size)
+        toBytes(u2, count, bytes2, curve.size)
+        immut g = generator(curve)
+        immut a = newPoint(count)
+        immut b = newPoint(count)
+        multiplyPoint(curve, a, bytes1, curve.size, g, t)
+        multiplyPoint(curve, b, bytes2, curve.size, q, t)
+        addPoints(curve, a, a, b, t)
+        immut x = allocate(curve.size)
+        immut y = allocate(curve.size)
+
+        if (affine(curve, a, x, y, t)) {
+            immut xn = fromBytes(x, curve.size, count)
+
+            if (not belowModulus(n, xn)) { subtractInPlace(xn, n.limbs, count) }
+
+            good = compare(xn, rn, count) == 0
+            free(xn)
+        } else {
+            good = false
+        }
+
+        for each in [e, w, u1, u2, bytes1, bytes2, g, a, b, x, y] {
+            free(each)
+        }
+    }
+
+    for each in [t, q, rn, sn, zero] {
+        free(each)
+    }
+
+    return good
+}
+
+// For C (the tests of the library).
+
+extern function koji_ecdh_public(which: CInt, secret: Address, out: Address) {
+    publicKey(which, secret, out)
+}
+
+extern function koji_ecdh_shared(which: CInt, secret: Address, theirs: Address, theirsSize: CSize, out: Address): boolean {
+    return sharedSecret(which, secret, theirs, theirsSize, out)
+}
+
+extern function koji_ecdsa_verify(which: CInt, digest: Address, digestSize: CSize, r: Address, s: Address, key: Address, keySize: CSize): boolean {
+    return verify(which, digest, digestSize, r, s, key, keySize)
+}
