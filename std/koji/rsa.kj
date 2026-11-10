@@ -4,7 +4,7 @@
 // then its encoding checked. Everything here is public: no constant time is needed.
 
 import { Address, CInt, CSize, allocate, free, offset, read, write } from 'koji:unsafe'
-import { compare, fromBytes, fromForm, modulusOf, power, toBytes, toForm, zeroNumber } from 'koji:bignum'
+import { compare, freeModulus, fromBytes, fromForm, modulusOf, power, toBytes, toForm, zeroNumber } from 'koji:bignum'
 import { digest, digestSize } from 'koji:sha'
 
 extern function memcpy(target: Address, source: Address, size: CSize): Address
@@ -36,7 +36,9 @@ function publicOperation(signature: Address, signatureSize: int, modulus: Addres
         toBytes(s, m.count, out, size)
     }
 
-    for each in [m.limbs, m.squared, t, s] {
+    freeModulus(m)
+
+    for each in [t, s] {
         free(each)
     }
 

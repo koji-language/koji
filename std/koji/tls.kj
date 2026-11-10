@@ -1,0 +1,1566 @@
+// `koji:tls`: the client of TLS 1.3 (RFC 8446), in the library of the runtime written in Koji, for
+// `https://` (std/http.kj). Only TLS 1.3, as decided (most servers have it; a few still have only
+// TLS 1.2): the key exchange X25519 (or P-256 and P-384, when the server asks for them with a
+// HelloRetryRequest); AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305, AES first when the processor has
+// its instructions (koji:aes), ChaCha20-Poly1305 alone otherwise; the certificate of the server
+// verified by koji:x509 with the authorities of the system or Mozilla's list, and its proof
+// (CertificateVerify) by its key (ECDSA or RSA-PSS). No resumption, no early data, no certificate of
+// the client (an empty one when the server asks). After the handshake, records of up to 16 KB each
+// way, KeyUpdate in both directions, and the tickets of the server ignored.
+//
+// A connection is a handle (an int) for C and std/http.kj: koji_tls_connect on a connected socket,
+// koji_tls_send, koji_tls_receive, koji_tls_close, and the text of a problem.
+
+import { Address, CInt, CSize, allocate, free, isNull, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
+import { digest, digestSize, hkdfExpand, hkdfExtract, hmac } from 'koji:sha'
+import { x25519, x25519Base } from 'koji:x25519'
+import { publicKey, sharedSecret } from 'koji:ecc'
+import { Algorithm, Authority, Certificate, PublicKey, authoritiesOfPem, certificateOf, now, problemText, trustedAuthorities, verifyChain, verifySignature } from 'koji:x509'
+import aes from 'koji:aes'
+import chacha from 'koji:chacha'
+
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function memset(target: Address, value: CInt, size: CSize): Address
+extern function memcmp(a: Address, b: Address, size: CSize): CInt
+extern function strlen(text: Address): CSize
+extern function getentropy(buffer: Address, size: CSize): CInt
+extern function realloc(block: Address, size: CSize): Address
+extern function koji_net_send(fd: int, bytes: Address, size: int): int
+extern function koji_net_receive(fd: int, bytes: Address, size: int): int
+extern function koji_system_errno(): CInt
+
+// The problems of a connection: those of koji:x509 (1 to 7) for the certificate, then these, and
+// 1000 + n for the alert n sent by the server.
+immut badMessage = 20
+immut notOffered = 21
+immut badRecord = 22
+immut closedEarly = 23
+immut systemError = 24
+immut badProof = 25
+immut badFinished = 26
+immut noRandom = 27
+immut truncated = 28
+immut alertBase = 1000
+
+// The text of a problem.
+export function problemMessage(problem: int): string {
+    if (problem >= alertBase) { return `the server sent the alert ${alertName(problem - alertBase)}` }
+
+    if (problem < badMessage) { return `invalid certificate: ${problemText(problem)}` }
+
+    return match (problem) {
+        20 => 'the server sent a malformed or unexpected message'
+        21 => 'the server chose a parameter that was not offered'
+        22 => 'a record could not be decrypted'
+        23 => 'the server closed the connection during the handshake'
+        24 => 'the connection failed'
+        25 => 'the proof of the server\'s key (CertificateVerify) is invalid'
+        26 => 'the Finished message of the server is invalid'
+        27 => 'the system gave no random bytes'
+        _ => 'the connection closed without close_notify: the data may be truncated'
+    }
+}
+
+function alertName(description: int): string {
+    return match (description) {
+        0 => 'close_notify'
+        10 => 'unexpected_message'
+        20 => 'bad_record_mac'
+        22 => 'record_overflow'
+        40 => 'handshake_failure'
+        42 => 'bad_certificate'
+        43 => 'unsupported_certificate'
+        44 => 'certificate_revoked'
+        45 => 'certificate_expired'
+        46 => 'certificate_unknown'
+        47 => 'illegal_parameter'
+        48 => 'unknown_ca'
+        49 => 'access_denied'
+        50 => 'decode_error'
+        51 => 'decrypt_error'
+        70 => 'protocol_version'
+        71 => 'insufficient_security'
+        80 => 'internal_error'
+        86 => 'inappropriate_fallback'
+        90 => 'user_canceled'
+        109 => 'missing_extension'
+        110 => 'unsupported_extension'
+        112 => 'unrecognized_name'
+        113 => 'bad_certificate_status_response'
+        115 => 'unknown_psk_identity'
+        116 => 'certificate_required'
+        120 => 'no_application_protocol'
+        _ => `${description}`
+    }
+}
+
+function byteAt(bytes: Address, i: int): int {
+    immut b: byte = read(bytes, i)
+    return int(b)
+}
+
+function number(bytes: Address, at: int, size: int): int {
+    mut value = 0
+
+    for i in range(size) {
+        value = (value << 8) | byteAt(bytes, at + i)
+    }
+
+    return value
+}
+
+// Buffers
+
+// Bytes that grow: `size` of them at `bytes` (room for `capacity`).
+type Buffer = {
+    bytes: Address
+    size: int
+    capacity: int
+}
+
+function newBuffer(capacity: int): Buffer {
+    return { bytes: allocate(capacity), size: 0, capacity: capacity }
+}
+
+function reserve(mut b: Buffer, more: int) {
+    if (b.size + more > b.capacity) {
+        mut capacity = b.capacity * 2
+
+        while (capacity < b.size + more) {
+            capacity *= 2
+        }
+
+        b.bytes = realloc(b.bytes, capacity)
+        b.capacity = capacity
+    }
+}
+
+// The value in `size` bytes, big-endian.
+function putNumber(mut b: Buffer, value: int, size: int) {
+    reserve(mut b, size)
+
+    for i in range(size) {
+        write(b.bytes, b.size + i, byte((value >> (8 * (size - 1 - i))) & 0xFF))
+    }
+
+    b.size += size
+}
+
+function putBytes(mut b: Buffer, bytes: Address, size: int) {
+    reserve(mut b, size)
+    memcpy(offset(b.bytes, b.size), bytes, size)
+    b.size += size
+}
+
+function putText(mut b: Buffer, text: string) {
+    putBytes(mut b, stringBytes(text), stringSize(text))
+}
+
+// The size, in `size` bytes, of what was written after the place `at` reserved for it.
+function patchSize(b: Buffer, at: int, size: int) {
+    immut value = b.size - at - size
+
+    for i in range(size) {
+        write(b.bytes, at + i, byte((value >> (8 * (size - 1 - i))) & 0xFF))
+    }
+}
+
+// The key schedule
+
+// HKDF-Expand-Label: `length` bytes of the secret for the label and the context, at `out`.
+function expandLabel(hash: int, secret: Address, label: string, context: Address, contextSize: int, length: int, out: Address) {
+    mut info = newBuffer(64 + contextSize)
+    putNumber(mut info, length, 2)
+    putNumber(mut info, 6 + stringSize(label), 1)
+    putText(mut info, 'tls13 ')
+    putText(mut info, label)
+    putNumber(mut info, contextSize, 1)
+    putBytes(mut info, context, contextSize)
+    hkdfExpand(hash, secret, digestSize(hash), info.bytes, info.size, length, out)
+    free(info.bytes)
+}
+
+// Derive-Secret: the label with the digest of the transcript (`transcript`, a digest), at `out`.
+function deriveSecret(hash: int, secret: Address, label: string, transcript: Address, out: Address) {
+    expandLabel(hash, secret, label, transcript, digestSize(hash), digestSize(hash), out)
+}
+
+// The keys of one direction: the AEAD's key and IV, from a traffic secret, and the number of the
+// next record.
+type Direction = {
+    secret: Address
+    key: Address
+    aesKey: aes.AesKey
+    iv: Address
+    sequence: int
+}
+
+// The suite chosen: 0x1301 (AES-128-GCM, SHA-256), 0x1302 (AES-256-GCM, SHA-384) or 0x1303
+// (ChaCha20-Poly1305, SHA-256).
+function hashOfSuite(suite: int): int {
+    return if (suite == 0x1302) { 1 } else { 0 }
+}
+
+function keySizeOfSuite(suite: int): int {
+    return if (suite == 0x1301) { 16 } else { 32 }
+}
+
+// The keys of a traffic secret (which the direction keeps, for KeyUpdate).
+function directionOf(suite: int, secret: Address): Direction {
+    immut hash = hashOfSuite(suite)
+    immut length = digestSize(hash)
+    immut kept = allocate(length)
+    memcpy(kept, secret, length)
+    immut keySize = keySizeOfSuite(suite)
+    immut key = allocate(keySize)
+    expandLabel(hash, kept, 'key', nullAddress(), 0, keySize, key)
+    immut iv = allocate(12)
+    expandLabel(hash, kept, 'iv', nullAddress(), 0, 12, iv)
+    immut aesKey = if (suite == 0x1303) { aes.emptyKey() } else { aes.keyOf(key, keySize) }
+    return { secret: kept, key: key, aesKey: aesKey, iv: iv, sequence: 0 }
+}
+
+function releaseDirection(suite: int, d: Direction) {
+    immut length = digestSize(hashOfSuite(suite))
+    memset(d.secret, 0, length)
+    memset(d.key, 0, keySizeOfSuite(suite))
+    free(d.secret)
+    free(d.key)
+    free(d.iv)
+
+    if (suite != 0x1303) { aes.release(d.aesKey) }
+}
+
+// The next traffic secret (KeyUpdate).
+function updatedDirection(suite: int, d: Direction): Direction {
+    immut hash = hashOfSuite(suite)
+    immut length = digestSize(hash)
+    immut next = allocate(length)
+    expandLabel(hash, d.secret, 'traffic upd', nullAddress(), 0, length, next)
+    immut updated = directionOf(suite, next)
+    memset(next, 0, length)
+    free(next)
+    releaseDirection(suite, d)
+    return updated
+}
+
+// The nonce of the next record: the IV xored with its number.
+function nonceOf(d: Direction, out: Address) {
+    memcpy(out, d.iv, 12)
+
+    for i in range(8) {
+        write(out, 4 + i, byte(byteAt(d.iv, 4 + i) ^ ((d.sequence >> (56 - 8 * i)) & 0xFF)))
+    }
+}
+
+// Connections
+
+type Session = {
+    fd: int
+    suite: int
+    // The handshake and then the application keys of each direction (`keyed` once they exist).
+    keyed: boolean
+    reading: Direction
+    writing: Direction
+    // A record read: `recordSize` bytes, of which `used` given already (its plaintext, after the
+    // type removed).
+    record: Address
+    recordSize: int
+    used: int
+    recordType: int
+    // Handshake messages read and not yet taken, in order.
+    pending: Buffer
+    // A CertificateRequest of the server, and its context (answered with no certificate).
+    requested: boolean
+    requestContext: Buffer
+    closed: boolean
+    problem: int
+}
+
+// The sessions by handle (handle - 1); `fd` -1 for a free one.
+mut sessions: Session[] = []
+
+// The largest records: 16384 bytes of plaintext, and 256 more when encrypted.
+immut largestPlaintext = 16384
+immut largestRecord = 16384 + 256
+
+function noDirection(): Direction {
+    return { secret: nullAddress(), key: nullAddress(), aesKey: aes.emptyKey(), iv: nullAddress(), sequence: 0 }
+}
+
+function newSession(fd: int): Session {
+    return {
+        fd: fd, suite: 0, keyed: false, reading: noDirection(), writing: noDirection(),
+        record: allocate(largestRecord + 5), recordSize: 0, used: 0, recordType: 0, pending: newBuffer(4096), requested: false,
+        requestContext: newBuffer(16), closed: false, problem: 0
+    }
+}
+
+// The input and output of records
+
+// All the bytes, or false.
+function sendAll(fd: int, bytes: Address, size: int): boolean {
+    mut done = 0
+
+    while (done < size) {
+        immut put = koji_net_send(fd, offset(bytes, done), size - done)
+
+        if (put <= 0) { return false }
+
+        done += put
+    }
+
+    return true
+}
+
+// Exactly `size` bytes: how many came before the connection closed (or -1 for an error).
+function receiveExactly(fd: int, bytes: Address, size: int): int {
+    mut done = 0
+
+    while (done < size) {
+        immut got = koji_net_receive(fd, offset(bytes, done), size - done)
+
+        if (got < 0) { return -1 }
+
+        if (got == 0) { return done }
+
+        done += got
+    }
+
+    return done
+}
+
+// The last error of the system, for std/http.kj.
+mut lastErrno = 0
+
+// Sends a record of `type` with the `size` bytes at `data` (at most 16384): encrypted once the
+// session is keyed. False when the connection failed.
+function sendRecord(mut s: Session, kind: int, data: Address, size: int): boolean {
+    mut out = newBuffer(size + 32)
+    putNumber(mut out, if (s.keyed) { 23 } else { kind }, 1)
+    putNumber(mut out, 0x0303, 2)
+
+    if (s.keyed) {
+        // TLSInnerPlaintext: the data and its type; then sealed, with the header as additional data.
+        putNumber(mut out, size + 1 + 16, 2)
+        immut inner = allocate(size + 1)
+        memcpy(inner, data, size)
+        write(inner, size, byte(kind))
+        immut nonce = allocate(12)
+        nonceOf(s.writing, nonce)
+        reserve(mut out, size + 1 + 16)
+
+        if (s.suite == 0x1303) {
+            chacha.seal(s.writing.key, nonce, out.bytes, 5, inner, size + 1, offset(out.bytes, 5))
+        } else {
+            aes.seal(s.writing.aesKey, nonce, out.bytes, 5, inner, size + 1, offset(out.bytes, 5))
+        }
+
+        out.size += size + 1 + 16
+        s.writing.sequence += 1
+        free(nonce)
+        free(inner)
+    } else {
+        putNumber(mut out, size, 2)
+        putBytes(mut out, data, size)
+    }
+
+    immut sent = sendAll(s.fd, out.bytes, out.size)
+
+    if (not sent) { lastErrno = koji_system_errno() }
+
+    free(out.bytes)
+    return sent
+}
+
+// Sends an alert (best effort: the connection is failing).
+function sendAlert(mut s: Session, description: int) {
+    immut alert = allocate(2)
+    write(alert, 0, byte(2))
+    write(alert, 1, byte(description))
+    sendRecord(mut s, 21, alert, 2)
+    free(alert)
+}
+
+// Reads the next record into `s.record`: its type (the inner type once keyed; ChangeCipherSpec
+// records of the handshake skipped), or -1 with `s.problem` set. Its plaintext is `s.recordSize`
+// bytes.
+function receiveRecord(mut s: Session): int {
+    while (true) {
+        immut got = receiveExactly(s.fd, s.record, 5)
+
+        if (got < 0) {
+            lastErrno = koji_system_errno()
+            s.problem = systemError
+            return -1
+        }
+
+        if (got < 5) {
+            s.problem = if (got == 0) { closedEarly } else { badMessage }
+            return -1
+        }
+
+        immut kind = byteAt(s.record, 0)
+        immut size = number(s.record, 3, 2)
+
+        if (size > largestRecord or (not s.keyed and size > largestPlaintext) or size == 0) {
+            s.problem = badRecord
+            return -1
+        }
+
+        immut body = receiveExactly(s.fd, offset(s.record, 5), size)
+
+        if (body < size) {
+            if (body < 0) { lastErrno = koji_system_errno() }
+
+            s.problem = if (body < 0) { systemError } else { closedEarly }
+            return -1
+        }
+
+        // ChangeCipherSpec (one byte 1), sent for middleboxes during the handshake: skipped.
+        if (kind == 20) {
+            if (size != 1 or byteAt(s.record, 5) != 1) {
+                s.problem = badMessage
+                return -1
+            }
+        } else {
+            if (not s.keyed or kind != 23) {
+                if (s.keyed or (kind != 22 and kind != 21)) {
+                    s.problem = badMessage
+                    return -1
+                }
+
+                // The plaintext moved to the start.
+                memcpy(s.record, offset(s.record, 5), size)
+                s.recordSize = size
+                s.used = 0
+                return kind
+            }
+
+            return openRecord(mut s, size)
+        }
+    }
+
+    return -1
+}
+
+// The record of `size` bytes after its header, decrypted in place: its inner type.
+function openRecord(mut s: Session, size: int): int {
+    if (size < 17) {
+        s.problem = badRecord
+        return -1
+    }
+
+    immut nonce = allocate(12)
+    nonceOf(s.reading, nonce)
+    immut plain = allocate(size)
+    immut good = if (s.suite == 0x1303) {
+        chacha.open(s.reading.key, nonce, s.record, 5, offset(s.record, 5), size, plain)
+    } else {
+        aes.open(s.reading.aesKey, nonce, s.record, 5, offset(s.record, 5), size, plain)
+    }
+
+    free(nonce)
+
+    if (not good) {
+        free(plain)
+        s.problem = badRecord
+        return -1
+    }
+
+    s.reading.sequence += 1
+    // The type: the last byte that is not zero (the zeros after it are padding).
+    mut end = size - 16
+
+    while (end > 0 and byteAt(plain, end - 1) == 0) {
+        end -= 1
+    }
+
+    if (end == 0 or end - 1 > largestPlaintext) {
+        free(plain)
+        s.problem = badRecord
+        return -1
+    }
+
+    immut kind = byteAt(plain, end - 1)
+    memcpy(s.record, plain, end - 1)
+    free(plain)
+    s.recordSize = end - 1
+    s.used = 0
+    return kind
+}
+
+// The handshake
+
+// The next handshake message (its type, its 3 bytes of size and its body) into `s.pending`, read
+// from as many records as it takes: its type, or -1.
+function nextMessage(mut s: Session): int {
+    while (true) {
+        if (s.pending.size >= 4) {
+            immut size = number(s.pending.bytes, 1, 3)
+
+            if (size > 65536) {
+                s.problem = badMessage
+                return -1
+            }
+
+            if (s.pending.size >= 4 + size) { return byteAt(s.pending.bytes, 0) }
+        }
+
+        immut kind = receiveRecord(mut s)
+
+        if (kind < 0) { return -1 }
+
+        if (kind == 21) {
+            alertReceived(mut s)
+            return -1
+        }
+
+        if (kind != 22) {
+            s.problem = badMessage
+            return -1
+        }
+
+        putBytes(mut s.pending, s.record, s.recordSize)
+    }
+
+    return -1
+}
+
+// The message taken from `s.pending` (its 4 + size bytes), added to the transcript.
+function takeMessage(mut s: Session, mut transcript: Buffer): int {
+    immut size = 4 + number(s.pending.bytes, 1, 3)
+    putBytes(mut transcript, s.pending.bytes, size)
+    memcpy(s.pending.bytes, offset(s.pending.bytes, size), s.pending.size - size)
+    s.pending.size -= size
+    return size
+}
+
+// An alert in `s.record`: close_notify closes, any other is the problem.
+function alertReceived(mut s: Session) {
+    if (s.recordSize != 2) {
+        s.problem = badMessage
+        return
+    }
+
+    immut description = byteAt(s.record, 1)
+
+    if (description == 0) {
+        s.closed = true
+        s.problem = closedEarly
+    } else {
+        s.problem = alertBase + description
+    }
+}
+
+// The digest of the transcript so far, at `out`.
+function transcriptDigest(hash: int, transcript: Buffer, out: Address) {
+    digest(hash, transcript.bytes, transcript.size, out)
+}
+
+// For the tests of the library (koji_tls_test_replay): the random bytes made from a seed (SHA-256 of
+// the seed and a counter) instead of the system's, and the time fixed; 0 when off.
+mut testSeed = 0
+mut testCounter = 0
+mut testTime = 0
+
+// The random bytes of the system, or false.
+function randomBytes(out: Address, size: int): boolean {
+    mut done = 0
+
+    if (testSeed != 0) {
+        immut input = allocate(16)
+        immut block = allocate(32)
+
+        while (done < size) {
+            write(input, 0, testSeed)
+            write(input, 8, testCounter)
+            testCounter += 1
+            digest(0, input, 16, block)
+            immut part = if (size - done > 32) { 32 } else { size - done }
+            memcpy(offset(out, done), block, part)
+            done += part
+        }
+
+        free(block)
+        free(input)
+        return true
+    }
+
+    while (done < size) {
+        immut part = if (size - done > 256) { 256 } else { size - done }
+
+        if (getentropy(offset(out, done), part) != 0) { return false }
+
+        done += part
+    }
+
+    return true
+}
+
+// The groups: X25519 (0x001D), P-256 (0x0017) and P-384 (0x0018).
+function curveOfGroup(group: int): int {
+    return if (group == 0x0017) { 0 } else { 1 }
+}
+
+function shareSize(group: int): int {
+    return match (group) {
+        0x001D => 32
+        0x0017 => 65
+        _ => 97
+    }
+}
+
+// A key share: the secret and the public key of the group.
+type Share = {
+    group: int
+    secret: Address
+    public: Address
+}
+
+function newShare(group: int): Share {
+    immut secretSize = if (group == 0x0018) { 48 } else { 32 }
+    immut secret = allocate(secretSize)
+    immut public = allocate(shareSize(group))
+    randomBytes(secret, secretSize)
+
+    if (group == 0x001D) {
+        x25519Base(public, secret)
+    } else {
+        // Below the order n of the curve, whose first bytes are all ones: the top bit cleared.
+        write(secret, 0, byte(byteAt(secret, 0) & 0x7F))
+        publicKey(curveOfGroup(group), secret, public)
+    }
+
+    return { group: group, secret: secret, public: public }
+}
+
+function releaseShare(share: Share) {
+    memset(share.secret, 0, if (share.group == 0x0018) { 48 } else { 32 })
+    free(share.secret)
+    free(share.public)
+}
+
+// The shared secret of our share and the server's public key (`size` bytes at `theirs`), at `out`:
+// its size, or 0 when the key is not valid.
+function exchange(share: Share, theirs: Address, size: int, out: Address): int {
+    if (size != shareSize(share.group)) { return 0 }
+
+    if (share.group == 0x001D) {
+        x25519(out, share.secret, theirs)
+        // An all-zero result (a point of small order) is refused (RFC 7748, section 6.1).
+        mut any = 0
+
+        for i in range(32) {
+            any = any | byteAt(out, i)
+        }
+
+        return if (any == 0) { 0 } else { 32 }
+    }
+
+    immut curve = curveOfGroup(share.group)
+
+    if (not sharedSecret(curve, share.secret, theirs, size, out)) { return 0 }
+
+    return if (curve == 0) { 32 } else { 48 }
+}
+
+// Whether the host is an IP address (no server_name for it).
+function isAddress(host: string): boolean {
+    if (host.startsWith('[')) { return true }
+
+    mut digitsAndDots = true
+
+    for c in host.chars() {
+        // A colon only in an IPv6 address.
+        if (c == ':') { return true }
+
+        if (not ((c >= '0' and c <= '9') or c == '.')) { digitsAndDots = false }
+    }
+
+    return digitsAndDots
+}
+
+// The ClientHello, after its 4 bytes of type and size: the suites (AES first when the processor
+// has it), the groups, our share, the algorithms of signatures, the name of the server, and the
+// cookie of a HelloRetryRequest.
+function clientHello(host: string, random: Address, sessionId: Address, share: Share, cookie: Buffer): Buffer {
+    mut m = newBuffer(512)
+    putNumber(mut m, 1, 1)
+    putNumber(mut m, 0, 3)
+    putNumber(mut m, 0x0303, 2)
+    putBytes(mut m, random, 32)
+    putNumber(mut m, 32, 1)
+    putBytes(mut m, sessionId, 32)
+    immut suites = if (aes.available()) { [0x1301, 0x1302, 0x1303] } else { [0x1303] }
+    putNumber(mut m, 2 * suites.length(), 2)
+
+    for suite in suites {
+        putNumber(mut m, suite, 2)
+    }
+
+    // No compression.
+    putNumber(mut m, 0x0100, 2)
+    immut extensionsAt = m.size
+    putNumber(mut m, 0, 2)
+
+    if (not isAddress(host)) {
+        // server_name: a host_name.
+        putNumber(mut m, 0, 2)
+        putNumber(mut m, stringSize(host) + 5, 2)
+        putNumber(mut m, stringSize(host) + 3, 2)
+        putNumber(mut m, 0, 1)
+        putNumber(mut m, stringSize(host), 2)
+        putText(mut m, host)
+    }
+
+    // supported_versions: TLS 1.3.
+    putNumber(mut m, 43, 2)
+    putNumber(mut m, 3, 2)
+    putNumber(mut m, 2, 1)
+    putNumber(mut m, 0x0304, 2)
+    // supported_groups.
+    putNumber(mut m, 10, 2)
+    putNumber(mut m, 8, 2)
+    putNumber(mut m, 6, 2)
+
+    for group in [0x001D, 0x0017, 0x0018] {
+        putNumber(mut m, group, 2)
+    }
+
+    // key_share: ours.
+    immut size = shareSize(share.group)
+    putNumber(mut m, 51, 2)
+    putNumber(mut m, size + 6, 2)
+    putNumber(mut m, size + 4, 2)
+    putNumber(mut m, share.group, 2)
+    putNumber(mut m, size, 2)
+    putBytes(mut m, share.public, size)
+    // signature_algorithms: ECDSA, RSA-PSS (rsae), and PKCS #1 v1.5 for the certificates.
+    immut schemes = [0x0403, 0x0503, 0x0603, 0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0601]
+    putNumber(mut m, 13, 2)
+    putNumber(mut m, 2 * schemes.length() + 2, 2)
+    putNumber(mut m, 2 * schemes.length(), 2)
+
+    for scheme in schemes {
+        putNumber(mut m, scheme, 2)
+    }
+
+    // application_layer_protocol_negotiation: HTTP/1.1.
+    putNumber(mut m, 16, 2)
+    putNumber(mut m, 11, 2)
+    putNumber(mut m, 9, 2)
+    putNumber(mut m, 8, 1)
+    putText(mut m, 'http/1.1')
+
+    if (cookie.size > 0) {
+        putNumber(mut m, 44, 2)
+        putNumber(mut m, cookie.size, 2)
+        putBytes(mut m, cookie.bytes, cookie.size)
+    }
+
+    patchSize(m, extensionsAt, 2)
+    patchSize(m, 1, 3)
+    return m
+}
+
+// A ServerHello read: the suite, the group of the server's share and where its key is (or, in a
+// HelloRetryRequest, the group asked for and the cookie), `good` false when it is malformed or
+// chose what was not offered (`problem`).
+type ServerHello = {
+    good: boolean
+    problem: int
+    retry: boolean
+    suite: int
+    group: int
+    keyStart: int
+    keySize: int
+    cookieStart: int
+    cookieSize: int
+}
+
+// SHA-256 of "HelloRetryRequest": the random of a HelloRetryRequest.
+immut retryRandom = 'cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c'
+
+function badHello(problem: int): ServerHello {
+    return { good: false, problem: problem, retry: false, suite: 0, group: 0, keyStart: 0, keySize: 0, cookieStart: 0, cookieSize: 0 }
+}
+
+function hexValue(text: string, at: int): int {
+    immut c = text[at]
+    return if (c >= 'a') { c.code() - 87 } else { c.code() - 48 }
+}
+
+// The ServerHello of `size` bytes at `m` (after its type and size).
+function serverHello(m: Address, size: int, sessionId: Address): ServerHello {
+    if (size < 38 or number(m, 0, 2) != 0x0303) { return badHello(badMessage) }
+
+    mut retry = true
+
+    for i in range(32) {
+        if (byteAt(m, 2 + i) != hexValue(retryRandom, 2 * i) * 16 + hexValue(retryRandom, 2 * i + 1)) { retry = false }
+    }
+
+    // The session ID echoed.
+    if (byteAt(m, 34) != 32 or size < 35 + 32 + 5 or memcmp(offset(m, 35), sessionId, 32) != 0) { return badHello(notOffered) }
+
+    mut at = 67
+    mut hello = badHello(badMessage)
+    hello.retry = retry
+    hello.suite = number(m, at, 2)
+    immut offered = hello.suite == 0x1303 or (aes.available() and (hello.suite == 0x1301 or hello.suite == 0x1302))
+
+    if (not offered or byteAt(m, at + 2) != 0) { return badHello(notOffered) }
+
+    at += 3
+    immut end = at + 2 + number(m, at, 2)
+
+    if (end != size) { return badHello(badMessage) }
+
+    at += 2
+    mut version = 0
+
+    while (at < end) {
+        if (at + 4 > end) { return badHello(badMessage) }
+
+        immut kind = number(m, at, 2)
+        immut length = number(m, at + 2, 2)
+        immut start = at + 4
+
+        if (start + length > end) { return badHello(badMessage) }
+
+        if (kind == 43) {
+            if (length != 2) { return badHello(badMessage) }
+
+            version = number(m, start, 2)
+        }
+
+        if (kind == 51) {
+            if (retry) {
+                if (length != 2) { return badHello(badMessage) }
+
+                hello.group = number(m, start, 2)
+            } else {
+                if (length < 4 or number(m, start + 2, 2) != length - 4) { return badHello(badMessage) }
+
+                hello.group = number(m, start, 2)
+                hello.keyStart = start + 4
+                hello.keySize = length - 4
+            }
+        }
+
+        if (kind == 44) {
+            if (not retry or length < 3 or number(m, start, 2) != length - 2) { return badHello(badMessage) }
+
+            hello.cookieStart = start + 2
+            hello.cookieSize = length - 2
+        }
+
+        at = start + length
+    }
+
+    if (version != 0x0304) { return badHello(notOffered) }
+
+    if (hello.group != 0x001D and hello.group != 0x0017 and hello.group != 0x0018) { return badHello(notOffered) }
+
+    hello.good = true
+    hello.problem = 0
+    return hello
+}
+
+// The algorithm of a scheme of CertificateVerify and whether the key can use it (the curve of an
+// ECDSA scheme is that of the key; RSA-PSS needs an RSA key); `kind` -1 otherwise.
+function schemeAlgorithm(scheme: int, key: PublicKey): Algorithm {
+    immut none: Algorithm = { kind: -1, hash: 0 }
+
+    if (key.kind == 1) {
+        for i in range(3) {
+            if (scheme == [0x0403, 0x0503, 0x0603][i] and key.curve == i) { return { kind: 2, hash: i } }
+        }
+
+        return none
+    }
+
+    for i in range(3) {
+        if (scheme == 0x0804 + i and key.kind == 0) { return { kind: 1, hash: i } }
+    }
+
+    return none
+}
+
+// The result of a handshake: the session, or the problem.
+type Handshake = {
+    session: Session
+    problem: int
+}
+
+// The handshake on the connected socket `fd` with `host` (a name or an IP address).
+function handshake(fd: int, host: string, authorities: Authority[]): Handshake {
+    mut s = newSession(fd)
+    immut random = allocate(32)
+    immut sessionId = allocate(32)
+
+    if (not randomBytes(random, 32) or not randomBytes(sessionId, 32)) {
+        s.problem = noRandom
+        free(random)
+        free(sessionId)
+        return { session: s, problem: s.problem }
+    }
+
+    mut share = newShare(0x001D)
+    mut transcript = newBuffer(8192)
+    mut cookie = newBuffer(16)
+    mut hello = clientHello(host, random, sessionId, share, cookie)
+    putBytes(mut transcript, hello.bytes, hello.size)
+    mut sent = sendRecord(mut s, 22, hello.bytes, hello.size)
+    free(hello.bytes)
+    mut server = badHello(badMessage)
+    // The server's public key, copied out of its ServerHello.
+    mut theirs = newBuffer(128)
+    mut retried = false
+
+    while (sent and s.problem == 0) {
+        if (nextMessage(mut s) != 2) {
+            if (s.problem == 0) { s.problem = badMessage }
+
+            break
+        }
+
+        immut messageStart = transcript.size
+        immut messageSize = takeMessage(mut s, mut transcript)
+        immut m = offset(transcript.bytes, messageStart + 4)
+        server = serverHello(m, messageSize - 4, sessionId)
+
+        if (not server.good) {
+            s.problem = server.problem
+            break
+        }
+
+        if (not server.retry) {
+            // The same suite as the HelloRetryRequest, our group, and nothing more in the record
+            // (the keys change after it).
+            if ((retried and server.suite != s.suite) or server.group != share.group) {
+                s.problem = notOffered
+            } else {
+                if (s.pending.size != 0) { s.problem = badMessage }
+            }
+
+            putBytes(mut theirs, offset(m, server.keyStart), server.keySize)
+            break
+        }
+
+        // A HelloRetryRequest (once, for a group offered and not sent): the transcript starts again
+        // from the digest of the first ClientHello, and a new ClientHello with a share of that group.
+        if (retried or server.group == share.group) {
+            s.problem = notOffered
+            break
+        }
+
+        retried = true
+        s.suite = server.suite
+        immut hash = hashOfSuite(server.suite)
+        immut length = digestSize(hash)
+        mut restarted = newBuffer(8192)
+        putNumber(mut restarted, 254, 1)
+        putNumber(mut restarted, length, 3)
+        reserve(mut restarted, length)
+        digest(hash, transcript.bytes, messageStart, offset(restarted.bytes, restarted.size))
+        restarted.size += length
+        putBytes(mut restarted, offset(transcript.bytes, messageStart), messageSize)
+        cookie.size = 0
+
+        if (server.cookieSize > 0) { putBytes(mut cookie, offset(m, server.cookieStart), server.cookieSize) }
+
+        free(transcript.bytes)
+        transcript = restarted
+        releaseShare(share)
+        share = newShare(server.group)
+        hello = clientHello(host, random, sessionId, share, cookie)
+        putBytes(mut transcript, hello.bytes, hello.size)
+        sent = sendRecord(mut s, 22, hello.bytes, hello.size)
+        free(hello.bytes)
+    }
+
+    if (not sent and s.problem == 0) { s.problem = systemError }
+
+    if (s.problem == 0) { keyedHandshake(mut s, mut transcript, server.suite, share, theirs, host, authorities) }
+
+    releaseShare(share)
+    free(transcript.bytes)
+    free(cookie.bytes)
+    free(theirs.bytes)
+    free(random)
+    free(sessionId)
+
+    if (s.problem != 0 and s.problem != closedEarly and s.problem != systemError and s.problem < alertBase) { sendAlert(mut s, alertFor(s.problem)) }
+
+    return { session: s, problem: s.problem }
+}
+
+// The alert for a problem found here.
+function alertFor(problem: int): int {
+    if (problem == 2) { return 45 }
+
+    if (problem == 3) { return 48 }
+
+    if (problem == 7) { return 43 }
+
+    if (problem < badMessage) { return 42 }
+
+    return match (problem) {
+        20 => 50
+        21 => 47
+        22 => 20
+        25 => 51
+        26 => 51
+        _ => 80
+    }
+}
+
+// The rest of the handshake, after the ServerHello: the secrets (early, of no key; handshake, of the
+// shared secret; master), the server's messages, then ours.
+function keyedHandshake(mut s: Session, mut transcript: Buffer, suite: int, share: Share, theirs: Buffer, host: string, authorities: Authority[]) {
+    s.suite = suite
+    immut hash = hashOfSuite(suite)
+    immut length = digestSize(hash)
+    immut shared = allocate(48)
+    immut sharedSize = exchange(share, theirs.bytes, theirs.size, shared)
+
+    if (sharedSize == 0) {
+        free(shared)
+        s.problem = notOffered
+        return
+    }
+
+    immut zeros = allocate(length)
+    memset(zeros, 0, length)
+    immut early = allocate(length)
+    hkdfExtract(hash, nullAddress(), 0, zeros, length, early)
+    immut empty = allocate(length)
+    digest(hash, nullAddress(), 0, empty)
+    immut derived = allocate(length)
+    deriveSecret(hash, early, 'derived', empty, derived)
+    immut handshakeSecret = allocate(length)
+    hkdfExtract(hash, derived, length, shared, sharedSize, handshakeSecret)
+    memset(shared, 0, 48)
+    free(shared)
+    immut context = allocate(length)
+    transcriptDigest(hash, transcript, context)
+    immut clientSecret = allocate(length)
+    immut serverSecret = allocate(length)
+    deriveSecret(hash, handshakeSecret, 'c hs traffic', context, clientSecret)
+    deriveSecret(hash, handshakeSecret, 's hs traffic', context, serverSecret)
+    s.reading = directionOf(suite, serverSecret)
+    s.writing = directionOf(suite, clientSecret)
+    s.keyed = true
+    serverFlight(mut s, mut transcript, host, authorities, serverSecret, hash)
+
+    if (s.problem == 0) {
+        // The application secrets, of the transcript up to the server's Finished.
+        transcriptDigest(hash, transcript, context)
+        deriveSecret(hash, handshakeSecret, 'derived', empty, derived)
+        immut master = allocate(length)
+        hkdfExtract(hash, derived, length, zeros, length, master)
+        immut clientApplication = allocate(length)
+        immut serverApplication = allocate(length)
+        deriveSecret(hash, master, 'c ap traffic', context, clientApplication)
+        deriveSecret(hash, master, 's ap traffic', context, serverApplication)
+        clientFlight(mut s, mut transcript, clientSecret, hash)
+
+        if (s.problem == 0) {
+            releaseDirection(suite, s.reading)
+            releaseDirection(suite, s.writing)
+            s.reading = directionOf(suite, serverApplication)
+            s.writing = directionOf(suite, clientApplication)
+        }
+
+        for each in [master, clientApplication, serverApplication] {
+            memset(each, 0, length)
+            free(each)
+        }
+    }
+
+    for each in [zeros, early, empty, derived, handshakeSecret, context, clientSecret, serverSecret] {
+        memset(each, 0, length)
+        free(each)
+    }
+}
+
+// The next message of the handshake when it has the type (else the problem set): the start of its
+// body in `transcript` once taken, and its size.
+type Taken = {
+    good: boolean
+    start: int
+    size: int
+}
+
+function takeExpected(mut s: Session, mut transcript: Buffer, kind: int): Taken {
+    immut next = nextMessage(mut s)
+
+    if (next != kind) {
+        if (s.problem == 0) { s.problem = badMessage }
+
+        return { good: false, start: 0, size: 0 }
+    }
+
+    immut start = transcript.size
+    immut size = takeMessage(mut s, mut transcript)
+    return { good: true, start: start + 4, size: size - 4 }
+}
+
+// Whether the bytes are a block of extensions (2 bytes of size, then extensions with 2 bytes of type
+// and 2 of size each) filling exactly `size` bytes.
+function extensionsGood(m: Address, size: int): boolean {
+    if (size < 2 or number(m, 0, 2) != size - 2) { return false }
+
+    mut at = 2
+
+    while (at < size) {
+        if (at + 4 > size) { return false }
+
+        at += 4 + number(m, at + 2, 2)
+    }
+
+    return at == size
+}
+
+// EncryptedExtensions, CertificateRequest (perhaps), Certificate, CertificateVerify and Finished.
+function serverFlight(mut s: Session, mut transcript: Buffer, host: string, authorities: Authority[], serverSecret: Address, hash: int) {
+    immut extensions = takeExpected(mut s, mut transcript, 8)
+
+    if (not extensions.good) { return }
+
+    if (not extensionsGood(offset(transcript.bytes, extensions.start), extensions.size)) {
+        s.problem = badMessage
+        return
+    }
+
+    if (nextMessage(mut s) == 13) {
+        // CertificateRequest: its context (answered with no certificate) and its extensions.
+        immut request = takeExpected(mut s, mut transcript, 13)
+        immut m = offset(transcript.bytes, request.start)
+        immut contextSize = if (request.size > 0) { byteAt(m, 0) } else { 0 }
+
+        if (request.size < 1 + contextSize or not extensionsGood(offset(m, 1 + contextSize), request.size - 1 - contextSize)) {
+            s.problem = badMessage
+            return
+        }
+
+        s.requested = true
+        putBytes(mut s.requestContext, offset(m, 1), contextSize)
+    }
+
+    if (s.problem != 0) { return }
+
+    immut certificate = takeExpected(mut s, mut transcript, 11)
+
+    if (not certificate.good) { return }
+
+    // Certificate: an empty context, then the certificates (3 bytes of size each, and extensions).
+    immut m = offset(transcript.bytes, certificate.start)
+    immut size = certificate.size
+
+    if (size < 4 or byteAt(m, 0) != 0 or number(m, 1, 3) != size - 4) {
+        s.problem = badMessage
+        return
+    }
+
+    mut chain: Certificate[] = []
+    mut at = 4
+
+    while (at < size and s.problem == 0) {
+        if (at + 3 > size) {
+            s.problem = badMessage
+            break
+        }
+
+        immut length = number(m, at, 3)
+
+        if (length == 0 or at + 3 + length + 2 > size) {
+            s.problem = badMessage
+            break
+        }
+
+        immut der = allocate(length)
+        memcpy(der, offset(m, at + 3), length)
+        chain.push(certificateOf(der, length))
+        at += 3 + length
+        at += 2 + number(m, at, 2)
+    }
+
+    if (s.problem == 0 and (at != size or chain.length() == 0)) { s.problem = badMessage }
+
+    if (s.problem == 0) { s.problem = verifyChain(chain, authorities, host, if (testTime > 0) { testTime } else { now() }) }
+
+    if (s.problem == 0) { verifyProof(mut s, mut transcript, chain[0].key, hash) }
+
+    for c in chain {
+        free(c.bytes)
+    }
+
+    if (s.problem != 0) { return }
+
+    // Finished: the HMAC of the transcript with the server's finished key.
+    immut length = digestSize(hash)
+    immut expected = finishedOf(hash, serverSecret, transcript)
+    immut finished = takeExpected(mut s, mut transcript, 20)
+
+    if (finished.good) {
+        mut difference = if (finished.size == length) { 0 } else { 1 }
+
+        if (difference == 0) {
+            for i in range(length) {
+                difference = difference | (byteAt(expected, i) ^ byteAt(transcript.bytes, finished.start + i))
+            }
+        }
+
+        if (difference != 0) { s.problem = badFinished }
+
+        // The keys change after it: nothing more in its record.
+        if (s.problem == 0 and s.pending.size != 0) { s.problem = badMessage }
+    }
+
+    free(expected)
+}
+
+// The verify_data of a Finished: HMAC of the transcript's digest with the finished key of the
+// traffic secret (to free).
+function finishedOf(hash: int, secret: Address, transcript: Buffer): Address {
+    immut length = digestSize(hash)
+    immut key = allocate(length)
+    expandLabel(hash, secret, 'finished', nullAddress(), 0, length, key)
+    immut context = allocate(length)
+    transcriptDigest(hash, transcript, context)
+    immut out = allocate(length)
+    hmac(hash, key, length, context, length, out)
+    memset(key, 0, length)
+    free(key)
+    free(context)
+    return out
+}
+
+// CertificateVerify: the signature by the server's key, with a scheme that was offered and fits the
+// key, of 64 spaces, the context string, a zero and the transcript's digest.
+function verifyProof(mut s: Session, mut transcript: Buffer, key: PublicKey, hash: int) {
+    immut length = digestSize(hash)
+    mut signed = newBuffer(200)
+
+    for i in range(64) {
+        putNumber(mut signed, 0x20, 1)
+    }
+
+    putText(mut signed, 'TLS 1.3, server CertificateVerify')
+    putNumber(mut signed, 0, 1)
+    reserve(mut signed, length)
+    transcriptDigest(hash, transcript, offset(signed.bytes, signed.size))
+    signed.size += length
+    immut proof = takeExpected(mut s, mut transcript, 15)
+
+    if (proof.good) {
+        immut m = offset(transcript.bytes, proof.start)
+
+        if (proof.size < 4 or number(m, 2, 2) != proof.size - 4) {
+            s.problem = badMessage
+        } else {
+            immut algorithm = schemeAlgorithm(number(m, 0, 2), key)
+
+            if (algorithm.kind < 0) {
+                s.problem = notOffered
+            } else {
+                if (not verifySignature(key, algorithm, signed.bytes, signed.size, offset(m, 4), proof.size - 4)) { s.problem = badProof }
+            }
+        }
+    }
+
+    free(signed.bytes)
+}
+
+// Ours: ChangeCipherSpec (for middleboxes, since a session ID was sent), an empty Certificate when
+// the server asked for one, and Finished.
+function clientFlight(mut s: Session, mut transcript: Buffer, clientSecret: Address, hash: int) {
+    immut change = allocate(6)
+
+    for i in range(6) {
+        write(change, i, byte([20, 3, 3, 0, 1, 1][i]))
+    }
+
+    immut sent = sendAll(s.fd, change, 6)
+    free(change)
+
+    if (not sent) {
+        lastErrno = koji_system_errno()
+        s.problem = systemError
+        return
+    }
+
+    if (s.requested) {
+        mut empty = newBuffer(16)
+        putNumber(mut empty, 11, 1)
+        putNumber(mut empty, 4 + s.requestContext.size, 3)
+        putNumber(mut empty, s.requestContext.size, 1)
+        putBytes(mut empty, s.requestContext.bytes, s.requestContext.size)
+        putNumber(mut empty, 0, 3)
+        putBytes(mut transcript, empty.bytes, empty.size)
+        immut good = sendRecord(mut s, 22, empty.bytes, empty.size)
+        free(empty.bytes)
+
+        if (not good) {
+            s.problem = systemError
+            return
+        }
+    }
+
+    immut length = digestSize(hash)
+    immut verifyData = finishedOf(hash, clientSecret, transcript)
+    mut finished = newBuffer(4 + length)
+    putNumber(mut finished, 20, 1)
+    putNumber(mut finished, length, 3)
+    putBytes(mut finished, verifyData, length)
+    free(verifyData)
+
+    if (not sendRecord(mut s, 22, finished.bytes, finished.size)) { s.problem = systemError }
+
+    free(finished.bytes)
+}
+
+// After the handshake
+
+// The messages of the handshake after it, in `s.pending`: NewSessionTicket (ignored) and KeyUpdate
+// (the keys of reading updated, and ours too when the server asks). False with the problem set.
+function afterHandshake(mut s: Session): boolean {
+    while (s.pending.size >= 4) {
+        immut size = number(s.pending.bytes, 1, 3)
+
+        if (s.pending.size < 4 + size) { return true }
+
+        immut kind = byteAt(s.pending.bytes, 0)
+
+        if (kind == 24) {
+            if (size != 1 or byteAt(s.pending.bytes, 4) > 1) {
+                s.problem = badMessage
+                return false
+            }
+
+            immut asked = byteAt(s.pending.bytes, 4) == 1
+            s.reading = updatedDirection(s.suite, s.reading)
+
+            if (asked) {
+                immut update = allocate(5)
+
+                for i in range(5) {
+                    write(update, i, byte([24, 0, 0, 1, 0][i]))
+                }
+
+                immut sent = sendRecord(mut s, 22, update, 5)
+                free(update)
+
+                if (not sent) {
+                    s.problem = systemError
+                    return false
+                }
+
+                s.writing = updatedDirection(s.suite, s.writing)
+            }
+        } else {
+            if (kind != 4) {
+                s.problem = badMessage
+                return false
+            }
+        }
+
+        memcpy(s.pending.bytes, offset(s.pending.bytes, 4 + size), s.pending.size - 4 - size)
+        s.pending.size -= 4 + size
+    }
+
+    return true
+}
+
+// Up to `size` bytes of application data at `out`: how many, 0 when the server closed the
+// connection (close_notify), -1 for a problem (`truncated` when it closed without close_notify).
+function receiveData(mut s: Session, out: Address, size: int): int {
+    while (s.used >= s.recordSize or s.recordType != 23) {
+        if (s.closed) { return 0 }
+
+        immut kind = receiveRecord(mut s)
+
+        if (kind < 0) {
+            // The connection closed without close_notify: not the end the server meant (an attacker
+            // can cut a connection), as rustls takes it; std/http.kj ignores it once a body whose size
+            // it knows has come whole.
+            if (s.problem == closedEarly) { s.problem = truncated }
+
+            return -1
+        }
+
+        s.recordType = kind
+
+        if (kind == 21) {
+            alertReceived(mut s)
+
+            if (s.closed) { return 0 }
+
+            return -1
+        }
+
+        if (kind == 22) {
+            putBytes(mut s.pending, s.record, s.recordSize)
+            s.used = s.recordSize
+
+            if (not afterHandshake(mut s)) { return -1 }
+        } else {
+            if (kind != 23) {
+                s.problem = badMessage
+                return -1
+            }
+        }
+    }
+
+    immut count = if (s.recordSize - s.used < size) { s.recordSize - s.used } else { size }
+    memcpy(out, offset(s.record, s.used), count)
+    s.used += count
+    return count
+}
+
+// The `size` bytes at `data` sent, in records of at most 16384 bytes: false for a problem.
+function sendData(mut s: Session, data: Address, size: int): boolean {
+    mut done = 0
+
+    while (done < size) {
+        immut part = if (size - done > largestPlaintext) { largestPlaintext } else { size - done }
+
+        if (not sendRecord(mut s, 23, offset(data, done), part)) {
+            s.problem = systemError
+            return false
+        }
+
+        done += part
+    }
+
+    return true
+}
+
+function releaseSession(s: Session) {
+    if (s.keyed) {
+        releaseDirection(s.suite, s.reading)
+        releaseDirection(s.suite, s.writing)
+    }
+
+    free(s.record)
+    free(s.pending.bytes)
+    free(s.requestContext.bytes)
+}
+
+// The interface for C and std/http.kj
+
+// A new handle for a session (a free one first).
+function store(s: Session): int {
+    for i in range(sessions.length()) {
+        if (sessions[i].fd < 0) {
+            sessions[i] = s
+            return i + 1
+        }
+    }
+
+    sessions.push(s)
+    return sessions.length()
+}
+
+function validHandle(handle: int): boolean {
+    return handle >= 1 and handle <= sessions.length() and sessions[handle - 1].fd >= 0
+}
+
+// The handshake on the connected socket `fd` for `host`: a handle (1 or more), or 0 with the problem
+// at `problem` (an int).
+extern function koji_tls_connect(fd: int, host: string, problem: Address): int {
+    immut result = handshake(fd, host, trustedAuthorities())
+
+    if (result.problem != 0) {
+        releaseSession(result.session)
+        write(problem, 0, result.problem)
+        return 0
+    }
+
+    return store(result.session)
+}
+
+// The same for C (the tests of the library): the host a C string, and the authorities those of the
+// PEM text at `pem` (`pemSize` bytes; the system's, or the built-in ones, when it is -1).
+extern function koji_tls_connect_with(fd: int, host: Address, pem: Address, pemSize: int, problem: Address): int {
+    immut given = if (pemSize >= 0) { authoritiesOfPem(pem, pemSize) } else { [] }
+    immut result = handshake(fd, newString(host, strlen(host)), if (pemSize >= 0) { given } else { trustedAuthorities() })
+
+    for each in given {
+        free(each.bytes)
+    }
+
+    if (result.problem != 0) {
+        releaseSession(result.session)
+        write(problem, 0, result.problem)
+        return 0
+    }
+
+    return store(result.session)
+}
+
+// For C (the tests of the library): the random bytes made from `seed` from now on, and the time
+// fixed to `time` (seconds since 1970), so that a recorded session can be replayed.
+extern function koji_tls_test_replay(seed: int, time: int) {
+    testSeed = seed
+    testCounter = 0
+    testTime = time
+}
+
+// The `size` bytes sent: `size`, or -1.
+extern function koji_tls_send(handle: int, data: Address, size: int): int {
+    if (not validHandle(handle)) { return -1 }
+
+    mut s = sessions[handle - 1]
+    immut good = sendData(mut s, data, size)
+    sessions[handle - 1] = s
+    return if (good) { size } else { -1 }
+}
+
+// Up to `size` bytes received at `out`: how many, 0 at the end, -1 for a problem.
+extern function koji_tls_receive(handle: int, out: Address, size: int): int {
+    if (not validHandle(handle)) { return -1 }
+
+    mut s = sessions[handle - 1]
+    immut got = receiveData(mut s, out, size)
+    sessions[handle - 1] = s
+    return got
+}
+
+// The problem of a session, after -1.
+extern function koji_tls_problem(handle: int): int {
+    return if (validHandle(handle)) { sessions[handle - 1].problem } else { systemError }
+}
+
+// The text of a problem.
+extern function koji_tls_message(problem: int): string {
+    return problemMessage(problem)
+}
+
+// The error of the system of the last problem `systemError`.
+extern function koji_tls_errno(): int {
+    return lastErrno
+}
+
+// The session closed (close_notify sent when it is still good) and freed; the socket is the
+// caller's.
+extern function koji_tls_close(handle: int) {
+    if (not validHandle(handle)) { return }
+
+    mut s = sessions[handle - 1]
+
+    if (s.problem == 0 and not s.closed) {
+        immut alert = allocate(2)
+        write(alert, 0, byte(1))
+        write(alert, 1, byte(0))
+        sendRecord(mut s, 21, alert, 2)
+        free(alert)
+    }
+
+    releaseSession(s)
+    s.fd = -1
+    sessions[handle - 1] = s
+}

@@ -1,12 +1,16 @@
 // `koji:x25519`: the Diffie-Hellman function X25519 of RFC 7748 (the key exchange of TLS 1.3), in
-// the library of the runtime written in Koji. As TweetNaCl computes it: a number modulo 2^255 - 19
-// is 16 limbs of 16 bits (ints, at an address of 128 bytes), whose products and their sums fit an int;
-// the Montgomery ladder swaps its points with masks, so that nothing depends on the bits of the
-// secret scalar (no branch, no address).
+// the library of the runtime written in Koji. As curve25519-donna (64 bits) computes it: a number
+// modulo p = 2^255 - 19 is 5 limbs of 51 bits (ints, at an address of 40 bytes), multiplied through
+// U128 (a limb of at most 54 bits times 19 times another, summed five times, fits 128 bits), the
+// top of a product folded in times 19 (2^255 = 19). The Montgomery ladder of the RFC swaps its points
+// with masks, so that nothing depends on the bits of the secret scalar (no branch, no address).
 
-import { Address, CSize, allocate, free, offset, read, write } from 'koji:unsafe'
+import { Address, CSize, U128, allocate, free, lowWord, offset, read, wide, wordProduct, write } from 'koji:unsafe'
 
 extern function memcpy(target: Address, source: Address, size: CSize): Address
+
+// 2^51 - 1.
+immut mask = 0x7FFFFFFFFFFFF
 
 function limb(f: Address, i: int): int {
     immut value: int = read(f, i * 8)
@@ -23,189 +27,295 @@ function byteAt(bytes: Address, i: int): int {
 }
 
 function newElement(): Address {
-    immut f = allocate(128)
+    immut f = allocate(40)
 
-    for i in range(16) {
+    for i in range(5) {
         setLimb(f, i, 0)
     }
 
     return f
 }
 
-// o = a + b, o = a - b (limb by limb; the carries come later).
+function product(a: int, b: int): U128 {
+    return wordProduct(wide(a, 0), wide(b, 0))
+}
+
+// o = a + b (limb by limb: below 2^53 when a and b are below 2^52).
 function add(o: Address, a: Address, b: Address) {
-    for i in range(16) {
+    for i in range(5) {
         setLimb(o, i, limb(a, i) + limb(b, i))
     }
 }
 
+// o = a - b, as a + 2p - b so that no limb is negative (b's limbs below 2^52 - 38: a product's).
 function subtract(o: Address, a: Address, b: Address) {
-    for i in range(16) {
-        setLimb(o, i, limb(a, i) - limb(b, i))
+    setLimb(o, 0, limb(a, 0) + 0xFFFFFFFFFFFDA - limb(b, 0))
+
+    for i in range(1, 5) {
+        setLimb(o, i, limb(a, i) + 0xFFFFFFFFFFFFE - limb(b, i))
     }
 }
 
-// The limbs back to 16 bits, the carry of the last one folded in times 38 (2^256 = 38).
-function carry(o: Address) {
-    for i in range(16) {
-        immut value = limb(o, i) + (1 << 16)
-        immut c = value >> 16
-        setLimb(o, i, value - (c << 16))
+// o = the five sums of products (of up to 128 bits), carried back to limbs of 51 bits (the first a
+// little more).
+function carry(o: Address, r0: U128, r1: U128, r2: U128, r3: U128, r4: U128) {
+    immut s1 = r1 + (r0 >> 51)
+    immut s2 = r2 + (s1 >> 51)
+    immut s3 = r3 + (s2 >> 51)
+    immut s4 = r4 + (s3 >> 51)
+    // The carry out of the top (below 2^60) times 19, back into the first limb.
+    immut s0 = wide(lowWord(r0) & mask, 0) + wordProduct(s4 >> 51, wide(19, 0))
+    setLimb(o, 0, lowWord(s0) & mask)
+    setLimb(o, 1, (lowWord(s1) & mask) + lowWord(s0 >> 51))
+    setLimb(o, 2, lowWord(s2) & mask)
+    setLimb(o, 3, lowWord(s3) & mask)
+    setLimb(o, 4, lowWord(s4) & mask)
+}
 
-        if (i < 15) {
-            setLimb(o, i + 1, limb(o, i + 1) + c - 1)
-        } else {
-            setLimb(o, 0, limb(o, 0) + 38 * (c - 1))
-        }
+// o = a * b (o may be a or b).
+function multiply(o: Address, a: Address, b: Address) {
+    immut a0 = limb(a, 0)
+    immut a1 = limb(a, 1)
+    immut a2 = limb(a, 2)
+    immut a3 = limb(a, 3)
+    immut a4 = limb(a, 4)
+    immut b0 = limb(b, 0)
+    immut b1 = limb(b, 1)
+    immut b2 = limb(b, 2)
+    immut b3 = limb(b, 3)
+    immut b4 = limb(b, 4)
+    // The limbs past the top, times 19 (below 2^59).
+    immut c1 = b1 * 19
+    immut c2 = b2 * 19
+    immut c3 = b3 * 19
+    immut c4 = b4 * 19
+    immut r0 = product(a0, b0) + product(a1, c4) + product(a2, c3) + product(a3, c2) + product(a4, c1)
+    immut r1 = product(a0, b1) + product(a1, b0) + product(a2, c4) + product(a3, c3) + product(a4, c2)
+    immut r2 = product(a0, b2) + product(a1, b1) + product(a2, b0) + product(a3, c4) + product(a4, c3)
+    immut r3 = product(a0, b3) + product(a1, b2) + product(a2, b1) + product(a3, b0) + product(a4, c4)
+    immut r4 = product(a0, b4) + product(a1, b3) + product(a2, b2) + product(a3, b1) + product(a4, b0)
+    carry(o, r0, r1, r2, r3, r4)
+}
+
+// o = a^2: the products of different limbs taken once, doubled.
+function square(o: Address, a: Address) {
+    immut a0 = limb(a, 0)
+    immut a1 = limb(a, 1)
+    immut a2 = limb(a, 2)
+    immut a3 = limb(a, 3)
+    immut a4 = limb(a, 4)
+    immut d0 = 2 * a0
+    immut d1 = 2 * a1
+    immut d2 = 2 * a2
+    immut e3 = 19 * a3
+    immut e4 = 19 * a4
+    immut r0 = product(a0, a0) + product(d1, e4) + product(2 * a2, e3)
+    immut r1 = product(d0, a1) + product(d2, e4) + product(a3, e3)
+    immut r2 = product(d0, a2) + product(a1, a1) + product(2 * a3, e4)
+    immut r3 = product(d0, a3) + product(d1, a2) + product(a4, e4)
+    immut r4 = product(d0, a4) + product(d1, a3) + product(a2, a2)
+    carry(o, r0, r1, r2, r3, r4)
+}
+
+// o = a^(2^n): n squarings.
+function squareTimes(o: Address, a: Address, n: int) {
+    square(o, a)
+
+    for i in range(n - 1) {
+        square(o, o)
     }
 }
 
-// o = a * b (o may be a or b), through `t` (31 ints).
-function multiply(o: Address, a: Address, b: Address, t: Address) {
-    for i in range(31) {
-        setLimb(t, i, 0)
-    }
-
-    for i in range(16) {
-        immut x = limb(a, i)
-
-        for j in range(16) {
-            setLimb(t, i + j, limb(t, i + j) + x * limb(b, j))
-        }
-    }
-
-    for i in range(15) {
-        setLimb(t, i, limb(t, i) + 38 * limb(t, i + 16))
-    }
-
-    for i in range(16) {
-        setLimb(o, i, limb(t, i))
-    }
-
-    carry(o)
-    carry(o)
+// o = a * 121665 ((486662 - 2) / 4, the constant of the ladder).
+function multiplySmall(o: Address, a: Address) {
+    immut k = wide(121665, 0)
+    carry(o, wide(limb(a, 0), 0) * k, wide(limb(a, 1), 0) * k, wide(limb(a, 2), 0) * k, wide(limb(a, 3), 0) * k, wide(limb(a, 4), 0) * k)
 }
 
 // Swaps p and q when `bit` is 1, with a mask: the same operations either way.
 function swap(p: Address, q: Address, bit: int) {
-    immut mask = 0 - bit
+    immut m = 0 - bit
 
-    for i in range(16) {
-        immut t = mask & (limb(p, i) ^ limb(q, i))
+    for i in range(5) {
+        immut t = m & (limb(p, i) ^ limb(q, i))
         setLimb(p, i, limb(p, i) ^ t)
         setLimb(q, i, limb(q, i) ^ t)
     }
 }
 
-// The 32 bytes (little-endian) of n reduced modulo 2^255 - 19.
-function pack(out: Address, n: Address, t: Address) {
-    immut m = newElement()
-    memcpy(t, n, 128)
-    carry(t)
-    carry(t)
-    carry(t)
+// o = 1 / z, as z^(p - 2) = z^(2^255 - 21), by the addition chain of curve25519-donna: 254 squarings
+// and 11 products.
+function invert(o: Address, z: Address) {
+    immut z2 = newElement()
+    immut z9 = newElement()
+    immut z11 = newElement()
+    immut z2_5_0 = newElement()
+    immut z2_10_0 = newElement()
+    immut z2_20_0 = newElement()
+    immut z2_50_0 = newElement()
+    immut z2_100_0 = newElement()
+    immut t = newElement()
+    square(z2, z)
+    squareTimes(t, z2, 2)
+    multiply(z9, t, z)
+    multiply(z11, z9, z2)
+    square(t, z11)
+    multiply(z2_5_0, t, z9)
+    squareTimes(t, z2_5_0, 5)
+    multiply(z2_10_0, t, z2_5_0)
+    squareTimes(t, z2_10_0, 10)
+    multiply(z2_20_0, t, z2_10_0)
+    squareTimes(t, z2_20_0, 20)
+    multiply(t, t, z2_20_0)
+    squareTimes(t, t, 10)
+    multiply(z2_50_0, t, z2_10_0)
+    squareTimes(t, z2_50_0, 50)
+    multiply(z2_100_0, t, z2_50_0)
+    squareTimes(t, z2_100_0, 100)
+    multiply(t, t, z2_100_0)
+    squareTimes(t, t, 50)
+    multiply(t, t, z2_50_0)
+    squareTimes(t, t, 5)
+    multiply(o, t, z11)
 
-    for j in range(2) {
-        setLimb(m, 0, limb(t, 0) - 0xFFED)
-
-        for i in range(1, 15) {
-            setLimb(m, i, limb(t, i) - 0xFFFF - ((limb(m, i - 1) >> 16) & 1))
-            setLimb(m, i - 1, limb(m, i - 1) & 0xFFFF)
-        }
-
-        setLimb(m, 15, limb(t, 15) - 0x7FFF - ((limb(m, 14) >> 16) & 1))
-        immut borrow = (limb(m, 15) >> 16) & 1
-        setLimb(m, 14, limb(m, 14) & 0xFFFF)
-        swap(t, m, 1 - borrow)
+    for each in [z2, z9, z11, z2_5_0, z2_10_0, z2_20_0, z2_50_0, z2_100_0, t] {
+        free(each)
     }
-
-    for i in range(16) {
-        write(out, 2 * i, byte(limb(t, i) & 0xFF))
-        write(out, 2 * i + 1, byte((limb(t, i) >> 8) & 0xFF))
-    }
-
-    free(m)
 }
 
-// o = 1 / i, as i^(p - 2).
-function invert(o: Address, i: Address, t: Address) {
-    immut c = newElement()
-    memcpy(c, i, 128)
-    mut a = 253
+// The 8 bytes at `at`, little-endian.
+function word(bytes: Address, at: int): int {
+    mut value = 0
 
-    while (a >= 0) {
-        multiply(c, c, c, t)
-
-        if (a != 2 and a != 4) { multiply(c, c, i, t) }
-
-        a -= 1
+    for i in range(8) {
+        value = value | (byteAt(bytes, at + i) << (8 * i))
     }
 
-    memcpy(o, c, 128)
-    free(c)
+    return value
+}
+
+// The u-coordinate of 32 bytes (little-endian; the top bit ignored, as the RFC asks).
+function unpack(o: Address, bytes: Address) {
+    immut w0 = word(bytes, 0)
+    immut w1 = word(bytes, 8)
+    immut w2 = word(bytes, 16)
+    immut w3 = word(bytes, 24)
+    setLimb(o, 0, w0 & mask)
+    setLimb(o, 1, ((w0 >> 51) & 0x1FFF) | ((w1 << 13) & mask))
+    setLimb(o, 2, ((w1 >> 38) & 0x3FFFFFF) | ((w2 << 26) & mask))
+    setLimb(o, 3, ((w2 >> 25) & 0x7FFFFFFFFF) | ((w3 << 39) & mask))
+    setLimb(o, 4, (w3 >> 12) & mask)
+}
+
+// The limbs carried to 51 bits each, the carry out of the top folded in times 19 (`fold`) or dropped.
+function carryFull(h: Address, fold: boolean) {
+    for i in range(4) {
+        setLimb(h, i + 1, limb(h, i + 1) + (limb(h, i) >> 51))
+        setLimb(h, i, limb(h, i) & mask)
+    }
+
+    if (fold) { setLimb(h, 0, limb(h, 0) + 19 * (limb(h, 4) >> 51)) }
+
+    setLimb(h, 4, limb(h, 4) & mask)
+}
+
+// The 32 bytes (little-endian) of a reduced fully modulo p, at `out` (as fcontract of
+// curve25519-donna).
+function pack(out: Address, a: Address) {
+    immut h = newElement()
+    memcpy(h, a, 40)
+    // Between 0 and 2^255 - 1, carried.
+    carryFull(h, true)
+    carryFull(h, true)
+    // Plus 19: between 19 and 2^255 - 1 whether h was below p or not (then it wrapped past 2^255).
+    setLimb(h, 0, limb(h, 0) + 19)
+    carryFull(h, true)
+    // Plus 2^255 - 19: h + 2^255, whose bit 255 is dropped.
+    setLimb(h, 0, limb(h, 0) + 0x8000000000000 - 19)
+
+    for i in range(1, 5) {
+        setLimb(h, i, limb(h, i) + 0x8000000000000 - 1)
+    }
+
+    carryFull(h, false)
+    immut h0 = limb(h, 0)
+    immut h1 = limb(h, 1)
+    immut h2 = limb(h, 2)
+    immut h3 = limb(h, 3)
+    immut h4 = limb(h, 4)
+    immut words = [h0 | (h1 << 51), (h1 >> 13) | (h2 << 38), (h2 >> 26) | (h3 << 25), (h3 >> 39) | (h4 << 12)]
+
+    for i in range(4) {
+        for j in range(8) {
+            write(out, 8 * i + j, byte((words[i] >> (8 * j)) & 0xFF))
+        }
+    }
+
+    free(h)
 }
 
 // X25519 of the scalar (32 bytes, clamped here) and the u-coordinate of a point (32 bytes), at
-// `out` (32 bytes).
+// `out` (32 bytes): the ladder of RFC 7748.
 export function x25519(out: Address, scalar: Address, point: Address) {
-    immut z = allocate(32)
-    memcpy(z, scalar, 32)
-    write(z, 31, byte((byteAt(scalar, 31) & 127) | 64))
-    write(z, 0, byte(byteAt(scalar, 0) & 248))
-    immut x = newElement()
-
-    for i in range(16) {
-        setLimb(x, i, byteAt(point, 2 * i) + (byteAt(point, 2 * i + 1) << 8))
-    }
-
-    setLimb(x, 15, limb(x, 15) & 0x7FFF)
+    immut k = allocate(32)
+    memcpy(k, scalar, 32)
+    write(k, 31, byte((byteAt(scalar, 31) & 127) | 64))
+    write(k, 0, byte(byteAt(scalar, 0) & 248))
+    immut x1 = newElement()
+    unpack(x1, point)
+    immut x2 = newElement()
+    immut z2 = newElement()
+    immut x3 = newElement()
+    immut z3 = newElement()
+    setLimb(x2, 0, 1)
+    memcpy(x3, x1, 40)
+    setLimb(z3, 0, 1)
     immut a = newElement()
+    immut aa = newElement()
     immut b = newElement()
+    immut bb = newElement()
+    immut e = newElement()
     immut c = newElement()
     immut d = newElement()
-    immut e = newElement()
-    immut f = newElement()
-    immut constant = newElement()
-    immut t = allocate(31 * 8)
-    setLimb(constant, 0, 0xDB41)
-    setLimb(constant, 1, 1)
-    memcpy(b, x, 128)
-    setLimb(a, 0, 1)
-    setLimb(d, 0, 1)
-    mut i = 254
+    immut da = newElement()
+    immut cb = newElement()
+    mut swapped = 0
+    mut t = 254
 
-    while (i >= 0) {
-        immut bit = (byteAt(z, i >> 3) >> (i & 7)) & 1
-        swap(a, b, bit)
-        swap(c, d, bit)
-        add(e, a, c)
-        subtract(a, a, c)
-        add(c, b, d)
-        subtract(b, b, d)
-        multiply(d, e, e, t)
-        multiply(f, a, a, t)
-        multiply(a, c, a, t)
-        multiply(c, b, e, t)
-        add(e, a, c)
-        subtract(a, a, c)
-        multiply(b, a, a, t)
-        subtract(c, d, f)
-        multiply(a, c, constant, t)
-        add(a, a, d)
-        multiply(c, c, a, t)
-        multiply(a, d, f, t)
-        multiply(d, b, x, t)
-        multiply(b, e, e, t)
-        swap(a, b, bit)
-        swap(c, d, bit)
-        i -= 1
+    while (t >= 0) {
+        immut bit = (byteAt(k, t >> 3) >> (t & 7)) & 1
+        swapped = swapped ^ bit
+        swap(x2, x3, swapped)
+        swap(z2, z3, swapped)
+        swapped = bit
+        add(a, x2, z2)
+        square(aa, a)
+        subtract(b, x2, z2)
+        square(bb, b)
+        subtract(e, aa, bb)
+        add(c, x3, z3)
+        subtract(d, x3, z3)
+        multiply(da, d, a)
+        multiply(cb, c, b)
+        add(x3, da, cb)
+        square(x3, x3)
+        subtract(z3, da, cb)
+        square(z3, z3)
+        multiply(z3, z3, x1)
+        multiply(x2, aa, bb)
+        multiplySmall(z2, e)
+        add(z2, z2, aa)
+        multiply(z2, z2, e)
+        t -= 1
     }
 
-    invert(c, c, t)
-    multiply(a, a, c, t)
-    pack(out, a, t)
+    swap(x2, x3, swapped)
+    swap(z2, z3, swapped)
+    invert(z2, z2)
+    multiply(x2, x2, z2)
+    pack(out, x2)
 
-    for each in [x, a, b, c, d, e, f, constant, t, z] {
+    for each in [k, x1, x2, z2, x3, z3, a, aa, b, bb, e, c, d, da, cb] {
         free(each)
     }
 }

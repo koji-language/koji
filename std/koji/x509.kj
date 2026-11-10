@@ -1337,6 +1337,13 @@ function addPem(mut authorities: Authority[], text: Address, size: int) {
     }
 }
 
+// The authorities of PEM text (each with its own bytes, to free).
+export function authoritiesOfPem(text: Address, size: int): Authority[] {
+    mut authorities: Authority[] = []
+    addPem(mut authorities, text, size)
+    return authorities
+}
+
 // Where `part` is in the bytes from `at` to `size`, or -1.
 function find(text: Address, at: int, size: int, part: string): int {
     immut length = stringSize(part)

@@ -1,7 +1,8 @@
 // `koji:bignum`: numbers modulo an odd number of up to 8192 bits, by Montgomery's multiplication, in
 // the library of the runtime written in Koji: what the elliptic curves of NIST and RSA compute with.
 // A number is limbs of 64 bits, the lowest first (the bits of ints, at an address); a modulus keeps
-// its limbs, -1/p modulo 2^64 and R^2 modulo p (R = 2^(64 n)). Products are U128: a limb times a
+// its limbs, -1/p modulo 2^64 and R^2 modulo p (R = 2^(64 n)), and two numbers to work in (the
+// library has one thread: no operation allocates). Products are U128: a limb times a
 // limb plus two limbs fits 128 bits. Multiplying, adding and subtracting take the same steps
 // whatever the numbers are (the last subtraction is chosen with a mask).
 
@@ -14,6 +15,8 @@ export type Modulus = {
     limbs: Address
     inverse: int
     squared: Address
+    sum: Address
+    difference: Address
 }
 
 export function limb(n: Address, i: int): int {
@@ -92,7 +95,7 @@ export function modulusOf(bytes: Address, size: int): Modulus {
         if (carry != 0 or compare(squared, limbs, count) >= 0) { subtractInPlace(squared, limbs, count) }
     }
 
-    return { count: count, limbs: limbs, inverse: negativeInverse(limb(limbs, 0)), squared: squared }
+    return { count: count, limbs: limbs, inverse: negativeInverse(limb(limbs, 0)), squared: squared, sum: zeroNumber(count), difference: zeroNumber(count) }
 }
 
 // n = 2n: the bit that leaves the top.
@@ -106,6 +109,13 @@ function shiftLeftOne(n: Address, count: int): int {
     }
 
     return carry
+}
+
+// The memory of a modulus given back.
+export function freeModulus(m: Modulus) {
+    for each in [m.limbs, m.squared, m.sum, m.difference] {
+        free(each)
+    }
 }
 
 // -1, 0 or 1 (not in constant time: for the setup and for public numbers).
@@ -159,7 +169,10 @@ export function select(out: Address, a: Address, b: Address, count: int, choose:
     }
 }
 
-// out = a * b / R modulo p (out may be a or b); a and b below p. Through `t` (count + 2 limbs).
+// out = a * b / R modulo p (out may be a or b); a and b below p. Through `t` (count + 2 limbs). The
+// product by a limb of b and the reduction in one pass ("FIOS"): t = (t + a b_i + m p) / 2^64, m
+// chosen so that the low limb is zero; two carries, each below 2^64 (a limb times a limb plus two
+// limbs fits 128 bits).
 export function multiply(m: Modulus, out: Address, a: Address, b: Address, t: Address) {
     immut count = m.count
     immut p = m.limbs
@@ -170,72 +183,64 @@ export function multiply(m: Modulus, out: Address, a: Address, b: Address, t: Ad
 
     for i in range(count) {
         immut factor = wordOf(b, i)
-        mut carry: U128 = 0
-
-        for j in range(count) {
-            immut sum = wordOf(t, j) + wordProduct(wordOf(a, j), factor) + carry
-            setLimb(t, j, lowWord(sum))
-            carry = sum >> 64
-        }
-
-        immut top = wordOf(t, count) + carry
-        setLimb(t, count, lowWord(top))
-        setLimb(t, count + 1, lowWord(top >> 64))
-        // t + m p, which divides by 2^64: m = t[0] * (-1/p).
-        immut reducer = wide(lowWord(wordProduct(wordOf(t, 0), wide(m.inverse, 0))), 0)
-        carry = (wordOf(t, 0) + wordProduct(reducer, wordOf(p, 0))) >> 64
+        immut first = wordOf(t, 0) + wordProduct(wordOf(a, 0), factor)
+        // m = t[0] * (-1/p) modulo 2^64.
+        immut reducer = wide(lowWord(wordProduct(first, wide(m.inverse, 0))), 0)
+        mut high: U128 = first >> 64
+        mut low: U128 = (wide(lowWord(first), 0) + wordProduct(reducer, wordOf(p, 0))) >> 64
 
         for j in range(1, count) {
-            immut sum = wordOf(t, j) + wordProduct(reducer, wordOf(p, j)) + carry
-            setLimb(t, j - 1, lowWord(sum))
-            carry = sum >> 64
+            immut product = wordOf(t, j) + wordProduct(wordOf(a, j), factor) + high
+            high = product >> 64
+            immut reduced = wide(lowWord(product), 0) + wordProduct(reducer, wordOf(p, j)) + low
+            low = reduced >> 64
+            setLimb(t, j - 1, lowWord(reduced))
         }
 
-        immut last = wordOf(t, count) + carry
-        setLimb(t, count - 1, lowWord(last))
-        setLimb(t, count, lowWord(wordOf(t, count + 1) + (last >> 64)))
+        // t below 2p: its top limb 0 or 1.
+        immut top = wordOf(t, count) + high + low
+        setLimb(t, count - 1, lowWord(top))
+        setLimb(t, count, lowWord(top >> 64))
     }
 
-    // t is below 2p: t - p when that does not borrow (t[count] counted).
     reduceOnce(m, out, t)
 }
 
-// out = t - p when t (count + 1 limbs) is at least p, else t; chosen with a mask.
+// out = t - p when t (count + 1 limbs, not `m.difference`) is at least p, else t; chosen with a
+// mask.
 function reduceOnce(m: Modulus, out: Address, t: Address) {
     immut count = m.count
-    immut difference = zeroNumber(count)
+    immut difference = m.difference
     memcpy(difference, t, count * 8)
     immut borrow = subtractInPlace(difference, m.limbs, count)
     // t >= p when the top limb (0 or 1) covers the borrow; t is kept when it does not.
     immut keep = borrow & (limb(t, count) ^ 1)
     select(out, t, difference, count, keep)
-    free(difference)
 }
 
 // out = a + b modulo p, out = a - b modulo p (a and b below p).
 export function addModulo(m: Modulus, out: Address, a: Address, b: Address) {
     immut count = m.count
-    immut sum = zeroNumber(count)
+    immut sum = m.sum
     memcpy(sum, a, count * 8)
     setLimb(sum, count, addInPlace(sum, b, count))
     reduceOnce(m, out, sum)
-    free(sum)
 }
 
 export function subtractModulo(m: Modulus, out: Address, a: Address, b: Address) {
     immut count = m.count
-    immut difference = zeroNumber(count)
+    immut difference = m.sum
     memcpy(difference, a, count * 8)
     immut borrow = subtractInPlace(difference, b, count)
-    // Below zero: p added back (the mask picks p or zero).
-    immut back = zeroNumber(count)
-    immut nothing = zeroNumber(count)
-    select(back, m.limbs, nothing, count, borrow)
-    addInPlace(difference, back, count)
-    memcpy(out, difference, count * 8)
-    free(nothing)
-    free(back)
-    free(difference)
+    // Below zero: p added back (the mask keeps p or makes it zero).
+    immut mask = 0 - borrow
+    mut carry: U128 = 0
+
+    for i in range(count) {
+        immut total = wordOf(difference, i) + wide(limb(m.limbs, i) & mask, 0) + carry
+        setLimb(out, i, lowWord(total))
+        carry = total >> 64
+    }
 }
 
 // Into the form of Montgomery (a R modulo p), and back out of it.
@@ -311,7 +316,9 @@ extern function koji_modular_power(base: Address, exponent: Address, exponentSiz
     fromForm(m, a, form, t)
     toBytes(a, m.count, out, size)
 
-    for each in [t, a, form, m.limbs, m.squared] {
+    freeModulus(m)
+
+    for each in [t, a, form] {
         free(each)
     }
 }

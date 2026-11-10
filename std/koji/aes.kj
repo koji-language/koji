@@ -6,7 +6,7 @@
 // counter blocks, the hash of the additional data, the ciphertext and their sizes, and the tag
 // (compared with no early exit).
 
-import { Address, CInt, CSize, allocate, free, offset, read, write } from 'koji:unsafe'
+import { Address, CInt, CSize, allocate, free, nullAddress, offset, read, write } from 'koji:unsafe'
 
 extern function memcpy(target: Address, source: Address, size: CSize): Address
 extern function memset(target: Address, value: CInt, size: CSize): Address
@@ -41,6 +41,11 @@ export function keyOf(key: Address, size: int): AesKey {
     memset(h, 0, 16)
     free(h)
     return { schedule: schedule, rounds: rounds, table: table }
+}
+
+// No key (for a connection whose suite is not AES).
+export function emptyKey(): AesKey {
+    return { schedule: nullAddress(), rounds: 0, table: nullAddress() }
 }
 
 // The memory of a key, cleared and given back.

@@ -342,3 +342,105 @@ int main(int argc, char **argv) {
     std::fs::write(&anchors, "-----BEGIN CERTIFICATE-----\nMIIBGjCBwaADAgECAgID6TAKBggqhkjOPQQDAjAMMQowCAYDVQQDDAFSMB4XDTI2\nMDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowDDEKMAgGA1UEAwwBUjBZMBMGByqG\nSM49AgEGCCqGSM49AwEHA0IABKaUqnUoyOOJx+Ml2oTgGp+2hT4CmbNCd8Tj79zV\nxUKd4knn5zX/DIenCaKcYmL04u1Louj7LxLwwdQXwwV1Xs+jEzARMA8GA1UdEwEB\n/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgcMw+vHsAOD3jFO3b649LvDdIe1le\nuZHwuPSqkv3xexICIQDgM7Eu/0hdcghpiKJwV1e7I8VeIHyn2Trh1UIbweclnw==\n-----END CERTIFICATE-----").unwrap();
     assert_eq!(run_c_with("x509", &source, &[anchors.to_str().unwrap(), empty.to_str().unwrap()]), "0 0 0 0 5 5 5 2 3 4\n118 3 1 0\n");
 }
+
+/// TLS 1.3 sessions recorded with `openssl s_server` (test/tls/: what the server sent, `.server`, and
+/// what the client sent, `.client`), the client's random bytes made from a seed and the time fixed:
+/// X25519 with AES-128-GCM (a P-256 key); P-256 by a HelloRetryRequest with ChaCha20-Poly1305, an RSA
+/// key and a CertificateRequest; P-384 by a HelloRetryRequest with AES-256-GCM (a P-384 key). Replayed
+/// through a socketpair, each must end with the page and close_notify, the client sending exactly what
+/// it sent then; truncated or altered, each must fail cleanly.
+#[test]
+fn tls_sessions() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("test").join("tls");
+    let source = format!(
+        "{}{}",
+        PRELUDE,
+        r#"
+#include <unistd.h>
+#include <sys/socket.h>
+int64_t koji_tls_connect_with(int64_t, const void *, const void *, int64_t, void *);
+int64_t koji_tls_send(int64_t, const void *, int64_t);
+int64_t koji_tls_receive(int64_t, void *, int64_t);
+int64_t koji_tls_problem(int64_t);
+void koji_tls_close(int64_t);
+void koji_tls_test_replay(int64_t, int64_t);
+static unsigned char *load(const char *directory, const char *name, long *size) {
+    char path[4096]; snprintf(path, sizeof path, "%s/%s", directory, name);
+    FILE *f = fopen(path, "rb"); fseek(f, 0, SEEK_END); *size = ftell(f); rewind(f);
+    unsigned char *b = malloc(*size + 1); if (fread(b, 1, *size, f) != (size_t)*size) exit(2); fclose(f); return b;
+}
+/* The session replayed: 0 as recorded, 1 the handshake refused, 2 a record refused, 3 other bytes. */
+static int replay(unsigned char *server, long serverSize, unsigned char *client, long clientSize, long seed, const char *pem, long pemSize, int show) {
+    int sv[2]; socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+    if (write(sv[1], server, serverSize) != serverSize) exit(3);
+    shutdown(sv[1], SHUT_WR);
+    koji_tls_test_replay(seed, 1794290181);
+    int64_t problem = 0, h = koji_tls_connect_with(sv[0], "localhost", pem, pemSize, &problem);
+    int result = 0;
+    if (h == 0) result = 1;
+    else {
+        const char *request = "GET /hello.txt HTTP/1.0\r\nHost: localhost\r\n\r\n";
+        koji_tls_send(h, request, strlen(request));
+        char buffer[4096]; long total = 0; int64_t got;
+        while ((got = koji_tls_receive(h, buffer + total, sizeof buffer - total - 1)) > 0) total += got;
+        buffer[total] = 0;
+        if (got < 0) result = 2;
+        else if (show) printf("%s", strstr(buffer, "\r\n\r\n") + 4);
+        koji_tls_close(h);
+    }
+    close(sv[0]);
+    static unsigned char sent[100000]; long n = 0, r;
+    while ((r = read(sv[1], sent + n, sizeof sent - n)) > 0) n += r;
+    close(sv[1]);
+    if (result == 0 && (n != clientSize || memcmp(sent, client, n) != 0)) result = 3;
+    return result;
+}
+bool koji_aes_gcm_seal(const void *, size_t, const void *, const void *, size_t, const void *, size_t, void *);
+int main(int argc, char **argv) {
+    koji_init(argc, argv);
+    unsigned char key[16] = {0}, out[16];
+    bool aes = koji_aes_gcm_seal(key, 16, key, key, 0, key, 0, out);
+    long ps; char *pem = (char *)load(argv[1], "root.pem", &ps);
+    const char *names[] = {"aes128", "chacha", "aes256"};
+    for (int i = 0; i < 3; i++) {
+        /* Without the instructions of AES, the client offers only ChaCha20-Poly1305: the recordings
+           of AES do not apply. */
+        if (!aes && i != 1) { printf("Hello from a recorded TLS 1.3 session.\n0 0 0\n"); continue; }
+        char file[64]; long ss, cs;
+        snprintf(file, sizeof file, "%s.server", names[i]); unsigned char *server = load(argv[1], file, &ss);
+        snprintf(file, sizeof file, "%s.client", names[i]); unsigned char *client = load(argv[1], file, &cs);
+        printf("%d", replay(server, ss, client, cs, i + 1, pem, ps, 1) == 0 ? 0 : 9);
+        /* Every 17th truncation, and 100 sessions with 1 to 3 bytes changed: never as recorded but
+           where the bytes changed are those TLS ignores (the version in the header of a record in
+           the clear). */
+        int truncatedGood = 0, changedGood = 0;
+        for (long cut = 0; cut < ss; cut += 17) truncatedGood += replay(server, cut, client, cs, i + 1, pem, ps, 0) == 0;
+        srand(i);
+        /* The bytes TLS ignores: the version in the header of each record in the clear. */
+        bool *ignored = calloc(ss, 1);
+        for (long at = 0; at + 5 <= ss; at += 5 + (server[at + 3] << 8 | server[at + 4]))
+            if (server[at] != 23) ignored[at + 1] = ignored[at + 2] = true;
+        unsigned char *changed = malloc(ss);
+        for (int t = 0; t < 100; t++) {
+            memcpy(changed, server, ss);
+            int count = 1 + rand() % 3;
+            bool onlyIgnored = true;
+            for (int j = 0; j < count; j++) {
+                long at = rand() % ss;
+                changed[at] ^= (unsigned char)(1 + rand() % 255);
+                if (!ignored[at]) onlyIgnored = false;
+            }
+            changedGood += replay(changed, ss, client, cs, i + 1, pem, ps, 0) == 0 && !onlyIgnored;
+        }
+        printf(" %d %d\n", truncatedGood, changedGood);
+        free(ignored); free(changed); free(server); free(client);
+    }
+    return 0;
+}
+"#
+    );
+    assert_eq!(
+        run_c_with("tls", &source, &[directory.to_str().unwrap()]),
+        "Hello from a recorded TLS 1.3 session.\n0 0 0\n".repeat(3)
+    );
+}

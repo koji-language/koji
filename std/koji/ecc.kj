@@ -16,8 +16,8 @@ immut p256Text = 'ffffffff00000001000000000000000000000000ffffffffffffffffffffff
 immut p384Text = 'fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffffb3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aefffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab73617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f'
 immut p521Text = '01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0051953eb9618e1c9a1f929a21a0b68540eea2da725b99b315f3b8b489918ef109e156193951ec7e937b1652c0bd3bb1bf073573df883d2c34f1ef451fd46b503f0001fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e9138640900c6858e06b70404e9cd9e3ecb662395b4429c648139053fb521f828af606b4d3dbaa14b5e77efe75928fe1dc127a2ffa8de3348b3c1856a429bf97e7e31c2e5bd66011839296a789a3bc0045c8a5fb42c7d1bd998f54449579b446817afbd17273e662c97ee72995ef42640c550b9013fad0761353c7086a272c24088be94769fd16650'
 
-// A curve: its field and its order, b and the generator in the form of Montgomery, and the bytes of
-// a coordinate.
+// A curve: its field and its order, b and the generator in the form of Montgomery, the bytes of a
+// coordinate, and the eight numbers the formulas of points work in (the library has one thread).
 export type Curve = {
     field: Modulus
     order: Modulus
@@ -25,6 +25,7 @@ export type Curve = {
     gx: Address
     gy: Address
     size: int
+    work: Address
 }
 
 // The curves, made the first time they are needed (an empty list before).
@@ -57,7 +58,7 @@ function makeCurve(text: string, size: int): Curve {
     immut gy = formOf(field, offset(bytes, 4 * size), size, t)
     free(t)
     free(bytes)
-    return { field: field, order: order, b: b, gx: gx, gy: gy, size: size }
+    return { field: field, order: order, b: b, gx: gx, gy: gy, size: size, work: zeroNumber(8 * (field.count + 1)) }
 }
 
 function hexDigit(digits: Address, at: int): int {
@@ -92,14 +93,14 @@ function addPoints(curve: Curve, out: Address, a: Address, b: Address, t: Addres
     immut x2 = coordinate(b, 0, count)
     immut y2 = coordinate(b, 1, count)
     immut z2 = coordinate(b, 2, count)
-    immut t0 = zeroNumber(count)
-    immut t1 = zeroNumber(count)
-    immut t2 = zeroNumber(count)
-    immut t3 = zeroNumber(count)
-    immut t4 = zeroNumber(count)
-    immut x3 = zeroNumber(count)
-    immut y3 = zeroNumber(count)
-    immut z3 = zeroNumber(count)
+    immut t0 = workNumber(curve, 0)
+    immut t1 = workNumber(curve, 1)
+    immut t2 = workNumber(curve, 2)
+    immut t3 = workNumber(curve, 3)
+    immut t4 = workNumber(curve, 4)
+    immut x3 = workNumber(curve, 5)
+    immut y3 = workNumber(curve, 6)
+    immut z3 = workNumber(curve, 7)
     multiply(f, t0, x1, x2, t)
     multiply(f, t1, y1, y2, t)
     multiply(f, t2, z1, z2, t)
@@ -146,10 +147,65 @@ function addPoints(curve: Curve, out: Address, a: Address, b: Address, t: Addres
     memcpy(coordinate(out, 0, count), x3, count * 8)
     memcpy(coordinate(out, 1, count), y3, count * 8)
     memcpy(coordinate(out, 2, count), z3, count * 8)
+}
 
-    for each in [t0, t1, t2, t3, t4, x3, y3, z3] {
-        free(each)
-    }
+// The number `i` (0 to 7) of the curve's work space.
+function workNumber(curve: Curve, i: int): Address {
+    return offset(curve.work, i * (curve.field.count + 1) * 8)
+}
+
+// out = 2 a (complete, out may be a): algorithm 6 of Renes, Costello and Batina (a = -3), 8
+// products and 3 squares where the addition takes 12 and 2.
+function doublePoint(curve: Curve, out: Address, a: Address, t: Address) {
+    immut f = curve.field
+    immut count = f.count
+    immut x = coordinate(a, 0, count)
+    immut y = coordinate(a, 1, count)
+    immut z = coordinate(a, 2, count)
+    immut t0 = workNumber(curve, 0)
+    immut t1 = workNumber(curve, 1)
+    immut t2 = workNumber(curve, 2)
+    immut t3 = workNumber(curve, 3)
+    immut x3 = workNumber(curve, 5)
+    immut y3 = workNumber(curve, 6)
+    immut z3 = workNumber(curve, 7)
+    multiply(f, t0, x, x, t)
+    multiply(f, t1, y, y, t)
+    multiply(f, t2, z, z, t)
+    multiply(f, t3, x, y, t)
+    addModulo(f, t3, t3, t3)
+    multiply(f, z3, x, z, t)
+    addModulo(f, z3, z3, z3)
+    multiply(f, y3, curve.b, t2, t)
+    subtractModulo(f, y3, y3, z3)
+    addModulo(f, x3, y3, y3)
+    addModulo(f, y3, x3, y3)
+    subtractModulo(f, x3, t1, y3)
+    addModulo(f, y3, t1, y3)
+    multiply(f, y3, x3, y3, t)
+    multiply(f, x3, x3, t3, t)
+    addModulo(f, t3, t2, t2)
+    addModulo(f, t2, t2, t3)
+    multiply(f, z3, curve.b, z3, t)
+    subtractModulo(f, z3, z3, t2)
+    subtractModulo(f, z3, z3, t0)
+    addModulo(f, t3, z3, z3)
+    addModulo(f, z3, z3, t3)
+    addModulo(f, t3, t0, t0)
+    addModulo(f, t0, t3, t0)
+    subtractModulo(f, t0, t0, t2)
+    multiply(f, t0, t0, z3, t)
+    addModulo(f, y3, y3, t0)
+    multiply(f, t0, y, z, t)
+    addModulo(f, t0, t0, t0)
+    multiply(f, z3, t0, z3, t)
+    subtractModulo(f, x3, x3, z3)
+    multiply(f, z3, t0, t1, t)
+    addModulo(f, z3, z3, z3)
+    addModulo(f, z3, z3, z3)
+    memcpy(coordinate(out, 0, count), x3, count * 8)
+    memcpy(coordinate(out, 1, count), y3, count * 8)
+    memcpy(coordinate(out, 2, count), z3, count * 8)
 }
 
 // The point at infinity, (0 : 1 : 0), in the form of Montgomery.
@@ -179,7 +235,7 @@ function multiplyPoint(curve: Curve, out: Address, scalar: Address, size: int, p
         mut bit = 7
 
         while (bit >= 0) {
-            addPoints(curve, result, result, result, t)
+            doublePoint(curve, result, result, t)
             addPoints(curve, sum, result, point, t)
             select(result, sum, result, 3 * count, (int(b) >> bit) & 1)
             bit -= 1
@@ -364,12 +420,33 @@ export function verify(which: int, digest: Address, digestSize: int, r: Address,
         immut bytes2 = allocate(curve.size)
         toBytes(u1, count, bytes1, curve.size)
         toBytes(u2, count, bytes2, curve.size)
+        // u1 G + u2 Q in one pass (Shamir's trick: public numbers, no need of the same steps for
+        // every scalar): a doubling for each bit, and G, Q or G + Q added for the bits set.
         immut g = generator(curve)
-        immut a = newPoint(count)
         immut b = newPoint(count)
-        multiplyPoint(curve, a, bytes1, curve.size, g, t)
-        multiplyPoint(curve, b, bytes2, curve.size, q, t)
-        addPoints(curve, a, a, b, t)
+        addPoints(curve, b, g, q, t)
+        immut a = newPoint(count)
+        setInfinity(curve, a, t)
+
+        for i in range(curve.size) {
+            immut first: byte = read(bytes1, i)
+            immut second: byte = read(bytes2, i)
+            mut bit = 7
+
+            while (bit >= 0) {
+                doublePoint(curve, a, a, t)
+                immut chosen = ((int(first) >> bit) & 1) + 2 * ((int(second) >> bit) & 1)
+
+                if (chosen == 1) { addPoints(curve, a, a, g, t) }
+
+                if (chosen == 2) { addPoints(curve, a, a, q, t) }
+
+                if (chosen == 3) { addPoints(curve, a, a, b, t) }
+
+                bit -= 1
+            }
+        }
+
         immut x = allocate(curve.size)
         immut y = allocate(curve.size)
 
