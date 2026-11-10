@@ -51,6 +51,15 @@ KojiString *koji_string_concat(const KojiString *a, const KojiString *b);
 /* `a + b`, taking the reference to `a`: adds to it in place when no one else sees it. */
 KojiString *koji_string_append(KojiString *a, const KojiString *b);
 KojiString *koji_string_append_char(KojiString *a, uint32_t code);
+/* `a + c` for a char, taking `a`: an ASCII char goes in place, inline, when no one else sees `a`
+   and its block has room (a string built char by char); the library does the rest. */
+KOJI_INLINE KojiString *koji_string_push_char(KojiString *a, uint32_t code) {
+    if (code < 0x80 && a->references == 1 && a->length < a->capacity) {
+        a->bytes[a->length++] = (char)code;
+        return a;
+    }
+    return koji_string_append_char(a, code);
+}
 KojiString *koji_string_repeat(const KojiString *string, int64_t count);
 bool koji_string_equal(const KojiString *a, const KojiString *b);
 int32_t koji_string_compare(const KojiString *a, const KojiString *b);
@@ -141,6 +150,13 @@ KOJI_INLINE int64_t koji_list_length(const KojiList *list) { return (int64_t)lis
 KOJI_INLINE const void *koji_list_get(const KojiList *list, int64_t index, const char *location) {
     if ((uint64_t)index >= list->length) koji_list_index_panic(index, (int64_t)list->length, location);
     return &list->items[(size_t)index * list->stride];
+}
+
+/* The same when the generated code knows the words of an item (its stride: 2 for a decimal or a
+   U128, else 1), a constant the C compiler folds. */
+KOJI_INLINE const void *koji_list_at(const KojiList *list, int64_t index, size_t words, const char *location) {
+    if ((uint64_t)index >= list->length) koji_list_index_panic(index, (int64_t)list->length, location);
+    return &list->items[(size_t)index * words];
 }
 
 void *koji_list_slot(const void *variable, int64_t index, const char *location);

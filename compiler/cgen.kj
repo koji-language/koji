@@ -1050,7 +1050,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                     match (self.movable(routine, left)) {
                         Some(local) if (left != right and dest != local and right == LocalOp(self.charLocal)) => {
                             self.charLocal = -1
-                            self.setLocal(routine, dest, `koji_string_append_char(l${local}, ${self.charValue})`)
+                            self.setLocal(routine, dest, `koji_string_push_char(l${local}, ${self.charValue})`)
                             self.line(`    l${local} = NULL;`)
                             return
                         }
@@ -1187,7 +1187,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
         }
         ListGetIns(dest, list, index, line) => {
             immut ty = routine.locals[dest].ty
-            immut item = `*(${cType(ty)} const *)koji_list_get(${operand(list)}, ${operand(index)}, ${self.location(line)})`
+            immut item = `*(${cType(ty)} const *)koji_list_at(${operand(list)}, ${operand(index)}, ${words(ty)}, ${self.location(line)})`
 
             // Borrowed: the list keeps the item alive (borrow.kj).
             if (self.current[dest]) {
@@ -1533,6 +1533,15 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             self.line(`    if (${operand(step)} == 0) koji_panic(${self.location(line)}, "range() step cannot be 0");`)
         }
         RangeNextIns(hasValue, value, next, end, step, done) => {
+            // A step of 1 (`range(n)`, `range(a, b)`): `next + 1` cannot overflow when `next < end`,
+            // so the loop needs no flag of its end: a plain C loop, which the C compiler unrolls and
+            // vectorizes.
+            if (step == IntOp(1)) {
+                self.line(`    l${hasValue} = l${next} < ${operand(end)};`)
+                self.line(`    if (l${hasValue}) { l${value} = l${next}; l${next} += 1; }`)
+                return
+            }
+
             self.line(`    l${hasValue} = koji_range_next(&l${next}, ${operand(end)}, ${operand(step)}, &l${done}, &l${value});`)
         }
     }
