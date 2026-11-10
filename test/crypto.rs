@@ -1,7 +1,8 @@
 //! The cryptography of the library written in Koji (std/koji/sha.kj, chacha.kj, x25519.kj, bignum.kj,
-//! ecc.kj, rsa.kj), which TLS is made of: a program of C linked with the runtime calls its functions by
-//! their names, on the vectors of the standards (FIPS 180-4, RFC 4231, RFC 5869, RFC 8439, RFC 7748)
-//! and on keys and signatures made by OpenSSL (P-256, P-384, RSA).
+//! ecc.kj, rsa.kj, aes.kj), which TLS is made of: a program of C linked with the runtime calls its
+//! functions by their names, on the vectors of the standards (FIPS 180-4, RFC 4231, RFC 5869, RFC
+//! 8439, RFC 7748, the test cases of GCM) and on keys and signatures made by OpenSSL (P-256, P-384,
+//! RSA).
 
 use std::path::Path;
 use std::process::Command;
@@ -218,5 +219,55 @@ int main(int argc, char **argv) {
          042975eaf65bfb82cebe69bb231b2c2dc900dcb2de3f36184df4a9b6cb670956a6cb03d23f9d0071893f9d88eb7d518dc55e9828e747526ca6c8c6832578c67afa981a8d1e20b12057d051e036cfab11bb7db7655345550818b642ce2603b266d4\n\
          1 e5b7eaa07cc57d33f3c635a8a581b33f8397fc55b6edc10d8028e3fb11b57837dc036f20ab250205cdf88a654eea3880\n0\n1 0 0\n\
          1 1 0 0 0 0 0\n"
+    );
+}
+
+#[test]
+fn aes_gcm() {
+    let source = format!(
+        "{}{}",
+        PRELUDE,
+        r#"
+bool koji_aes_gcm_seal(const void *, size_t, const void *, const void *, size_t, const void *, size_t, void *);
+bool koji_aes_gcm_open(const void *, size_t, const void *, const void *, size_t, const void *, size_t, void *);
+int main(int argc, char **argv) {
+    koji_init(argc, argv);
+    unsigned char key[32], nonce[12], reversed[12], aad[20], text[300], sealed[316], opened[300];
+    unhex("feffe9928665731c6d6a8f9467308308", key, 16);
+    memcpy(key + 16, key, 16);
+    unhex("cafebabefacedbaddecaf888", nonce, 12);
+    for (int i = 0; i < 12; i++) reversed[i] = nonce[11 - i];
+    unhex("feedfacedeadbeeffeedfacedeadbeefabaddad2", aad, 20);
+    unhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72"
+          "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255", text, 64);
+    /* Processors without the instructions: no AES-GCM (TLS offers ChaCha20-Poly1305 alone). */
+    if (!koji_aes_gcm_seal(key, 16, nonce, aad, 0, text, 64, sealed)) { printf("unavailable\n"); return 0; }
+    hex(sealed + 64, 16);
+    koji_aes_gcm_seal(key, 16, nonce, aad, 20, text, 60, sealed); hex(sealed + 60, 16);
+    koji_aes_gcm_seal(key, 32, nonce, aad, 20, text, 60, sealed); hex(sealed, 76);
+    bool good = koji_aes_gcm_open(key, 32, nonce, aad, 20, sealed, 76, opened);
+    printf("%d %d", good, memcmp(opened, text, 60) == 0);
+    sealed[70] ^= 4;
+    printf(" %d", koji_aes_gcm_open(key, 32, nonce, aad, 20, sealed, 76, opened));
+    printf(" %d\n", koji_aes_gcm_open(key, 32, nonce, aad, 20, sealed, 15, opened));
+    for (int i = 0; i < 300; i++) text[i] = (unsigned char)i;
+    koji_aes_gcm_seal(key, 32, reversed, aad, 13, text, 300, sealed); hex(sealed + 268, 48);
+    good = koji_aes_gcm_open(key, 32, reversed, aad, 13, sealed, 316, opened);
+    printf("%d %d\n", good, memcmp(opened, text, 300) == 0);
+    return 0;
+}
+"#
+    );
+    let output = run_c("aes", &source);
+    if output == "unavailable\n" {
+        eprintln!("this processor has no AES instructions: AES-GCM not tested");
+        return;
+    }
+    assert_eq!(
+        output,
+        "4d5c2af327cd64a62cf35abd2ba6fab4\n5bc94fbc3221a5db94fae95ae7121a47\n\
+         522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f66276fc6ece0f4e1768cddf8853bb2d551b\n\
+         1 1 0 0\n\
+         7dde0511dce08fa91e10d77f1d868b803e45310fba6585c0bdc8091b8ea29acc0aa323a54e990c68cd4cc6d101843915\n1 1\n"
     );
 }
