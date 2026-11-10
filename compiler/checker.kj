@@ -407,7 +407,7 @@ function Checker.builtinSumId(self, name: string): int {
 function Checker.prelude(self): Scope {
     mut scope = emptyScope()
 
-    for name in ['print', 'printError', 'input', 'range', 'int', 'float', 'decimal', 'string', 'char', 'byte', 'panic'] {
+    for name in ['print', 'printError', 'input', 'range', 'int', 'float', 'decimal', 'string', 'char', 'byte', 'panic', 'assert'] {
         scope.vars[name] = builtinSymbol(name)
     }
 
@@ -2348,6 +2348,7 @@ function isTemporary(node: Node): boolean {
         ObjectLiteral(_) => true
         ListLiteral(_) => true
         Try(value) => isTemporary(value)
+        Asserted(_, call) => isTemporary(call)
         _ => false
     }
 }
@@ -3383,6 +3384,7 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
         }
         Block(_) => return self.checkBlock(node, expected, [])
         Try(value) => return self.checkTry(node, value)
+        Asserted(_, call) => return self.checkExpression(call, expected)
         _ => return self.checkStatement(node, expected)
     }
 }
@@ -4817,6 +4819,15 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         'panic' => {
             self.checkExactly(name, types, [s])?
             return Ok(NeverType)
+        }
+        // `assert(condition)` or `assert(condition, message)`.
+        'assert' => {
+            self.arity(name, types, 1, 2)?
+            self.expectArg(name, 0, BooleanType, types[0])?
+
+            if (types.length() > 1) { self.expectArg(name, 1, s, types[1])? }
+
+            return Ok(VoidType)
         }
         'input' => {
             self.arity(name, types, 0, 1)?

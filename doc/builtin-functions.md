@@ -10,6 +10,7 @@ These functions are available in every file, without `import`.
 | `range(...)` | A list of consecutive integers |
 | `int(x)`, `float(x)`, `decimal(x)`, `string(x)`, `char(code)`, `byte(n)` | Conversions |
 | `panic(message)` | Stops the program |
+| `assert(condition, message)` | Stops the program when the condition is false |
 
 ## `print`
 
@@ -108,3 +109,20 @@ function check(age: int): int {
 ```
 
 A panic cannot be caught: Koji has no `try` / `catch`. Index out of range, division by zero and overflow also panic (see [Error Handling](error-handling.md)).
+
+## `assert`
+
+`assert(condition)` or `assert(condition, message)`: panics when the condition is false, with the condition as it was written, the message, and for a comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`) the values of its two sides (as `debug()` shows them). Each side is computed once.
+
+```koji
+immut total = [2, 3, 4].length()
+assert(total == 4, 'three items and one more')
+```
+
+```
+panic: main.kj:2: assertion failed: total == 4 (three items and one more)
+  left:  3
+  right: 4
+```
+
+It is what [tests](testing.md) check with, and works in any program. A program may declare its own function named `assert`, which then takes its place.

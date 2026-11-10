@@ -117,6 +117,9 @@ export type NodeKind = {
     ImportModule(name: string, path: string)
     ImportNames(names: string[], path: string)
     Try(value: Node)
+    // A call of `assert` (the built-in one, unless the program has its own), with the text of its
+    // condition as written, which a failure shows.
+    Asserted(text: string, call: Node)
     // `opaque`: other modules use the type, but do not see its structure.
     Export(declaration: Node, opaque: boolean)
     // `extern function name(...) { ... }`: a function of Koji that C calls by its name (the library
@@ -142,6 +145,8 @@ immut powerPower = 13
 
 type Parser = {
     tokens: Spanned[]
+    // The characters of the source (for the text of an `assert`; none inside an interpolation).
+    source: char[]
     position: int
     // How many loops and functions enclose the current point (for `break` and `return`).
     loopDepth: int
@@ -170,8 +175,8 @@ export function describe(token: Token): string {
     }
 }
 
-function Parser.create(tokens: Spanned[]): Parser {
-    return { tokens: tokens, position: 0, loopDepth: 0, functionDepth: 0, newlineEndsExpression: false, nextId: 0 }
+function Parser.create(tokens: Spanned[], source: char[]): Parser {
+    return { tokens: tokens, source: source, position: 0, loopDepth: 0, functionDepth: 0, newlineEndsExpression: false, nextId: 0 }
 }
 
 function Parser.node(mut self, kind: NodeKind): Node {
@@ -325,6 +330,9 @@ function Parser.locatedStatement(mut self): Result[Node, string] {
 }
 
 function Parser.statement(mut self): Result[Node, string] {
+    // A test is read by the loop of the top level: here it is inside a block.
+    if (self.startsTest()) { return Err(self.failure("a test can only be at the top level of a file")) }
+
     // `extern function`: `extern` is a name anywhere else.
     if (self.current() == Identifier('extern') and self.peek() == Keyword('function')) { return self.externDeclaration() }
 
@@ -1099,11 +1107,87 @@ function Parser.call(mut self, callee: Node): Result[Node, string] {
     self.advance()
     immut saved = self.newlineEndsExpression
     self.newlineEndsExpression = false
-    immut args = self.arguments()
+    immut asserting = match (callee.kind) {
+        Name(name) => name == 'assert' and not self.isSymbol(')')
+        _ => false
+    }
+    immut first = self.tokens[self.position].start
+    mut last = first
+    immut args = if (asserting) { self.assertArguments(mut last) } else { self.arguments() }
     self.newlineEndsExpression = saved
     immut values = args?
     self.expectSymbol(')', "')' at the end of the arguments")?
-    return Ok(self.node(Call(callee, values)))
+    immut call = self.node(Call(callee, values))
+
+    if (not asserting) { return Ok(call) }
+
+    return Ok(self.node(Asserted(self.sourceText(first, last), call)))
+}
+
+// The arguments of `assert`, and where its first one (the condition) ends, in `last`.
+function Parser.assertArguments(mut self, mut last: int): Result[Node[], string] {
+    mut args = [self.argument()?]
+    last = self.tokens[self.position - 1].end
+
+    while (self.another(')')) {
+        args.push(self.argument()?)
+    }
+
+    return Ok(args)
+}
+
+// `test 'name' { ... }` at the top level of a file: `test`, a word only there, then a string.
+function Parser.startsTest(self): boolean {
+    if (self.current() != Identifier('test')) { return false }
+
+    return match (self.peek()) {
+        StringLiteral(_) => true
+        _ => false
+    }
+}
+
+// A test: a function of its own, named `test 'name'` (no program can name one so), which only
+// `kojic test` calls. Its name is unique in its file.
+function Parser.test(mut self, mut tests: Set[string]): Result[Node, string] {
+    immut line = self.currentLine()
+    self.advance()
+    immut name = match (self.current()) {
+        StringLiteral(value) => value
+        _ => ''
+    }
+
+    if (tests.has(name)) { return Err(self.failure(`a test named '${name}' is already in this file`)) }
+
+    tests.add(name)
+    self.advance()
+
+    if (not self.isSymbol('{')) { return Err(self.failure("expected '{' after the name of the test")) }
+
+    immut body = self.functionBody(true)?
+    return Ok(self.node(Located(line, self.node(FunctionDecl(testName(name), None, [], [], None, body)))))
+}
+
+// The name of the function of a test.
+export function testName(name: string): string {
+    return `test ${name.debug()}`
+}
+
+// Whether a function is a test (its name is not an identifier).
+export function isTestName(name: string): boolean {
+    return name.startsWith('test \'')
+}
+
+// The characters of the source from `start` to `end` (none inside an interpolation).
+function Parser.sourceText(self, start: int, end: int): string {
+    mut text = ''
+
+    if (end > self.source.length()) { return text }
+
+    for i in range(start, end) {
+        text += string(self.source[i])
+    }
+
+    return text
 }
 
 function Parser.arguments(mut self): Result[Node[], string] {
@@ -1397,10 +1481,10 @@ function Parser.interpolation(mut self, source: string, line: int): Result[Node,
     mut tokens: Spanned[] = []
 
     for spanned in tokenize(source) {
-        tokens.push({ token: spanned.token, line: 0, column: 0 })
+        tokens.push({ token: spanned.token, line: 0, column: 0, start: 0, end: 0 })
     }
 
-    mut parser = Parser.create(tokens)
+    mut parser = Parser.create(tokens, [])
     parser.nextId = self.nextId
     immut result = parser.expression(0)
     self.nextId = parser.nextId
@@ -1442,14 +1526,20 @@ export function parseFrom(source: string, firstId: int): Result[ParsedFile, stri
         }
     }
 
-    mut parser = Parser.create(tokens)
+    mut parser = Parser.create(tokens, source.chars())
     parser.nextId = firstId
     mut statements: Node[] = []
+    mut tests: Set[string] = Set.from([])
 
     while (true) {
         parser.skipSemicolons()
 
         if (parser.current() == End) { break }
+
+        if (parser.startsTest()) {
+            statements.push(parser.test(mut tests)?)
+            continue
+        }
 
         if (parser.isKeyword('export')) {
             statements.push(parser.export()?)
@@ -1625,6 +1715,8 @@ export function annotated(node: Node, a: (Node) => string): string {
         Located(line, statement) => `(at ${line} ${annotated(statement, a)})`
         Export(declaration, opaque) => `(export ${if (opaque) { 'opaque ' } else { '' }}${annotated(declaration, a)})`
         ForC(declaration) => `(for-c ${annotated(declaration, a)})`
+        // The call of `assert` as it was written.
+        Asserted(_, call) => annotated(call, a)
         _ => `${plain(node, a)}${a(node)}`
     }
 }
@@ -1698,6 +1790,7 @@ function plain(node: Node, a: (Node) => string): string {
         ImportModule(name, path) => return `(import ${name} ${path.debug()})`
         ImportNames(names, path) => return `(import (${names.join(' ')}) ${path.debug()})`
         Try(value) => return `(try ${annotated(value, a)})`
+        Asserted(_, call) => return plain(call, a)
         Export(declaration, opaque) => return `(export ${if (opaque) { 'opaque ' } else { '' }}${annotated(declaration, a)})`
         ForC(declaration) => return `(for-c ${annotated(declaration, a)})`
         Located(line, statement) => return `(at ${line} ${annotated(statement, a)})`

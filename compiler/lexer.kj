@@ -22,11 +22,14 @@ export type Token = {
     End
 }
 
-// A token and where it starts.
+// A token, where it starts (its line and column), and the characters it takes in the source
+// (`start` to `end`: the text of an `assert` is shown from them).
 export type Spanned = {
     token: Token
     line: int
     column: int
+    start: int
+    end: int
 }
 
 type Lexer = {
@@ -400,8 +403,9 @@ export function tokenize(source: string): Spanned[] {
         lexer.skipSpace()
         immut line = lexer.line
         immut column = lexer.column
+        immut start = lexer.position
         immut token = lexer.token()
-        tokens.push({ token: token, line: line, column: column })
+        tokens.push({ token: token, line: line, column: column, start: start, end: lexer.position })
 
         if (token == End) { break }
     }

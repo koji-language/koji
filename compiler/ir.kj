@@ -214,6 +214,15 @@ export type IrProgram = {
     // The library of the runtime written in Koji (`kojic dump library`): no `main`, but
     // `koji_library_init`, which the runtime calls first.
     library: boolean
+    // `kojic test`: the tests of the main file (the program runs the one its last argument names).
+    testing: boolean
+    tests: IrTest[]
+}
+
+// A test (`test 'name' { ... }`): its function, named `test 'name'`.
+export type IrTest = {
+    name: string
+    function: int
 }
 
 export type IrForC = {

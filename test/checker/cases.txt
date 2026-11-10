@@ -944,3 +944,20 @@ match (decimal(1)) {
     1.5 => print(1)
     _ => print(2)
 }
+----
+assert(1 + 1 == 2, 'arithmetic')
+
+test 'checked like a function' {
+    immut x: int = 3
+    assert(x > 2)
+}
+----
+assert(3)
+----
+assert(true, 4)
+----
+function assert(value: int) {
+    print(value)
+}
+
+assert(5)

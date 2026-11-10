@@ -80,6 +80,7 @@ The message gives the file and the line of the error.
 | `kojic run <file.kj> [arguments]` | Checks and runs a program; the arguments after the file are for the program (`system.args()`) |
 | `kojic check <file.kj>` | Only checks syntax and types |
 | `kojic build <file.kj> [-o <output>]` | Compiles a program to an executable (needs a C compiler) |
+| `kojic test [file.kj \| directory]...` | Runs the tests of files, the `test` blocks (see [Testing](testing.md)) |
 | `kojic help` | Shows the available commands |
 
 `kojic build` compiles a program to a native executable, through C. `kojic run` does the same in a temporary file, runs it with the arguments and the input of `kojic`, and ends with its exit code.

@@ -195,3 +195,13 @@ import math
 immut a: decimal = 1.25
 immut b = a * 3 - 0.5
 print(b, b / 7, b % 2, b ** 3, -b, b > 1, int(b), float(b), decimal(2.5), math.sqrt(b), math.round(b))
+----
+// `assert`: a comparison keeps its two sides for the message; tests are left out of a program.
+immut values = [3, 4]
+assert(values.length() == 2)
+assert(values[0] < values[1], 'in order')
+assert(not (5 in values))
+
+test 'never in the program' {
+    assert(false)
+}

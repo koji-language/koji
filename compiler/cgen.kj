@@ -319,6 +319,9 @@ function Generator.generateProgram(mut self) {
         self.line('void koji_library_init(void) {')
     } else {
         self.line('int main(int argc, char **argv) {')
+
+        if (self.program.testing) { self.line('    koji_test_selected = koji_test_argument(&argc, argv);') }
+
         self.line('    koji_init(argc, (const char *const *)argv);')
     }
 
@@ -480,7 +483,8 @@ function signature(id: int, routine: IrFunction, inlined: boolean): string {
 
     immut list = if (params.length() == 0) { 'void' } else { params.join(', ') }
     immut inline = if (inlined) { 'KOJI_INLINE' } else { 'static' }
-    return `${inline} ${cType(routine.returns)} ${functionName(id)}(${list}) /* ${routine.name} */`
+    // In a comment: the name of a test may hold `*/`.
+    return `${inline} ${cType(routine.returns)} ${functionName(id)}(${list}) /* ${routine.name.replace('*/', '* /')} */`
 }
 
 // The functions of a few instructions that call no other ones but such functions (`Lexer.at`,

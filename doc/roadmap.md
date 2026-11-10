@@ -32,7 +32,7 @@ This document outlines the planned features and milestones for the Koji programm
 ## Long-term
 
 -   [ ] Package manager
--   [ ] Built-in testing framework
+-   [x] Built-in testing framework (`test` blocks, `assert`, `kojic test`)
 -   [ ] WebAssembly (WASM) compilation
 -   [ ] Editor support (syntax highlighting, LSP integration)
 -   [ ] Runtime optimizations

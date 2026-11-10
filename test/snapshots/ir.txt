@@ -61436,3 +61436,68 @@ function f16 isInt(l0: Decimal): Bool
     l8 = IntToDecimal l7
     l9 = DecimalCompare(Equal) l8, l0
     return l9
+==== test/ir/cases.txt #32
+string s0 = ""
+string s1 = "\n  left:  "
+string s2 = "\n  right: "
+string s3 = "values.length() == 2"
+string s4 = "in order"
+string s5 = "values[0] < values[1]"
+string s6 = "not (5 in values)"
+global g0: List(Int) // values
+
+function f0 main(): Void
+    local l0: List(Int)
+    local l1: Int
+    local l2: Bool
+    local l3: Str
+    local l4: Str
+    local l5: Str
+    local l6: Str
+    local l7: Str
+    local l8: Int
+    local l9: Int
+    local l10: Bool
+    local l11: Str
+    local l12: Str
+    local l13: Str
+    local l14: Str
+    local l15: Str
+    local l16: Bool
+    local l17: Bool
+  b0:
+    l0 = list [3, 4]
+    g0 = l0
+    l1 = ListLength g0
+    l2 = IntCompare(Equal) l1, 2
+    branch l2, b1, b2
+  b1:
+    l8 = g0[0]
+    l9 = g0[1]
+    l10 = IntCompare(Less) l8, l9
+    branch l10, b3, b4
+  b2:
+    l3 = IntToStr l1
+    l4 = StrConcat s1, l3
+    l5 = IntToStr 2
+    l6 = StrConcat s2, l5
+    l7 = StrConcat l4, l6
+    koji_std_assert([Value(Str(3)), Value(Str(0)), Value(Local(7)), Location(3)])
+    unreachable
+  b3:
+    l16 = ListContains 5, g0
+    l17 = Not l16
+    branch l17, b5, b6
+  b4:
+    l11 = IntToStr l8
+    l12 = StrConcat s1, l11
+    l13 = IntToStr l9
+    l14 = StrConcat s2, l13
+    l15 = StrConcat l12, l14
+    koji_std_assert([Value(Str(5)), Value(Str(4)), Value(Local(15)), Location(4)])
+    unreachable
+  b5:
+    return
+  b6:
+    koji_std_assert([Value(Str(6)), Value(Str(0)), Value(Str(0)), Location(5)])
+    unreachable

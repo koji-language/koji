@@ -8,7 +8,7 @@ import time
 import { tokenize, dump } from 'lexer.kj'
 import parser from 'parser.kj'
 import { dumpTypes, check, checkLibrary, Program } from 'checker.kj'
-import { lower } from 'lower.kj'
+import { lower, lowerTests } from 'lower.kj'
 import { IrProgram, programText } from 'ir.kj'
 import { generate } from 'cgen.kj'
 
@@ -18,6 +18,7 @@ immut usage = [
     'Usage:',
     '    kojic run <file.kj> [arguments]   check, compile and run a program',
     '    kojic check <file.kj>             only check syntax and types',
+    '    kojic test [file.kj | dir]...     run the tests (`test` blocks) of files (default: .)',
     '    kojic build <file.kj> [options]   compile a program to an executable',
     '        -o <output>                   the executable (default: the file name without .kj)',
     '        --emit c                      write the generated C instead',
@@ -334,8 +335,203 @@ function runProgram(args: string[]) {
     system.exit(if (code < 0) { 1 } else { code })
 }
 
+// The `.kj` files of `name`: itself, or those of a directory and its directories (sorted; those
+// whose names start with a dot left out).
+function sourceFiles(name: string, mut files: string[]) {
+    match (file.list(name)) {
+        Ok(entries) => {
+            for entry in entries {
+                if (entry.startsWith('.')) { continue }
+
+                immut inner = path.join(name, entry)
+
+                if (entry.endsWith('.kj')) {
+                    if (file.list(inner) is Err) { files.push(inner) }
+                } else {
+                    if (file.list(inner) is Ok) { sourceFiles(inner, mut files) }
+                }
+            }
+        }
+        Err(_) => files.push(name)
+    }
+}
+
+// Whether a file has tests: `test 'name' { ... }` at its top level (a syntax error is found when
+// it is checked).
+function hasTests(source: string): boolean {
+    match (parser.parse(source)) {
+        Ok(statements) => {
+            for statement in statements {
+                match (unlocatedDeclaration(statement)) {
+                    Some(name) => {
+                        if (parser.isTestName(name)) { return true }
+                    }
+                    None => {}
+                }
+            }
+
+            return false
+        }
+        Err(_) => return true
+    }
+}
+
+// The name of a function declared by a statement.
+function unlocatedDeclaration(node: parser.Node): Option[string] {
+    return match (node.kind) {
+        Located(_, inner) => unlocatedDeclaration(inner)
+        FunctionDecl(name, _, _, _, _, _) => Some(name)
+        _ => None
+    }
+}
+
+// The name of a test as written, from the name of its function (`test 'it\'s'` is `it's`).
+function testDisplay(name: string): string {
+    immut chars = name.chars()
+    mut text = ''
+    mut i = 6
+
+    while (i < chars.length() - 1) {
+        mut c = chars[i]
+
+        if (c == '\\' and i + 1 < chars.length() - 1) {
+            i += 1
+            c = match (chars[i]) {
+                'n' => '\n'
+                't' => '\t'
+                'r' => '\r'
+                other => other
+            }
+        }
+
+        text += string(c)
+        i += 1
+    }
+
+    return text
+}
+
+// A text indented by four spaces, line by line (the line breaks at its end left out).
+function indented(text: string): string {
+    mut lines: string[] = []
+
+    mut end = text.length()
+
+    while (end > 0 and (text[end - 1] == '\n' or text[end - 1] == '\r')) {
+        end -= 1
+    }
+
+    for line in text[..end].split('\n') {
+        lines.push(`    ${line}`)
+    }
+
+    return lines.join('\n')
+}
+
+// Seconds with two decimals (`0.25`).
+function secondsText(seconds: decimal): string {
+    immut hundredths = int(seconds * 100)
+    immut rest = hundredths % 100
+    return `${hundredths / 100}.${if (rest < 10) { '0' } else { '' }}${rest}`
+}
+
+// `kojic test [paths]`: the tests of each file, each in a process of its own (the file's top-level
+// statements first, as an import runs them), so that a failure or a panic stops only its test and
+// each one starts from the same state. The output of a test is shown when it fails.
+function testCommand(args: string[]) {
+    immut started = time.monotonic()
+    mut files: string[] = []
+
+    immut paths = if (args.length() == 0) { ['.'] } else { args }
+
+    for each in paths {
+        sourceFiles(each, mut files)
+    }
+
+    mut passed = 0
+    mut failed = 0
+    mut broken = 0
+
+    for name in files {
+        immut source = match (readSource(name)) {
+            Ok(text) => text
+            Err(error) => {
+                print(`FAIL  ${name}: cannot read it: ${ioMessage(error)}`)
+                broken += 1
+                continue
+            }
+        }
+
+        if (not hasTests(source)) { continue }
+
+        immut program = match (check(name)) {
+            Ok(checked) => lowerTests(checked)
+            Err(message) => Err(message)
+        }
+        immut lowered = match (program) {
+            Ok(found) => found
+            Err(message) => {
+                print(`FAIL  ${name}\n${indented(message)}`)
+                broken += 1
+                continue
+            }
+        }
+        immut executable = temporary('')
+
+        match (compileC(text(generate(lowered)), executable)) {
+            Ok(_) => {}
+            Err(message) => {
+                print(`FAIL  ${name}\n${indented(message)}`)
+                broken += 1
+                continue
+            }
+        }
+
+        for i in range(lowered.tests.length()) {
+            immut title = `${name}: ${testDisplay(lowered.tests[i].name)}`
+
+            match (system.capture(executable, [string(i)])) {
+                Ok(run) => {
+                    if (run.status == 0) {
+                        print(`ok    ${title}`)
+                        passed += 1
+                    } else {
+                        print(`FAIL  ${title}`)
+
+                        if (run.stderr.trim() != '') { print(indented(run.stderr)) }
+
+                        if (run.stdout.trim() != '') { print(`    output:\n${indented(indented(run.stdout))}`) }
+
+                        if (run.status < 0) { print('    stopped by a signal') }
+
+                        failed += 1
+                    }
+                }
+                Err(error) => {
+                    print(`FAIL  ${title}: cannot run it: ${error}`)
+                    failed += 1
+                }
+            }
+        }
+
+        file.remove(executable)
+    }
+
+    immut seconds = time.monotonic() - started
+    mut summary = `${passed} passed, ${failed} failed`
+
+    if (broken > 0) { summary += `, ${broken} ${if (broken == 1) { 'file' } else { 'files' }} not built` }
+
+    if (passed + failed + broken == 0) { summary = 'no tests found' }
+
+    print(`\n${summary} (${secondsText(seconds)} s)`)
+    system.exit(if (failed + broken > 0) { 1 } else { 0 })
+}
+
 immut args = system.args()
 immut command = if (args.length() > 0) { args[0] } else { '' }
+
+if (command == 'test') { testCommand(args[1..]) }
 
 if (command == 'build') {
     build(args[1..])

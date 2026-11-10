@@ -2161,3 +2161,51 @@ fn errors_are_reported_before_compiling() {
     assert_eq!(built.code, Some(1));
     assert!(built.stderr.starts_with("type error: "), "{}", built.stderr);
 }
+
+#[test]
+fn assert_shows_the_condition_and_the_two_sides() {
+    assert_same("assert_passes", "immut values = [3, 4]\nassert(values.length() == 2)\nassert(values[0] < values[1], 'in order')\nprint('ok')\n", "ok\n");
+    let path = source_file("assert_fails", "immut names = ['ana', 'bia']\nassert(names[0] + '!' == names[1], 'the same')\n");
+    let failed = koji::finish(koji::kojic().current_dir(path.parent().unwrap()).arg("run").arg(path.file_name().unwrap()), "");
+    assert_eq!(failed.code, Some(1));
+    assert_eq!(failed.stderr, "panic: assert_fails.kj:2: assertion failed: names[0] + '!' == names[1] (the same)\n  left:  'ana!'\n  right: 'bia'\n");
+    assert_same_panic("assert_condition", "immut n = 3\nassert(n > 2 and n % 2 == 0)\n", "assert_condition.kj:2: assertion failed: n > 2 and n % 2 == 0");
+}
+
+/// `kojic test`: the tests of each file in a process of their own, the output of a failing one,
+/// files without tests left out, and the exit code 1 when a test fails.
+#[test]
+fn kojic_test_runs_each_test_alone() {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("kojic-test");
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(directory.join("sub")).unwrap();
+    std::fs::write(
+        directory.join("math.kj"),
+        "mut calls = 0\n\nfunction gcd(a: int, b: int): int {\n    calls += 1\n    return if (b == 0) { a } else { gcd(b, a % b) }\n}\n\n\
+         test 'gcd' {\n    assert(gcd(12, 18) == 6)\n}\n\n\
+         test 'each test starts again' {\n    assert(calls == 0)\n}\n\n\
+         test 'a wrong result' {\n    print('computing')\n    assert(gcd(4, 6) == 3, 'on purpose')\n}\n\n\
+         test 'a panic' {\n    immut items = [1]\n    print(items[2])\n}\n",
+    )
+    .unwrap();
+    std::fs::write(directory.join("sub/plain.kj"), "print('no tests')\n").unwrap();
+    std::fs::write(directory.join("sub/top.kj"), "print('top level')\n\ntest 'it\\'s fine' {\n    assert(true)\n}\n").unwrap();
+    let finished = koji::finish(koji::kojic().current_dir(&directory).arg("test"), "");
+    assert_eq!(finished.code, Some(1), "{}", finished.stderr);
+    let (report, time) = finished.stdout.trim_end().rsplit_once(" (").unwrap();
+    assert!(time.ends_with(" s)"), "{}", finished.stdout);
+    assert_eq!(
+        report,
+        "ok    ./math.kj: gcd\n\
+         ok    ./math.kj: each test starts again\n\
+         FAIL  ./math.kj: a wrong result\n    panic: ./math.kj:18: assertion failed: gcd(4, 6) == 3 (on purpose)\n      left:  2\n      right: 3\n    output:\n        computing\n\
+         FAIL  ./math.kj: a panic\n    panic: ./math.kj:23: index 2 out of range (length 1)\n\
+         ok    ./sub/top.kj: it's fine\n\n\
+         3 passed, 2 failed"
+    );
+    // A file without tests, and a program run by `kojic run`, which leaves its tests out.
+    let none = koji::finish(koji::kojic().current_dir(&directory).arg("test").arg("sub/plain.kj"), "");
+    assert_eq!((none.code, none.stdout.starts_with("\nno tests found")), (Some(0), true), "{}", none.stdout);
+    let run = koji::finish(koji::kojic().current_dir(&directory).arg("run").arg("sub/top.kj"), "");
+    assert_eq!(run.stdout, "top level\n");
+}

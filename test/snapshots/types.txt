@@ -1528,6 +1528,18 @@ error: type error: case240.kj:1: decimal literal 1234567890123456789012345678901
 ==== test/checker/cases.txt #241
 module case241.kj
 (at 1 (match (call (name decimal) (int 1):int):decimal (arm (literal (decimal 1.5):decimal) _ (call (name print) (int 1):int):void) (arm (wildcard) _ (call (name print) (int 2):int):void)):void)
+==== test/checker/cases.txt #242
+module case242.kj
+(at 1 (call (name assert) (binary == (binary + (int 1):int (int 1):int):int (int 2):int):boolean (string 'arithmetic'):string):void)
+(at 3 (function test 'checked like a function' () () _ (block (at 4 (immut x int (int 3):int)!variable=int) (at 5 (call (name assert) (binary > (name x):int (int 2):int):boolean):void)))!function=() => void)
+==== test/checker/cases.txt #243
+error: type error: case243.kj:1: argument 1 of 'assert' must be boolean, found int
+==== test/checker/cases.txt #244
+error: type error: case244.kj:1: argument 2 of 'assert' must be string, found int
+==== test/checker/cases.txt #245
+module case245.kj
+(at 1 (function assert () ((param value int)) _ (block (at 2 (call (name print) (name value):int):void)))!function=(int) => void)
+(at 5 (call (name assert):(int) => void (int 5):int):void)
 ==== test/checker/cycle.kj
 error: type error: cycle_b.kj:1: circular import of 'cycle_a.kj'
 ==== test/checker/generic_value.kj

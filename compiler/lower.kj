@@ -1,10 +1,10 @@
 // Lowering, in the Koji compiler: from the checked syntax tree to the IR, with a message for what
 // `kojic build` does not support yet.
 
-import { Node, NodeKind, Pattern, TypeExpr, Param, TypeParam, Arm, Part, Entry, ObjectEntry } from 'parser.kj'
+import { Node, NodeKind, Pattern, TypeExpr, Param, TypeParam, Arm, Part, Entry, ObjectEntry, isTestName } from 'parser.kj'
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, substitute, display } from 'types.kj'
 import { MethodRef, TryWrap, LoadedModule, Tables, Program, coreStringMethods, libraryModules, parentDir, resolvePath } from 'checker.kj'
-import { IrExtern, IrForC, Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
+import { IrExtern, IrForC, IrTest, Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
 import { decimalLiteral } from 'decimal.kj'
 import { kojiModules } from 'stdlib.kj'
 
@@ -203,6 +203,12 @@ type Instance = {
 }
 
 type Lowerer = {
+    // `kojic test`: the tests of the main file are lowered, and its top-level function runs the one
+    // asked for; otherwise tests are left out.
+    testing: boolean
+    tests: IrTest[]
+    // The condition of the `assert` being lowered, as written (`Asserted`).
+    assertText: string
     // The C functions of the `extern` declarations.
     externs: IrExtern[]
     // The functions C calls by their names (`extern function name(...) { ... }`).
@@ -1004,6 +1010,11 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
 
         match (declaration.kind) {
             FunctionDecl(name, owner, typeParams, _, _, _) => {
+                // A test: only those of the main file, and only for `kojic test`.
+                immut isTest = owner is None and isTestName(name)
+
+                if (isTest and not (self.testing and self.module == 0)) { continue }
+
                 immut key = functionKey(self.module, owner, name)
 
                 if (owner is None) { self.modules[self.module].names[name] = FunctionItem(key) }
@@ -1020,6 +1031,8 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
 
                 self.functions.push(None)
                 self.signatures[key] = self.signature(declaration, self.functions.length() - 1)?
+
+                if (isTest) { self.tests.push({ name: name, function: self.functions.length() - 1 }) }
 
                 if (isForC(statement)) {
                     immut params = match (declaration.kind) {
@@ -1416,6 +1429,24 @@ function Lowerer.lowerModuleBody(mut self): Result[void, string] {
 
     self.line = 0
     self.statements(mut builder, module.statements)?
+
+    // `kojic test`: the test asked for (its number from the executable's last argument), with the
+    // values of every module still there.
+    if (module.init == 0 and self.testing) {
+        immut selected = builder.local(IntTy, None)
+        builder.emit(StdCallIns(Some(selected), 'koji_test_index', []))
+
+        for i in range(self.tests.length()) {
+            immut run = builder.newBlock()
+            immut next = builder.newBlock()
+            immut chosen = self.arithmetic(mut builder, '==', LocalOp(selected), IntTy, IntOp(i), IntTy)?.value
+            builder.terminate(BranchT(chosen, run, next))
+            builder.switchTo(run)
+            builder.emit(CallIns(None, self.tests[i].function, [], [], 0))
+            builder.terminate(GotoT(next))
+            builder.switchTo(next)
+        }
+    }
 
     if (module.init == 0) {
         // At the end of the program, the values owned by each module are dropped (the main file
@@ -2900,6 +2931,12 @@ function Lowerer.expression(mut self, mut builder: Builder, node: Node): Result[
         Match(scrutinee, arms) => return self.lowerMatch(mut builder, node, scrutinee, arms)
         Lambda(params, _, body) => return Ok(Some(self.lambda(mut builder, node, params, body)?))
         Try(value) => return self.lowerTry(mut builder, node, value)
+        Asserted(text, call) => {
+            self.assertText = text
+            immut result = self.expression(mut builder, call)
+            self.assertText = ''
+            return result
+        }
         _ => {}
     }
 
@@ -3736,6 +3773,67 @@ function Lowerer.lowerCall(mut self, mut builder: Builder, node: Node, callee: N
     }
 }
 
+// The two sides of the comparison of an `assert`, evaluated once: shown when it fails.
+type Sides = {
+    left: Operand
+    leftType: Ty
+    right: Operand
+    rightType: Ty
+}
+
+// `assert(condition)` or `assert(condition, message)`: when the condition is false, a panic with
+// the condition as written (`assertText`), the message, and for a comparison the values of its two
+// sides (their `debug()`, computed only then).
+function Lowerer.lowerAssert(mut self, mut builder: Builder, args: Node[]): Result[Option[Operand], string] {
+    immut text = self.assertText
+    self.assertText = ''
+    immut line = self.line
+    mut sides: Option[Sides] = None
+    mut test: Operand = BoolOp(true)
+
+    match (unlocated(args[0]).kind) {
+        Binary(op, left, right) if (op in ['==', '!=', '<', '<=', '>', '>=']) => {
+            immut leftType = self.typeIn(builder, left)?
+            immut rightType = self.typeIn(builder, right)?
+            immut leftValue = self.valueOf(mut builder, left, leftType)?
+            immut rightValue = self.valueOf(mut builder, right, rightType)?
+            test = self.arithmetic(mut builder, op, leftValue, leftType, rightValue, rightType)?.value
+            sides = Some({ left: leftValue, leftType: leftType, right: rightValue, rightType: rightType })
+        }
+        _ => test = self.condition(mut builder, args[0])?
+    }
+
+    immut passed = builder.newBlock()
+    immut failed = builder.newBlock()
+    builder.terminate(BranchT(test, passed, failed))
+    builder.switchTo(failed)
+    self.line = line
+    mut details = self.string('')
+
+    match (sides) {
+        Some(found) => {
+            immut leftLabel = self.string('\n  left:  ')
+            immut leftText = self.reprOf(mut builder, found.left, found.leftType)
+            immut left = self.concat(mut builder, leftLabel, leftText)
+            immut rightLabel = self.string('\n  right: ')
+            immut rightText = self.reprOf(mut builder, found.right, found.rightType)
+            immut right = self.concat(mut builder, rightLabel, rightText)
+            details = self.concat(mut builder, left, right)
+        }
+        None => {}
+    }
+
+    mut message = self.string('')
+
+    if (args.length() > 1) { message = self.valueOf(mut builder, args[1], StrTy)? }
+
+    immut condition = self.string(text)
+    builder.emit(StdCallIns(None, 'koji_std_assert', [ValueArg(condition), ValueArg(message), ValueArg(details), LocationArg(line)]))
+    builder.terminate(UnreachableT)
+    builder.switchTo(passed)
+    return Ok(None)
+}
+
 // A move-only argument used only by the call, dropped after it.
 type Temporary = {
     node: Node
@@ -3875,6 +3973,7 @@ function Lowerer.call(mut self, mut builder: Builder, call: Node, name: string, 
     }
 
     match (name) {
+        'assert' => return self.lowerAssert(mut builder, args)
         printed if (printed == 'print' or printed == 'printError') => {
             mut line: Option[Operand] = None
 
@@ -4826,6 +4925,7 @@ function identifiers(node: Node, mut out: string[]) {
         }
         MutArg(inner) => identifiers(inner, mut out)
         Try(inner) => identifiers(inner, mut out)
+        Asserted(_, call) => identifiers(call, mut out)
         Export(inner, _) => identifiers(inner, mut out)
         ForC(inner) => identifiers(inner, mut out)
         Located(_, inner) => identifiers(inner, mut out)
@@ -4894,6 +4994,16 @@ function identifiersOf(nodes: Node[], mut out: string[]) {
 
 // Lowers a checked program: the main file and the modules it imports.
 export function lower(program: Program): Result[IrProgram, string] {
+    return lowerProgram(program, false)
+}
+
+// The program for `kojic test`: its top-level function runs the test whose number the last argument
+// of the executable gives (`koji_test_index`), after the top-level statements.
+export function lowerTests(program: Program): Result[IrProgram, string] {
+    return lowerProgram(program, true)
+}
+
+function lowerProgram(program: Program, testing: boolean): Result[IrProgram, string] {
     mut checked: Map[string, LoadedModule] = [:]
 
     for module in program.modules {
@@ -4902,6 +5012,7 @@ export function lower(program: Program): Result[IrProgram, string] {
 
     immut entry = program.modules[0]
     mut lowerer: Lowerer = {
+        testing: testing, tests: [], assertText: '',
         table: program.table, tables: program.tables, records: [], recordIds: [:], file: entry.display, line: 0,
         functions: [], signatures: [:], globals: [], strings: [], stringIds: [:], emptyEnvironment: None, wrappers: [:],
         genericFunctions: [:], instances: [:], pending: [], substitution: [], typeNames: [], recordTypes: [:],
@@ -4956,6 +5067,7 @@ export function lower(program: Program): Result[IrProgram, string] {
 
     return Ok({
         file: entry.display, functions: functions, main: 0, globals: lowerer.globals, strings: lowerer.strings,
-        records: lowerer.records, externs: lowerer.externs, forC: lowerer.forC, library: entry.path == 'std:library'
+        records: lowerer.records, externs: lowerer.externs, forC: lowerer.forC, library: entry.path == 'std:library',
+        testing: testing, tests: lowerer.tests
     })
 }
