@@ -40,6 +40,7 @@ immut badProof = 25
 immut badFinished = 26
 immut noRandom = 27
 immut truncated = 28
+immut notTls = 29
 immut alertBase = 1000
 
 // The text of a problem.
@@ -60,6 +61,7 @@ export function problemMessage(problem: int): string {
         25 => 'the proof of the server\'s key (CertificateVerify) is invalid'
         26 => 'the Finished message of the server is invalid'
         27 => 'the system gave no random bytes'
+        29 => 'the server does not speak TLS (it answered something else)'
         _ => 'the connection closed without close_notify: the data may be truncated'
     }
 }
@@ -405,6 +407,13 @@ function receiveRecord(mut s: Session): int {
 
         immut kind = byteAt(s.record, 0)
         immut size = number(s.record, 3, 2)
+
+        // Not a record of TLS at all (a server of HTTP answers `HTTP/1.1 ...`): the types of records
+        // are 20 to 23 and their versions 3.x.
+        if (kind < 20 or kind > 23 or byteAt(s.record, 1) != 3) {
+            s.problem = if (s.keyed) { badRecord } else { notTls }
+            return -1
+        }
 
         if (size > largestRecord or (not s.keyed and size > largestPlaintext) or size == 0) {
             s.problem = badRecord

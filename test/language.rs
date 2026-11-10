@@ -2068,6 +2068,80 @@ fn stdlib_http() {
     server.join().unwrap();
 }
 
+/// `https://` (std/http.kj over koji:tls) against `openssl s_server`, with certificates made by the
+/// `openssl` command: skipped where it is missing, or cannot serve TLS 1.3.
+#[test]
+fn stdlib_https() {
+    use std::process::{Command, Stdio};
+
+    let dir = temp_dir("https");
+    std::fs::create_dir_all(&dir).unwrap();
+    let openssl = |args: &[&str]| Command::new("openssl").args(args).current_dir(&dir).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    if !matches!(openssl(&["version"]), Ok(status) if status.success()) {
+        eprintln!("no openssl command: https:// not tested");
+        return;
+    }
+    // An authority, and a certificate for localhost signed by it (P-256, two days).
+    std::fs::write(dir.join("leaf.ext"), "subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE\n").unwrap();
+    std::fs::write(dir.join("hello.txt"), "hello over TLS 1.3\n").unwrap();
+    let made = [
+        openssl(&["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", "root.key", "-out", "root.pem", "-subj", "/CN=Koji Test Root", "-days", "2", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign"]),
+        openssl(&["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", "leaf.key", "-out", "leaf.csr", "-subj", "/CN=localhost"]),
+        openssl(&["x509", "-req", "-in", "leaf.csr", "-CA", "root.pem", "-CAkey", "root.key", "-CAcreateserial", "-out", "leaf.pem", "-days", "2", "-extfile", "leaf.ext"]),
+    ];
+    if !made.iter().all(|status| matches!(status, Ok(status) if status.success())) {
+        eprintln!("openssl cannot make the certificates: https:// not tested");
+        return;
+    }
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut server = Command::new("openssl")
+        .args(["s_server", "-accept", &port.to_string(), "-tls1_3", "-cert", "leaf.pem", "-key", "leaf.key", "-WWW", "-quiet"])
+        .current_dir(&dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let ready = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    if !ready {
+        let _ = server.kill();
+        eprintln!("openssl s_server did not start: https:// not tested");
+        return;
+    }
+    // The authorities of the program: only the test's.
+    std::env::set_var("SSL_CERT_FILE", dir.join("root.pem"));
+    std::env::set_var("SSL_CERT_DIR", dir.join("no-directory"));
+    let source = format!(
+        r#"
+        import http
+
+        match (http.get('https://localhost:{port}/hello.txt')) {{
+            Ok(res) => print(`${{res.status}} ${{res.body.trim()}}`)
+            Err(error) => print(error)
+        }}
+
+        // The certificate names localhost, not this address.
+        match (http.get('https://127.0.0.1:{port}/hello.txt')) {{
+            Ok(_) => print('trusted?')
+            Err(Tls(_, message)) => print(message)
+            Err(error) => print(error)
+        }}
+        "#
+    );
+    let output = run(&source);
+    let _ = server.kill();
+    let _ = server.wait();
+    assert_eq!(
+        output,
+        format!(
+            "200 hello over TLS 1.3\nhttps://127.0.0.1:{port}/hello.txt: invalid certificate: the certificate is not valid for this name\n"
+        )
+    );
+}
+
 #[test]
 fn stdlib_http_redirects_and_chunks() {
     use std::io::{Read, Write as _};

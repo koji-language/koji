@@ -14,9 +14,8 @@ use std::sync::OnceLock;
 /// The runtime library every program is linked with.
 pub const RUNTIME: &str = env!("KOJI_RUNTIME_LIB");
 
-/// The libraries the runtime (a Rust static library) needs from the system.
-const SYSTEM_LIBRARIES: &[&str] =
-    if cfg!(target_os = "macos") { &["-lSystem", "-lc", "-lm"] } else { &["-lpthread", "-ldl", "-lm", "-lrt", "-lutil"] };
+/// The libraries a program needs from the system besides the C library.
+const SYSTEM_LIBRARIES: &[&str] = &["-lm"];
 
 /// The directory of the compilers the test binaries share.
 fn compilers() -> PathBuf {

@@ -7,8 +7,9 @@ This guide shows how to build Koji, write a first program and run it.
 The Koji compiler, `kojic`, is written in Koji, and compiles programs to C. Building it needs:
 
 -   a C compiler (`cc`, such as gcc or clang), which `kojic` also uses to build programs;
--   `gzip`;
--   [Rust](https://www.rust-lang.org/tools/install) (which includes `cargo`), for the runtime library that compiled programs are linked with.
+-   `gzip` and `ar`.
+
+The runtime library that compiled programs are linked with is written in Koji too; its C is in `bootstrap/libkoji.c.gz`, next to the seed.
 
 ## Building
 
@@ -99,12 +100,12 @@ kojic run examples/shapes.kj
 
 ## Running the Tests
 
-If you want to contribute, run the test suite with:
+If you want to contribute, run the test suite with [Rust](https://www.rust-lang.org/tools/install)'s `cargo` (the tests are written in Rust; building Koji does not need it):
 
 ```sh
 cargo test
 ```
 
-The tests build the compiler from the seed, like `bootstrap/build.sh`, and run it on their programs. The runtime has tests of its own: `cargo test --manifest-path runtime/Cargo.toml`. `cargo test --test bootstrap -- --ignored` also checks that the compiler compiles itself to the same C (the fixed point). The stages of the compiler are compared with snapshots (`test/snapshots/`): after a change of a stage, `KOJI_UPDATE_SNAPSHOTS=1 cargo test --test stages` writes them again.
+The tests build the compiler from the seed, like `bootstrap/build.sh`, and run it on their programs. `test/crypto.rs` tests the cryptography of the runtime by C programs linked with it, and the test of `https://` uses the `openssl` command when it is there. `cargo test --test bootstrap -- --ignored` also checks that the compiler compiles itself to the same C (the fixed point). The stages of the compiler are compared with snapshots (`test/snapshots/`): after a change of a stage, `KOJI_UPDATE_SNAPSHOTS=1 cargo test --test stages` writes them again.
 
 See the [contributing guide](../CONTRIBUTING.md) for details.

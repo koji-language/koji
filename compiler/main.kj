@@ -196,12 +196,9 @@ function buildOptions(args: string[]): Build {
     return { source: name, output: chosen, emit: emit }
 }
 
-// The libraries the runtime (a Rust static library) needs from the system.
+// The libraries a program needs from the system besides the C library: the mathematics (`math.h`).
 function systemLibraries(): string[] {
-    return match (system.os) {
-        MacOS => ['-lSystem', '-lc', '-lm']
-        _ => ['-lpthread', '-ldl', '-lm', '-lrt', '-lutil']
-    }
+    return ['-lm']
 }
 
 function variable(name: string, otherwise: string): string {

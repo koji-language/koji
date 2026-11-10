@@ -9,8 +9,8 @@ use std::process::Command;
 /// The runtime library, as the other tests link it.
 const RUNTIME: &str = env!("KOJI_RUNTIME_LIB");
 
-const SYSTEM_LIBRARIES: &[&str] =
-    if cfg!(target_os = "macos") { &["-lSystem", "-lc", "-lm"] } else { &["-lpthread", "-ldl", "-lm", "-lrt", "-lutil"] };
+/// The libraries a program needs from the system besides the C library.
+const SYSTEM_LIBRARIES: &[&str] = &["-lm"];
 
 /// Builds `source` (C) with the runtime and runs it: what it printed.
 fn run_c(name: &str, source: &str) -> String {
