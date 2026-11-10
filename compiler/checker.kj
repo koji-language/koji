@@ -17,8 +17,8 @@ export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'end
 // The internal modules (std/koji/): `koji:core`, compiled with the programs that use it, and those
 // of the library of the runtime written in Koji, compiled once (`kojic dump library`) and linked
 // into every program.
-immut internalModules = ['koji:closure', 'koji:core', 'koji:decimal', 'koji:list', 'koji:map', 'koji:memory', 'koji:numbers', 'koji:output', 'koji:record', 'koji:ryu', 'koji:text', 'koji:unicode']
-export immut libraryModules = ['koji:closure', 'koji:decimal', 'koji:list', 'koji:map', 'koji:memory', 'koji:numbers', 'koji:output', 'koji:record', 'koji:ryu', 'koji:text', 'koji:unicode']
+immut internalModules = ['koji:closure', 'koji:core', 'koji:decimal', 'koji:list', 'koji:map', 'koji:memory', 'koji:numbers', 'koji:output', 'koji:record', 'koji:ryu', 'koji:start', 'koji:text', 'koji:unicode']
+export immut libraryModules = ['koji:closure', 'koji:decimal', 'koji:list', 'koji:map', 'koji:memory', 'koji:numbers', 'koji:output', 'koji:record', 'koji:ryu', 'koji:start', 'koji:text', 'koji:unicode']
 
 type SymbolKind = {
     ValueSymbol

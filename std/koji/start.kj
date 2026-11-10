@@ -1,0 +1,16 @@
+// `koji:start`: the start of a program, in the library of the runtime written in Koji (the `main`
+// of a program calls `koji_init` first).
+
+import { Address, CInt } from 'koji:unsafe'
+
+// The pool (std/koji/memory.kj), the arguments of `main` (runtime/prelude.h) and the modules of the
+// library.
+extern function koji_pool_start()
+extern function koji_keep_arguments(count: CInt, values: Address)
+extern function koji_library_init()
+
+extern function koji_init(count: CInt, values: Address) {
+    koji_pool_start()
+    koji_keep_arguments(count, values)
+    koji_library_init()
+}

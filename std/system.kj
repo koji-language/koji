@@ -25,12 +25,12 @@ extern function readv(fd: CInt, buffers: Address, count: CInt): int
 extern function poll(fds: Address, count: CSize, timeout: CInt): CInt
 extern function realloc(memory: Address, size: CSize): Address
 
-// The runtime (runtime/src/system.rs).
+// What the system gives in different ways: small inline functions of the prelude (runtime/prelude.h).
 extern function koji_system_argument_count(): int
 extern function koji_system_argument(index: int): Address
 extern function koji_system_errno(): CInt
 extern function koji_system_environment(): Address
-extern function koji_system_executable(): Address
+extern function koji_system_executable_into(buffer: Address, size: int): int
 
 export type OperatingSystem = {
     Linux
@@ -95,13 +95,37 @@ export function env(name: string): Option[string] {
     return Some(newString(value, size))
 }
 
-// The path of the executable of this program, or `None` where the system cannot tell it.
+// The path of the executable of this program, or `None` where the system cannot tell it (read
+// once, as the system may say it no longer exists later).
+mut executableKnown: Option[string][] = []
+
 export function executable(): Option[string] {
-    immut path = koji_system_executable()
+    if (executableKnown.length() == 0) { executableKnown.push(executablePath()) }
 
-    if (isNull(path)) { return None }
+    return executableKnown[0]
+}
 
-    return Some(cText(path))
+function executablePath(): Option[string] {
+    mut size = 4096
+
+    while (true) {
+        immut buffer = allocate(size)
+        immut length = koji_system_executable_into(buffer, size)
+
+        if (length >= 0) {
+            immut path = textOf(buffer, length)
+            free(buffer)
+            return Some(path)
+        }
+
+        free(buffer)
+
+        if (length == -1 or size >= 1048576) { return None }
+
+        size = size * 2
+    }
+
+    return None
 }
 
 // `system.exit(code)`: ends the program (a code beyond those of C is the nearest one).
