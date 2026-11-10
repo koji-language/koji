@@ -19,5 +19,9 @@ name = "stages"
 path = "test/stages.rs"
 
 [[test]]
+name = "crypto"
+path = "test/crypto.rs"
+
+[[test]]
 name = "bootstrap"
 path = "test/bootstrap.rs"

@@ -1,0 +1,302 @@
+// `koji:chacha`: the cipher ChaCha20 and the authenticator Poly1305, sealed together as the AEAD
+// ChaCha20-Poly1305 of RFC 8439, in the library of the runtime written in Koji (a cipher suite of TLS
+// 1.3). Its words are ints below 2^32 (sums masked), and Poly1305 works on numbers of 130 bits in
+// five limbs of 26 bits, whose products fit in an int. Nothing depends on the value of a secret:
+// no branch, no address (the tag is compared with no early exit).
+
+import { Address, CInt, CSize, allocate, free, offset, read, write } from 'koji:unsafe'
+
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function memset(target: Address, value: CInt, size: CSize): Address
+
+immut mask32 = 0xFFFFFFFF
+immut mask26 = 0x3FFFFFF
+
+function byteAt(bytes: Address, i: int): int {
+    immut b: byte = read(bytes, i)
+    return int(b)
+}
+
+function putByte(bytes: Address, i: int, value: int) {
+    write(bytes, i, byte(value & 0xFF))
+}
+
+// The little-endian word of 32 bits at `at`.
+function le32(bytes: Address, at: int): int {
+    return byteAt(bytes, at) | (byteAt(bytes, at + 1) << 8) | (byteAt(bytes, at + 2) << 16) | (byteAt(bytes, at + 3) << 24)
+}
+
+function putLe32(bytes: Address, at: int, value: int) {
+    putByte(bytes, at, value)
+    putByte(bytes, at + 1, value >> 8)
+    putByte(bytes, at + 2, value >> 16)
+    putByte(bytes, at + 3, value >> 24)
+}
+
+function rotl32(x: int, n: int): int {
+    return ((x << n) | (x >> (32 - n))) & mask32
+}
+
+// ChaCha20
+
+// The quarter round on four words of the state (an address of 16 ints).
+function quarter(s: Address, a: int, b: int, c: int, d: int) {
+    mut x = wordAt(s, a)
+    mut y = wordAt(s, b)
+    mut z = wordAt(s, c)
+    mut w = wordAt(s, d)
+    x = (x + y) & mask32
+    w = rotl32(w ^ x, 16)
+    z = (z + w) & mask32
+    y = rotl32(y ^ z, 12)
+    x = (x + y) & mask32
+    w = rotl32(w ^ x, 8)
+    z = (z + w) & mask32
+    y = rotl32(y ^ z, 7)
+    write(s, a * 8, x)
+    write(s, b * 8, y)
+    write(s, c * 8, z)
+    write(s, d * 8, w)
+}
+
+function wordAt(words: Address, i: int): int {
+    immut word: int = read(words, i * 8)
+    return word
+}
+
+// The block of 64 bytes of keystream for `key` (32 bytes), `counter` and `nonce` (12 bytes), at
+// `out`, through `state` and `work` (16 ints each).
+function block(key: Address, counter: int, nonce: Address, out: Address, state: Address, work: Address) {
+    // "expand 32-byte k"
+    write(state, 0, 0x61707865)
+    write(state, 8, 0x3320646E)
+    write(state, 16, 0x79622D32)
+    write(state, 24, 0x6B206574)
+
+    for i in range(8) {
+        write(state, (4 + i) * 8, le32(key, i * 4))
+    }
+
+    write(state, 96, counter & mask32)
+
+    for i in range(3) {
+        write(state, (13 + i) * 8, le32(nonce, i * 4))
+    }
+
+    memcpy(work, state, 128)
+    mut round = 0
+
+    while (round < 10) {
+        quarter(work, 0, 4, 8, 12)
+        quarter(work, 1, 5, 9, 13)
+        quarter(work, 2, 6, 10, 14)
+        quarter(work, 3, 7, 11, 15)
+        quarter(work, 0, 5, 10, 15)
+        quarter(work, 1, 6, 11, 12)
+        quarter(work, 2, 7, 8, 13)
+        quarter(work, 3, 4, 9, 14)
+        round += 1
+    }
+
+    for i in range(16) {
+        putLe32(out, i * 4, (wordAt(work, i) + wordAt(state, i)) & mask32)
+    }
+}
+
+// The `size` bytes at `data` encrypted (or decrypted) at `out`, from the block `counter` on.
+export function chacha20(key: Address, counter: int, nonce: Address, data: Address, size: int, out: Address) {
+    immut state = allocate(128)
+    immut work = allocate(128)
+    immut stream = allocate(64)
+    mut at = 0
+    mut number = counter
+
+    while (at < size) {
+        block(key, number, nonce, stream, state, work)
+        immut count = if (size - at < 64) { size - at } else { 64 }
+
+        for i in range(count) {
+            putByte(out, at + i, byteAt(data, at + i) ^ byteAt(stream, i))
+        }
+
+        at += count
+        number += 1
+    }
+
+    free(stream)
+    free(work)
+    free(state)
+}
+
+// Poly1305
+
+// The tag of 16 bytes of the `size` bytes at `data` with the one-time key `key` (32 bytes), at
+// `out`.
+export function poly1305(key: Address, data: Address, size: int, out: Address) {
+    // r, clamped, in limbs of 26 bits; and the limbs times 5, for the reduction by 2^130 = 5.
+    immut r0 = le32(key, 0) & 0x3FFFFFF
+    immut r1 = (le32(key, 3) >> 2) & 0x3FFFF03
+    immut r2 = (le32(key, 6) >> 4) & 0x3FFC0FF
+    immut r3 = (le32(key, 9) >> 6) & 0x3F03FFF
+    immut r4 = (le32(key, 12) >> 8) & 0x00FFFFF
+    immut s1 = r1 * 5
+    immut s2 = r2 * 5
+    immut s3 = r3 * 5
+    immut s4 = r4 * 5
+    mut h0 = 0
+    mut h1 = 0
+    mut h2 = 0
+    mut h3 = 0
+    mut h4 = 0
+    immut last = allocate(16)
+    mut at = 0
+
+    while (at < size) {
+        // A block of 16 bytes and a 1 bit after it; a shorter last block has the 1 right after its
+        // bytes, then zeros.
+        mut piece = offset(data, at)
+        mut high = 1 << 24
+
+        if (size - at < 16) {
+            memset(last, 0, 16)
+            memcpy(last, piece, size - at)
+            putByte(last, size - at, 1)
+            piece = last
+            high = 0
+        }
+
+        h0 += le32(piece, 0) & mask26
+        h1 += (le32(piece, 3) >> 2) & mask26
+        h2 += (le32(piece, 6) >> 4) & mask26
+        h3 += (le32(piece, 9) >> 6) & mask26
+        h4 += (le32(piece, 12) >> 8) | high
+        // h * r, modulo 2^130 - 5.
+        immut d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1
+        mut d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2
+        mut d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3
+        mut d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4
+        mut d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0
+        h0 = d0 & mask26
+        d1 += d0 >> 26
+        h1 = d1 & mask26
+        d2 += d1 >> 26
+        h2 = d2 & mask26
+        d3 += d2 >> 26
+        h3 = d3 & mask26
+        d4 += d3 >> 26
+        h4 = d4 & mask26
+        h0 += (d4 >> 26) * 5
+        h1 += h0 >> 26
+        h0 = h0 & mask26
+        at += 16
+    }
+
+    free(last)
+    // The full carry, then h - p when h is at least p (chosen without a branch).
+    h2 += h1 >> 26
+    h1 = h1 & mask26
+    h3 += h2 >> 26
+    h2 = h2 & mask26
+    h4 += h3 >> 26
+    h3 = h3 & mask26
+    h0 += (h4 >> 26) * 5
+    h4 = h4 & mask26
+    h1 += h0 >> 26
+    h0 = h0 & mask26
+    mut g0 = h0 + 5
+    mut g1 = h1 + (g0 >> 26)
+    g0 = g0 & mask26
+    mut g2 = h2 + (g1 >> 26)
+    g1 = g1 & mask26
+    mut g3 = h3 + (g2 >> 26)
+    g2 = g2 & mask26
+    mut g4 = h4 + (g3 >> 26) - (1 << 26)
+    g3 = g3 & mask26
+    // All ones when g is negative (h below p): keep h.
+    immut keep = g4 >> 63
+    h0 = (h0 & keep) | (g0 & (keep ^ -1))
+    h1 = (h1 & keep) | (g1 & (keep ^ -1))
+    h2 = (h2 & keep) | (g2 & (keep ^ -1))
+    h3 = (h3 & keep) | (g3 & (keep ^ -1))
+    h4 = (h4 & keep) | ((g4 & mask26) & (keep ^ -1))
+    // h + s, modulo 2^128, in four words of 32 bits.
+    immut w0 = (h0 | (h1 << 26)) & mask32
+    immut w1 = ((h1 >> 6) | (h2 << 20)) & mask32
+    immut w2 = ((h2 >> 12) | (h3 << 14)) & mask32
+    immut w3 = ((h3 >> 18) | (h4 << 8)) & mask32
+    mut f = w0 + le32(key, 16)
+    putLe32(out, 0, f)
+    f = w1 + le32(key, 20) + (f >> 32)
+    putLe32(out, 4, f)
+    f = w2 + le32(key, 24) + (f >> 32)
+    putLe32(out, 8, f)
+    f = w3 + le32(key, 28) + (f >> 32)
+    putLe32(out, 12, f)
+}
+
+// ChaCha20-Poly1305
+
+// The tag of the AEAD: Poly1305 with the first 32 bytes of the block 0 as its key, over the
+// additional data, the ciphertext (each padded with zeros to 16 bytes) and their sizes.
+function tag(key: Address, nonce: Address, aad: Address, aadSize: int, cipher: Address, size: int, out: Address) {
+    immut oneTime = allocate(64)
+    immut state = allocate(128)
+    immut work = allocate(128)
+    block(key, 0, nonce, oneTime, state, work)
+    free(work)
+    free(state)
+    immut aadPadded = (aadSize + 15) / 16 * 16
+    immut cipherPadded = (size + 15) / 16 * 16
+    immut total = aadPadded + cipherPadded + 16
+    immut text = allocate(total)
+    memset(text, 0, total)
+    memcpy(text, aad, aadSize)
+    memcpy(offset(text, aadPadded), cipher, size)
+
+    for i in range(8) {
+        putByte(text, aadPadded + cipherPadded + i, aadSize >> (8 * i))
+        putByte(text, aadPadded + cipherPadded + 8 + i, size >> (8 * i))
+    }
+
+    poly1305(oneTime, text, total, out)
+    free(text)
+    free(oneTime)
+}
+
+// Seals the `size` bytes at `data` with `key` (32 bytes) and `nonce` (12 bytes): the ciphertext and
+// its tag of 16 bytes at `out` (`size + 16` bytes).
+export function seal(key: Address, nonce: Address, aad: Address, aadSize: int, data: Address, size: int, out: Address) {
+    chacha20(key, 1, nonce, data, size, out)
+    tag(key, nonce, aad, aadSize, out, size, offset(out, size))
+}
+
+// Opens a ciphertext and its tag (`size` bytes, the last 16 the tag): its plaintext at `out`
+// (`size - 16` bytes), or false when the tag is not that of the ciphertext (nothing is written).
+export function open(key: Address, nonce: Address, aad: Address, aadSize: int, data: Address, size: int, out: Address): boolean {
+    if (size < 16) { return false }
+
+    immut expected = allocate(16)
+    tag(key, nonce, aad, aadSize, data, size - 16, expected)
+    mut difference = 0
+
+    for i in range(16) {
+        difference = difference | (byteAt(expected, i) ^ byteAt(data, size - 16 + i))
+    }
+
+    free(expected)
+
+    if (difference != 0) { return false }
+
+    chacha20(key, 1, nonce, data, size - 16, out)
+    return true
+}
+
+// For C (the tests of the library).
+
+extern function koji_chacha20_poly1305_seal(key: Address, nonce: Address, aad: Address, aadSize: CSize, data: Address, size: CSize, out: Address) {
+    seal(key, nonce, aad, aadSize, data, size, out)
+}
+
+extern function koji_chacha20_poly1305_open(key: Address, nonce: Address, aad: Address, aadSize: CSize, data: Address, size: CSize, out: Address): boolean {
+    return open(key, nonce, aad, aadSize, data, size, out)
+}

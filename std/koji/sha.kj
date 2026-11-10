@@ -1,0 +1,421 @@
+// `koji:sha`: the hashes SHA-256, SHA-384 and SHA-512 (FIPS 180-4), HMAC (RFC 2104) and HKDF
+// (RFC 5869), in the library of the runtime written in Koji: what TLS 1.3 derives its keys with and
+// signatures are made over. On bytes at addresses (`data`, `size`), the digest written at `out`.
+// A word of SHA-256 is an int below 2^32 (its sums are masked); one of SHA-512 is the 64 bits of an
+// int (its sums wrap through U128, its shifts to the right are logical).
+
+import { Address, CInt, CSize, U128, allocate, free, isNull, lowWord, nullAddress, offset, read, stringBytes, stringSize, wide, write } from 'koji:unsafe'
+
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function memset(target: Address, value: CInt, size: CSize): Address
+
+
+// The constants, in hexadecimal: the first 32 (or 64) bits of the fractional parts of the cube roots
+// of the first 64 (or 80) primes, and the first values, of their square roots (of the 9th to 16th
+// primes for SHA-384).
+immut k256Text = '428a2f9871374491b5c0fbcfe9b5dba53956c25b59f111f1923f82a4ab1c5ed5d807aa9812835b01243185be550c7dc372be5d7480deb1fe9bdc06a7c19bf174e49b69c1efbe47860fc19dc6240ca1cc2de92c6f4a7484aa5cb0a9dc76f988da983e5152a831c66db00327c8bf597fc7c6e00bf3d5a7914706ca63511429296727b70a852e1b21384d2c6dfc53380d13650a7354766a0abb81c2c92e92722c85a2bfe8a1a81a664bc24b8b70c76c51a3d192e819d6990624f40e3585106aa07019a4c1161e376c082748774c34b0bcb5391c0cb34ed8aa4a5b9cca4f682e6ff3748f82ee78a5636f84c878148cc7020890befffaa4506cebbef9a3f7c67178f2'
+immut h256Text = '6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19'
+immut k512Text = '428a2f98d728ae227137449123ef65cdb5c0fbcfec4d3b2fe9b5dba58189dbbc3956c25bf348b53859f111f1b605d019923f82a4af194f9bab1c5ed5da6d8118d807aa98a303024212835b0145706fbe243185be4ee4b28c550c7dc3d5ffb4e272be5d74f27b896f80deb1fe3b1696b19bdc06a725c71235c19bf174cf692694e49b69c19ef14ad2efbe4786384f25e30fc19dc68b8cd5b5240ca1cc77ac9c652de92c6f592b02754a7484aa6ea6e4835cb0a9dcbd41fbd476f988da831153b5983e5152ee66dfaba831c66d2db43210b00327c898fb213fbf597fc7beef0ee4c6e00bf33da88fc2d5a79147930aa72506ca6351e003826f142929670a0e6e7027b70a8546d22ffc2e1b21385c26c9264d2c6dfc5ac42aed53380d139d95b3df650a73548baf63de766a0abb3c77b2a881c2c92e47edaee692722c851482353ba2bfe8a14cf10364a81a664bbc423001c24b8b70d0f89791c76c51a30654be30d192e819d6ef5218d69906245565a910f40e35855771202a106aa07032bbd1b819a4c116b8d2d0c81e376c085141ab532748774cdf8eeb9934b0bcb5e19b48a8391c0cb3c5c95a634ed8aa4ae3418acb5b9cca4f7763e373682e6ff3d6b2b8a3748f82ee5defb2fc78a5636f43172f6084c87814a1f0ab728cc702081a6439ec90befffa23631e28a4506cebde82bde9bef9a3f7b2c67915c67178f2e372532bca273eceea26619cd186b8c721c0c207eada7dd6cde0eb1ef57d4f7fee6ed17806f067aa72176fba0a637dc5a2c898a6113f9804bef90dae1b710b35131c471b28db77f523047d8432caab7b40c724933c9ebe0a15c9bebc431d67c49c100d4c4cc5d4becb3e42b6597f299cfc657e2a5fcb6fab3ad6faec6c44198c4a475817'
+immut h512Text = '6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179'
+immut h384Text = 'cbbb9d5dc1059ed8629a292a367cd5079159015a3070dd17152fecd8f70e593967332667ffc00b318eb44a8768581511db0c2e0d64f98fa747b5481dbefa4fa4'
+
+// The constants as ints, read the first time a hash needs them.
+mut k256 = nullAddress()
+mut k512 = nullAddress()
+
+// Ints from groups of `digits` hexadecimal digits of `text`.
+function wordsOf(text: string, digits: int): Address {
+    immut bytes = stringBytes(text)
+    immut count = stringSize(text) / digits
+    immut words = allocate(count * 8)
+
+    for i in range(count) {
+        mut value: U128 = 0
+
+        for d in range(digits) {
+            immut b: byte = read(bytes, i * digits + d)
+            value = (value << 4) | wide(int(if (b <= 57) { b - 48 } else { b - 87 }), 0)
+        }
+
+        write(words, i * 8, lowWord(value))
+    }
+
+    return words
+}
+
+function wordAt(words: Address, i: int): int {
+    immut word: int = read(words, i * 8)
+    return word
+}
+
+function byteAt(bytes: Address, i: int): int {
+    immut b: byte = read(bytes, i)
+    return int(b)
+}
+
+function putByte(bytes: Address, i: int, value: int) {
+    write(bytes, i, byte(value & 0xFF))
+}
+
+// SHA-256
+
+immut mask32 = 0xFFFFFFFF
+
+function rotr32(x: int, n: int): int {
+    return ((x >> n) | (x << (32 - n))) & mask32
+}
+
+// The digest of SHA-256 (32 bytes) of the `size` bytes at `data`, at `out`.
+export function sha256(data: Address, size: int, out: Address) {
+    if (isNull(k256)) { k256 = wordsOf(k256Text, 8) }
+
+    immut state = wordsOf(h256Text, 8)
+    immut schedule = allocate(64 * 8)
+    mut at = 0
+
+    while (at + 64 <= size) {
+        compress256(state, schedule, offset(data, at))
+        at += 64
+    }
+
+    // The last bytes, a 1 bit, zeros, and the size in bits on 8 bytes (one block or two).
+    immut tail = allocate(128)
+    memset(tail, 0, 128)
+    memcpy(tail, offset(data, at), size - at)
+    putByte(tail, size - at, 0x80)
+    immut blocks = if (size - at + 9 > 64) { 2 } else { 1 }
+    immut bits = size * 8
+
+    for i in range(8) {
+        putByte(tail, blocks * 64 - 1 - i, (bits >> (8 * i)) & 0xFF)
+    }
+
+    for b in range(blocks) {
+        compress256(state, schedule, offset(tail, b * 64))
+    }
+
+    for i in range(8) {
+        immut word = wordAt(state, i)
+
+        for j in range(4) {
+            putByte(out, i * 4 + j, word >> (24 - 8 * j))
+        }
+    }
+
+    free(tail)
+    free(schedule)
+    free(state)
+}
+
+function compress256(state: Address, w: Address, block: Address) {
+    mut t = 0
+
+    while (t < 16) {
+        write(w, t * 8, (byteAt(block, 4 * t) << 24) | (byteAt(block, 4 * t + 1) << 16) | (byteAt(block, 4 * t + 2) << 8) | byteAt(block, 4 * t + 3))
+        t += 1
+    }
+
+    while (t < 64) {
+        immut x = wordAt(w, t - 15)
+        immut y = wordAt(w, t - 2)
+        immut s0 = rotr32(x, 7) ^ rotr32(x, 18) ^ (x >> 3)
+        immut s1 = rotr32(y, 17) ^ rotr32(y, 19) ^ (y >> 10)
+        write(w, t * 8, (wordAt(w, t - 16) + s0 + wordAt(w, t - 7) + s1) & mask32)
+        t += 1
+    }
+
+    mut a = wordAt(state, 0)
+    mut b = wordAt(state, 1)
+    mut c = wordAt(state, 2)
+    mut d = wordAt(state, 3)
+    mut e = wordAt(state, 4)
+    mut f = wordAt(state, 5)
+    mut g = wordAt(state, 6)
+    mut h = wordAt(state, 7)
+    t = 0
+
+    while (t < 64) {
+        immut big1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)
+        immut choice = (e & f) ^ ((e ^ mask32) & g)
+        immut first = (h + big1 + choice + wordAt(k256, t) + wordAt(w, t)) & mask32
+        immut big0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)
+        immut majority = (a & b) ^ (a & c) ^ (b & c)
+        immut second = (big0 + majority) & mask32
+        h = g
+        g = f
+        f = e
+        e = (d + first) & mask32
+        d = c
+        c = b
+        b = a
+        a = (first + second) & mask32
+        t += 1
+    }
+
+    write(state, 0, (wordAt(state, 0) + a) & mask32)
+    write(state, 8, (wordAt(state, 1) + b) & mask32)
+    write(state, 16, (wordAt(state, 2) + c) & mask32)
+    write(state, 24, (wordAt(state, 3) + d) & mask32)
+    write(state, 32, (wordAt(state, 4) + e) & mask32)
+    write(state, 40, (wordAt(state, 5) + f) & mask32)
+    write(state, 48, (wordAt(state, 6) + g) & mask32)
+    write(state, 56, (wordAt(state, 7) + h) & mask32)
+}
+
+// SHA-512 and SHA-384
+
+// a + b, in 64 bits.
+function add64(a: int, b: int): int {
+    return lowWord(wide(a, 0) + wide(b, 0))
+}
+
+// x shifted right by n (1 to 63) bits, zeros coming in.
+function shr64(x: int, n: int): int {
+    return (x >> n) & (-1 ^ (-1 << (64 - n)))
+}
+
+function rotr64(x: int, n: int): int {
+    return shr64(x, n) | (x << (64 - n))
+}
+
+// The digest of SHA-512 (64 bytes) of the `size` bytes at `data`, at `out`.
+export function sha512(data: Address, size: int, out: Address) {
+    sha512Family(data, size, out, h512Text, 64)
+}
+
+// The digest of SHA-384 (48 bytes): SHA-512 from other first values, its first 48 bytes.
+export function sha384(data: Address, size: int, out: Address) {
+    sha512Family(data, size, out, h384Text, 48)
+}
+
+function sha512Family(data: Address, size: int, out: Address, first: string, length: int) {
+    if (isNull(k512)) { k512 = wordsOf(k512Text, 16) }
+
+    immut state = wordsOf(first, 16)
+    immut schedule = allocate(80 * 8)
+    mut at = 0
+
+    while (at + 128 <= size) {
+        compress512(state, schedule, offset(data, at))
+        at += 128
+    }
+
+    // The size in bits takes 16 bytes; sizes below 2^61 bytes have 0 in their first 8.
+    immut tail = allocate(256)
+    memset(tail, 0, 256)
+    memcpy(tail, offset(data, at), size - at)
+    putByte(tail, size - at, 0x80)
+    immut blocks = if (size - at + 17 > 128) { 2 } else { 1 }
+    immut bits = size * 8
+
+    for i in range(8) {
+        putByte(tail, blocks * 128 - 1 - i, (bits >> (8 * i)) & 0xFF)
+    }
+
+    for b in range(blocks) {
+        compress512(state, schedule, offset(tail, b * 128))
+    }
+
+    for i in range(length) {
+        immut word = wordAt(state, i / 8)
+        immut place = i % 8
+        putByte(out, i, if (place == 7) { word } else { shr64(word, 56 - 8 * place) })
+    }
+
+    free(tail)
+    free(schedule)
+    free(state)
+}
+
+function be64(block: Address, at: int): int {
+    mut value = 0
+
+    for i in range(8) {
+        value = (value << 8) | byteAt(block, at + i)
+    }
+
+    return value
+}
+
+function compress512(state: Address, w: Address, block: Address) {
+    mut t = 0
+
+    while (t < 16) {
+        write(w, t * 8, be64(block, 8 * t))
+        t += 1
+    }
+
+    while (t < 80) {
+        immut x = wordAt(w, t - 15)
+        immut y = wordAt(w, t - 2)
+        immut s0 = rotr64(x, 1) ^ rotr64(x, 8) ^ shr64(x, 7)
+        immut s1 = rotr64(y, 19) ^ rotr64(y, 61) ^ shr64(y, 6)
+        write(w, t * 8, add64(add64(wordAt(w, t - 16), s0), add64(wordAt(w, t - 7), s1)))
+        t += 1
+    }
+
+    mut a = wordAt(state, 0)
+    mut b = wordAt(state, 1)
+    mut c = wordAt(state, 2)
+    mut d = wordAt(state, 3)
+    mut e = wordAt(state, 4)
+    mut f = wordAt(state, 5)
+    mut g = wordAt(state, 6)
+    mut h = wordAt(state, 7)
+    t = 0
+
+    while (t < 80) {
+        immut big1 = rotr64(e, 14) ^ rotr64(e, 18) ^ rotr64(e, 41)
+        immut choice = (e & f) ^ ((e ^ -1) & g)
+        immut first = add64(add64(add64(h, big1), add64(choice, wordAt(k512, t))), wordAt(w, t))
+        immut big0 = rotr64(a, 28) ^ rotr64(a, 34) ^ rotr64(a, 39)
+        immut majority = (a & b) ^ (a & c) ^ (b & c)
+        immut second = add64(big0, majority)
+        h = g
+        g = f
+        f = e
+        e = add64(d, first)
+        d = c
+        c = b
+        b = a
+        a = add64(first, second)
+        t += 1
+    }
+
+    write(state, 0, add64(wordAt(state, 0), a))
+    write(state, 8, add64(wordAt(state, 1), b))
+    write(state, 16, add64(wordAt(state, 2), c))
+    write(state, 24, add64(wordAt(state, 3), d))
+    write(state, 32, add64(wordAt(state, 4), e))
+    write(state, 40, add64(wordAt(state, 5), f))
+    write(state, 48, add64(wordAt(state, 6), g))
+    write(state, 56, add64(wordAt(state, 7), h))
+}
+
+// Hashes by number: 0 SHA-256, 1 SHA-384, 2 SHA-512.
+
+export function digestSize(hash: int): int {
+    return match (hash) {
+        0 => 32
+        1 => 48
+        _ => 64
+    }
+}
+
+function blockSize(hash: int): int {
+    return if (hash == 0) { 64 } else { 128 }
+}
+
+export function digest(hash: int, data: Address, size: int, out: Address) {
+    if (hash == 0) {
+        sha256(data, size, out)
+        return
+    }
+
+    if (hash == 1) {
+        sha384(data, size, out)
+        return
+    }
+
+    sha512(data, size, out)
+}
+
+// HMAC of `hash` with the key `key` (`keySize` bytes) over the data, at `out` (the size of a digest).
+export function hmac(hash: int, key: Address, keySize: int, data: Address, size: int, out: Address) {
+    immut block = blockSize(hash)
+    immut length = digestSize(hash)
+    // A key longer than a block is its digest; then zeros to a block.
+    immut padded = allocate(block)
+    memset(padded, 0, block)
+
+    if (keySize > block) {
+        digest(hash, key, keySize, padded)
+    } else {
+        memcpy(padded, key, keySize)
+    }
+
+    // H((K ^ opad) || H((K ^ ipad) || data))
+    immut inner = allocate(block + size)
+
+    for i in range(block) {
+        putByte(inner, i, byteAt(padded, i) ^ 0x36)
+    }
+
+    memcpy(offset(inner, block), data, size)
+    immut outer = allocate(block + length)
+    digest(hash, inner, block + size, offset(outer, block))
+
+    for i in range(block) {
+        putByte(outer, i, byteAt(padded, i) ^ 0x5C)
+    }
+
+    digest(hash, outer, block + length, out)
+    free(outer)
+    free(inner)
+    free(padded)
+}
+
+// HKDF-Extract: the pseudorandom key (the size of a digest) of `salt` and `secret`, at `out`.
+export function hkdfExtract(hash: int, salt: Address, saltSize: int, secret: Address, secretSize: int, out: Address) {
+    if (saltSize == 0) {
+        // No salt is a salt of zeros, the size of a digest.
+        immut zeros = allocate(digestSize(hash))
+        memset(zeros, 0, digestSize(hash))
+        hmac(hash, zeros, digestSize(hash), secret, secretSize, out)
+        free(zeros)
+        return
+    }
+
+    hmac(hash, salt, saltSize, secret, secretSize, out)
+}
+
+// HKDF-Expand: `length` bytes (at most 255 digests) from the pseudorandom key and `info`, at `out`.
+export function hkdfExpand(hash: int, key: Address, keySize: int, info: Address, infoSize: int, length: int, out: Address) {
+    immut size = digestSize(hash)
+    // T(i) = HMAC(key, T(i - 1) || info || i)
+    immut input = allocate(size + infoSize + 1)
+    immut block = allocate(size)
+    mut previous = 0
+    mut done = 0
+    mut counter = 1
+
+    while (done < length) {
+        memcpy(input, block, previous)
+        memcpy(offset(input, previous), info, infoSize)
+        putByte(input, previous + infoSize, counter)
+        hmac(hash, key, keySize, input, previous + infoSize + 1, block)
+        immut taken = if (length - done < size) { length - done } else { size }
+        memcpy(offset(out, done), block, taken)
+        done += taken
+        previous = size
+        counter += 1
+    }
+
+    free(block)
+    free(input)
+}
+
+// For C (the tests of the library): the same functions, by their names.
+
+extern function koji_sha256(data: Address, size: CSize, out: Address) {
+    sha256(data, size, out)
+}
+
+extern function koji_sha384(data: Address, size: CSize, out: Address) {
+    sha384(data, size, out)
+}
+
+extern function koji_sha512(data: Address, size: CSize, out: Address) {
+    sha512(data, size, out)
+}
+
+extern function koji_hmac(hash: CInt, key: Address, keySize: CSize, data: Address, size: CSize, out: Address) {
+    hmac(hash, key, keySize, data, size, out)
+}
+
+extern function koji_hkdf(hash: CInt, salt: Address, saltSize: CSize, secret: Address, secretSize: CSize, info: Address, infoSize: CSize, length: CSize, out: Address) {
+    immut key = allocate(64)
+    hkdfExtract(hash, salt, saltSize, secret, secretSize, key)
+    hkdfExpand(hash, key, digestSize(hash), info, infoSize, length, out)
+    free(key)
+}
