@@ -214,10 +214,12 @@ KOJI_INLINE int64_t koji_unsafe_offset(int64_t address, int64_t bytes) { return 
 KOJI_INLINE int64_t koji_unsafe_distance(int64_t from, int64_t to) { return to - from; }
 
 /* The prototypes of the `extern` functions have the types of Koji, which may differ from those
-   the compiler knows for a function of the C library (`strlen(const void *)`). */
+   the compiler knows for a function of the C library (`strlen(const void *)`), and come without the
+   headers that declare them (clang asks for <stdio.h> before `fopen`). */
 #if defined(__clang__)
 #define KOJI_EXTERNS_BEGIN                                                                         \
-    _Pragma("clang diagnostic push") _Pragma("clang diagnostic ignored \"-Wincompatible-library-redeclaration\"")
+    _Pragma("clang diagnostic push") _Pragma("clang diagnostic ignored \"-Wincompatible-library-redeclaration\"") \
+    _Pragma("clang diagnostic ignored \"-Wbuiltin-requires-header\"")
 #define KOJI_EXTERNS_END _Pragma("clang diagnostic pop")
 #elif defined(__GNUC__)
 #define KOJI_EXTERNS_BEGIN                                                                         \
