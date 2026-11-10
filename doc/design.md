@@ -354,3 +354,11 @@ The modules of the standard library may import `koji:core` too (`system` uses `t
 **Decision**: type errors and panics name the main file as it was given on the command line, and a module as its `import` wrote it (`lib/math.kj:3: division by zero`).
 
 **Why**: the same names everywhere, which the reader recognizes from the code.
+
+### HTTPS: TLS 1.3 only, written in Koji
+
+**Decision**: `https://` uses a client of TLS written in Koji (`koji:tls`, `koji:x509`, the cryptography of `std/koji/`), and only TLS 1.3. Its certificate authorities are those of the system (`SSL_CERT_FILE`, `SSL_CERT_DIR`, the usual files of Linux, macOS and the BSDs), with Mozilla's list built in for the systems that have none, as Go does. Its ciphers are AES-GCM with the instructions of the processor (AES-NI and PCLMULQDQ, or those of ARMv8, the only C of the cryptography, in the prelude) when it has them, and ChaCha20-Poly1305 otherwise, as Go, BoringSSL and rustls choose; never AES by tables. The end of the data is close_notify only: a connection closed without it is reported as maybe truncated, as rustls reports it, and `std/http.kj` ignores that after a body whose size it knows. A server without TLS 1.3 is refused with a message that says so.
+
+**Why**: TLS 1.3 is what most servers speak, and what has the least to get wrong (no renegotiation, no CBC, no exchange of keys by RSA, the whole handshake after the ServerHello encrypted): one version, a smaller client and a smaller surface of attack. The cost is known: a few servers have only TLS 1.2 (in 2026, `registry.npmjs.org` and `registry.yarnpkg.com`), which the client in Rust (`ureq`) reached and which Koji does not.
+
+**Alternatives**: TLS 1.2 too, in the modern subset rustls keeps (ECDHE, AEAD ciphers, Extended Master Secret, no renegotiation), which reaches every server but doubles the protocol to keep right; the TLS of the system (OpenSSL, Secure Transport), as Python and Node use it, which ties Koji to a library in C.
