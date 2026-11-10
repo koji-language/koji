@@ -22,6 +22,12 @@ The `system` module gives access to the command line, the environment, the exit 
 -   `capture(command: string, args: string[]) -> Result[Output, SystemError]`  
     Like `run`, but keeps what the program prints instead of showing it, and gives it with the exit code as an `Output`.
 
+-   `readInput(count: int) -> Option[string]`  
+    The next `count` bytes of the standard input, as a text (fewer at its end; bytes that are not UTF-8 become U+FFFD), or `None` when nothing is left. It reads from the same buffer as `input()`, so that a protocol can read its header lines with `input()` and a body of a known size with `readInput` (as the language server of `kojic lsp` does).
+
+-   `writeOutput(text: string)`  
+    Writes `text` on the standard output without a line break after it (`print` adds one): a prompt, a line drawn piece by piece, the messages of a protocol.
+
 ## Constants
 
 -   `os: OperatingSystem`  

@@ -381,3 +381,12 @@ The modules of the standard library may import `koji:core` too (`system` uses `t
 **Alternatives**: the line only (as before), which leaves the reader to find the place in it; a long explanation with each error (as Elm), more work for each message, for later.
 
 The check goes on after an error, statement by statement, and reports every error, up to 20 (`3 errors` at the end). A variable whose declaration failed is declared all the same, with its written type or an unknown one that no later use reports, so that one mistake gives one error, not a cascade; an imported module with errors stops the check, since every name taken from it would be an error too. Syntax errors stop at the first: the parser cannot know where the program goes on.
+
+### The language server is a command of the compiler
+
+**Decision**: `kojic lsp` is the language server (the Language Server Protocol, on the standard input and output), written in Koji in the compiler (`compiler/lsp.kj`): it checks the text the editor holds, saved or not, with the checker of the compiler, and gives every error as it is edited (the line, the column and the width of each), the type of what is under the cursor (from the types the checker kept, even when the file has errors elsewhere) and where a name is declared (a variable, a parameter, a function, a type, in the file or in the module it is imported from). The editor extension of VS Code (`editors/vscode`) runs it.
+
+**Why**: the editor sees exactly what `kojic check` sees, with no second implementation of the language to keep in step; one program to install. Checking a whole file at each change is fast enough for the files of Koji (the compiler checks its own 15,000 lines in 0.08 s).
+
+**Alternatives**: a server of its own, apart from the compiler (as rust-analyzer), which can be incremental but repeats the language; a server in another language (TypeScript), which would need the compiler anyway.
+

@@ -197,6 +197,15 @@ function Parser.node(mut self, kind: NodeKind): Node {
     return { id: self.nextId - 1, kind: kind, span: self.spanFrom(if (self.starts.length() > 0) { self.starts[self.starts.length() - 1] } else { self.position - 1 }) }
 }
 
+// A node that wraps another (`Located`, `Export`): where the other is.
+function Parser.wrapping(mut self, kind: NodeKind, inner: Node): Node {
+    mut node = self.node(kind)
+
+    if (inner.span.line > 0) { node.span = inner.span }
+
+    return node
+}
+
 // From the token `start` to the last token read.
 function Parser.spanFrom(self, start: int): Span {
     immut first = if (start < 0) { 0 } else { start }
@@ -365,7 +374,7 @@ function Parser.locatedStatement(mut self): Result[Node, string] {
 
     if (line == 0) { return Ok(statement) }
 
-    return Ok(self.node(Located(line, statement)))
+    return Ok(self.wrapping(Located(line, statement), statement))
 }
 
 function Parser.statement(mut self): Result[Node, string] {
@@ -754,11 +763,12 @@ function Parser.export(mut self): Result[Node, string] {
         return Err(self.failure(`expected 'function', 'mut', 'immut' or 'type' after 'export', found ${describe(next)}`))
     }
 
-    immut declaration = self.node(Export(self.statement()?, opaque))
+    immut exported = self.statement()?
+    immut declaration = self.wrapping(Export(exported, opaque), exported)
 
     if (line == 0) { return Ok(declaration) }
 
-    return Ok(self.node(Located(line, declaration)))
+    return Ok(self.wrapping(Located(line, declaration), declaration))
 }
 
 function Parser.importStatement(mut self): Result[Node, string] {

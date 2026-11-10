@@ -5902,6 +5902,29 @@ function Checker.finished(mut self, result: Result[int, string]): Result[Program
     return Ok({ modules: self.loaded, table: self.table, tables: self.tables })
 }
 
+// What the checker found in a text (for `kojic lsp`, which checks what an editor holds, saved or
+// not): the program, whatever its errors (its tables hold the types of what was checked), and the
+// errors, each as `kojic check` shows it.
+export type Checked = {
+    program: Program
+    errors: string[]
+}
+
+export function checkText(path: string, source: string): Checked {
+    mut checker = Checker.create()
+    immut result = checker.checkModule(resolvePath('', path), path, source)
+    mut errors = checker.errors
+
+    match (result) {
+        Ok(_) => {}
+        Err(message) => {
+            if (message != stopChecking) { errors.push(message) }
+        }
+    }
+
+    return { program: { modules: checker.loaded, table: checker.table, tables: checker.tables }, errors: errors }
+}
+
 export function check(path: string): Result[Program, string] {
     immut source = match (readSource(path)) {
         Ok(source) => source

@@ -6,3 +6,4 @@
 *.dll
 build/
 target/
+node_modules/

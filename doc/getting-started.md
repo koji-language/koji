@@ -83,6 +83,7 @@ The message gives the file, the line and the column of the error, and shows the 
 | `kojic check <file.kj>` | Only checks syntax and types |
 | `kojic build <file.kj> [-o <output>]` | Compiles a program to an executable (needs a C compiler) |
 | `kojic test [file.kj \| directory]...` | Runs the tests of files, the `test` blocks (see [Testing](testing.md)) |
+| `kojic lsp` | The language server, for editors (on the standard input and output) |
 | `kojic help` | Shows the available commands |
 
 `kojic build` compiles a program to a native executable, through C. `kojic run` does the same in a temporary file, runs it with the arguments and the input of `kojic`, and ends with its exit code.
@@ -94,7 +95,9 @@ kojic build hello.kj
 
 ## Editor Support
 
-`editors/vscode` is an extension of Visual Studio Code with the syntax highlighting of Koji: see its [README](../editors/vscode/README.md) to install it. Its grammar is a TextMate grammar, which other editors read too.
+`editors/vscode` is an extension of Visual Studio Code with the syntax highlighting of Koji and its language server: see its [README](../editors/vscode/README.md) to install it. Its grammar is a TextMate grammar, which other editors read too.
+
+`kojic lsp` is the language server, for any editor that speaks the Language Server Protocol (VS Code, Neovim, Helix, Zed, Emacs...): it shows every error of a file as it is edited, the type of what is under the cursor, and goes to where a name is declared, in the file or in the module it comes from.
 
 ## Examples
 

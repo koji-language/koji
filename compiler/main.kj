@@ -11,6 +11,7 @@ import { dumpTypes, check, checkLibrary, Program } from 'checker.kj'
 import { lower, lowerTests } from 'lower.kj'
 import { IrProgram, programText } from 'ir.kj'
 import { generate } from 'cgen.kj'
+import { serve } from 'lsp.kj'
 
 immut usage = [
     'kojic - the Koji programming language (the compiler written in Koji)',
@@ -19,6 +20,7 @@ immut usage = [
     '    kojic run <file.kj> [arguments]   check, compile and run a program',
     '    kojic check <file.kj>             only check syntax and types',
     '    kojic test [file.kj | dir]...     run the tests (`test` blocks) of files (default: .)',
+    '    kojic lsp                         a language server for editors (on stdin and stdout)',
     '    kojic build <file.kj> [options]   compile a program to an executable',
     '        -o <output>                   the executable (default: the file name without .kj)',
     '        --emit c                      write the generated C instead',
@@ -532,6 +534,8 @@ immut args = system.args()
 immut command = if (args.length() > 0) { args[0] } else { '' }
 
 if (command == 'test') { testCommand(args[1..]) }
+
+if (command == 'lsp' and args.length() == 1) { serve() }
 
 if (command == 'build') {
     build(args[1..])

@@ -2,7 +2,7 @@
 // operating system (see doc/standard-library/system.md). `exit` is checked by the compiler, which
 // calls `leave` here (a function of Koji cannot say that it never returns).
 
-import { Address, CInt, CSize, allocate, free, isNull, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
+import { Address, CInt, CSize, Location, allocate, free, isNull, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
 import { cString, cText, hasNul, isUtf8, textOf } from 'koji:core'
 
 // The C library.
@@ -31,6 +31,9 @@ extern function koji_system_argument(index: int): Address
 extern function koji_system_errno(): CInt
 extern function koji_system_environment(): Address
 extern function koji_system_executable_into(buffer: Address, size: int): int
+// The standard input and output, of the library (std/koji/output.kj): the buffer of `input`.
+extern function koji_read_bytes(count: int, here: Location, status: Address): string
+extern function koji_write(text: string, here: Location)
 
 export type OperatingSystem = {
     Linux
@@ -76,6 +79,23 @@ export function args(): string[] {
     }
 
     return found
+}
+
+// The next `count` bytes of the standard input, as a text (fewer at its end; bytes that are not
+// UTF-8 become U+FFFD), or `None` when nothing is left. It reads from the same buffer as
+// `input()`: a protocol can read lines with one and a body of known size with the other.
+export function readInput(count: int, here: Location): Option[string] {
+    immut status = allocate(8)
+    write(status, 0, 0)
+    immut text = koji_read_bytes(count, here, status)
+    immut ended: int = read(status, 0)
+    free(status)
+    return if (ended == 1) { None } else { Some(text) }
+}
+
+// Writes `text` on the standard output, without a line break after it (`print` adds one).
+export function writeOutput(text: string, here: Location) {
+    koji_write(text, here)
 }
 
 // The value of the environment variable `name` (`None` if it is not set, or not UTF-8).

@@ -2251,3 +2251,72 @@ fn several_errors_are_reported() {
          3 errors\n"
     );
 }
+
+/// `kojic lsp`: the language server answers on the standard output with the errors of a file, the
+/// type under the cursor and the declaration of a name.
+#[test]
+fn the_language_server() {
+    use std::io::{BufRead, BufReader, Read, Write as _};
+    use std::process::Stdio;
+
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("lsp");
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("main.kj");
+    let uri = format!("file://{}", file.display());
+    let mut server = koji::kojic().arg("lsp").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut input = server.stdin.take().unwrap();
+    let mut output = BufReader::new(server.stdout.take().unwrap());
+    let mut send = |message: String| {
+        write!(input, "Content-Length: {}\r\n\r\n{}", message.len(), message).unwrap();
+        input.flush().unwrap();
+    };
+    let mut receive = || {
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            output.read_line(&mut line).unwrap();
+            let line = line.trim();
+            if line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("Content-Length:") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        output.read_exact(&mut body).unwrap();
+        String::from_utf8(body).unwrap()
+    };
+    send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_string());
+    assert!(receive().contains(r#""hoverProvider":true"#));
+    let text = "function twice(n: int): int {\n    return n * 2\n}\n\nimmut count = twice(3)\nimmut wrong: string = count\n";
+    send(format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{}","text":{}}}}}}}"#,
+        uri,
+        format!("{:?}", text)
+    ));
+    assert_eq!(
+        receive(),
+        format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{{"uri":"{}","diagnostics":[{{"range":{{"start":{{"line":5,"character":22}},"end":{{"line":5,"character":27}}}},"severity":1,"source":"kojic","message":"type error: cannot assign a value of type int to 'wrong' of type string"}}]}}}}"#,
+            uri
+        )
+    );
+    let request = |id: i32, method: &str, line: i32, character: i32| {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{},"method":"textDocument/{}","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{},"character":{}}}}}}}"#,
+            id, method, uri, line, character
+        )
+    };
+    // The type of `count` in its declaration, and where `twice` and `n` are declared.
+    send(request(2, "hover", 4, 7));
+    assert!(receive().contains(r#""value":"```koji\ncount: int\n```""#));
+    send(request(3, "definition", 4, 15));
+    assert!(receive().contains(r#""range":{"start":{"line":0,"character":0}"#));
+    send(request(4, "definition", 1, 11));
+    assert!(receive().contains(r#""range":{"start":{"line":0,"character":0}"#));
+    send(r#"{"jsonrpc":"2.0","id":5,"method":"shutdown"}"#.to_string());
+    assert_eq!(receive(), r#"{"jsonrpc":"2.0","id":5,"result":null}"#);
+    send(r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string());
+    assert_eq!(server.wait().unwrap().code(), Some(0));
+}

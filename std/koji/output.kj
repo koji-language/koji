@@ -3,7 +3,7 @@
 // Koji (C calls these functions by their names). The writes go to the system at once, a line in
 // one call, as Rust's output flushed at each line did.
 
-import { Address, CInt, Location, Never, allocate, isNull, locationAddress, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
+import { Address, CInt, CSize, Location, Never, allocate, free, isNull, locationAddress, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
 import { cString, cText, isUtf8 } from 'koji:core'
 
 extern function writev(fd: CInt, buffers: Address, count: CInt): int
@@ -12,6 +12,7 @@ extern function exit(code: CInt): Never
 extern function fdopen(fd: CInt, mode: Address): Address
 extern function getline(line: Address, capacity: Address, stream: Address): int
 extern function ferror(stream: Address): CInt
+extern function fread(target: Address, size: CSize, count: CSize, file: Address): CSize
 extern function clearerr(stream: Address)
 extern function koji_system_errno(): CInt
 
@@ -185,6 +186,48 @@ extern function koji_read_line(prompt: string, here: Location, status: Address):
     }
 
     return newString(bytes, last)
+}
+
+// `system.readInput(count)`: up to `count` bytes of the standard input (fewer at its end), from the
+// buffer `input` reads too, as a text (bytes that are not UTF-8 become U+FFFD); `status` becomes 1
+// when nothing is left.
+extern function koji_read_bytes(count: int, here: Location, status: Address): string {
+    if (isNull(input)) { input = fdopen(0, readMode) }
+
+    if (isNull(input) or count <= 0) {
+        write(status, 0, if (count <= 0) { 0 } else { 1 })
+        return ''
+    }
+
+    immut block = allocate(count)
+    mut done = 0
+
+    while (done < count) {
+        immut got = fread(offset(block, done), 1, count - done, input)
+
+        if (got == 0) {
+            immut code = koji_system_errno()
+
+            if (ferror(input) != 0 and code != 9) { end('panic', here, `cannot read input: ${message(code)}`) }
+
+            break
+        }
+
+        done += got
+    }
+
+    if (done == 0) { write(status, 0, 1) }
+
+    immut text = newString(block, done)
+    free(block)
+    return text
+}
+
+// `system.writeOutput(text)`: the text on the standard output, without a line break after it.
+extern function koji_write(text: string, here: Location) {
+    immut code = written(1, text, false)
+
+    if (code != 0) { end('panic', here, `cannot write output: ${message(code)}`) }
 }
 
 function isLineEnd(bytes: Address, at: int): boolean {
