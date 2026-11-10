@@ -1,119 +1,23 @@
-//! Strings: immutable text with a reference count, shared between copies (value semantics with
-//! copy-on-write: a copy only increments the count).
-//!
-//! The generated code owns one reference per variable that holds a string. `retain` adds a
-//! reference and `release` removes one, freeing the string at zero. Functions that return a
-//! string return a new reference.
+//! The layout of strings, for the runtime in Rust that still reads and makes them (`http.rs`):
+//! strings are in std/koji/text.kj and the prelude.
 
-use std::cell::Cell;
-
-
-/// A string, laid out for C (the prelude counts its references inline): its UTF-8 bytes follow
-/// it, in the same allocation, from the pool for a short one.
+/// A string: its count of references, its size, the bytes its block holds, then its UTF-8 bytes.
 #[repr(C)]
 pub struct KojiString {
-    references: Cell<usize>,
+    references: usize,
     length: usize,
-    /// The bytes the block holds; more than `length` when the string grew in place.
     capacity: usize,
     bytes: [u8; 0],
 }
 
-impl KojiString {
-    pub fn as_str(&self) -> &str {
-        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.bytes.as_ptr(), self.length)) }
-    }
-}
-
-/// The 8-byte words of a string that holds `capacity` bytes.
-fn block_words(capacity: usize) -> usize {
-    std::mem::size_of::<KojiString>() / 8 + capacity.div_ceil(8)
-}
-
-/// A new string of `length` bytes that `fill` writes (they must be UTF-8), in a block that holds
-/// `capacity` bytes.
-fn allocate_with(length: usize, capacity: usize, fill: impl FnOnce(&mut [u8])) -> *mut KojiString {
-    // The whole last word is usable.
-    let capacity = capacity.div_ceil(8) * 8;
-    unsafe {
-        let string = crate::pool::take(block_words(capacity)) as *mut KojiString;
-        string.write(KojiString { references: Cell::new(1), length, capacity, bytes: [] });
-        fill(std::slice::from_raw_parts_mut((*string).bytes.as_mut_ptr(), length));
-        string
-    }
-}
-
-fn allocate(length: usize, fill: impl FnOnce(&mut [u8])) -> *mut KojiString {
-    allocate_with(length, length, fill)
+extern "C" {
+    fn koji_string_from_utf8(bytes: *const u8, length: usize) -> *mut KojiString;
 }
 
 pub(crate) fn new_string(text: String) -> *mut KojiString {
-    from_str(&text)
-}
-
-fn from_str(text: &str) -> *mut KojiString {
-    allocate(text.len(), |bytes| bytes.copy_from_slice(text.as_bytes()))
+    unsafe { koji_string_from_utf8(text.as_ptr(), text.len()) }
 }
 
 pub(crate) fn string_text<'a>(string: *const KojiString) -> &'a str {
-    unsafe { (*string).as_str() }
+    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts((*string).bytes.as_ptr(), (*string).length)) }
 }
-
-/// A new string with the UTF-8 bytes `bytes[..length]`.
-#[no_mangle]
-pub extern "C" fn koji_string_new(bytes: *const u8, length: usize) -> *mut KojiString {
-    let bytes = unsafe { std::slice::from_raw_parts(bytes, length) };
-    from_str(&String::from_utf8_lossy(bytes))
-}
-
-/// A new string with the bytes `bytes[..length]`, which are UTF-8 (`koji:unsafe`).
-#[no_mangle]
-pub extern "C" fn koji_string_from_utf8(bytes: *const u8, length: usize) -> *mut KojiString {
-    allocate(length, |target| target.copy_from_slice(unsafe { std::slice::from_raw_parts(bytes, length) }))
-}
-
-/// Frees a string without references (the prelude releases strings inline).
-#[no_mangle]
-pub extern "C" fn koji_string_free(string: *mut KojiString) {
-    let capacity = unsafe { (*string).capacity };
-    crate::pool::give(string as *mut u8, block_words(capacity));
-}
-
-#[no_mangle]
-pub extern "C" fn koji_string_retain(string: *const KojiString) {
-    if let Some(string) = unsafe { string.as_ref() } {
-        string.references.set(string.references.get() + 1);
-    }
-}
-
-/// Removes a reference; `NULL` is ignored (a variable that was never assigned).
-#[no_mangle]
-pub extern "C" fn koji_string_release(string: *mut KojiString) {
-    if let Some(reference) = unsafe { string.as_ref() } {
-        let references = reference.references.get() - 1;
-        if references == 0 {
-            koji_string_free(string);
-        } else {
-            reference.references.set(references);
-        }
-    }
-}
-
-/// The text as written in code: in quotes, with `\\`, `\'`, `\n`, `\t` and `\r` escaped.
-pub fn repr_string(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('\'');
-    for c in text.chars() {
-        match c {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            other => out.push(other),
-        }
-    }
-    out.push('\'');
-    out
-}
-

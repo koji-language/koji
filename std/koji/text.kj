@@ -5,10 +5,11 @@
 // it is given, but those it takes (`take`: the caller gives its reference).
 
 import { Address, CInt, CSize, Location, U128, allocate, blankString, charOfCode, distance, isNull, lowWord, newString, nullAddress, offset, panicAt, read, setStringSize, stringBytes, stringCapacity, stringReferences, stringSize, wide, wordProduct, write } from 'koji:unsafe'
-import { isContinuation, isSpace } from 'koji:core'
+import { isContinuation, isSpace, isUtf8, textOf } from 'koji:core'
 import { alphabetic, cased, ignorable, lowerMultiple, lowerSingle, lowercase, numeric, upperMultiple, upperSingle, uppercase } from 'koji:unicode'
 
 extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function koji_memory_give(block: Address, words: int)
 extern function memcmp(a: Address, b: Address, size: CSize): CInt
 extern function memchr(bytes: Address, value: CInt, size: CSize): Address
 extern function memmem(haystack: Address, haystackSize: CSize, needle: Address, needleSize: CSize): Address
@@ -804,4 +805,27 @@ function hexAt(digits: Address, at: int, count: int): int {
     }
 
     return value
+}
+
+// The block of a string: 3 words (its count of references, its size and the bytes its block holds,
+// a multiple of 8), then its bytes, from the pool for a short one (runtime/prelude.h makes them).
+
+// A new string of the bytes `bytes[..size]` (bytes that are not UTF-8 become U+FFFD).
+extern function koji_string_new(bytes: Address, size: CSize): string {
+    if (isUtf8(bytes, size)) { return koji_string_from_utf8(bytes, size) }
+
+    return textOf(bytes, size)
+}
+
+// A new string of the bytes `bytes[..size]`, which are UTF-8 (`newString` of `koji:unsafe`).
+extern function koji_string_from_utf8(bytes: Address, size: CSize): string {
+    immut text = blankString(size, size)
+    memcpy(stringBytes(text), bytes, size)
+    return text
+}
+
+// Frees a string without references (the prelude releases strings inline).
+extern function koji_string_free(text: Address) {
+    immut capacity: int = read(text, 16)
+    koji_memory_give(text, 3 + capacity / 8)
 }

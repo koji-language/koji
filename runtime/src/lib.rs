@@ -8,9 +8,7 @@
 mod http;
 mod record;
 mod stdlib;
-mod pool;
 mod string;
 mod system;
 
-pub use string::repr_string;
 pub use http::{http_request, HttpOutcome};

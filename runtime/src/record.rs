@@ -61,6 +61,11 @@ pub struct KojiRecord {
     fields: [u64; 0],
 }
 
+extern "C" {
+    /// A block of the pool (std/koji/memory.kj).
+    fn koji_pool_take_block(words: usize) -> *mut u8;
+}
+
 /// The position of the variant `name` of `ty` (0 for an object type).
 pub(crate) fn variant_index(ty: *const KojiRecordType, name: &str) -> usize {
     let ty = unsafe { &*ty };
@@ -85,7 +90,7 @@ pub(crate) fn make(ty: *const KojiRecordType, name: &str, fields: &[u64]) -> *mu
     let words = unsafe { (*(*ty).variants.add(tag)).word_count() };
     assert_eq!(words, fields.len(), "the words of a record");
     unsafe {
-        let record = crate::pool::take(3 + words) as *mut KojiRecord;
+        let record = koji_pool_take_block(3 + words) as *mut KojiRecord;
         record.write(KojiRecord { references: 1, ty, tag, fields: [] });
         std::ptr::copy_nonoverlapping(fields.as_ptr(), (*record).fields.as_mut_ptr(), words);
         record
