@@ -22,10 +22,10 @@ This document outlines the planned features and milestones for the Koji programm
 -   [x] Methods on custom types (`Type.method()`)
 -   [x] Error handling model: `Result`, the `?` operator and panics (no `try` / `catch`)
 -   [x] Module system with mandatory `export`
--   [ ] Value semantics with copy-on-write, move-only types and `drop`
+-   [x] Value semantics with copy-on-write, move-only types and `drop`
 -   [x] User-defined generics, with `equatable` and `orderable` constraints
 -   [x] A compiler targeting native binaries (`kojic build`, through C)
--   [ ] A self-hosted compiler, written in Koji
+-   [x] A self-hosted compiler, written in Koji, with its runtime written in Koji too
 
 ---
 

@@ -2,7 +2,7 @@
 
 This document plans the path from the current implementation to a **self-hosted compiler**: a Koji compiler written in Koji that produces native binaries. It records the language decisions already made and the ones still open.
 
-> Status: the compiler is self-hosted (phases 1 to 5 are done): `kojic` is written in Koji and built from a seed in C. The compiler and the interpreter in Rust were removed; the next phase is [optimization](#optimizations).
+> Status: the compiler is self-hosted (phases 1 to 5 are done): `kojic` is written in Koji and built from a seed in C. The compiler and the interpreter in Rust were removed, the [optimizations](#optimizations) of phase 6 are done, and so is [a runtime in Koji](#a-runtime-in-koji-phase-7) (phase 7): building Koji needs only a C compiler, `gzip` and `ar`. What comes next is in the [roadmap](roadmap.md).
 
 ---
 
@@ -46,7 +46,7 @@ stage 3: must be identical to stage 2 (fixed point)
 
 When stage 2 and stage 3 produce the same output, the compiler sustains itself.
 
-**Backend:** generate C, with the runtime written in Rust (decided).
+**Backend:** generate C, with the runtime written in Rust (decided; the runtime later moved to Koji, in phase 7).
 
 -   **C** needs no LLVM or Cranelift bindings, works on any platform with a C compiler, gets the optimizations of gcc and clang for free, and the generated code is readable, which makes debugging much easier. A compiler written in Koji only has to write text.
 -   **The runtime in Rust** reuses the standard library already implemented for the interpreter (`http`, `regex`, `json`, ...) instead of rewriting it in C, and the interpreter and compiled programs share the same code (number formatting, `**`), so they produce the same output. It is distributed with `kojic` as a static library: users only need a C compiler, never Rust.
@@ -163,6 +163,7 @@ Notes for writing the compiler in Koji:
 | **4. Bootstrap** | Stages 1 → 2 → 3 | Stage 2 output identical to stage 3: reached, checked by `cargo test --test bootstrap -- --ignored` (stage 1 is the compiler in Koji built by `kojic build`, stage 2 the C it generates for itself compiled by `cc`) |
 | **5. Maintenance** | A bootstrap policy (decided: a seed in C, see below): done, and the compiler and the interpreter in Rust are removed | The tests build the compiler from the seed; `cargo test --test bootstrap -- --ignored` checks the fixed point |
 | **6. Optimization** | The optimizations below, in the compiler written in Koji | A benchmark (the compiler checking and lowering its own files) measures each one; every test still gives the same output |
+| **7. A runtime in Koji** | The runtime and the standard library in Koji, TLS included, and no Rust in what builds Koji ([below](#a-runtime-in-koji-phase-7)): done | The same results, tests and speed as the runtime in Rust, module by module; `bootstrap/build.sh` without `cargo` |
 
 Notes:
 
@@ -171,7 +172,7 @@ Notes:
 
 ### The seed (phase 5)
 
-Decided: **a seed in C**. The C that the compiler in Koji generates for itself is committed (compressed, `bootstrap/kojic.c.gz`), and building Koji needs only a C compiler and the runtime: `cc` builds stage 1 from the seed, and stage 1 builds the compiler from `compiler/`. There is then one implementation of the language, the one in Koji, which can use any feature of the language once the seed is regenerated with it (a feature is implemented first, the seed regenerated, and only then can the compiler use it). The runtime stays in Rust, so building it still needs `cargo`.
+Decided: **a seed in C**. The C that the compiler in Koji generates for itself is committed (compressed, `bootstrap/kojic.c.gz`), and building Koji needs only a C compiler and the runtime: `cc` builds stage 1 from the seed, and stage 1 builds the compiler from `compiler/`. There is then one implementation of the language, the one in Koji, which can use any feature of the language once the seed is regenerated with it (a feature is implemented first, the seed regenerated, and only then can the compiler use it). The runtime stayed in Rust, so building it needed `cargo`, until it moved to Koji (phase 7).
 
 Steps:
 
@@ -212,14 +213,14 @@ None for now.
 
 Decided:
 
--   **FFI** (`extern function`, to call C libraries from Koji code) is postponed until the language needs it: the compiler compiles itself without it, and the standard library is in the runtime, in Rust.
+-   **FFI** for programs (`extern function`, to call C libraries from any Koji code) is postponed until the language needs it: the compiler compiles itself without it, and only the standard library declares `extern` functions (through `koji:unsafe`).
 
 -   **Generic functions as values**: allowed where a function type is expected (an annotation, a parameter), which gives the type arguments; without it, an error. A value that stays generic is not planned.
 
 -   **`Ok()`**: a `Result[void, E]` succeeds with `Ok()`, without an argument (there is no `void` value); it is shown as `Ok(void)`.
 
 -   **`int` to `float`**: only a single value is converted; an `int[]` where a `float[]` is expected is an error, since converting it would copy the list (see [Primitive Types](primitive-types.md#numeric-types)).
--   **Backend**: C, with the runtime in Rust (see [Bootstrap strategy](#bootstrap-strategy)).
+-   **Backend**: C, with the runtime written in Koji (see [Bootstrap strategy](#bootstrap-strategy) and [A runtime in Koji](#a-runtime-in-koji-phase-7)).
 
 -   **Mutating methods**: `mut self`, with no marker at the call (see [Methods](design.md#methods-and-self)).
 -   **Functions without `self`**: associated functions, `Person.create('John')`.
