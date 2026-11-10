@@ -1,6 +1,6 @@
 //! The cryptography of the library written in Koji (std/koji/sha.kj, chacha.kj...), which TLS is made
 //! of: a program of C linked with the runtime calls its functions by their names, on the vectors of
-//! the standards (FIPS 180-4, RFC 4231, RFC 5869, RFC 8439).
+//! the standards (FIPS 180-4, RFC 4231, RFC 5869, RFC 8439, RFC 7748).
 
 use std::path::Path;
 use std::process::Command;
@@ -39,6 +39,8 @@ void koji_hmac(int, const void *, size_t, const void *, size_t, void *);
 void koji_hkdf(int, const void *, size_t, const void *, size_t, const void *, size_t, size_t, void *);
 void koji_chacha20_poly1305_seal(const void *, const void *, const void *, size_t, const void *, size_t, void *);
 bool koji_chacha20_poly1305_open(const void *, const void *, const void *, size_t, const void *, size_t, void *);
+void koji_x25519(void *, const void *, const void *);
+static void unhex(const char *h, unsigned char *b, size_t n) { for (size_t i = 0; i < n; i++) sscanf(h + 2 * i, "%2hhx", &b[i]); }
 static void hex(const unsigned char *b, size_t n) { for (size_t i = 0; i < n; i++) printf("%02x", b[i]); printf("\n"); }
 "#;
 
@@ -115,5 +117,38 @@ int main(int argc, char **argv) {
         run_c("chacha", &source),
         "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b61161ae10b594f09e26a7e902ecbd0600691\n\
          1 1\n0\n"
+    );
+}
+
+#[test]
+fn x25519() {
+    let source = format!(
+        "{}{}",
+        PRELUDE,
+        r#"
+int main(int argc, char **argv) {
+    koji_init(argc, argv);
+    unsigned char scalar[32], point[32], out[32], alice[32], bob[32], base[32] = {9};
+    unhex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4", scalar, 32);
+    unhex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c", point, 32);
+    koji_x25519(out, scalar, point); hex(out, 32);
+    unhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", alice, 32);
+    unhex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb", bob, 32);
+    unsigned char alicePublic[32], bobPublic[32];
+    koji_x25519(alicePublic, alice, base); hex(alicePublic, 32);
+    koji_x25519(bobPublic, bob, base); hex(bobPublic, 32);
+    koji_x25519(out, alice, bobPublic); hex(out, 32);
+    koji_x25519(out, bob, alicePublic); hex(out, 32);
+    return 0;
+}
+"#
+    );
+    assert_eq!(
+        run_c("x25519", &source),
+        "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552\n\
+         8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a\n\
+         de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f\n\
+         4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742\n\
+         4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742\n"
     );
 }
