@@ -379,3 +379,5 @@ The modules of the standard library may import `koji:core` too (`system` uses `t
 **Why**: a beginner, and the editor, see at once where the error is, as with gcc, rustc and Elm; `file:line:column:` is what editors and terminals turn into a link.
 
 **Alternatives**: the line only (as before), which leaves the reader to find the place in it; a long explanation with each error (as Elm), more work for each message, for later.
+
+The check goes on after an error, statement by statement, and reports every error, up to 20 (`3 errors` at the end). A variable whose declaration failed is declared all the same, with its written type or an unknown one that no later use reports, so that one mistake gives one error, not a cascade; an imported module with errors stops the check, since every name taken from it would be an error too. Syntax errors stop at the first: the parser cannot know where the program goes on.

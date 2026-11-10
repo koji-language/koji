@@ -265,6 +265,10 @@ type Checker = {
     methods: Map[string, MethodInfo]
     // The argument types of the last built-in call checked.
     lastArgTypes: Type[]
+    // The errors found (the check goes on after one, statement by statement), and the declarations
+    // of the variables that failed, declared all the same (with the type written, or unknown).
+    errors: string[]
+    recovered: Set[int]
     // The arguments of the built-in function being checked (its errors point at them).
     builtinArgs: Node[]
     // The type arguments of the last generic call checked, until the call records them.
@@ -392,7 +396,7 @@ function Checker.create(): Checker {
     }
     return {
         table: table, builtins: builtins, modules: [], moduleByPath: [:], stdlib: [:], loading: [], loaded: [],
-        methods: [:], lastArgTypes: [], builtinArgs: [], typeArgs: None, tables: emptyTables(), state: emptyState(), nextId: 0,
+        methods: [:], lastArgTypes: [], errors: [], recovered: Set.from([]), builtinArgs: [], typeArgs: None, tables: emptyTables(), state: emptyState(), nextId: 0,
         moveOnly: [:]
     }
 }
@@ -714,11 +718,106 @@ function Checker.failure(self, message: string): string {
     return `type error: ${location}: ${message}`
 }
 
+// The message of a check stopped with its errors already kept: after an imported module with
+// errors (its names would all be errors too), or after `errorLimit` errors.
+immut stopChecking = '\0stop'
+immut errorLimit = 20
+
+// The sizes of the stacks of the state, before a statement: an error may leave a scope open.
+type SavedState = {
+    scopes: int
+    functionScopes: int
+    returns: int
+    loopScopes: int
+    line: int
+    span: Span
+    borrowingMatch: boolean
+}
+
+function Checker.savedState(self): SavedState {
+    return {
+        scopes: self.state.scopes.length(), functionScopes: self.state.functionScopes.length(), returns: self.state.returns.length(),
+        loopScopes: self.state.loopScopes.length(), line: self.state.line, span: self.state.span, borrowingMatch: self.state.borrowingMatch
+    }
+}
+
+function Checker.restoreState(mut self, saved: SavedState) {
+    while (self.state.scopes.length() > saved.scopes) {
+        self.state.scopes.pop()
+    }
+
+    while (self.state.functionScopes.length() > saved.functionScopes) {
+        self.state.functionScopes.pop()
+    }
+
+    while (self.state.returns.length() > saved.returns) {
+        self.state.returns.pop()
+    }
+
+    while (self.state.loopScopes.length() > saved.loopScopes) {
+        self.state.loopScopes.pop()
+    }
+
+    self.state.line = saved.line
+    self.state.span = saved.span
+    self.state.borrowingMatch = saved.borrowingMatch
+}
+
+// After an error in a statement: a variable it declares is declared all the same, with the type
+// written, or unknown (which no later use reports), so that its uses are not errors too.
+function Checker.recover(mut self, statement: Node) {
+    immut declaration = unlocated(statement)
+
+    match (declaration.kind) {
+        VarDecl(name, annotation, _, isImmut) => {
+            if (self.state.scopes[self.lastScope()].vars.has(name)) { return }
+
+            mut ty = UnknownType
+
+            match (annotation) {
+                Some(written) => {
+                    match (self.resolveType(written)) {
+                        Ok(found) => ty = found
+                        Err(_) => {}
+                    }
+                }
+                None => {}
+            }
+
+            mut symbol = valueSymbol(ty, isImmut)
+            symbol.isImut = isImmut
+            symbol.decl = Some(nodeId(declaration))
+            self.recovered.add(nodeId(declaration))
+            self.declare(name, symbol)
+        }
+        _ => {}
+    }
+}
+
+// The errors of a check, one after the other, and how many when there are several.
+function report(errors: string[], stopped: boolean): string {
+    mut text = errors.join('\n\n')
+
+    if (errors.length() > 1) { text += `\n\n${errors.length()} errors` }
+
+    if (stopped and errors.length() >= errorLimit) { text += ' (the first ones: the check stopped there)' }
+
+    return text
+}
+
 // A type error at a node (an argument, a value), not at the whole statement.
 function Checker.failureAt(self, node: Node, message: string): string {
     if (node.span.line == 0) { return self.failure(message) }
 
     return `type error: ${self.state.file}:${node.span.line}:${node.span.column}: ${message}${excerpt(self.state.lines, node.span)}`
+}
+
+// A type error at the value returned, when there is one.
+function Checker.returnFailure(self, value: Option[Node], message: string): string {
+    return match (value) {
+        Some(returned) => self.failureAt(returned, message)
+        None => self.failure(message)
+    }
 }
 
 // A type error at the argument `index` of the built-in function being checked.
@@ -885,6 +984,14 @@ function Checker.ensureInferred(mut self): Result[void, string] {
 
         if (symbol.kind != ValueSymbol or not containsUnknown(symbol.ty)) { continue }
 
+        // A variable whose declaration failed: its error is reported already.
+        match (symbol.decl) {
+            Some(decl) => {
+                if (self.recovered.has(decl)) { continue }
+            }
+            None => {}
+        }
+
         immut earlier = match (found) {
             Some(other) => symbol.line < foundLine or (symbol.line == foundLine and name < other)
             None => true
@@ -939,6 +1046,14 @@ function Checker.setLine(mut self, node: Node) {
 
 // Modules
 
+// The statements of a module checked, and what it exports.
+function Checker.moduleBody(mut self, statements: Node[], display: string): Result[ModuleInfo, string] {
+    self.checkStatements(statements, None)?
+    self.ensureInferred()?
+    immut moduleScope = self.state.scopes[1]
+    return self.moduleExports(statements, moduleScope, display)
+}
+
 function Checker.checkModule(mut self, path: string, display: string, source: string): Result[int, string] {
     immut parsed = match (parseFrom(source, self.nextId)) {
         Ok(parsed) => parsed
@@ -958,12 +1073,26 @@ function Checker.checkModule(mut self, path: string, display: string, source: st
     state.path = path
     state.dir = parentDir(path)
     self.state = state
-    self.checkStatements(parsed.statements, None)?
-    self.ensureInferred()?
-    immut moduleScope = self.state.scopes[1]
-    immut module = self.moduleExports(parsed.statements, moduleScope, display)?
+    immut before = self.errors.length()
+    immut body = self.moduleBody(parsed.statements, display)
     self.state = saved
     self.loading.pop()
+    // An imported module with errors stops the check (its names would be errors too): its errors
+    // are kept with the others.
+    immut imported = self.loading.length() > 0
+    immut module = match (body) {
+        Ok(found) => found
+        Err(message) => {
+            if (not imported) { return Err(message) }
+
+            if (message != stopChecking) { self.errors.push(message) }
+
+            return Err(stopChecking)
+        }
+    }
+
+    if (imported and self.errors.length() > before) { return Err(stopChecking) }
+
     self.modules.push(module)
     immut id = self.modules.length() - 1
     self.moduleByPath[path] = id
@@ -2493,7 +2622,25 @@ function Checker.checkStatements(mut self, statements: Node[], expected: Option[
     for i in range(statements.length()) {
         immut statement = statements[i]
         immut isLast = i + 1 == statements.length()
-        tail = self.checkStatement(statement, if (isLast) { expected } else { None })?
+        immut saved = self.savedState()
+        immut checked = self.checkStatement(statement, if (isLast) { expected } else { None })
+
+        // An error: kept, and the check goes on with the next statement.
+        match (checked) {
+            Ok(found) => tail = found
+            Err(message) => {
+                if (message == stopChecking) { return Err(stopChecking) }
+
+                self.errors.push(message)
+
+                if (self.errors.length() >= errorLimit) { return Err(stopChecking) }
+
+                self.restoreState(saved)
+                self.recover(statement)
+                tail = UnknownType
+                continue
+            }
+        }
 
         if (not isLast and tail != NeverType) {
             // The value of an expression statement is discarded.
@@ -2731,7 +2878,7 @@ function Checker.checkReturn(mut self, value: Option[Node]): Result[void, string
                     if (assignable(wanted, ty)) {
                         Ok()
                     } else {
-                        Err(self.failure(`returning ${self.show(ty)}, but the function returns ${self.show(wanted)}`))
+                        Err(self.returnFailure(value, `returning ${self.show(ty)}, but the function returns ${self.show(wanted)}`))
                     }
                 }
             }
@@ -3431,6 +3578,8 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
             immut targetType = self.checkValue(target, None)?
             immut indexType = self.checkValue(index, None)?
 
+            if (targetType == UnknownType) { return Ok(UnknownType) }
+
             match (targetType) {
                 ListType(item) => {
                     self.expectType(IntType, indexType, 'list index')?
@@ -4089,6 +4238,9 @@ function Checker.checkObject(mut self, entries: ObjectEntry[], expected: Option[
 function Checker.checkMember(mut self, object: Node, name: string): Result[Type, string] {
     immut objectType = self.checkValue(object, None)?
     self.noteTemporary(object, objectType)
+
+    // A variable whose declaration failed: its error is reported already.
+    if (objectType == UnknownType) { return Ok(UnknownType) }
 
     match (objectType) {
         ModuleType(id) => {
@@ -5184,6 +5336,12 @@ function Checker.conversion(mut self, name: string, types: Type[], target: Type)
 }
 
 function Checker.checkMethodCall(mut self, objectType: Type, name: string, args: Node[], expected: Option[Type]): Result[Type, string] {
+    // A variable whose declaration failed: its arguments are checked, the call is not.
+    if (objectType == UnknownType) {
+        self.argTypes(args)?
+        return Ok(UnknownType)
+    }
+
     match (objectType) {
         ModuleType(id) => {
             immut symbol = match (self.modules[id].members.get(name)) {
@@ -5720,8 +5878,28 @@ export function checkLibrary(): Result[Program, string] {
     }
 
     mut checker = Checker.create()
-    checker.checkModule('std:library', 'koji:library', lines.join('\n'))?
-    return Ok({ modules: checker.loaded, table: checker.table, tables: checker.tables })
+    immut result = checker.checkModule('std:library', 'koji:library', lines.join('\n'))
+    return checker.finished(result)
+}
+
+// The program checked, or the report of its errors.
+function Checker.finished(mut self, result: Result[int, string]): Result[Program, string] {
+    mut stopped = false
+
+    match (result) {
+        Ok(_) => {}
+        Err(message) => {
+            if (message == stopChecking) {
+                stopped = true
+            } else {
+                self.errors.push(message)
+            }
+        }
+    }
+
+    if (self.errors.length() > 0) { return Err(report(self.errors, stopped)) }
+
+    return Ok({ modules: self.loaded, table: self.table, tables: self.tables })
 }
 
 export function check(path: string): Result[Program, string] {
@@ -5731,8 +5909,8 @@ export function check(path: string): Result[Program, string] {
     }
 
     mut checker = Checker.create()
-    checker.checkModule(resolvePath('', path), path, source)?
-    return Ok({ modules: checker.loaded, table: checker.table, tables: checker.tables })
+    immut result = checker.checkModule(resolvePath('', path), path, source)
+    return checker.finished(result)
 }
 
 function methodsText(methods: Option[MethodRef][]): string {

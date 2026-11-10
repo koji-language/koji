@@ -73,7 +73,7 @@ type error: hello.kj:5:13: argument 1 of 'greet' must be string, found int
       |             ^^
 ```
 
-The message gives the file, the line and the column of the error, and shows the line with the part in error marked.
+The message gives the file, the line and the column of the error, and shows the line with the part in error marked. The check goes on after an error, so that every error of the program is reported at once (up to 20).
 
 ## Commands
 

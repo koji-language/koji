@@ -2231,3 +2231,23 @@ fn errors_show_the_column_and_the_line() {
         "syntax error: column_syntax.kj:3:1: expected ')', found the end of the file\n    3 | \n      | ^\n"
     );
 }
+
+/// The check goes on after an error, statement by statement: every error is reported, and a variable
+/// whose declaration failed is declared all the same (with its written type, or unknown), so that
+/// its uses are not errors too.
+#[test]
+fn several_errors_are_reported() {
+    let path = source_file(
+        "several_errors",
+        "immut a: int = 'one'\nimmut b = a + 1\nimmut c = missing * 2\nprint(c.upper(), b)\n\nfunction f(): string {\n    return 3\n}\n",
+    );
+    let checked = koji::finish(koji::kojic().current_dir(path.parent().unwrap()).arg("check").arg(path.file_name().unwrap()), "");
+    assert_eq!(checked.code, Some(1));
+    assert_eq!(
+        checked.stderr,
+        "type error: several_errors.kj:1:16: cannot assign a value of type string to 'a' of type int\n    1 | immut a: int = 'one'\n      |                ^^^^^\n\n\
+         type error: several_errors.kj:3:11: undefined variable 'missing'\n    3 | immut c = missing * 2\n      |           ^^^^^^^\n\n\
+         type error: several_errors.kj:7:12: returning int, but the function returns string\n    7 |     return 3\n      |            ^\n\n\
+         3 errors\n"
+    );
+}
