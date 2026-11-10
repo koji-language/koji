@@ -601,6 +601,18 @@ KOJI_INLINE int64_t koji_net_receive(int64_t fd, const void *bytes, int64_t size
     return recv((int)fd, (void *)bytes, (size_t)size, 0);
 }
 KOJI_INLINE void koji_net_close(int64_t fd) { close((int)fd); }
+/* The name of an entry of `readdir` (where `d_name` is in a `struct dirent`, for koji:x509). */
+KOJI_INLINE void *koji_directory_entry_name(const void *entry) {
+#if defined(__APPLE__)
+    return (char *)entry + 21;
+#elif defined(__FreeBSD__) || defined(__OpenBSD__)
+    return (char *)entry + 24;
+#elif defined(__NetBSD__)
+    return (char *)entry + 13;
+#else
+    return (char *)entry + 19;
+#endif
+}
 
 /* AES (FIPS 197) and GHASH (SP 800-38D) by the instructions of the processor: AES-NI, PCLMULQDQ and
    SSSE3 on x86-64, the cryptographic extension of ARMv8 (AES and PMULL) on arm64. No table, no

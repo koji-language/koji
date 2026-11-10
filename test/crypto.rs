@@ -1,8 +1,7 @@
 //! The cryptography of the library written in Koji (std/koji/sha.kj, chacha.kj, x25519.kj, bignum.kj,
 //! ecc.kj, rsa.kj, aes.kj), which TLS is made of: a program of C linked with the runtime calls its
 //! functions by their names, on the vectors of the standards (FIPS 180-4, RFC 4231, RFC 5869, RFC
-//! 8439, RFC 7748, the test cases of GCM) and on keys and signatures made by OpenSSL (P-256, P-384,
-//! RSA).
+//! 8439, RFC 7748, the test cases of GCM) and on keys, signatures and certificates made by OpenSSL.
 
 use std::path::Path;
 use std::process::Command;
@@ -15,6 +14,11 @@ const SYSTEM_LIBRARIES: &[&str] =
 
 /// Builds `source` (C) with the runtime and runs it: what it printed.
 fn run_c(name: &str, source: &str) -> String {
+    run_c_with(name, source, &[])
+}
+
+/// The same, the program given `arguments`.
+fn run_c_with(name: &str, source: &str, arguments: &[&str]) -> String {
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("crypto");
     std::fs::create_dir_all(&directory).unwrap();
     let file = directory.join(format!("{}.c", name));
@@ -23,7 +27,7 @@ fn run_c(name: &str, source: &str) -> String {
     let cc = std::env::var("KOJI_CC").unwrap_or_else(|_| "cc".to_string());
     let built = Command::new(cc).arg("-O2").arg("-o").arg(&program).arg(&file).arg(RUNTIME).args(SYSTEM_LIBRARIES).output().unwrap();
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let output = Command::new(&program).output().unwrap();
+    let output = Command::new(&program).args(arguments).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     String::from_utf8(output.stdout).unwrap()
 }
@@ -33,6 +37,7 @@ const PRELUDE: &str = r#"
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 void koji_init(int argc, const void *argv);
 void koji_sha256(const void *, size_t, void *);
 void koji_sha384(const void *, size_t, void *);
@@ -168,18 +173,19 @@ bool koji_ecdsa_verify(int, const void *, size_t, const void *, const void *, co
 bool koji_rsa_verify(int, int, const void *, size_t, const void *, size_t, const void *, size_t, const void *, size_t);
 static size_t load(const char *h, unsigned char *b) { size_t n = strlen(h) / 2; unhex(h, b, n); return n; }
 static void curve(int which, size_t size, const char *secret, const char *theirs, const char *digest, const char *r, const char *s) {
-    unsigned char k[48], q[97], q2[97], out[97], d[48], rb[48], sb[48];
-    load(secret, k); load(theirs, q); load(digest, d); load(r, rb); load(s, sb);
+    unsigned char k[66], q[133], q2[133], out[133], d[66], rb[66], sb[66];
+    load(secret, k); load(theirs, q); load(r, rb); load(s, sb);
+    size_t digestSize = load(digest, d);
     koji_ecdh_public(which, k, out); hex(out, 1 + 2 * size);
     printf("%d ", koji_ecdh_shared(which, k, q, 1 + 2 * size, out)); hex(out, size);
-    memcpy(q2, q, 97); q2[size] ^= 1;
+    memcpy(q2, q, 133); q2[size] ^= 1;
     printf("%d\n", koji_ecdh_shared(which, k, q2, 1 + 2 * size, out));
     koji_ecdh_public(which, k, q);
-    printf("%d", koji_ecdsa_verify(which, d, size, rb, sb, q, 1 + 2 * size));
+    printf("%d", koji_ecdsa_verify(which, d, digestSize, rb, sb, q, 1 + 2 * size));
     d[0] ^= 1;
-    printf(" %d", koji_ecdsa_verify(which, d, size, rb, sb, q, 1 + 2 * size));
+    printf(" %d", koji_ecdsa_verify(which, d, digestSize, rb, sb, q, 1 + 2 * size));
     d[0] ^= 1; memset(rb, 0, size);
-    printf(" %d\n", koji_ecdsa_verify(which, d, size, rb, sb, q, 1 + 2 * size));
+    printf(" %d\n", koji_ecdsa_verify(which, d, digestSize, rb, sb, q, 1 + 2 * size));
 }
 int main(int argc, char **argv) {
     koji_init(argc, argv);
@@ -194,6 +200,12 @@ int main(int argc, char **argv) {
           "727edb0adb4a6c144d725b954cacd5f1a55c3dfdb0fdefdf3fd62cd1d64c01bf5dc66eef1c0a004126031a406533de5a",
           "3852234f196e98a684befbb76b67714cc6dd3a7090feeb0d9272dda38fc68bdb722b13542bb6713f7d355a7cd134fd39",
           "fade094323216da50551091ff230828de95c6f4cdea10b52d7374d4049137ba9a1b1cd06163e2ceb335bba551cc0c313");
+    curve(2, 66, "005da415c4c839a44721de85eb9025ac45a0aa8b230f3b05e392a6ea1c0d2f8b9e9de3d6e4b9d96e182dcd502d42af1ffe0de8d79f49af6d114c4a6f188a424e617b",
+          "0401bfe361afb55eba387880486ff1194f3872bf5a7a6567ebdfc71638328c8e328ea632b70918fc197a7fb85c02894b2eeadc10bf3b099470e122a24296d95c8243"
+          "2c01dbc8f0fb15ba3880d29dadb2953c1c0c2de60aeeb47b0962588e189a9a890ecd5bb4227aeb2f8c0bc444c51301e0aa432560c55eb0a6ea2eb3afd18174cae3b630",
+          "58eed3ef3872099e948795b5c825f1a7c558bd65d51a0beae900c8daab0af62eedeb99c2467455770d87e47bbd17c4e53f237eeb444a4148de45ea9c22fd3131",
+          "00dc1c2a93135dd8b0280f253aa42ba89c2ca19cf54e7224efa616184e1783d12437fa7bf9538be56870344fa9d90ee3c6acd04f572e45f1c011419e2ada5e06e8a8",
+          "01e23b75f7c3630d6b7521c11d7196549684b47fb48d3f58593e3b47b1630aa7eee520b6464cbb3ff1dd8e3e6a37db0e5e9a9c3b278b51ae16e695592f24483a4054");
     unsigned char n[256], d[32], pkcs[256], pss[256], f[3] = {1, 0, 1};
     load("b0cd6cafd9aed48ea1c48b88edbd4183196c545566f5739f8c288bf39946155b9455d71a953db5673ec45e59e0292cb3039e6edafd604a6d2eb04826c45654aba7574b926c4abdc729bfb4880e8e18300ce48db4a7358d575ab49c95fdfbecdbdfbdae331ee6b8ec5a25c7659a0d557dc69266f628f5011159585f515e9c4339"
          "3b62b829f4e8102cc7c56825167ddb922435f1602319e74faf85adbbf4a7276e0ac717fdbd753cb7dfcb31ab8403100ef7c6eaf5393cefeebf2dfcb8008b4b29e9acf94e1a6ee48f7db02b1e8f6f3880249b4648d1a8a54e8ef37e2382fc57a2ab161ab137d25dbf1271c81caa4f3ebad889f593342ed229eb505a1ab718b00b", n);
@@ -218,6 +230,8 @@ int main(int argc, char **argv) {
          1 fb13c0e558bf09702a6387874cfd957a536336d7137728aadd47bd6aec0375ee\n0\n1 0 0\n\
          042975eaf65bfb82cebe69bb231b2c2dc900dcb2de3f36184df4a9b6cb670956a6cb03d23f9d0071893f9d88eb7d518dc55e9828e747526ca6c8c6832578c67afa981a8d1e20b12057d051e036cfab11bb7db7655345550818b642ce2603b266d4\n\
          1 e5b7eaa07cc57d33f3c635a8a581b33f8397fc55b6edc10d8028e3fb11b57837dc036f20ab250205cdf88a654eea3880\n0\n1 0 0\n\
+         04011cd3f9b203671c04de37914eaf8746196902e66f53132e64ca7e56eccd145445cdfb1f2fd419745b8767a48b773672d880f06eaeaa46200c74bd60e4892c8646f5018e0eb58c1d5a53c36df4f4f9dcecb9cd3c2886c9fc29175bd76266e654bd165763202ae9e4f1b02868a8a00d60ef8ecea5284c25c1ae0474a971b9e965798882c4\n\
+         1 016b53346ccefe4f609b85b04ebf33e7c61d206033372fd8f521250b25a64f1bebea8c0f5d5554167cd9ac282a1cbb8fabfdafc96fe07cb4f70b80f7aa667a3b1772\n0\n1 0 0\n\
          1 1 0 0 0 0 0\n"
     );
 }
@@ -270,4 +284,61 @@ int main(int argc, char **argv) {
          1 1 0 0\n\
          7dde0511dce08fa91e10d77f1d868b803e45310fba6585c0bdc8091b8ea29acc0aa323a54e990c68cd4cc6d101843915\n1 1\n"
     );
+}
+
+#[test]
+fn x509_chains() {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("crypto");
+    std::fs::create_dir_all(&directory).unwrap();
+    let anchors = directory.join("anchors.pem");
+    let empty = directory.join("no-authorities");
+    std::fs::create_dir_all(&empty).unwrap();
+    let source = format!(
+        "{}{}",
+        PRELUDE,
+        r#"
+int64_t koji_x509_verify(const void *, size_t, const void *, int64_t, const void *, int64_t);
+int64_t koji_x509_authority_count(int);
+int setenv(const char *, const char *, int);
+/* A chain made by OpenSSL: a leaf for koji.test, *.koji.test and 10.1.2.3, below an intermediate
+   constrained to koji.test and 10.0.0.0/8, below a root (P-256, valid from 2026 to 2036). */
+static const char *chainHex = "308201553081fca003020102020203e9300a06082a8648ce3d040302300c310a300806035504030c0149301e170d3236"
+          "303130313030303030305a170d3336303130313030303030305a300c310a300806035504030c014c3059301306072a86"
+          "48ce3d020106082a8648ce3d030107034200049017d3b42d3b36dd497d58b482bdb7488bc9b511f350a00d435d6f0be2"
+          "b8976c3345428f1e6f0815299eff506ab4e3521ca9a59725eeea2f1df305b3982014dba34e304c300c0603551d130101"
+          "ff0402300030270603551d110420301e82096b6f6a692e74657374820b2a2e6b6f6a692e7465737487040a0102033013"
+          "0603551d25040c300a06082b06010505070301300a06082a8648ce3d040302034800304502203b90850b0b1096b774d9"
+          "52314c4cefa7605111b2789dba5fda147d573dee63640221008224057e4a6c95f55f7b0d4a3366e902ce86182b1e4e7d"
+          "080e2ec23775736b15308201433081eaa003020102020203e9300a06082a8648ce3d040302300c310a30080603550403"
+          "0c0152301e170d3236303130313030303030305a170d3336303130313030303030305a300c310a300806035504030c01"
+          "493059301306072a8648ce3d020106082a8648ce3d03010703420004fd28d091d9569747552fe6fd4ee187f61e75e6ff"
+          "4f785f0896977b0b750744d332dc8cc7073983a66bf39430f489718f945a657d5695df2a133759260a77f426a33c303a"
+          "300f0603551d130101ff040530030101ff30270603551d1e0101ff041d301ba019300b82096b6f6a692e74657374300a"
+          "87080a000000ff000000300a06082a8648ce3d040302034800304502207a76cd5a001fb6d24af102d16caddda142d73d"
+          "477d3b831358646c5b2cf3a754022100cbe6ac6272fc13badc8e9b692901c6bf0843d20a5ddeb0b2876c8d94d27fe190";
+static const char *root = "-----BEGIN CERTIFICATE-----\nMIIBGjCBwaADAgECAgID6TAKBggqhkjOPQQDAjAMMQowCAYDVQQDDAFSMB4XDTI2\nMDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowDDEKMAgGA1UEAwwBUjBZMBMGByqG\nSM49AgEGCCqGSM49AwEHA0IABKaUqnUoyOOJx+Ml2oTgGp+2hT4CmbNCd8Tj79zV\nxUKd4knn5zX/DIenCaKcYmL04u1Louj7LxLwwdQXwwV1Xs+jEzARMA8GA1UdEwEB\n/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgcMw+vHsAOD3jFO3b649LvDdIe1le\nuZHwuPSqkv3xexICIQDgM7Eu/0hdcghpiKJwV1e7I8VeIHyn2Trh1UIbweclnw==\n-----END CERTIFICATE-----";
+int main(int argc, char **argv) {
+    koji_init(argc, argv);
+    size_t size = strlen(chainHex) / 2;
+    unsigned char *chain = malloc(size);
+    unhex(chainHex, chain, size);
+    int64_t in2030 = 1893456000, in2037 = 2114380800;
+    const char *hosts[] = {"koji.test", "a.koji.test", "KOJI.TEST.", "10.1.2.3", "b.a.koji.test", "koji.example", "10.1.2.4"};
+    for (int i = 0; i < 7; i++) printf("%lld ", (long long)koji_x509_verify(chain, size, root, (int64_t)strlen(root), hosts[i], in2030));
+    printf("%lld ", (long long)koji_x509_verify(chain, size, root, (int64_t)strlen(root), "koji.test", in2037));
+    printf("%lld ", (long long)koji_x509_verify(chain, size, root, 0, "koji.test", in2030));
+    chain[size - 5] ^= 1;
+    printf("%lld\n", (long long)koji_x509_verify(chain, size, root, (int64_t)strlen(root), "koji.test", in2030));
+    chain[size - 5] ^= 1;
+    /* The built-in authorities, and those of the system from SSL_CERT_FILE. */
+    printf("%lld %lld ", (long long)koji_x509_authority_count(1), (long long)koji_x509_verify(chain, size, root, -2, "koji.test", in2030));
+    setenv("SSL_CERT_FILE", argv[1], 1);
+    setenv("SSL_CERT_DIR", argv[2], 1);
+    printf("%lld %lld\n", (long long)koji_x509_authority_count(0), (long long)koji_x509_verify(chain, size, root, -1, "koji.test", in2030));
+    return 0;
+}
+"#
+    );
+    std::fs::write(&anchors, "-----BEGIN CERTIFICATE-----\nMIIBGjCBwaADAgECAgID6TAKBggqhkjOPQQDAjAMMQowCAYDVQQDDAFSMB4XDTI2\nMDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowDDEKMAgGA1UEAwwBUjBZMBMGByqG\nSM49AgEGCCqGSM49AwEHA0IABKaUqnUoyOOJx+Ml2oTgGp+2hT4CmbNCd8Tj79zV\nxUKd4knn5zX/DIenCaKcYmL04u1Louj7LxLwwdQXwwV1Xs+jEzARMA8GA1UdEwEB\n/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgcMw+vHsAOD3jFO3b649LvDdIe1le\nuZHwuPSqkv3xexICIQDgM7Eu/0hdcghpiKJwV1e7I8VeIHyn2Trh1UIbweclnw==\n-----END CERTIFICATE-----").unwrap();
+    assert_eq!(run_c_with("x509", &source, &[anchors.to_str().unwrap(), empty.to_str().unwrap()]), "0 0 0 0 5 5 5 2 3 4\n118 3 1 0\n");
 }

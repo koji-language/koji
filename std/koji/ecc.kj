@@ -1,6 +1,6 @@
-// `koji:ecc`: the curves P-256 and P-384 of NIST (FIPS 186-4), in the library of the runtime written
-// in Koji: Diffie-Hellman on P-256 (a key exchange of TLS 1.3, for the servers without X25519) and the
-// verification of ECDSA signatures (certificates and their proofs). On the numbers of koji:bignum,
+// `koji:ecc`: the curves P-256, P-384 and P-521 of NIST (FIPS 186-4), in the library of the runtime
+// written in Koji: Diffie-Hellman on P-256 (a key exchange of TLS 1.3, for the servers without X25519)
+// and the verification of ECDSA signatures (certificates and their proofs). On the numbers of koji:bignum,
 // in the form of Montgomery. A point is projective (X : Y : Z); it is added by the complete formulas
 // of Renes, Costello and Batina (2016, algorithm 4, for a = -3), which have no case apart (the point
 // at infinity, a point added to itself), so a secret scalar multiplies with the same steps whatever
@@ -14,6 +14,7 @@ extern function memcpy(target: Address, source: Address, size: CSize): Address
 // The parameters, in hexadecimal: p, b, the order n, and the generator (x, y).
 immut p256Text = 'ffffffff00000001000000000000000000000000ffffffffffffffffffffffff5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604bffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc6325516b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5'
 immut p384Text = 'fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffffb3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aefffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab73617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f'
+immut p521Text = '01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0051953eb9618e1c9a1f929a21a0b68540eea2da725b99b315f3b8b489918ef109e156193951ec7e937b1652c0bd3bb1bf073573df883d2c34f1ef451fd46b503f0001fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e9138640900c6858e06b70404e9cd9e3ecb662395b4429c648139053fb521f828af606b4d3dbaa14b5e77efe75928fe1dc127a2ffa8de3348b3c1856a429bf97e7e31c2e5bd66011839296a789a3bc0045c8a5fb42c7d1bd998f54449579b446817afbd17273e662c97ee72995ef42640c550b9013fad0761353c7086a272c24088be94769fd16650'
 
 // A curve: its field and its order, b and the generator in the form of Montgomery, and the bytes of
 // a coordinate.
@@ -29,11 +30,12 @@ export type Curve = {
 // The curves, made the first time they are needed (an empty list before).
 mut curves: Curve[] = []
 
-// The curve 0 (P-256) or 1 (P-384).
+// The curve 0 (P-256), 1 (P-384) or 2 (P-521).
 export function curveOf(which: int): Curve {
     if (curves.length() == 0) {
         curves.push(makeCurve(p256Text, 32))
         curves.push(makeCurve(p384Text, 48))
+        curves.push(makeCurve(p521Text, 66))
     }
 
     return curves[which]

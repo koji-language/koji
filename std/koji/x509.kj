@@ -1,0 +1,1743 @@
+// `koji:x509`: the certificates of TLS (RFC 5280), in the library of the runtime written in Koji:
+// their DER read, the chain of a server verified up to an authority, and its name checked (RFC 6125).
+// The authorities are those of the system (`SSL_CERT_FILE`, `SSL_CERT_DIR`, else the usual files
+// of Linux, macOS and the BSDs), or, when the system has none, those of Mozilla's list built into the
+// library (koji:roots), as Go does. Of an authority only its subject and its key are used, as in
+// rustls (its dates, its constraints and its own signature are not: the system trusts it).
+//
+// As Go and rustls verify: signatures RSA (PKCS #1 v1.5 and PSS, keys of 2048 to 8192 bits) and
+// ECDSA (P-256, P-384 and P-521) with SHA-256, SHA-384 or SHA-512, never SHA-1; the dates of every
+// certificate of the chain; basicConstraints (and its length of path), keyUsage and extKeyUsage
+// (serverAuth); the name constraints of the intermediates on the DNS names, IP addresses and
+// subjects below them; a critical extension not known makes a certificate invalid. The name of the
+// server is matched against the DNS names and IP addresses of the certificate (subjectAltName; the
+// common name is not used), a wildcard standing for the whole leftmost label.
+//
+// Everything here is public: nothing needs constant time.
+
+import { Address, CInt, CSize, allocate, free, isNull, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
+import { digest, digestSize } from 'koji:sha'
+import { verifyPkcs1, verifyPss } from 'koji:rsa'
+import { verify } from 'koji:ecc'
+import { rootCount, roots } from 'koji:roots'
+
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function memcmp(a: Address, b: Address, size: CSize): CInt
+extern function strlen(text: Address): CSize
+extern function getenv(name: Address): Address
+extern function fopen(path: Address, mode: Address): Address
+extern function fread(target: Address, size: CSize, count: CSize, file: Address): CSize
+extern function fclose(file: Address): CInt
+extern function opendir(path: Address): Address
+extern function readdir(directory: Address): Address
+extern function closedir(directory: Address): CInt
+extern function koji_directory_entry_name(entry: Address): Address
+extern function realloc(block: Address, size: CSize): Address
+extern function time(place: Address): int
+
+// The results of a verification: why a chain is not trusted.
+export immut trusted = 0
+export immut malformed = 1
+export immut expired = 2
+export immut unknownIssuer = 3
+export immut badSignature = 4
+export immut wrongName = 5
+export immut notAuthorized = 6
+export immut unsupported = 7
+
+// The message of a result, for the errors of TLS.
+export function problemText(problem: int): string {
+    return match (problem) {
+        0 => 'trusted'
+        1 => 'a certificate is malformed'
+        2 => 'a certificate has expired or is not yet valid'
+        3 => 'the certificate is not signed by a known authority'
+        4 => 'a signature of the certificate chain is invalid'
+        5 => 'the certificate is not valid for this name'
+        6 => 'a certificate is not authorized for this use'
+        _ => 'a certificate uses an algorithm that is not supported'
+    }
+}
+
+function byteAt(bytes: Address, i: int): int {
+    immut b: byte = read(bytes, i)
+    return int(b)
+}
+
+// DER
+
+// An element: its tag, where its contents start and where it ends (`good` false when it does not
+// fit in the bytes before `limit`, or its length is not in the form of DER).
+export type Element = {
+    good: boolean
+    tag: int
+    start: int
+    end: int
+}
+
+function badElement(): Element {
+    return { good: false, tag: 0, start: 0, end: 0 }
+}
+
+// The element at `at`, within `limit`.
+export function element(bytes: Address, at: int, limit: int): Element {
+    if (at + 2 > limit) { return badElement() }
+
+    immut tag = byteAt(bytes, at)
+
+    // A tag of several bytes (a number of 31 or more) is not used by certificates.
+    if (tag & 0x1F == 0x1F) { return badElement() }
+
+    immut first = byteAt(bytes, at + 1)
+
+    if (first < 0x80) {
+        if (at + 2 + first > limit) { return badElement() }
+
+        return { good: true, tag: tag, start: at + 2, end: at + 2 + first }
+    }
+
+    // The long form, in as few bytes as it can (and not for a length below 128).
+    immut count = first & 0x7F
+
+    if (count == 0 or count > 3 or at + 2 + count > limit) { return badElement() }
+
+    if (byteAt(bytes, at + 2) == 0) { return badElement() }
+
+    mut length = 0
+
+    for i in range(count) {
+        length = (length << 8) | byteAt(bytes, at + 2 + i)
+    }
+
+    if (length < 0x80 or at + 2 + count + length > limit) { return badElement() }
+
+    return { good: true, tag: tag, start: at + 2 + count, end: at + 2 + count + length }
+}
+
+// The element at `at` when it has the tag, else a bad one.
+export function expect(bytes: Address, at: int, limit: int, tag: int): Element {
+    immut e = element(bytes, at, limit)
+
+    if (not e.good or e.tag != tag) { return badElement() }
+
+    return e
+}
+
+// Whether the contents of an element are the bytes of `hex`.
+function contentsAre(bytes: Address, e: Element, hex: string): boolean {
+    immut size = hex.length() / 2
+
+    if (e.end - e.start != size) { return false }
+
+    for i in range(size) {
+        if (byteAt(bytes, e.start + i) != hexValue(hex, 2 * i) * 16 + hexValue(hex, 2 * i + 1)) { return false }
+    }
+
+    return true
+}
+
+function hexValue(text: string, at: int): int {
+    immut c = text[at]
+    return if (c >= 'a') { c.code() - 87 } else { c.code() - 48 }
+}
+
+// Whether two runs of bytes are the same.
+function sameBytes(a: Address, aStart: int, aSize: int, b: Address, bStart: int, bSize: int): boolean {
+    return aSize == bSize and memcmp(offset(a, aStart), offset(b, bStart), aSize) == 0
+}
+
+// The bytes of a positive INTEGER without its leading zero: where they start (its size is then
+// `e.end - start`), or -1 when it is negative, empty or not in the form of DER.
+function unsignedStart(bytes: Address, e: Element): int {
+    if (e.end <= e.start) { return -1 }
+
+    immut first = byteAt(bytes, e.start)
+
+    if (first & 0x80 != 0) { return -1 }
+
+    if (first == 0 and e.end - e.start > 1) {
+        // A zero only before a byte whose top bit is set.
+        if (byteAt(bytes, e.start + 1) & 0x80 == 0) { return -1 }
+
+        return e.start + 1
+    }
+
+    return e.start
+}
+
+// Algorithms
+
+// A way of signing: RSA with PKCS #1 v1.5 (0) or PSS (1), or ECDSA (2), with SHA-256 (0), SHA-384
+// (1) or SHA-512 (2); `kind` -1 for one that is not supported.
+export type Algorithm = {
+    kind: int
+    hash: int
+}
+
+function unsupportedAlgorithm(): Algorithm {
+    return { kind: -1, hash: 0 }
+}
+
+// The hash of the OID of an element of SHA-2 (2.16.840.1.101.3.4.2.1 to 3), or -1.
+function hashOf(bytes: Address, e: Element): int {
+    for hash in range(3) {
+        if (contentsAre(bytes, e, '6086480165030402' + ['01', '02', '03'][hash])) { return hash }
+    }
+
+    return -1
+}
+
+// The hash of an AlgorithmIdentifier of SHA-2 whose parameters are absent or NULL, or -1.
+function hashAlgorithmOf(bytes: Address, e: Element): int {
+    immut oid = expect(bytes, e.start, e.end, 0x06)
+
+    if (not oid.good) { return -1 }
+
+    if (oid.end != e.end and not isDerNull(bytes, oid.end, e.end)) { return -1 }
+
+    return hashOf(bytes, oid)
+}
+
+// Whether the element at `at` is a NULL that ends at `limit`.
+function isDerNull(bytes: Address, at: int, limit: int): boolean {
+    immut e = element(bytes, at, limit)
+    return e.good and e.tag == 0x05 and e.start == e.end and e.end == limit
+}
+
+// The algorithm of an AlgorithmIdentifier (a SEQUENCE).
+export function algorithmOf(bytes: Address, e: Element): Algorithm {
+    immut oid = expect(bytes, e.start, e.end, 0x06)
+
+    if (not oid.good) { return unsupportedAlgorithm() }
+
+    // sha256, sha384 and sha512WithRSAEncryption: NULL parameters (or none, as some write them).
+    for hash in range(3) {
+        if (contentsAre(bytes, oid, '2a864886f70d0101' + ['0b', '0c', '0d'][hash])) {
+            if (oid.end != e.end and not isDerNull(bytes, oid.end, e.end)) { return unsupportedAlgorithm() }
+
+            return { kind: 0, hash: hash }
+        }
+    }
+
+    // ecdsa-with-SHA256, SHA384 and SHA512: no parameters.
+    for hash in range(3) {
+        if (contentsAre(bytes, oid, '2a8648ce3d0403' + ['02', '03', '04'][hash])) {
+            if (oid.end != e.end) { return unsupportedAlgorithm() }
+
+            return { kind: 2, hash: hash }
+        }
+    }
+
+    if (contentsAre(bytes, oid, '2a864886f70d01010a')) { return pssAlgorithm(bytes, oid.end, e.end) }
+
+    return unsupportedAlgorithm()
+}
+
+// RSASSA-PSS-params: the hash ([0]), MGF1 with the same hash ([1]), a salt as long as the digest
+// ([2]) and the trailer 1 ([3]). The defaults (SHA-1) are not supported.
+function pssAlgorithm(bytes: Address, at: int, limit: int): Algorithm {
+    immut params = expect(bytes, at, limit, 0x30)
+
+    if (not params.good or params.end != limit) { return unsupportedAlgorithm() }
+
+    immut hashPart = expect(bytes, params.start, params.end, 0xA0)
+
+    if (not hashPart.good) { return unsupportedAlgorithm() }
+
+    immut hashAlgorithm = expect(bytes, hashPart.start, hashPart.end, 0x30)
+
+    if (not hashAlgorithm.good or hashAlgorithm.end != hashPart.end) { return unsupportedAlgorithm() }
+
+    immut hash = hashAlgorithmOf(bytes, hashAlgorithm)
+
+    if (hash < 0) { return unsupportedAlgorithm() }
+
+    immut maskPart = expect(bytes, hashPart.end, params.end, 0xA1)
+
+    if (not maskPart.good) { return unsupportedAlgorithm() }
+
+    immut mask = expect(bytes, maskPart.start, maskPart.end, 0x30)
+
+    if (not mask.good or mask.end != maskPart.end) { return unsupportedAlgorithm() }
+
+    immut mgf = expect(bytes, mask.start, mask.end, 0x06)
+
+    if (not mgf.good or not contentsAre(bytes, mgf, '2a864886f70d010108')) { return unsupportedAlgorithm() }
+
+    immut maskHash = expect(bytes, mgf.end, mask.end, 0x30)
+
+    if (not maskHash.good or maskHash.end != mask.end or hashAlgorithmOf(bytes, maskHash) != hash) { return unsupportedAlgorithm() }
+
+    immut saltPart = expect(bytes, maskPart.end, params.end, 0xA2)
+
+    if (not saltPart.good) { return unsupportedAlgorithm() }
+
+    immut salt = expect(bytes, saltPart.start, saltPart.end, 0x02)
+
+    if (not salt.good or salt.end != saltPart.end or salt.end - salt.start != 1 or byteAt(bytes, salt.start) != digestSize(hash)) { return unsupportedAlgorithm() }
+
+    // The trailer, when it is there, is 1.
+    if (saltPart.end != params.end) {
+        immut trailerPart = expect(bytes, saltPart.end, params.end, 0xA3)
+
+        if (not trailerPart.good or trailerPart.end != params.end) { return unsupportedAlgorithm() }
+
+        immut trailer = expect(bytes, trailerPart.start, trailerPart.end, 0x02)
+
+        if (not trailer.good or trailer.end != trailerPart.end or trailer.end - trailer.start != 1 or byteAt(bytes, trailer.start) != 1) { return unsupportedAlgorithm() }
+    }
+
+    return { kind: 1, hash: hash }
+}
+
+// Keys
+
+// A public key: RSA (`kind` 0: the modulus at `a`, the exponent at `b`) or EC (`kind` 1: the curve,
+// 0 for P-256, 1 for P-384 and 2 for P-521, and the uncompressed point at `a`), in `bytes`; `kind` -1 for a key
+// that is not supported.
+export type PublicKey = {
+    kind: int
+    curve: int
+    bytes: Address
+    aStart: int
+    aSize: int
+    bStart: int
+    bSize: int
+}
+
+function unsupportedKey(): PublicKey {
+    return { kind: -1, curve: 0, bytes: nullAddress(), aStart: 0, aSize: 0, bStart: 0, bSize: 0 }
+}
+
+// The key of a SubjectPublicKeyInfo (a SEQUENCE).
+export function keyOf(bytes: Address, e: Element): PublicKey {
+    immut algorithm = expect(bytes, e.start, e.end, 0x30)
+
+    if (not algorithm.good) { return unsupportedKey() }
+
+    immut bits = expect(bytes, algorithm.end, e.end, 0x03)
+
+    // A BIT STRING of whole bytes.
+    if (not bits.good or bits.end != e.end or bits.end - bits.start < 2 or byteAt(bytes, bits.start) != 0) { return unsupportedKey() }
+
+    immut oid = expect(bytes, algorithm.start, algorithm.end, 0x06)
+
+    if (not oid.good) { return unsupportedKey() }
+
+    if (contentsAre(bytes, oid, '2a864886f70d010101')) {
+        if (not isDerNull(bytes, oid.end, algorithm.end)) { return unsupportedKey() }
+
+        return rsaKeyOf(bytes, bits.start + 1, bits.end)
+    }
+
+    if (contentsAre(bytes, oid, '2a8648ce3d0201')) {
+        immut curveOid = expect(bytes, oid.end, algorithm.end, 0x06)
+
+        if (not curveOid.good or curveOid.end != algorithm.end) { return unsupportedKey() }
+
+        mut curve = -1
+
+        for i in range(3) {
+            if (contentsAre(bytes, curveOid, ['2a8648ce3d030107', '2b81040022', '2b81040023'][i])) { curve = i }
+        }
+
+        immut size = 1 + 2 * coordinateSize(curve)
+
+        // The point uncompressed (04, x, y); koji:ecc checks that it is on the curve.
+        if (curve < 0 or bits.end - bits.start - 1 != size or byteAt(bytes, bits.start + 1) != 4) { return unsupportedKey() }
+
+        return { kind: 1, curve: curve, bytes: bytes, aStart: bits.start + 1, aSize: size, bStart: 0, bSize: 0 }
+    }
+
+    return unsupportedKey()
+}
+
+// The bytes of a coordinate of the curve 0 (P-256), 1 (P-384) or 2 (P-521).
+function coordinateSize(curve: int): int {
+    return match (curve) {
+        0 => 32
+        1 => 48
+        _ => 66
+    }
+}
+
+// RSAPublicKey: the modulus (2048 to 8192 bits, odd) and the exponent (odd, at least 3, at most 4
+// bytes).
+function rsaKeyOf(bytes: Address, at: int, limit: int): PublicKey {
+    immut sequence = expect(bytes, at, limit, 0x30)
+
+    if (not sequence.good or sequence.end != limit) { return unsupportedKey() }
+
+    immut modulus = expect(bytes, sequence.start, sequence.end, 0x02)
+
+    if (not modulus.good) { return unsupportedKey() }
+
+    immut exponent = expect(bytes, modulus.end, sequence.end, 0x02)
+
+    if (not exponent.good or exponent.end != sequence.end) { return unsupportedKey() }
+
+    immut n = unsignedStart(bytes, modulus)
+    immut e = unsignedStart(bytes, exponent)
+
+    if (n < 0 or e < 0) { return unsupportedKey() }
+
+    immut nSize = modulus.end - n
+    immut eSize = exponent.end - e
+
+    if (nSize < 256 or nSize > 1024 or byteAt(bytes, n) == 0 or byteAt(bytes, modulus.end - 1) & 1 == 0) { return unsupportedKey() }
+
+    if (eSize > 4 or byteAt(bytes, exponent.end - 1) & 1 == 0 or (eSize == 1 and byteAt(bytes, e) < 3)) { return unsupportedKey() }
+
+    return { kind: 0, curve: 0, bytes: bytes, aStart: n, aSize: nSize, bStart: e, bSize: eSize }
+}
+
+// Whether `signature` (`size` bytes; for ECDSA the SEQUENCE of r and s, as certificates and TLS
+// write it) signs the `messageSize` bytes at `message` with `key` and `algorithm`.
+export function verifySignature(key: PublicKey, algorithm: Algorithm, message: Address, messageSize: int, signature: Address, size: int): boolean {
+    if (algorithm.kind < 0 or key.kind < 0) { return false }
+
+    // The algorithm of the key's kind: RSA for RSA, ECDSA for EC.
+    if ((key.kind == 0) != (algorithm.kind < 2)) { return false }
+
+    immut length = digestSize(algorithm.hash)
+    immut hashed = allocate(length)
+    digest(algorithm.hash, message, messageSize, hashed)
+    mut good = false
+
+    if (algorithm.kind == 0) {
+        good = verifyPkcs1(algorithm.hash, hashed, length, signature, size, offset(key.bytes, key.aStart), key.aSize, offset(key.bytes, key.bStart), key.bSize)
+    }
+
+    if (algorithm.kind == 1) {
+        good = verifyPss(algorithm.hash, hashed, length, signature, size, offset(key.bytes, key.aStart), key.aSize, offset(key.bytes, key.bStart), key.bSize)
+    }
+
+    if (algorithm.kind == 2) { good = verifyEcdsa(key, hashed, length, signature, size) }
+
+    free(hashed)
+    return good
+}
+
+// ECDSA: the SEQUENCE of the INTEGERs r and s, each at most as long as a coordinate.
+function verifyEcdsa(key: PublicKey, hashed: Address, length: int, signature: Address, size: int): boolean {
+    immut sequence = expect(signature, 0, size, 0x30)
+
+    if (not sequence.good or sequence.end != size) { return false }
+
+    immut r = expect(signature, sequence.start, sequence.end, 0x02)
+
+    if (not r.good) { return false }
+
+    immut s = expect(signature, r.end, sequence.end, 0x02)
+
+    if (not s.good or s.end != sequence.end) { return false }
+
+    immut rStart = unsignedStart(signature, r)
+    immut sStart = unsignedStart(signature, s)
+    immut coordinate = coordinateSize(key.curve)
+
+    if (rStart < 0 or sStart < 0 or r.end - rStart > coordinate or s.end - sStart > coordinate) { return false }
+
+    // r and s in `coordinate` bytes each (zeros before).
+    immut fixed = allocate(2 * coordinate)
+
+    for i in range(2 * coordinate) {
+        write(fixed, i, byte(0))
+    }
+
+    memcpy(offset(fixed, coordinate - (r.end - rStart)), offset(signature, rStart), r.end - rStart)
+    memcpy(offset(fixed, 2 * coordinate - (s.end - sStart)), offset(signature, sStart), s.end - sStart)
+    immut good = verify(key.curve, hashed, length, fixed, offset(fixed, coordinate), offset(key.bytes, key.aStart), key.aSize)
+    free(fixed)
+    return good
+}
+
+// Times
+
+// The seconds since 1970 of a UTCTime (YYMMDDHHMMSSZ: 1950 to 2049) or a GeneralizedTime
+// (YYYYMMDDHHMMSSZ), or -1 when it is not in one of these forms (those of DER).
+function timeOf(bytes: Address, e: Element): int {
+    immut size = e.end - e.start
+    immut long = e.tag == 0x18
+
+    if (not ((e.tag == 0x17 and size == 13) or (long and size == 15))) { return -1 }
+
+    if (byteAt(bytes, e.end - 1) != 0x5A) { return -1 }
+
+    for i in range(size - 1) {
+        immut c = byteAt(bytes, e.start + i)
+
+        if (c < 0x30 or c > 0x39) { return -1 }
+    }
+
+    immut digits = if (long) { 4 } else { 2 }
+    mut year = number(bytes, e.start, digits)
+
+    if (not long) { year = if (year < 50) { 2000 + year } else { 1900 + year } }
+
+    immut at = e.start + digits
+    immut month = number(bytes, at, 2)
+    immut day = number(bytes, at + 2, 2)
+    immut hour = number(bytes, at + 4, 2)
+    immut minute = number(bytes, at + 6, 2)
+    immut second = number(bytes, at + 8, 2)
+
+    if (month < 1 or month > 12 or day < 1 or day > daysIn(year, month) or hour > 23 or minute > 59 or second > 59) { return -1 }
+
+    return ((daysFromCivil(year, month, day) * 24 + hour) * 60 + minute) * 60 + second
+}
+
+function number(bytes: Address, at: int, digits: int): int {
+    mut value = 0
+
+    for i in range(digits) {
+        value = value * 10 + byteAt(bytes, at + i) - 0x30
+    }
+
+    return value
+}
+
+function daysIn(year: int, month: int): int {
+    if (month == 2) {
+        immut leap = (year % 4 == 0 and year % 100 != 0) or year % 400 == 0
+        return if (leap) { 29 } else { 28 }
+    }
+
+    return if (month == 4 or month == 6 or month == 9 or month == 11) { 30 } else { 31 }
+}
+
+// The days from 1970-01-01 to a date (Howard Hinnant's days_from_civil).
+function daysFromCivil(year: int, month: int, day: int): int {
+    immut y = if (month <= 2) { year - 1 } else { year }
+    immut era = y / 400
+    immut yearOfEra = y - era * 400
+    immut shifted = if (month > 2) { month - 3 } else { month + 9 }
+    immut dayOfYear = (153 * shifted + 2) / 5 + day - 1
+    immut dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+    return era * 146097 + dayOfEra - 719468
+}
+
+// Certificates
+
+// A certificate read: where its parts are in `bytes` (`size` bytes, its DER); `problem` is
+// `trusted` (0) when it could be read, else why not.
+export type Certificate = {
+    problem: int
+    bytes: Address
+    size: int
+    tbsStart: int
+    tbsSize: int
+    algorithm: Algorithm
+    signatureStart: int
+    signatureSize: int
+    issuerStart: int
+    issuerSize: int
+    subjectStart: int
+    subjectSize: int
+    notBefore: int
+    notAfter: int
+    key: PublicKey
+    authority: boolean
+    // The most intermediates below it (basicConstraints), -1 for no limit.
+    pathLength: int
+    // The bits of keyUsage (bit 0 digitalSignature, bit 5 keyCertSign: the first bits of the BIT
+    // STRING), -1 when it is absent.
+    keyUsage: int
+    // extKeyUsage: 0 absent, 1 serverAuth (or any) in it, 2 present without it.
+    serverAuth: int
+    // The GeneralNames of subjectAltName, and the GeneralSubtrees of nameConstraints (permitted and
+    // excluded); a size of 0 when absent.
+    namesStart: int
+    namesSize: int
+    permittedStart: int
+    permittedSize: int
+    excludedStart: int
+    excludedSize: int
+}
+
+function badCertificate(problem: int, bytes: Address, size: int): Certificate {
+    return {
+        problem: problem, bytes: bytes, size: size, tbsStart: 0, tbsSize: 0, algorithm: unsupportedAlgorithm(),
+        signatureStart: 0, signatureSize: 0, issuerStart: 0, issuerSize: 0, subjectStart: 0, subjectSize: 0,
+        notBefore: 0, notAfter: 0, key: unsupportedKey(), authority: false, pathLength: -1, keyUsage: -1,
+        serverAuth: 0, namesStart: 0, namesSize: 0, permittedStart: 0, permittedSize: 0, excludedStart: 0,
+        excludedSize: 0
+    }
+}
+
+// The certificate of the `size` bytes of DER at `bytes` (which it keeps: they must outlive it).
+export function certificateOf(bytes: Address, size: int): Certificate {
+    immut outer = expect(bytes, 0, size, 0x30)
+
+    if (not outer.good or outer.end != size) { return badCertificate(malformed, bytes, size) }
+
+    immut tbs = expect(bytes, outer.start, outer.end, 0x30)
+
+    if (not tbs.good) { return badCertificate(malformed, bytes, size) }
+
+    immut outerAlgorithm = expect(bytes, tbs.end, outer.end, 0x30)
+
+    if (not outerAlgorithm.good) { return badCertificate(malformed, bytes, size) }
+
+    immut signature = expect(bytes, outerAlgorithm.end, outer.end, 0x03)
+
+    if (not signature.good or signature.end != outer.end or signature.end == signature.start or byteAt(bytes, signature.start) != 0) {
+        return badCertificate(malformed, bytes, size)
+    }
+
+    mut c = badCertificate(malformed, bytes, size)
+    c.tbsStart = outer.start
+    c.tbsSize = tbs.end - outer.start
+    c.signatureStart = signature.start + 1
+    c.signatureSize = signature.end - signature.start - 1
+    // version [0]: v3 (2) only, as every certificate of the web is.
+    immut version = expect(bytes, tbs.start, tbs.end, 0xA0)
+
+    if (not version.good) { return c }
+
+    immut versionNumber = expect(bytes, version.start, version.end, 0x02)
+
+    if (not versionNumber.good or versionNumber.end != version.end or versionNumber.end - versionNumber.start != 1 or byteAt(bytes, versionNumber.start) != 2) {
+        return c
+    }
+
+    immut serial = expect(bytes, version.end, tbs.end, 0x02)
+
+    if (not serial.good) { return c }
+
+    immut innerAlgorithm = expect(bytes, serial.end, tbs.end, 0x30)
+
+    // The algorithm signed and the one outside are the same.
+    if (not innerAlgorithm.good or not sameBytes(bytes, innerAlgorithm.start, innerAlgorithm.end - innerAlgorithm.start, bytes, outerAlgorithm.start, outerAlgorithm.end - outerAlgorithm.start)) {
+        return c
+    }
+
+    c.algorithm = algorithmOf(bytes, innerAlgorithm)
+    immut issuer = expect(bytes, innerAlgorithm.end, tbs.end, 0x30)
+
+    if (not issuer.good) { return c }
+
+    c.issuerStart = innerAlgorithm.end
+    c.issuerSize = issuer.end - innerAlgorithm.end
+    immut validity = expect(bytes, issuer.end, tbs.end, 0x30)
+
+    if (not validity.good) { return c }
+
+    immut before = element(bytes, validity.start, validity.end)
+
+    if (not before.good) { return c }
+
+    immut after = element(bytes, before.end, validity.end)
+
+    if (not after.good or after.end != validity.end) { return c }
+
+    c.notBefore = timeOf(bytes, before)
+    c.notAfter = timeOf(bytes, after)
+
+    if (c.notBefore < 0 or c.notAfter < 0) { return c }
+
+    immut subject = expect(bytes, validity.end, tbs.end, 0x30)
+
+    if (not subject.good) { return c }
+
+    c.subjectStart = validity.end
+    c.subjectSize = subject.end - validity.end
+    immut keyInfo = expect(bytes, subject.end, tbs.end, 0x30)
+
+    if (not keyInfo.good) { return c }
+
+    c.key = keyOf(bytes, keyInfo)
+    mut at = keyInfo.end
+
+    // issuerUniqueID [1] and subjectUniqueID [2], skipped.
+    for tag in [0x81, 0xA1, 0x82, 0xA2] {
+        immut unique = element(bytes, at, tbs.end)
+
+        if (unique.good and unique.tag == tag) { at = unique.end }
+    }
+
+    if (at != tbs.end) {
+        immut extensions = expect(bytes, at, tbs.end, 0xA3)
+
+        if (not extensions.good or extensions.end != tbs.end) { return c }
+
+        immut list = expect(bytes, extensions.start, extensions.end, 0x30)
+
+        if (not list.good or list.end != extensions.end) { return c }
+
+        if (not readExtensions(mut c, list)) { return c }
+    }
+
+    c.problem = trusted
+    return c
+}
+
+// The extensions of a certificate, into it: false when one is malformed, appears twice, or is
+// critical and not known.
+function readExtensions(mut c: Certificate, list: Element): boolean {
+    immut bytes = c.bytes
+    mut at = list.start
+    mut seen = 0
+
+    while (at < list.end) {
+        immut extension = expect(bytes, at, list.end, 0x30)
+
+        if (not extension.good) { return false }
+
+        at = extension.end
+        immut oid = expect(bytes, extension.start, extension.end, 0x06)
+
+        if (not oid.good) { return false }
+
+        mut next = oid.end
+        mut critical = false
+        immut flag = element(bytes, next, extension.end)
+
+        if (flag.good and flag.tag == 0x01) {
+            // DER writes no FALSE: a critical flag is TRUE.
+            if (flag.end - flag.start != 1 or byteAt(bytes, flag.start) != 0xFF) { return false }
+
+            critical = true
+            next = flag.end
+        }
+
+        immut value = expect(bytes, next, extension.end, 0x04)
+
+        if (not value.good or value.end != extension.end) { return false }
+
+        immut known = extensionIndex(bytes, oid)
+
+        if (known < 0) {
+            if (critical) { return false }
+        } else {
+            if (seen & (1 << known) != 0) { return false }
+
+            seen = seen | (1 << known)
+
+            if (not readExtension(mut c, known, value)) { return false }
+        }
+    }
+
+    return true
+}
+
+// The extensions known: basicConstraints, keyUsage, extKeyUsage, subjectAltName, nameConstraints,
+// and those that need no checking here (certificatePolicies, the key identifiers): their index, or
+// -1.
+function extensionIndex(bytes: Address, oid: Element): int {
+    immut known = ['551d13', '551d0f', '551d25', '551d11', '551d1e', '551d20', '551d23', '551d0e']
+
+    for i in range(known.length()) {
+        if (contentsAre(bytes, oid, known[i])) { return i }
+    }
+
+    return -1
+}
+
+function readExtension(mut c: Certificate, known: int, value: Element): boolean {
+    immut bytes = c.bytes
+    immut inner = element(bytes, value.start, value.end)
+
+    if (not inner.good or inner.end != value.end) { return false }
+
+    if (known == 0) {
+        // basicConstraints: SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLenConstraint INTEGER OPTIONAL }
+        if (inner.tag != 0x30) { return false }
+
+        mut at = inner.start
+        immut flag = element(bytes, at, inner.end)
+
+        if (flag.good and flag.tag == 0x01) {
+            if (flag.end - flag.start != 1 or byteAt(bytes, flag.start) != 0xFF) { return false }
+
+            c.authority = true
+            at = flag.end
+        }
+
+        if (at < inner.end) {
+            immut length = expect(bytes, at, inner.end, 0x02)
+
+            if (not length.good or length.end != inner.end or not c.authority) { return false }
+
+            immut start = unsignedStart(bytes, length)
+
+            if (start < 0 or length.end - start > 1) { return false }
+
+            c.pathLength = if (length.end == start) { 0 } else { byteAt(bytes, start) }
+        }
+
+        return true
+    }
+
+    if (known == 1) {
+        // keyUsage: a BIT STRING of at most 2 bytes of bits.
+        if (inner.tag != 0x03 or inner.end - inner.start < 2 or inner.end - inner.start > 3) { return false }
+
+        mut bits = 0
+
+        for i in range(inner.end - inner.start - 1) {
+            immut b = byteAt(bytes, inner.start + 1 + i)
+
+            // Bit 0 is the top bit of the first byte.
+            for j in range(8) {
+                if ((b >> (7 - j)) & 1 == 1) { bits = bits | (1 << (8 * i + j)) }
+            }
+        }
+
+        c.keyUsage = bits
+        return true
+    }
+
+    if (known == 2) {
+        // extKeyUsage: a SEQUENCE of OIDs.
+        if (inner.tag != 0x30 or inner.end == inner.start) { return false }
+
+        c.serverAuth = 2
+        mut at = inner.start
+
+        while (at < inner.end) {
+            immut purpose = expect(bytes, at, inner.end, 0x06)
+
+            if (not purpose.good) { return false }
+
+            if (contentsAre(bytes, purpose, '2b06010505070301') or contentsAre(bytes, purpose, '551d2500')) { c.serverAuth = 1 }
+
+            at = purpose.end
+        }
+
+        return true
+    }
+
+    if (known == 3) {
+        // subjectAltName: GeneralNames, checked when a name is matched.
+        if (inner.tag != 0x30 or inner.end == inner.start or not generalNamesGood(bytes, inner.start, inner.end)) { return false }
+
+        c.namesStart = inner.start
+        c.namesSize = inner.end - inner.start
+        return true
+    }
+
+    if (known == 4) {
+        // nameConstraints: SEQUENCE { permittedSubtrees [0], excludedSubtrees [1] }, on a CA.
+        if (inner.tag != 0x30 or inner.end == inner.start) { return false }
+
+        mut at = inner.start
+        immut permitted = element(bytes, at, inner.end)
+
+        if (permitted.good and permitted.tag == 0xA0) {
+            if (not subtreesGood(bytes, permitted.start, permitted.end)) { return false }
+
+            c.permittedStart = permitted.start
+            c.permittedSize = permitted.end - permitted.start
+            at = permitted.end
+        }
+
+        if (at < inner.end) {
+            immut excluded = expect(bytes, at, inner.end, 0xA1)
+
+            if (not excluded.good or excluded.end != inner.end or not subtreesGood(bytes, excluded.start, excluded.end)) { return false }
+
+            c.excludedStart = excluded.start
+            c.excludedSize = excluded.end - excluded.start
+        }
+
+        return true
+    }
+
+    // certificatePolicies and the key identifiers: well formed is enough.
+    return true
+}
+
+// Whether the run of bytes is a run of elements (GeneralName: a context tag each).
+function generalNamesGood(bytes: Address, start: int, end: int): boolean {
+    mut at = start
+
+    while (at < end) {
+        immut name = element(bytes, at, end)
+
+        if (not name.good or name.tag & 0x80 == 0) { return false }
+
+        at = name.end
+    }
+
+    return true
+}
+
+// Whether the run of bytes is a run of GeneralSubtrees: SEQUENCE { base, minimum [0] 0, no maximum }.
+function subtreesGood(bytes: Address, start: int, end: int): boolean {
+    mut at = start
+
+    if (start == end) { return false }
+
+    while (at < end) {
+        immut subtree = expect(bytes, at, end, 0x30)
+
+        if (not subtree.good) { return false }
+
+        immut base = element(bytes, subtree.start, subtree.end)
+
+        // The minimum and maximum are never used (RFC 5280): only the base.
+        if (not base.good or base.tag & 0x80 == 0 or base.end != subtree.end) { return false }
+
+        at = subtree.end
+    }
+
+    return true
+}
+
+// Names
+
+// The lower case of an ASCII byte.
+function lower(c: int): int {
+    return if (c >= 0x41 and c <= 0x5A) { c + 32 } else { c }
+}
+
+// Whether two runs of ASCII bytes are the same, the case aside.
+function sameName(a: Address, aStart: int, aSize: int, b: Address, bStart: int, bSize: int): boolean {
+    if (aSize != bSize) { return false }
+
+    for i in range(aSize) {
+        if (lower(byteAt(a, aStart + i)) != lower(byteAt(b, bStart + i))) { return false }
+    }
+
+    return true
+}
+
+// Whether a DNS name of a certificate (`pattern`, perhaps with a wildcard as its leftmost label)
+// is the host name (lower case, no dot at the end): `*.example.com` is `a.example.com`, not
+// `example.com` nor `a.b.example.com`; a wildcard needs two labels after it.
+function dnsMatches(bytes: Address, start: int, size: int, host: Address, hostSize: int): boolean {
+    if (size == 0) { return false }
+
+    if (size > 2 and byteAt(bytes, start) == 0x2A and byteAt(bytes, start + 1) == 0x2E) {
+        immut rest = size - 1
+        // The labels after the wildcard: at least two.
+        mut dots = 0
+
+        for i in range(1, size) {
+            if (byteAt(bytes, start + i) == 0x2E) { dots += 1 }
+        }
+
+        if (dots < 2) { return false }
+
+        // The host's first label, then the same rest.
+        mut first = 0
+
+        while (first < hostSize and byteAt(host, first) != 0x2E) {
+            first += 1
+        }
+
+        if (first == 0 or first == hostSize) { return false }
+
+        return sameName(bytes, start + 1, rest, host, first, hostSize - first)
+    }
+
+    return sameName(bytes, start, size, host, 0, hostSize)
+}
+
+// Whether the certificate names the host: a DNS name (dNSName [2]) for a name, an IP address
+// (iPAddress [7]) for an address (`address` its 4 or 16 bytes, `addressSize` 0 for a name).
+function namesHost(c: Certificate, host: Address, hostSize: int, address: Address, addressSize: int): boolean {
+    immut bytes = c.bytes
+    mut at = c.namesStart
+    immut end = c.namesStart + c.namesSize
+
+    while (at < end) {
+        immut name = element(bytes, at, end)
+        at = name.end
+
+        if (addressSize == 0 and name.tag == 0x82 and dnsMatches(bytes, name.start, name.end - name.start, host, hostSize)) { return true }
+
+        if (addressSize > 0 and name.tag == 0x87 and sameBytes(bytes, name.start, name.end - name.start, address, 0, addressSize)) { return true }
+    }
+
+    return false
+}
+
+// Whether a DNS name is within the DNS name of a constraint: the same name or a name under it
+// (`example.com` holds `example.com` and `a.example.com`; `.example.com` only names under it; an
+// empty constraint holds every name).
+function dnsWithin(bytes: Address, start: int, size: int, cBytes: Address, cStart: int, cSize: int): boolean {
+    if (cSize == 0) { return true }
+
+    if (byteAt(cBytes, cStart) == 0x2E) {
+        return size > cSize and sameName(bytes, start + size - cSize, cSize, cBytes, cStart, cSize)
+    }
+
+    if (size == cSize) { return sameName(bytes, start, size, cBytes, cStart, cSize) }
+
+    return size > cSize and byteAt(bytes, start + size - cSize - 1) == 0x2E and sameName(bytes, start + size - cSize, cSize, cBytes, cStart, cSize)
+}
+
+// Whether an IP address (4 or 16 bytes) is within a constraint (the address and its mask: 8 or 32
+// bytes).
+function addressWithin(bytes: Address, start: int, size: int, cBytes: Address, cStart: int, cSize: int): boolean {
+    if (cSize != 2 * size) { return false }
+
+    for i in range(size) {
+        immut mask = byteAt(cBytes, cStart + size + i)
+
+        if (byteAt(bytes, start + i) & mask != byteAt(cBytes, cStart + i) & mask) { return false }
+    }
+
+    return true
+}
+
+// Whether a Name (a SEQUENCE of RDNs) starts with the RDNs of a constraint's Name.
+function subjectWithin(bytes: Address, start: int, size: int, cBytes: Address, cStart: int, cSize: int): boolean {
+    immut name = expect(bytes, start, start + size, 0x30)
+    immut constraint = expect(cBytes, cStart, cStart + cSize, 0x30)
+
+    if (not name.good or not constraint.good) { return false }
+
+    mut at = name.start
+    mut cAt = constraint.start
+
+    while (cAt < constraint.end) {
+        immut rdn = element(bytes, at, name.end)
+        immut cRdn = element(cBytes, cAt, constraint.end)
+
+        if (not rdn.good or not cRdn.good) { return false }
+
+        if (not sameBytes(bytes, at, rdn.end - at, cBytes, cAt, cRdn.end - cAt)) { return false }
+
+        at = rdn.end
+        cAt = cRdn.end
+    }
+
+    return true
+}
+
+// One name of a certificate (`kind` 2 DNS, 7 IP address, 4 a subject) against the subtrees of a
+// constraint of its kind: within one of them (`any` true) or within none. `unconstrained` when the
+// subtrees have none of its kind.
+type Within = {
+    any: boolean
+    unconstrained: boolean
+}
+
+function withinSubtrees(kind: int, bytes: Address, start: int, size: int, cBytes: Address, cStart: int, cSize: int): Within {
+    mut result: Within = { any: false, unconstrained: true }
+    mut at = cStart
+    immut end = cStart + cSize
+
+    while (at < end) {
+        immut subtree = element(cBytes, at, end)
+        at = subtree.end
+        immut base = element(cBytes, subtree.start, subtree.end)
+
+        if (base.tag & 0x1F == kind) {
+            result.unconstrained = false
+            immut inside = match (kind) {
+                2 => dnsWithin(bytes, start, size, cBytes, base.start, base.end - base.start)
+                7 => addressWithin(bytes, start, size, cBytes, base.start, base.end - base.start)
+                _ => subjectWithin(bytes, start, size, cBytes, base.start, base.end - base.start)
+            }
+
+            if (inside) { result.any = true }
+        }
+    }
+
+    return result
+}
+
+// Whether one name obeys the constraints of an authority: within a permitted subtree of its kind
+// (when there are some) and within no excluded one.
+function nameAllowed(kind: int, bytes: Address, start: int, size: int, authority: Certificate): boolean {
+    if (authority.permittedSize > 0) {
+        immut permitted = withinSubtrees(kind, bytes, start, size, authority.bytes, authority.permittedStart, authority.permittedSize)
+
+        if (not permitted.unconstrained and not permitted.any) { return false }
+    }
+
+    if (authority.excludedSize > 0) {
+        immut excluded = withinSubtrees(kind, bytes, start, size, authority.bytes, authority.excludedStart, authority.excludedSize)
+
+        if (excluded.any) { return false }
+    }
+
+    return true
+}
+
+// Whether the names of a certificate (its DNS names, its IP addresses and its subject, when it is
+// not empty) obey the constraints of an authority above it.
+function namesAllowed(c: Certificate, authority: Certificate): boolean {
+    if (authority.permittedSize == 0 and authority.excludedSize == 0) { return true }
+
+    immut bytes = c.bytes
+    mut at = c.namesStart
+    immut end = c.namesStart + c.namesSize
+
+    while (at < end) {
+        immut name = element(bytes, at, end)
+        at = name.end
+
+        if (name.tag == 0x82 and not nameAllowed(2, bytes, name.start, name.end - name.start, authority)) { return false }
+
+        if (name.tag == 0x87 and not nameAllowed(7, bytes, name.start, name.end - name.start, authority)) { return false }
+
+        if (name.tag == 0xA4 and not nameAllowed(4, bytes, name.start, name.end - name.start, authority)) { return false }
+    }
+
+    // The subject, unless empty (a SEQUENCE of nothing: 2 bytes).
+    return c.subjectSize <= 2 or nameAllowed(4, bytes, c.subjectStart, c.subjectSize, authority)
+}
+
+// The host, as a name to match: lower case with no dot at the end, or an IP address (IPv4 in dots,
+// IPv6 in brackets or not).
+type Host = {
+    good: boolean
+    name: Address
+    size: int
+    address: Address
+    addressSize: int
+}
+
+function hostOf(host: string): Host {
+    immut text = stringBytes(host)
+    mut size = stringSize(host)
+
+    if (size > 0 and byteAt(text, size - 1) == 0x2E) { size -= 1 }
+
+    immut name = allocate(size + 1)
+
+    for i in range(size) {
+        write(name, i, byte(lower(byteAt(text, i))))
+    }
+
+    immut address = allocate(16)
+    mut addressSize = 0
+
+    if (ipv4(name, 0, size, address)) { addressSize = 4 }
+
+    if (addressSize == 0) {
+        immut bracketed = size > 2 and byteAt(name, 0) == 0x5B and byteAt(name, size - 1) == 0x5D
+        immut first = if (bracketed) { 1 } else { 0 }
+        immut to = if (bracketed) { size - 1 } else { size }
+
+        if (ipv6(name, first, to, address)) { addressSize = 16 }
+    }
+
+    return { good: size > 0, name: name, size: size, address: address, addressSize: addressSize }
+}
+
+function freeHost(host: Host) {
+    free(host.name)
+    free(host.address)
+}
+
+function isDigit(c: int): boolean {
+    return c >= 0x30 and c <= 0x39
+}
+
+function hexDigit(c: int): int {
+    if (isDigit(c)) { return c - 0x30 }
+
+    if (c >= 0x61 and c <= 0x66) { return c - 87 }
+
+    return -1
+}
+
+// The 4 bytes of an IPv4 address in dots (four decimal numbers below 256, no leading zeros), at
+// `out`.
+function ipv4(text: Address, start: int, end: int, out: Address): boolean {
+    mut at = start
+
+    for part in range(4) {
+        if (part > 0) {
+            if (at >= end or byteAt(text, at) != 0x2E) { return false }
+
+            at += 1
+        }
+
+        mut value = 0
+        mut digits = 0
+
+        while (at < end and isDigit(byteAt(text, at))) {
+            value = value * 10 + byteAt(text, at) - 0x30
+            digits += 1
+            at += 1
+
+            if (digits > 3) { return false }
+        }
+
+        if (digits == 0 or value > 255 or (digits > 1 and byteAt(text, at - digits) == 0x30)) { return false }
+
+        write(out, part, byte(value))
+    }
+
+    return at == end
+}
+
+// The 16 bytes of an IPv6 address (groups of hexadecimal digits, `::` once for zeros, an IPv4
+// address at the end), at `out`.
+function ipv6(text: Address, start: int, end: int, out: Address): boolean {
+    for i in range(16) {
+        write(out, i, byte(0))
+    }
+
+    mut at = start
+    mut index = 0
+    mut gap = -1
+
+    if (end - start >= 2 and byteAt(text, start) == 0x3A and byteAt(text, start + 1) == 0x3A) {
+        gap = 0
+        at += 2
+    }
+
+    while (at < end) {
+        if (index == 16) { return false }
+
+        // An IPv4 address in the last 4 bytes.
+        immut dotted = index <= 12 and ipv4(text, at, end, offset(out, index))
+
+        if (dotted) {
+            index += 4
+            at = end
+            break
+        }
+
+        mut value = 0
+        mut digits = 0
+
+        while (at < end and hexDigit(byteAt(text, at)) >= 0) {
+            value = value * 16 + hexDigit(byteAt(text, at))
+            digits += 1
+            at += 1
+
+            if (digits > 4) { return false }
+        }
+
+        if (digits == 0) { return false }
+
+        write(out, index, byte(value >> 8))
+        write(out, index + 1, byte(value & 0xFF))
+        index += 2
+
+        if (at < end) {
+            if (byteAt(text, at) != 0x3A) { return false }
+
+            at += 1
+
+            if (at < end and byteAt(text, at) == 0x3A) {
+                if (gap >= 0) { return false }
+
+                gap = index
+                at += 1
+            } else {
+                if (at == end) { return false }
+            }
+        }
+    }
+
+    if (gap < 0) { return index == 16 }
+
+    if (index == 16) { return false }
+
+    // The groups after the gap moved to the end.
+    immut moved = index - gap
+
+    for i in range(moved) {
+        immut b: byte = read(out, index - 1 - i)
+        write(out, 15 - i, b)
+    }
+
+    for i in range(gap, 16 - moved) {
+        write(out, i, byte(0))
+    }
+
+    return true
+}
+
+// Authorities
+
+// An authority: its subject and its key, in `bytes`.
+export type Authority = {
+    bytes: Address
+    subjectStart: int
+    subjectSize: int
+    key: PublicKey
+}
+
+// The value of a base64 digit, or -1.
+function base64Value(c: int): int {
+    if (c >= 0x41 and c <= 0x5A) { return c - 0x41 }
+
+    if (c >= 0x61 and c <= 0x7A) { return c - 71 }
+
+    if (isDigit(c)) { return c + 4 }
+
+    if (c == 0x2B) { return 62 }
+
+    if (c == 0x2F) { return 63 }
+
+    return -1
+}
+
+// The bytes of the base64 between `start` and `end` (white space skipped, `=` ends it), at `out`:
+// how many.
+function unbase64(text: Address, start: int, end: int, out: Address): int {
+    mut bits = 0
+    mut count = 0
+    mut size = 0
+
+    for i in range(start, end) {
+        immut c = byteAt(text, i)
+
+        if (c == 0x3D) { break }
+
+        immut value = base64Value(c)
+
+        if (value >= 0) {
+            bits = ((bits << 6) | value) & 0xFFFFFF
+            count += 6
+
+            if (count >= 8) {
+                count -= 8
+                write(out, size, byte((bits >> count) & 0xFF))
+                size += 1
+            }
+        }
+    }
+
+    return size
+}
+
+// The authority of a certificate, when it can be read and its key is supported.
+function addCertificate(mut authorities: Authority[], bytes: Address, size: int) {
+    immut c = certificateOf(bytes, size)
+
+    if (c.problem == trusted and c.key.kind >= 0) {
+        authorities.push({ bytes: bytes, subjectStart: c.subjectStart, subjectSize: c.subjectSize, key: c.key })
+    } else {
+        free(bytes)
+    }
+}
+
+// The certificates of PEM text (`size` bytes at `text`), as authorities.
+function addPem(mut authorities: Authority[], text: Address, size: int) {
+    immut begin = '-----BEGIN CERTIFICATE-----'
+    immut end = '-----END CERTIFICATE-----'
+    mut at = 0
+
+    while (true) {
+        immut start = find(text, at, size, begin)
+
+        if (start < 0) { break }
+
+        immut stop = find(text, start, size, end)
+
+        if (stop < 0) { break }
+
+        immut body = start + begin.length()
+        immut der = allocate((stop - body) * 3 / 4 + 3)
+        immut length = unbase64(text, body, stop, der)
+        addCertificate(mut authorities, der, length)
+        at = stop + end.length()
+    }
+}
+
+// Where `part` is in the bytes from `at` to `size`, or -1.
+function find(text: Address, at: int, size: int, part: string): int {
+    immut length = stringSize(part)
+    immut bytes = stringBytes(part)
+    mut i = at
+
+    while (i + length <= size) {
+        if (memcmp(offset(text, i), bytes, length) == 0) { return i }
+
+        i += 1
+    }
+
+    return -1
+}
+
+// A C string of a text (to free).
+function cString(text: string): Address {
+    immut size = stringSize(text)
+    immut out = allocate(size + 1)
+    memcpy(out, stringBytes(text), size)
+    write(out, size, byte(0))
+    return out
+}
+
+// The text of a C string.
+function textOfC(text: Address): string {
+    return newString(text, strlen(text))
+}
+
+// The contents of the file at `path` (a C string): where (to free) and how many bytes, or a null
+// address when it cannot be read.
+type Contents = {
+    bytes: Address
+    size: int
+}
+
+function readFile(path: Address): Contents {
+    immut mode = cString('rb')
+    immut file = fopen(path, mode)
+    free(mode)
+
+    if (isNull(file)) { return { bytes: nullAddress(), size: 0 } }
+
+    mut capacity = 65536
+    mut bytes = allocate(capacity)
+    mut size = 0
+
+    while (true) {
+        if (size == capacity) {
+            capacity *= 2
+            bytes = realloc(bytes, capacity)
+        }
+
+        immut got = fread(offset(bytes, size), 1, capacity - size, file)
+
+        if (got == 0) { break }
+
+        size += got
+    }
+
+    fclose(file)
+    return { bytes: bytes, size: size }
+}
+
+// The certificates of the PEM file at `path`: whether it could be read.
+function addFile(mut authorities: Authority[], path: string): boolean {
+    immut cPath = cString(path)
+    immut contents = readFile(cPath)
+    free(cPath)
+
+    if (isNull(contents.bytes)) { return false }
+
+    addPem(mut authorities, contents.bytes, contents.size)
+    free(contents.bytes)
+    return true
+}
+
+// The certificates of the files of a directory.
+function addDirectory(mut authorities: Authority[], path: string) {
+    immut cPath = cString(path)
+    immut directory = opendir(cPath)
+    free(cPath)
+
+    if (isNull(directory)) { return }
+
+    mut names: string[] = []
+
+    while (true) {
+        immut entry = readdir(directory)
+
+        if (isNull(entry)) { break }
+
+        immut name = textOfC(koji_directory_entry_name(entry))
+
+        if (not name.startsWith('.')) { names.push(name) }
+    }
+
+    closedir(directory)
+
+    for name in names {
+        addFile(mut authorities, path + '/' + name)
+    }
+}
+
+// The value of an environment variable, '' when it is not set.
+function environment(name: string): string {
+    immut cName = cString(name)
+    immut value = getenv(cName)
+    free(cName)
+    return if (isNull(value)) { '' } else { textOfC(value) }
+}
+
+// The authorities of the system: `SSL_CERT_FILE`, or the first of the usual files that can be read;
+// then the directories of `SSL_CERT_DIR` (separated by `:`), or, when no file could be read, the
+// usual directories. As Go reads them (which also reads the usual directories after a file).
+function systemAuthorities(): Authority[] {
+    mut authorities: Authority[] = []
+    immut file = environment('SSL_CERT_FILE')
+    immut files = if (file != '') { [file] } else {
+        [
+            // Debian, Ubuntu, Gentoo, Arch
+            '/etc/ssl/certs/ca-certificates.crt',
+            // Fedora, RHEL 6
+            '/etc/pki/tls/certs/ca-bundle.crt',
+            // OpenSUSE
+            '/etc/ssl/ca-bundle.pem',
+            // OpenELEC
+            '/etc/pki/tls/cacert.pem',
+            // CentOS, RHEL 7
+            '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',
+            // Alpine, macOS, OpenBSD
+            '/etc/ssl/cert.pem',
+            // FreeBSD
+            '/usr/local/etc/ssl/cert.pem',
+            '/usr/local/share/certs/ca-root-nss.crt',
+            // NetBSD
+            '/etc/openssl/certs/ca-certificates.crt'
+        ]
+    }
+    mut found = false
+
+    for each in files {
+        if (not found and addFile(mut authorities, each)) { found = true }
+    }
+
+    immut directories = environment('SSL_CERT_DIR')
+
+    if (directories != '') {
+        for each in directories.split(':') {
+            if (each != '') { addDirectory(mut authorities, each) }
+        }
+    } else {
+        if (not found) {
+            for each in ['/etc/ssl/certs', '/etc/pki/tls/certs', '/system/etc/security/cacerts'] {
+                addDirectory(mut authorities, each)
+            }
+        }
+    }
+
+    return authorities
+}
+
+// The authorities built into the library (koji:roots).
+function builtInAuthorities(): Authority[] {
+    mut authorities: Authority[] = []
+    immut text = stringBytes(roots)
+    immut size = stringSize(roots)
+    immut bytes = allocate(size * 3 / 4 + 3)
+    unbase64(text, 0, size, bytes)
+    mut at = 0
+
+    for i in range(rootCount) {
+        immut subjectSize = byteAt(bytes, at) * 256 + byteAt(bytes, at + 1)
+        immut subjectStart = at + 2
+        immut keyStart = subjectStart + subjectSize
+        immut keySize = byteAt(bytes, keyStart) * 256 + byteAt(bytes, keyStart + 1)
+        immut keyInfo = element(bytes, keyStart + 2, keyStart + 2 + keySize)
+        immut key = keyOf(bytes, keyInfo)
+
+        if (key.kind >= 0) { authorities.push({ bytes: bytes, subjectStart: subjectStart, subjectSize: subjectSize, key: key }) }
+
+        at = keyStart + 2 + keySize
+    }
+
+    return authorities
+}
+
+// The authorities, read the first time they are needed (an empty list before), and whether they
+// were read.
+mut cache: Authority[] = []
+mut cacheRead = false
+
+export function trustedAuthorities(): Authority[] {
+    if (not cacheRead) {
+        cache = systemAuthorities()
+
+        if (cache.length() == 0) { cache = builtInAuthorities() }
+
+        cacheRead = true
+    }
+
+    return cache
+}
+
+// Verification
+
+// The work of a verification, bounded (a server could send many certificates of the same name).
+type Search = {
+    chain: Certificate[]
+    authorities: Authority[]
+    now: int
+    // The indexes of the certificates of the path so far (the leaf first).
+    path: int[]
+    budget: int
+    problem: int
+}
+
+// The certificates below which a path can have at most 8 more (as Go limits the intermediates).
+immut deepest = 9
+
+// Whether the certificates of the path obey the name constraints of `authority` (the last of the
+// path issued by it).
+function pathAllowed(search: Search, authority: Certificate): boolean {
+    for index in search.path {
+        if (not namesAllowed(search.chain[index], authority)) { return false }
+    }
+
+    return true
+}
+
+// Whether `issuer` signed `c` (a signature costs some budget).
+function signedBy(mut search: Search, c: Certificate, key: PublicKey): boolean {
+    search.budget -= 1
+    return verifySignature(key, c.algorithm, offset(c.bytes, c.tbsStart), c.tbsSize, offset(c.bytes, c.signatureStart), c.signatureSize)
+}
+
+function contains(list: int[], value: int): boolean {
+    for each in list {
+        if (each == value) { return true }
+    }
+
+    return false
+}
+
+// The worse of two problems (the one that tells more about why no path was found).
+function worse(a: int, b: int): int {
+    // The rank of each problem: an issuer not found tells the least.
+    immut order = [0, 6, 4, 1, 2, 3, 5, 7]
+    return if (order[b] > order[a]) { b } else { a }
+}
+
+// Extends the path from its last certificate: to an authority, or through an intermediate of the
+// chain; whether a path was found (else `search.problem` tells why not).
+function extend(mut search: Search): boolean {
+    immut last = search.chain[search.path[search.path.length() - 1]]
+
+    if (last.algorithm.kind < 0) {
+        search.problem = worse(search.problem, unsupported)
+        return false
+    }
+
+    for authority in search.authorities {
+        if (search.budget <= 0) { return false }
+
+        if (sameBytes(authority.bytes, authority.subjectStart, authority.subjectSize, last.bytes, last.issuerStart, last.issuerSize)) {
+            if (signedBy(mut search, last, authority.key)) { return true }
+
+            search.problem = worse(search.problem, badSignature)
+        }
+    }
+
+    search.problem = worse(search.problem, unknownIssuer)
+
+    if (search.path.length() >= deepest) { return false }
+
+    for i in range(1, search.chain.length()) {
+        if (search.budget <= 0) { return false }
+
+        immut c = search.chain[i]
+
+        if (not contains(search.path, i) and c.problem == trusted and sameBytes(c.bytes, c.subjectStart, c.subjectSize, last.bytes, last.issuerStart, last.issuerSize)) {
+            // Below it: the intermediates of the path so far.
+            immut below = search.path.length() - 1
+            mut problem = trusted
+
+            if (search.now < c.notBefore or search.now > c.notAfter) { problem = expired }
+
+            if (not c.authority or (c.keyUsage >= 0 and c.keyUsage & (1 << 5) == 0) or c.serverAuth == 2) { problem = notAuthorized }
+
+            if (c.pathLength >= 0 and below > c.pathLength) { problem = notAuthorized }
+
+            if (c.key.kind < 0) { problem = unsupported }
+
+            if (problem == trusted and not pathAllowed(search, c)) { problem = notAuthorized }
+
+            if (problem == trusted and not signedBy(mut search, last, c.key)) { problem = badSignature }
+
+            if (problem == trusted) {
+                search.path.push(i)
+
+                if (extend(mut search)) { return true }
+
+                search.path.pop()
+            } else {
+                search.problem = worse(search.problem, problem)
+            }
+        }
+    }
+
+    return false
+}
+
+// Verifies a chain (the certificates of a server, its own first) for `host` at `now` (seconds since
+// 1970) with `authorities`: `trusted` (0) or why not.
+export function verifyChain(chain: Certificate[], authorities: Authority[], host: string, now: int): int {
+    if (chain.length() == 0) { return malformed }
+
+    immut leaf = chain[0]
+
+    if (leaf.problem != trusted) { return leaf.problem }
+
+    if (now < leaf.notBefore or now > leaf.notAfter) { return expired }
+
+    // The key of a server signs the handshake (digitalSignature), for the servers (serverAuth).
+    if ((leaf.keyUsage >= 0 and leaf.keyUsage & 1 == 0) or leaf.serverAuth == 2) { return notAuthorized }
+
+    if (leaf.key.kind < 0) { return unsupported }
+
+    immut name = hostOf(host)
+    immut named = name.good and namesHost(leaf, name.name, name.size, name.address, name.addressSize)
+    freeHost(name)
+
+    if (not named) { return wrongName }
+
+    mut search: Search = { chain: chain, authorities: authorities, now: now, path: [0], budget: 100, problem: trusted }
+
+    if (extend(mut search)) { return trusted }
+
+    return if (search.problem == trusted) { unknownIssuer } else { search.problem }
+}
+
+// The seconds since 1970, now.
+export function now(): int {
+    return time(nullAddress())
+}
+
+// The certificates of the DER at `bytes` one after the other (`size` bytes), each copied.
+function chainOf(bytes: Address, size: int): Certificate[] {
+    mut chain: Certificate[] = []
+    mut at = 0
+
+    while (at < size) {
+        immut e = element(bytes, at, size)
+
+        if (not e.good) {
+            chain.push(badCertificate(malformed, nullAddress(), 0))
+            break
+        }
+
+        immut copy = allocate(e.end - at)
+        memcpy(copy, offset(bytes, at), e.end - at)
+        chain.push(certificateOf(copy, e.end - at))
+        at = e.end
+    }
+
+    return chain
+}
+
+function freeChain(chain: Certificate[]) {
+    for c in chain {
+        if (not isNull(c.bytes)) { free(c.bytes) }
+    }
+}
+
+// For C (the tests of the library): the chain (DER certificates one after the other) verified for
+// `host` at `now` with the authorities of the PEM text `pem` (`pemSize` bytes; the system's and
+// then the built-in ones when `pemSize` is -1, the built-in ones when it is -2).
+extern function koji_x509_verify(chain: Address, size: CSize, pem: Address, pemSize: int, host: Address, now: int): int {
+    immut certificates = chainOf(chain, size)
+    mut given: Authority[] = []
+
+    if (pemSize >= 0) { addPem(mut given, pem, pemSize) }
+
+    immut chosen = if (pemSize == -1) { trustedAuthorities() } else {
+        if (pemSize == -2) { builtInAuthorities() } else { given }
+    }
+    immut result = verifyChain(certificates, chosen, textOfC(host), now)
+    freeChain(certificates)
+
+    if (pemSize >= 0) {
+        for each in given {
+            free(each.bytes)
+        }
+    }
+
+    return result
+}
+
+// For C: how many authorities the system has (and the built-in list, when -1 is asked for).
+extern function koji_x509_authority_count(builtIn: CInt): int {
+    if (builtIn == 1) { return builtInAuthorities().length() }
+
+    return trustedAuthorities().length()
+}
