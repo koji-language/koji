@@ -90,6 +90,10 @@ kojic build hello.kj
 ./hello
 ```
 
+## Editor Support
+
+`editors/vscode` is an extension of Visual Studio Code with the syntax highlighting of Koji: see its [README](../editors/vscode/README.md) to install it. Its grammar is a TextMate grammar, which other editors read too.
+
 ## Examples
 
 The [`examples`](../examples) folder has small programs to try:

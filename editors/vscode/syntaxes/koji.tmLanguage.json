@@ -1,0 +1,156 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Koji",
+    "scopeName": "source.koji",
+    "fileTypes": ["kj"],
+    "patterns": [{ "include": "#code" }],
+    "repository": {
+        "code": {
+            "patterns": [
+                { "include": "#comments" },
+                { "include": "#test" },
+                { "include": "#declarations" },
+                { "include": "#keywords" },
+                { "include": "#strings" },
+                { "include": "#templates" },
+                { "include": "#numbers" },
+                { "include": "#constants" },
+                { "include": "#types" },
+                { "include": "#calls" },
+                { "include": "#operators" },
+                { "include": "#braces" }
+            ]
+        },
+        "comments": {
+            "patterns": [
+                { "name": "comment.line.double-slash.koji", "match": "//.*$" },
+                { "name": "comment.block.koji", "begin": "/\\*", "end": "\\*/" }
+            ]
+        },
+        "test": {
+            "comment": "`test 'name' { ... }` at the start of a line: `test` is a word only there.",
+            "match": "^(test)\\s+(?=['\"])",
+            "captures": { "1": { "name": "keyword.other.test.koji" } }
+        },
+        "declarations": {
+            "patterns": [
+                {
+                    "match": "\\b(function)\\s+(?:([A-Za-z_][A-Za-z0-9_]*)(\\.))?([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "storage.type.function.koji" },
+                        "2": { "name": "entity.name.type.koji" },
+                        "3": { "name": "punctuation.accessor.koji" },
+                        "4": { "name": "entity.name.function.koji" }
+                    }
+                },
+                {
+                    "match": "\\b(opaque\\s+)?(type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "storage.modifier.koji" },
+                        "2": { "name": "storage.type.koji" },
+                        "3": { "name": "entity.name.type.koji" }
+                    }
+                },
+                {
+                    "match": "\\b(extern)\\s+(?=function\\b)",
+                    "captures": { "1": { "name": "storage.modifier.koji" } }
+                },
+                {
+                    "match": "\\b(mut|immut)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": { "name": "storage.modifier.koji" },
+                        "2": { "name": "variable.other.koji" }
+                    }
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                { "name": "keyword.control.koji", "match": "\\b(if|else|for|in|while|match|break|continue|return|default|fallthrough)\\b" },
+                { "name": "keyword.other.koji", "match": "\\b(import|export|from)\\b" },
+                { "name": "storage.modifier.koji", "match": "\\b(mut|immut|take)\\b" },
+                { "name": "keyword.operator.word.koji", "match": "\\b(and|or|not|is)\\b" },
+                { "name": "variable.language.self.koji", "match": "\\bself\\b" },
+                { "name": "invalid.deprecated.koji", "match": "\\b(var|const|let|interface|async|await)\\b" }
+            ]
+        },
+        "escapes": {
+            "name": "constant.character.escape.koji",
+            "match": "\\\\."
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.single.koji",
+                    "begin": "'",
+                    "end": "'",
+                    "patterns": [{ "include": "#escapes" }]
+                },
+                {
+                    "name": "string.quoted.double.koji",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [{ "include": "#escapes" }]
+                }
+            ]
+        },
+        "templates": {
+            "name": "string.template.koji",
+            "begin": "`",
+            "end": "`",
+            "patterns": [
+                { "include": "#escapes" },
+                {
+                    "name": "meta.interpolation.koji",
+                    "begin": "\\$\\{",
+                    "end": "\\}",
+                    "beginCaptures": { "0": { "name": "punctuation.definition.interpolation.begin.koji" } },
+                    "endCaptures": { "0": { "name": "punctuation.definition.interpolation.end.koji" } },
+                    "patterns": [{ "include": "#code" }]
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                { "name": "constant.numeric.float.hexadecimal.koji", "match": "\\b0x[0-9a-fA-F]+(?:\\.[0-9a-fA-F]*)?p[+-]?[0-9]+\\b" },
+                { "name": "constant.numeric.integer.hexadecimal.koji", "match": "\\b0x[0-9a-fA-F]+\\b" },
+                { "name": "constant.numeric.decimal.koji", "match": "\\b[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\b" }
+            ]
+        },
+        "constants": {
+            "patterns": [
+                { "name": "constant.language.boolean.koji", "match": "\\b(true|false)\\b" },
+                { "name": "support.function.constructor.koji", "match": "\\b(Some|None|Ok|Err)\\b" }
+            ]
+        },
+        "types": {
+            "patterns": [
+                { "name": "support.type.primitive.koji", "match": "\\b(int|float|decimal|string|char|byte|boolean|bool|void)\\b(?!\\s*\\()" },
+                { "name": "support.type.koji", "match": "\\b(Option|Result|Map|Set)\\b" },
+                { "name": "entity.name.type.koji", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
+            ]
+        },
+        "calls": {
+            "patterns": [
+                { "name": "support.function.builtin.koji", "match": "\\b(print|printError|input|range|panic|assert|int|float|decimal|string|char|byte)\\b(?=\\s*\\()" },
+                { "name": "entity.name.function.call.koji", "match": "\\b[a-z_][A-Za-z0-9_]*\\b(?=\\s*\\()" }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                { "name": "keyword.operator.arrow.koji", "match": "=>|->" },
+                { "name": "keyword.operator.range.koji", "match": "\\.\\." },
+                { "name": "keyword.operator.assignment.compound.koji", "match": "\\*\\*=|<<=|>>=|[-+*/%&|^]=" },
+                { "name": "keyword.operator.comparison.koji", "match": "==|!=|<=|>=|<|>" },
+                { "name": "keyword.operator.koji", "match": "\\*\\*|<<|>>|[-+*/%&|^~?]" },
+                { "name": "keyword.operator.assignment.koji", "match": "=" }
+            ]
+        },
+        "braces": {
+            "patterns": [
+                { "name": "punctuation.separator.koji", "match": "[,;:]" },
+                { "name": "punctuation.accessor.koji", "match": "\\." }
+            ]
+        }
+    }
+}
