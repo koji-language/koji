@@ -178,18 +178,14 @@ extern function koji_record_display(record: Address): string {
 }
 
 // The message of an error of the standard library, from the texts of its fields, or '' for another
-// value.
+// value (`ParseError`, which the compiler declares; the errors of the modules written in Koji have
+// `display` methods).
 function errorMessage(typeName: string, variant: string, record: Address): string {
-    if (typeName != 'ParseError' and typeName != 'HttpError') { return '' }
+    if (typeName != 'ParseError') { return '' }
 
     return match (variant) {
         'InvalidNumber' => `'${fieldText(record, 0)}' is not a valid number`
         'OutOfRange' => `'${fieldText(record, 0)}' is out of range`
-        'InvalidUrl' => `invalid URL '${fieldText(record, 0)}'`
-        'ConnectionFailed' => `cannot connect to '${fieldText(record, 0)}': ${fieldText(record, 1)}`
-        'Timeout' => `the request to '${fieldText(record, 0)}' timed out`
-        'Tls' => `secure connection to '${fieldText(record, 0)}' failed: ${fieldText(record, 1)}`
-        'InvalidResponse' => `invalid response from '${fieldText(record, 0)}': ${fieldText(record, 1)}`
         _ => ''
     }
 }

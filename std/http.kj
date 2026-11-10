@@ -1,0 +1,784 @@
+// The `http` module: requests over HTTP/1.1 (see doc/standard-library/http.md). `http://` is written
+// here, on sockets (the inline functions of runtime/prelude.h that differ from one system to
+// another); `https://` still goes through the runtime in Rust (`koji_https_request`), until TLS is
+// written in Koji. As the runtime in Rust did (with `ureq`): at most 30 seconds to connect, 5
+// redirects (301, 302 and 303 become GET; 307 and 308 only for a GET), a body of at most 10 MB read
+// as UTF-8 (invalid bytes become U+FFFD).
+
+import { Address, CInt, CSize, allocate, free, isNull, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
+import { cString, cText, isSpace, textOf } from 'koji:core'
+
+extern function strerror(code: CInt): Address
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function koji_net_connect(host: Address, port: Address, seconds: int, code: Address): int
+extern function koji_net_dns_message(code: int): Address
+extern function koji_net_send(fd: int, bytes: Address, size: int): int
+extern function koji_net_receive(fd: int, bytes: Address, size: int): int
+extern function koji_net_close(fd: int)
+extern function koji_system_errno(): CInt
+// HTTPS, by the runtime in Rust: -1 for a response (its status in the first word of `out`), or else
+// the variant of `HttpError` (0 to 4); then the bytes of the body or of the message (an address of
+// the C library's memory, or none) and their size, in the next two words.
+extern function koji_https_request(method: int, url: string, body: string, hasBody: boolean, out: Address): int
+
+export type Response = {
+    status: int
+    body: string
+}
+
+export type HttpError = {
+    InvalidUrl(url: string)
+    ConnectionFailed(url: string, message: string)
+    Timeout(url: string)
+    Tls(url: string, message: string)
+    InvalidResponse(url: string, message: string)
+}
+
+function HttpError.display(self): string {
+    return match (self) {
+        InvalidUrl(url) => `invalid URL '${url}'`
+        ConnectionFailed(url, message) => `cannot connect to '${url}': ${message}`
+        Timeout(url) => `the request to '${url}' timed out`
+        Tls(url, message) => `secure connection to '${url}' failed: ${message}`
+        InvalidResponse(url, message) => `invalid response from '${url}': ${message}`
+    }
+}
+
+// `get(url)`, `delete(url)`, `post(url, data)` and `put(url, data)`: a response with an error
+// status (404, 500...) is still a response.
+export function get(url: string): Result[Response, HttpError] {
+    return request('GET', url, None)
+}
+
+export function delete(url: string): Result[Response, HttpError] {
+    return request('DELETE', url, None)
+}
+
+export function post(url: string, data: string): Result[Response, HttpError] {
+    return request('POST', url, Some(data))
+}
+
+export function put(url: string, data: string): Result[Response, HttpError] {
+    return request('PUT', url, Some(data))
+}
+
+// A URL of HTTP: its host (without brackets for IPv6), port and target (path and query), the Host
+// header, and the URL as `ureq` showed it in its messages.
+type Url = {
+    secure: boolean
+    host: string
+    port: int
+    target: string
+    authority: string
+    text: string
+}
+
+// What a server answered.
+type Answer = {
+    status: int
+    location: Option[string]
+    body: string
+}
+
+// The most bytes of a body.
+immut bodyLimit = 10485760
+
+function request(method: string, url: string, body: Option[string]): Result[Response, HttpError] {
+    mut target = match (parseUrl(url)) {
+        Some(found) => found
+        None => return Err(InvalidUrl(url))
+    }
+
+    // A body is sent as JSON when it looks like JSON, otherwise as text; the type stays for the
+    // redirects, which send no body.
+    immut contentType = match (body) {
+        Some(text) => Some(if (looksLikeJson(text)) { 'application/json' } else { 'text/plain; charset=utf-8' })
+        None => None
+    }
+    mut currentMethod = method
+    mut currentBody = body
+    mut redirects = 0
+
+    while (true) {
+        immut answer = exchange(currentMethod, target, currentBody, contentType, url)?
+
+        if (answer.status < 300 or answer.status >= 399) { return Ok({ status: answer.status, body: answer.body }) }
+
+        if (redirects + 1 >= 5) { return Err(InvalidResponse(url, `${target.text}: Too Many Redirects: reached max redirects (5)`)) }
+
+        immut location = match (answer.location) {
+            Some(found) => found
+            None => return Ok({ status: answer.status, body: answer.body })
+        }
+        immut next = match (joinUrl(target, location)) {
+            Some(found) => found
+            None => return Err(InvalidUrl(url))
+        }
+
+        if (answer.status == 301 or answer.status == 302 or answer.status == 303) {
+            if (currentMethod != 'GET') { currentMethod = 'GET' }
+        } else {
+            if (not ((answer.status == 307 or answer.status == 308) and currentMethod == 'GET')) { return Ok({ status: answer.status, body: answer.body }) }
+        }
+
+        target = next
+        currentBody = None
+        redirects += 1
+    }
+
+    return Err(InvalidUrl(url))
+}
+
+// Whether a body looks like JSON: `{` or `[` after the white space at its start.
+function looksLikeJson(text: string): boolean {
+    for c in text {
+        if (isSpace(c.code())) { continue }
+
+        return c == '{' or c == '['
+    }
+
+    return false
+}
+
+// One request, and what the server answered.
+function exchange(method: string, target: Url, body: Option[string], contentType: Option[string], url: string): Result[Answer, HttpError] {
+    if (target.secure) { return secureExchange(method, target, body, url) }
+
+    immut codePlace = allocate(8)
+    immut host = cString(target.host)
+    immut port = cString(`${target.port}`)
+    immut fd = koji_net_connect(host, port, 30, codePlace)
+    immut code: int = read(codePlace, 0)
+    free(codePlace)
+    free(host)
+    free(port)
+
+    if (fd == -1) { return Err(ConnectionFailed(url, `${target.text}: Dns Failed: resolve dns name '${target.host}:${target.port}': failed to lookup address information: ${cText(koji_net_dns_message(code))}`)) }
+
+    if (fd == -2) { return Err(ConnectionFailed(url, `${target.text}: Connection Failed: Connect error: ${systemMessage(code)}`)) }
+
+    if (fd == -3) { return Err(Timeout(url)) }
+
+    mut text = `${method} ${target.target} HTTP/1.1\r\nHost: ${target.authority}\r\nUser-Agent: koji\r\nAccept: */*\r\n`
+
+    match (contentType) {
+        Some(kind) => text += `Content-Type: ${kind}\r\n`
+        None => {}
+    }
+
+    match (body) {
+        Some(data) => text += `Content-Length: ${stringSize(data)}\r\n`
+        None => {}
+    }
+
+    text += 'Connection: close\r\n\r\n'
+
+    match (body) {
+        Some(data) => text += data
+        None => {}
+    }
+
+    immut sent = sendAll(fd, text)
+
+    if (sent != 0) {
+        koji_net_close(fd)
+        return Err(ConnectionFailed(url, `${target.text}: Network Error: ${systemMessage(sent)}`))
+    }
+
+    immut answer = receive(fd, target, url)
+    koji_net_close(fd)
+    return answer
+}
+
+// Sends all the bytes of `text`: 0, or the error of the system.
+function sendAll(fd: int, text: string): int {
+    immut bytes = stringBytes(text)
+    immut size = stringSize(text)
+    mut done = 0
+
+    while (done < size) {
+        immut put = koji_net_send(fd, offset(bytes, done), size - done)
+
+        if (put < 0) {
+            immut code = koji_system_errno()
+
+            if (code == 4) { continue }
+
+            return code
+        }
+
+        done += put
+    }
+
+    return 0
+}
+
+// The text of an error of the system, as Rust shows it.
+function systemMessage(code: int): string {
+    return `${cText(strerror(code))} (os error ${code})`
+}
+
+// Reads the answer of the server: the status line and the headers, then the body (by its length,
+// in chunks, or until the server closes the connection).
+function receive(fd: int, target: Url, url: string): Result[Answer, HttpError] {
+    mut buffer = allocate(16384)
+    mut capacity = 16384
+    mut size = 0
+    mut headerEnd = -1
+    mut closed = false
+
+    // The headers.
+    while (headerEnd < 0) {
+        immut got = fill(fd, mut buffer, mut size, mut capacity)
+
+        if (got < 0) {
+            free(buffer)
+            return Err(InvalidResponse(url, systemMessage(-got)))
+        }
+
+        if (got == 0) {
+            free(buffer)
+            return Err(InvalidResponse(url, `${target.text}: Bad Status: the server closed the connection before answering`))
+        }
+
+        headerEnd = findHeaderEnd(buffer, size)
+    }
+
+    immut head = textOf(buffer, headerEnd)
+    immut lines = head.split('\r\n')
+    immut statusLine = lines[0]
+
+    if (not statusLine.startsWith('HTTP/') or statusLine.length() < 12 or statusLine[8] != ' ') {
+        free(buffer)
+        return Err(InvalidResponse(url, `${target.text}: Bad Status: ${statusLine}`))
+    }
+
+    immut status = match (int(statusLine[9..12])) {
+        Ok(number) => number
+        Err(_) => {
+            free(buffer)
+            return Err(InvalidResponse(url, `${target.text}: Bad Status: ${statusLine}`))
+        }
+    }
+    mut length = -1
+    mut chunked = false
+    mut location: Option[string] = None
+
+    for i in range(1, lines.length()) {
+        immut line = lines[i]
+
+        match (line.indexOf(':')) {
+            Some(colon) => {
+                immut name = line[..colon].trim().lower()
+                immut value = line[colon + 1..].trim()
+
+                if (name == 'content-length') {
+                    match (int(value)) {
+                        Ok(number) => length = number
+                        Err(_) => {}
+                    }
+                }
+
+                if (name == 'transfer-encoding' and value.lower().endsWith('chunked')) { chunked = true }
+
+                if (name == 'location' and location is None) { location = Some(value) }
+            }
+            None => {}
+        }
+    }
+
+    immut start = headerEnd + 4
+    // No body: an informational answer, 204 and 304.
+    immut empty = status < 200 or status == 204 or status == 304
+
+    if (empty) {
+        free(buffer)
+        return Ok({ status: status, location: location, body: '' })
+    }
+
+    // The body: its bytes, from `start`, then decoded (chunks) into a block of their own.
+    while (true) {
+        if (size - start > bodyLimit + 2 * 1048576 and not chunked) { break }
+
+        if (not chunked and length >= 0 and size - start >= length) { break }
+
+        if (chunked and chunksComplete(buffer, start, size)) { break }
+
+        immut got = fill(fd, mut buffer, mut size, mut capacity)
+
+        if (got < 0) {
+            free(buffer)
+            return Err(InvalidResponse(url, systemMessage(-got)))
+        }
+
+        if (got == 0) {
+            closed = true
+            break
+        }
+    }
+
+    mut bodyStart = start
+    mut bodySize = if (length >= 0 and not chunked) { minOf(length, size - start) } else { size - start }
+
+    if (chunked) {
+        bodySize = decodeChunks(buffer, start, size)
+        bodyStart = start
+    }
+
+    if (not chunked and length >= 0 and size - start < length and closed) {
+        free(buffer)
+        return Err(InvalidResponse(url, 'response body closed before all bytes were read'))
+    }
+
+    if (bodySize > bodyLimit) {
+        free(buffer)
+        return Err(InvalidResponse(url, 'response too big for into_string'))
+    }
+
+    immut text = textOf(offset(buffer, bodyStart), bodySize)
+    free(buffer)
+    return Ok({ status: status, location: location, body: text })
+}
+
+function minOf(a: int, b: int): int {
+    return if (a < b) { a } else { b }
+}
+
+// Reads more bytes into `buffer` (`size` of them, in a block of `capacity`), which grows: their
+// number, 0 at the end of the connection, or -errno.
+function fill(fd: int, mut buffer: Address, mut size: int, mut capacity: int): int {
+    if (capacity - size < 4096) {
+        immut grown = allocate(capacity * 2)
+        memcpy(grown, buffer, size)
+        free(buffer)
+        buffer = grown
+        capacity = capacity * 2
+    }
+
+    while (true) {
+        immut got = koji_net_receive(fd, offset(buffer, size), capacity - size)
+
+        if (got >= 0) {
+            size += got
+            return got
+        }
+
+        immut code = koji_system_errno()
+
+        if (code != 4) { return -code }
+    }
+
+    return 0
+}
+
+function byteAt(bytes: Address, at: int): int {
+    immut b: byte = read(bytes, at)
+    return int(b)
+}
+
+// Where the headers end (the empty line), or -1.
+function findHeaderEnd(bytes: Address, size: int): int {
+    for at in range(size - 3) {
+        if (byteAt(bytes, at) == 13 and byteAt(bytes, at + 1) == 10 and byteAt(bytes, at + 2) == 13 and byteAt(bytes, at + 3) == 10) { return at }
+    }
+
+    return -1
+}
+
+// The size of a chunk from its line at `at` (hexadecimal digits, then extensions after `;`), and
+// where its bytes start in `dataStart`; -1 when the line is not complete.
+function chunkSize(bytes: Address, at: int, size: int, mut dataStart: int): int {
+    mut end = at
+
+    while (end + 1 < size and not (byteAt(bytes, end) == 13 and byteAt(bytes, end + 1) == 10)) {
+        end += 1
+    }
+
+    if (end + 1 >= size) { return -1 }
+
+    mut value = 0
+    mut i = at
+
+    while (i < end) {
+        immut b = byteAt(bytes, i)
+        immut digit = if (b >= 48 and b <= 57) { b - 48 } else { if (b >= 97 and b <= 102) { b - 87 } else { if (b >= 65 and b <= 70) { b - 55 } else { -1 } } }
+
+        if (digit < 0) { break }
+
+        value = value * 16 + digit
+        i += 1
+    }
+
+    dataStart = end + 2
+    return value
+}
+
+// Whether all the chunks (to the one of size 0 and the empty line after the trailers) are there.
+function chunksComplete(bytes: Address, start: int, size: int): boolean {
+    mut at = start
+
+    while (true) {
+        mut dataStart = 0
+        immut count = chunkSize(bytes, at, size, mut dataStart)
+
+        if (count < 0) { return false }
+
+        if (count == 0) {
+            // The trailers, then an empty line.
+            mut line = dataStart
+
+            while (true) {
+                if (line + 1 >= size) { return false }
+
+                if (byteAt(bytes, line) == 13 and byteAt(bytes, line + 1) == 10) { return true }
+
+                mut end = line
+
+                while (end + 1 < size and not (byteAt(bytes, end) == 13 and byteAt(bytes, end + 1) == 10)) {
+                    end += 1
+                }
+
+                if (end + 1 >= size) { return false }
+
+                line = end + 2
+            }
+        }
+
+        if (dataStart + count + 2 > size) { return false }
+
+        at = dataStart + count + 2
+    }
+
+    return false
+}
+
+// Puts the bytes of the chunks one after the other from `start`: their size.
+function decodeChunks(bytes: Address, start: int, size: int): int {
+    mut at = start
+    mut written = 0
+
+    while (true) {
+        mut dataStart = 0
+        immut count = chunkSize(bytes, at, size, mut dataStart)
+
+        if (count <= 0) { return written }
+
+        immut available = minOf(count, size - dataStart)
+        memcpy(offset(bytes, start + written), offset(bytes, dataStart), available)
+        written += available
+
+        if (available < count) { return written }
+
+        at = dataStart + count + 2
+    }
+
+    return written
+}
+
+// HTTPS, by the runtime in Rust (it follows the redirects itself).
+function secureExchange(method: string, target: Url, body: Option[string], url: string): Result[Answer, HttpError] {
+    immut out = allocate(24)
+    immut number = if (method == 'GET') { 0 } else { if (method == 'DELETE') { 1 } else { if (method == 'POST') { 2 } else { 3 } } }
+    immut kind = match (body) {
+        Some(data) => koji_https_request(number, target.text, data, true, out)
+        None => koji_https_request(number, target.text, '', false, out)
+    }
+    immut first: int = read(out, 0)
+    immut bytes: Address = read(out, 8)
+    immut size: int = read(out, 16)
+    free(out)
+    immut text = if (isNull(bytes)) { '' } else { newString(bytes, size) }
+
+    if (not isNull(bytes)) { free(bytes) }
+
+    if (kind == -1) { return Ok({ status: first, location: None, body: text }) }
+
+    return Err(match (kind) {
+        0 => InvalidUrl(url)
+        1 => ConnectionFailed(url, text)
+        2 => Timeout(url)
+        3 => Tls(url, text)
+        _ => InvalidResponse(url, text)
+    })
+}
+
+// URLs, as the WHATWG standard reads those of HTTP: the scheme and the host in lower case, the
+// default port left out, `/` for an empty path, the fragment dropped, and the bytes that cannot be
+// in a path or a query written as `%XX`.
+function parseUrl(given: string): Option[Url] {
+    immut url = trimControls(given)
+    mut at = 0
+    immut chars = url.chars()
+
+    // The scheme: a letter, then letters, digits, `+`, `-` and `.`, then `:`.
+    if (chars.length() == 0 or not isLetter(chars[0])) { return None }
+
+    while (at < chars.length() and chars[at] != ':') {
+        immut c = chars[at]
+
+        if (not (isLetter(c) or (c >= '0' and c <= '9') or c == '+' or c == '-' or c == '.')) { return None }
+
+        at += 1
+    }
+
+    if (at == chars.length()) { return None }
+
+    immut scheme = url[..at].lower()
+
+    if (scheme != 'http' and scheme != 'https') { return None }
+
+    at += 1
+
+    while (at < chars.length() and (chars[at] == '/' or chars[at] == '\\')) {
+        at += 1
+    }
+
+    mut authorityEnd = at
+
+    while (authorityEnd < chars.length() and not endsAuthority(chars[authorityEnd])) {
+        authorityEnd += 1
+    }
+
+    mut authority = url[at..authorityEnd]
+
+    // A user and a password are not sent.
+    match (lastIndexOf(authority, '@')) {
+        Some(sign) => authority = authority[sign + 1..]
+        None => {}
+    }
+
+    immut secure = scheme == 'https'
+    immut defaultPort = if (secure) { 443 } else { 80 }
+    mut host = authority
+    mut port = defaultPort
+    mut portText = ''
+
+    if (authority.startsWith('[')) {
+        immut close = match (authority.indexOf(']')) {
+            Some(found) => found
+            None => return None
+        }
+        host = authority[1..close]
+        immut rest = authority[close + 1..]
+
+        if (rest != '') {
+            if (not rest.startsWith(':')) { return None }
+
+            portText = rest[1..]
+        }
+    } else {
+        match (lastIndexOf(authority, ':')) {
+            Some(colon) => {
+                host = authority[..colon]
+                portText = authority[colon + 1..]
+            }
+            None => {}
+        }
+    }
+
+    if (portText != '') {
+        for c in portText {
+            if (c < '0' or c > '9') { return None }
+        }
+
+        if (portText.length() > 5) { return None }
+
+        port = match (int(portText)) {
+            Ok(number) => number
+            Err(_) => return None
+        }
+
+        if (port > 65535) { return None }
+    }
+
+    host = host.lower()
+
+    if (host == '') { return None }
+
+    for c in host {
+        if (forbiddenInHost(c)) { return None }
+    }
+
+    // The path (`\` is `/` in a URL of HTTP), then the query, without the fragment.
+    mut pathEnd = authorityEnd
+
+    while (pathEnd < chars.length() and chars[pathEnd] != '?' and chars[pathEnd] != '#') {
+        pathEnd += 1
+    }
+
+    mut path = normalizedPath(encoded(url[authorityEnd..pathEnd].replace('\\', '/'), false))
+
+    if (path == '') { path = '/' }
+
+    mut query = ''
+
+    if (pathEnd < chars.length() and chars[pathEnd] == '?') {
+        mut queryEnd = pathEnd
+
+        while (queryEnd < chars.length() and chars[queryEnd] != '#') {
+            queryEnd += 1
+        }
+
+        query = encoded(url[pathEnd..queryEnd], true)
+    }
+
+    immut shownHost = if (host.indexOf(':') is Some) { `[${host}]` } else { host }
+    immut hostAndPort = if (port == defaultPort) { shownHost } else { `${shownHost}:${port}` }
+    return Some({ secure: secure, host: host, port: port, target: path + query, authority: hostAndPort, text: `${scheme}://${hostAndPort}${path}${query}` })
+}
+
+// The characters that end the host and the port of a URL.
+function endsAuthority(c: char): boolean {
+    return c == '/' or c == '\\' or c == '?' or c == '#'
+}
+
+// The characters a host cannot have.
+function forbiddenInHost(c: char): boolean {
+    return c.code() <= 0x20 or c == '#' or c == '%' or c == '/' or c == '<' or c == '>' or c == '?' or c == '@' or c == '\\' or c == '^' or c == '|'
+}
+
+function isLetter(c: char): boolean {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
+}
+
+// Without the control characters and spaces at both ends.
+function trimControls(text: string): string {
+    immut chars = text.chars()
+    mut start = 0
+    mut end = chars.length()
+
+    while (start < end and chars[start].code() <= 0x20) {
+        start += 1
+    }
+
+    while (end > start and chars[end - 1].code() <= 0x20) {
+        end -= 1
+    }
+
+    return text[start..end]
+}
+
+function lastIndexOf(text: string, c: char): Option[int] {
+    immut chars = text.chars()
+    mut i = chars.length() - 1
+
+    while (i >= 0) {
+        if (chars[i] == c) { return Some(i) }
+
+        i -= 1
+    }
+
+    return None
+}
+
+// `text` with the characters that cannot be in a path (or a query) as `%XX` of their UTF-8 bytes.
+function encoded(text: string, inQuery: boolean): string {
+    mut out = ''
+
+    for c in text {
+        immut code = c.code()
+        immut kept = code > 0x20 and code < 0x7F and c != '"' and c != '<' and c != '>' and c != '`' and (inQuery or (c != '{' and c != '}')) and not (inQuery and c == '\'')
+
+        if (kept) {
+            out += string(c)
+            continue
+        }
+
+        for b in utf8Of(c) {
+            out += '%' + hexByte(b)
+        }
+    }
+
+    return out
+}
+
+function hexByte(b: int): string {
+    immut digits = '0123456789ABCDEF'
+    return digits[b / 16..b / 16 + 1] + digits[b % 16..b % 16 + 1]
+}
+
+function utf8Of(c: char): int[] {
+    immut code = c.code()
+
+    if (code < 0x80) { return [code] }
+
+    if (code < 0x800) { return [0xC0 | (code >> 6), 0x80 | (code & 0x3F)] }
+
+    if (code < 0x10000) { return [0xE0 | (code >> 12), 0x80 | ((code >> 6) & 0x3F), 0x80 | (code & 0x3F)] }
+
+    return [0xF0 | (code >> 18), 0x80 | ((code >> 12) & 0x3F), 0x80 | ((code >> 6) & 0x3F), 0x80 | (code & 0x3F)]
+}
+
+// A path without its segments `.` and `..` (as `%2e` too).
+function normalizedPath(path: string): string {
+    if (path == '') { return '' }
+
+    immut parts = path.split('/')
+    mut kept: string[] = []
+
+    for i in range(1, parts.length()) {
+        immut part = parts[i].lower()
+        immut last = i == parts.length() - 1
+
+        if (part == '.' or part == '%2e') {
+            if (last) { kept.push('') }
+
+            continue
+        }
+
+        if (part == '..' or part == '.%2e' or part == '%2e.' or part == '%2e%2e') {
+            if (kept.length() > 0) { kept.pop() }
+
+            if (last) { kept.push('') }
+
+            continue
+        }
+
+        kept.push(parts[i])
+    }
+
+    return '/' + kept.join('/')
+}
+
+// The URL of a redirect: `location` against the URL it came from.
+function joinUrl(base: Url, location: string): Option[Url] {
+    immut trimmed = trimControls(location)
+    immut scheme = if (base.secure) { 'https' } else { 'http' }
+
+    if (hasScheme(trimmed)) { return parseUrl(trimmed) }
+
+    if (trimmed.startsWith('//') or trimmed.startsWith('\\\\')) { return parseUrl(`${scheme}:${trimmed}`) }
+
+    immut origin = `${scheme}://${base.authority}`
+
+    if (trimmed.startsWith('/') or trimmed.startsWith('\\')) { return parseUrl(origin + trimmed) }
+
+    immut path = match (base.target.indexOf('?')) {
+        Some(question) => base.target[..question]
+        None => base.target
+    }
+
+    if (trimmed.startsWith('?')) { return parseUrl(origin + path + trimmed) }
+
+    if (trimmed.startsWith('#') or trimmed == '') { return parseUrl(origin + base.target) }
+
+    immut directory = match (lastIndexOf(path, '/')) {
+        Some(slash) => path[..slash + 1]
+        None => '/'
+    }
+    return parseUrl(origin + directory + trimmed)
+}
+
+function hasScheme(text: string): boolean {
+    immut chars = text.chars()
+
+    if (chars.length() == 0 or not isLetter(chars[0])) { return false }
+
+    for c in chars {
+        if (c == ':') { return true }
+
+        if (not (isLetter(c) or (c >= '0' and c <= '9') or c == '+' or c == '-' or c == '.')) { return false }
+    }
+
+    return false
+}

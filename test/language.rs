@@ -2069,6 +2069,51 @@ fn stdlib_http() {
 }
 
 #[test]
+fn stdlib_http_redirects_and_chunks() {
+    use std::io::{Read, Write as _};
+    use std::net::TcpListener;
+
+    // A POST redirected by 303 becomes a GET without a body; the answer comes in chunks, with an
+    // extension and a trailer (std/http.kj reads both, as HTTP/1.1 allows).
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        for stream in listener.incoming().take(2) {
+            let mut stream = stream.unwrap();
+            let mut data = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !String::from_utf8_lossy(&data).contains("\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                data.extend_from_slice(&buffer[..read]);
+            }
+            let request = String::from_utf8_lossy(&data).to_string();
+            let first_line = request.lines().next().unwrap_or("").to_string();
+            let response = if first_line.starts_with("POST /form") {
+                "HTTP/1.1 303 See Other\r\nLocation: /done?ok=1\r\nContent-Length: 0\r\n\r\n".to_string()
+            } else {
+                format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;ext=1\r\nhello\r\n{:x}\r\n {}\r\n0\r\nX-Trailer: y\r\n\r\n", first_line.len() + 1, first_line)
+            };
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    let source = format!(
+        r#"
+        import http
+
+        match (http.post('http://127.0.0.1:{port}/form', 'name=Ana')) {{
+            Ok(res) => print(res.status, res.body)
+            Err(error) => print(error)
+        }}
+        "#
+    );
+    assert_eq!(run(&source), "200 hello GET /done?ok=1 HTTP/1.1\n");
+    server.join().unwrap();
+}
+
+#[test]
 fn all_examples_type_check() {
     for entry in std::fs::read_dir("examples").unwrap() {
         let path = entry.unwrap().path();

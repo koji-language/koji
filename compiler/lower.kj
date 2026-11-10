@@ -4171,13 +4171,6 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             immut offset = self.stdValue(mut builder, args, 1, IntTy)?
             arguments = [address, offset, self.stdValue(mut builder, args, 2, ty)?]
         }
-        other if (other in ['http.get', 'http.delete', 'http.post', 'http.put']) => {
-            runner = 'koji_std_http_request'
-            immut method = position(['get', 'delete', 'post', 'put'], name)
-            immut url = self.stdValue(mut builder, args, 0, StrTy)?
-            immut body = if (method >= 2) { self.stdValue(mut builder, args, 1, StrTy)? } else { NullArg }
-            arguments = [ModeArg(method), url, body, self.stdResult(builder, call)?]
-        }
         // It never returns: `leave` of std/system.kj ends the program.
         'system.exit' => {
             self.kojiCall(mut builder, 'std:system', 'leave', args)?

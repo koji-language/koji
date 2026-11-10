@@ -28,6 +28,10 @@ The response to a request has these fields:
 
 A response with an error status (such as `404` or `500`) is still `Ok(Response)`: the request reached the server. Only failures to communicate are errors.
 
+## How requests are made
+
+Requests use HTTP/1.1. A connection may take at most 30 seconds; up to 5 redirects are followed (`301`, `302` and `303` become a `GET` without the body; `307` and `308` are followed for a `GET` only); a body is sent as `application/json` when it starts with `{` or `[` (after white space), otherwise as `text/plain; charset=utf-8`; the body of a response is read as UTF-8 (invalid bytes become U+FFFD), up to 10 MB. Responses may come with a length, in chunks (with extensions and trailers) or until the server closes the connection.
+
 ## Errors
 
 ```koji

@@ -8,7 +8,7 @@ import { decimalLiteral } from 'decimal.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
-immut stdlibModules = ['http']
+immut stdlibModules: string[] = []
 
 // The methods of strings written in Koji, in std/koji/core.kj: the compiler calls its function of
 // the same name, with the string first.
@@ -132,14 +132,12 @@ type Builtins = {
     parseError: int
     // `MathError` of `math` (std/math.kj), once it is imported.
     mathError: int
-    httpError: int
     // `Address` of `koji:unsafe`: a place in memory.
     address: int
     // `Location` of `koji:unsafe`: the place of a call, for the panics of the function it calls.
     location: int
     map: int
     set: int
-    response: int
 }
 
 // The checking state of a module.
@@ -306,29 +304,19 @@ function field(name: string, ty: string): BuiltinField {
 
 function builtinSums(): BuiltinSum[] {
     immut text = [field('text', 'string')]
-    immut url = [field('url', 'string')]
-    immut urlMessage = [field('url', 'string'), field('message', 'string')]
     return [
         { name: 'Option', module: None, params: 1, variants: [variant('Some', [field('value', 'T0')]), variant('None', [])] },
         {
             name: 'Result', module: None, params: 2,
             variants: [variant('Ok', [field('value', 'T0')]), variant('Err', [field('error', 'T1')])]
         },
-        { name: 'ParseError', module: None, params: 0, variants: [variant('InvalidNumber', text), variant('OutOfRange', text)] },
-        {
-            name: 'HttpError', module: Some('http'), params: 0,
-            variants: [
-                variant('InvalidUrl', url), variant('ConnectionFailed', urlMessage), variant('Timeout', url),
-                variant('Tls', urlMessage), variant('InvalidResponse', urlMessage)
-            ]
-        }
+        { name: 'ParseError', module: None, params: 0, variants: [variant('InvalidNumber', text), variant('OutOfRange', text)] }
     ]
 }
 
 // The functions of each standard library module.
 function stdlibFunctions(module: string): string[] {
     return match (module) {
-        'http' => ['get', 'post', 'put', 'delete']
         _ => []
     }
 }
@@ -391,13 +379,11 @@ function Checker.create(): Checker {
     }
 
     immut result = sumId(ids, 'Result')
-    immut response = addType(mut table, 'Response', 0, BuiltinKind([{ name: 'status', ty: IntType }, { name: 'body', ty: StringType }], []))
     immut address = addType(mut table, 'Address', 0, BuiltinKind([], []))
     immut location = addType(mut table, 'Location', 0, BuiltinKind([], []))
     immut builtins: Builtins = {
         address: address, location: location, option: sumId(ids, 'Option'), result: result,
-        parseError: sumId(ids, 'ParseError'), mathError: -1, httpError: sumId(ids, 'HttpError'), map: map, set: set,
-        response: response
+        parseError: sumId(ids, 'ParseError'), mathError: -1, map: map, set: set
     }
     return {
         table: table, builtins: builtins, modules: [], moduleByPath: [:], stdlib: [:], loading: [], loaded: [],
@@ -413,7 +399,7 @@ function Checker.builtinSumId(self, name: string): int {
         'Option' => b.option
         'Result' => b.result
         'ParseError' => b.parseError
-        _ => b.httpError
+        _ => b.parseError
     }
 }
 
@@ -510,14 +496,6 @@ function Checker.stdlibModule(mut self, name: string): int {
 
     for member in stdlibFunctions(name) {
         module.members[member] = builtinSymbol(`${name}.${member}`)
-    }
-
-    immut b = self.builtins
-
-    // `system.os`: the operating system the program runs on.
-    match (name) {
-        'http' => module.types['Response'] = KnownType(named(b.response))
-        _ => {}
     }
 
     // The sum types of the module (`FileError`, `Json`...), with their constructors.
@@ -2003,7 +1981,7 @@ function Checker.equatableIn(mut self, ty: Type, mut visited: Set[int]): boolean
 
     match (self.table[parts.id].kind) {
         ParamKind(constraint) => return constraint >= equatable
-        BuiltinKind(_, _) => return parts.id == b.response
+        BuiltinKind(_, _) => return false
         _ => {}
     }
 
@@ -5063,14 +5041,6 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         'system.exit' => {
             self.checkExactly(name, types, [IntType])?
             return Ok(NeverType)
-        }
-        other if (other == 'http.get' or other == 'http.delete') => {
-            self.checkExactly(name, types, [s])?
-            return Ok(self.resultWith(named(b.response), b.httpError))
-        }
-        other if (other == 'http.post' or other == 'http.put') => {
-            self.checkExactly(name, types, [s, s])?
-            return Ok(self.resultWith(named(b.response), b.httpError))
         }
         other => return Err(self.failure(`unknown built-in function '${other}'`))
     }
