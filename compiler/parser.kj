@@ -76,6 +76,16 @@ export type ObjectEntry = {
 export type Node = {
     id: int
     kind: NodeKind
+    span: Span
+}
+
+// Where a node is in its file: its first line and column, and the line and column after it (line 0
+// when unknown: inside an interpolation). Columns count characters, from 1.
+export type Span = {
+    line: int
+    column: int
+    endLine: int
+    endColumn: int
 }
 
 export type NodeKind = {
@@ -155,6 +165,9 @@ type Parser = {
     newlineEndsExpression: boolean
     // The id of the next node.
     nextId: int
+    // Where the expressions and statements being read start (indexes of tokens): a node starts
+    // where the innermost one does, and ends at the last token read.
+    starts: int[]
 }
 
 // The token as error messages show it: `'x'`, `'=>'`, `42`, `the end of the file`.
@@ -176,12 +189,24 @@ export function describe(token: Token): string {
 }
 
 function Parser.create(tokens: Spanned[], source: char[]): Parser {
-    return { tokens: tokens, source: source, position: 0, loopDepth: 0, functionDepth: 0, newlineEndsExpression: false, nextId: 0 }
+    return { tokens: tokens, source: source, position: 0, loopDepth: 0, functionDepth: 0, newlineEndsExpression: false, nextId: 0, starts: [] }
 }
 
 function Parser.node(mut self, kind: NodeKind): Node {
     self.nextId += 1
-    return { id: self.nextId - 1, kind: kind }
+    return { id: self.nextId - 1, kind: kind, span: self.spanFrom(if (self.starts.length() > 0) { self.starts[self.starts.length() - 1] } else { self.position - 1 }) }
+}
+
+// From the token `start` to the last token read.
+function Parser.spanFrom(self, start: int): Span {
+    immut first = if (start < 0) { 0 } else { start }
+    immut last = if (self.position - 1 < first) { first } else { self.position - 1 }
+
+    if (last >= self.tokens.length()) { return { line: 0, column: 0, endLine: 0, endColumn: 0 } }
+
+    immut a = self.tokens[first]
+    immut b = self.tokens[last]
+    return { line: a.line, column: a.column, endLine: b.endLine, endColumn: b.endColumn }
 }
 
 function Parser.tokenAt(self, index: int): Token {
@@ -236,8 +261,22 @@ function Parser.isKeyword(self, name: string): boolean {
 }
 
 // An error at the current line.
+// A syntax error at the current token: `line 3:12: message` (`line 3: message` without a column).
 function Parser.failure(self, message: string): string {
-    return atLine(self.currentLine(), message)
+    immut line = self.currentLine()
+
+    if (line == 0 or self.position >= self.tokens.length()) { return atLine(line, message) }
+
+    return `line ${line}:${self.tokens[self.position].column}: ${message}`
+}
+
+// A syntax error at the token just read.
+function Parser.failureBefore(self, message: string): string {
+    immut index = self.position - 1
+
+    if (index < 0 or index >= self.tokens.length() or self.tokens[index].line == 0) { return atLine(self.currentLine(), message) }
+
+    return `line ${self.tokens[index].line}:${self.tokens[index].column}: ${message}`
 }
 
 function atLine(line: int, message: string): string {
@@ -330,6 +369,13 @@ function Parser.locatedStatement(mut self): Result[Node, string] {
 }
 
 function Parser.statement(mut self): Result[Node, string] {
+    self.starts.push(self.position)
+    immut result = self.statementFrom()
+    self.starts.pop()
+    return result
+}
+
+function Parser.statementFrom(mut self): Result[Node, string] {
     // A test is read by the loop of the top level: here it is inside a block.
     if (self.startsTest()) { return Err(self.failure("a test can only be at the top level of a file")) }
 
@@ -954,6 +1000,13 @@ function operatorText(token: Token): string {
 }
 
 function Parser.expression(mut self, minimum: int): Result[Node, string] {
+    self.starts.push(self.position)
+    immut result = self.expressionFrom(minimum)
+    self.starts.pop()
+    return result
+}
+
+function Parser.expressionFrom(mut self, minimum: int): Result[Node, string] {
     mut left = self.prefix()?
 
     while (true) {
@@ -1016,7 +1069,7 @@ function Parser.prefix(mut self): Result[Node, string] {
         Int(value) => Ok(self.node(IntLiteral(value)))
         Decimal(text) => Ok(self.node(DecimalLiteral(text)))
         Float(value, text) => Ok(self.node(FloatLiteral(value, text)))
-        BadNumber(_, reason) => Err(atLine(line, reason))
+        BadNumber(_, reason) => Err(self.failureBefore(reason))
         StringLiteral(value) => Ok(self.node(StringNode(value)))
         TemplateString(raw) => self.template(raw, line)
         Boolean(value) => Ok(self.node(BooleanLiteral(value)))
@@ -1046,7 +1099,7 @@ function Parser.prefix(mut self): Result[Node, string] {
             self.expectSymbol(')', "')'")?
             Ok(inner)
         }
-        other => Err(atLine(line, `unexpected expression: ${describe(other)}`))
+        other => Err(self.failureBefore(`unexpected expression: ${describe(other)}`))
     }
 }
 
@@ -1150,6 +1203,7 @@ function Parser.startsTest(self): boolean {
 // `kojic test` calls. Its name is unique in its file.
 function Parser.test(mut self, mut tests: Set[string]): Result[Node, string] {
     immut line = self.currentLine()
+    immut start = self.position
     self.advance()
     immut name = match (self.current()) {
         StringLiteral(value) => value
@@ -1164,7 +1218,11 @@ function Parser.test(mut self, mut tests: Set[string]): Result[Node, string] {
     if (not self.isSymbol('{')) { return Err(self.failure("expected '{' after the name of the test")) }
 
     immut body = self.functionBody(true)?
-    return Ok(self.node(Located(line, self.node(FunctionDecl(testName(name), None, [], [], None, body)))))
+    self.starts.push(start)
+    immut declaration = self.node(FunctionDecl(testName(name), None, [], [], None, body))
+    immut located = self.node(Located(line, declaration))
+    self.starts.pop()
+    return Ok(located)
 }
 
 // The name of the function of a test.
@@ -1396,8 +1454,8 @@ function Parser.pattern(mut self): Result[Pattern, string] {
                 Int(value) => Ok(Literal(self.node(IntLiteral(-value))))
                 Decimal(text) => Ok(Literal(self.node(DecimalLiteral(`-${text}`))))
                 Float(value, text) => Ok(Literal(self.node(FloatLiteral(-value, `-${text}`))))
-                BadNumber(_, reason) => Err(self.failure(reason))
-                other => Err(self.failure(`unexpected pattern: -${describe(other)}`))
+                BadNumber(_, reason) => Err(self.failureBefore(reason))
+                other => Err(self.failureBefore(`unexpected pattern: -${describe(other)}`))
             }
         }
         StringLiteral(value) => {
@@ -1481,7 +1539,7 @@ function Parser.interpolation(mut self, source: string, line: int): Result[Node,
     mut tokens: Spanned[] = []
 
     for spanned in tokenize(source) {
-        tokens.push({ token: spanned.token, line: 0, column: 0, start: 0, end: 0 })
+        tokens.push({ token: spanned.token, line: 0, column: 0, start: 0, end: 0, endLine: 0, endColumn: 0 })
     }
 
     mut parser = Parser.create(tokens, [])

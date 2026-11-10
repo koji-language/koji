@@ -30,6 +30,9 @@ export type Spanned = {
     column: int
     start: int
     end: int
+    // Where it ends: the line and the column after its last character.
+    endLine: int
+    endColumn: int
 }
 
 type Lexer = {
@@ -405,7 +408,7 @@ export function tokenize(source: string): Spanned[] {
         immut column = lexer.column
         immut start = lexer.position
         immut token = lexer.token()
-        tokens.push({ token: token, line: line, column: column, start: start, end: lexer.position })
+        tokens.push({ token: token, line: line, column: column, start: start, end: lexer.position, endLine: lexer.line, endColumn: lexer.column })
 
         if (token == End) { break }
     }

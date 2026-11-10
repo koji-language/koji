@@ -2209,3 +2209,25 @@ fn kojic_test_runs_each_test_alone() {
     let run = koji::finish(koji::kojic().current_dir(&directory).arg("run").arg("sub/top.kj"), "");
     assert_eq!(run.stdout, "top level\n");
 }
+
+/// A compile error gives the column, then the line with the part at fault marked (the tabs of the
+/// line kept, so that the marks fall under it).
+#[test]
+fn errors_show_the_column_and_the_line() {
+    let check = |name: &str, source: &str| {
+        let path = source_file(name, source);
+        koji::finish(koji::kojic().current_dir(path.parent().unwrap()).arg("check").arg(path.file_name().unwrap()), "").stderr
+    };
+    assert_eq!(
+        check("column_type", "function greet(name: string): string {\n    return name\n}\n\nprint(greet(42))\n"),
+        "type error: column_type.kj:5:13: argument 1 of 'greet' must be string, found int\n    5 | print(greet(42))\n      |             ^^\n"
+    );
+    assert_eq!(
+        check("column_tabs", "function f() {\n\tif (true) {\n\t\timmut s: string = 4\n\t}\n}\n"),
+        "type error: column_tabs.kj:3:21: cannot assign a value of type int to 's' of type string\n    3 | \t\timmut s: string = 4\n      | \t\t                  ^\n"
+    );
+    assert_eq!(
+        check("column_syntax", "immut x = (1 +\nprint(x)\n"),
+        "syntax error: column_syntax.kj:3:1: expected ')', found the end of the file\n    3 | \n      | ^\n"
+    );
+}

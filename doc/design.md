@@ -371,3 +371,11 @@ The modules of the standard library may import `koji:core` too (`system` uses `t
 
 **Alternatives**: test functions in files of their own (`math_test.kj`, as Go), which see only what is exported; a `testing` module with `test(name, () => { ... })` (as Deno), whose closures could not change the variables around them; several assertion functions (`assertEqual`, as JUnit or unittest); all the tests of a file in one process, faster but with no isolation after a panic.
 
+
+### Errors show their column and the line they are on
+
+**Decision**: a compile error gives the file, the line and the column of what is wrong, then that line with it marked: `type error: hello.kj:5:13: argument 1 of 'greet' must be string, found int`, then `5 | print(greet(42))` and `^^` under `42`. The mark is under the value, the argument or the element at fault, not the whole statement (the parser gives each node where it starts and ends). A panic keeps its form, `panic: main.kj:12: message`: the program running has the line only.
+
+**Why**: a beginner, and the editor, see at once where the error is, as with gcc, rustc and Elm; `file:line:column:` is what editors and terminals turn into a link.
+
+**Alternatives**: the line only (as before), which leaves the reader to find the place in it; a long explanation with each error (as Elm), more work for each message, for later.

@@ -146,25 +146,25 @@ module examples/types.kj
 ==== parser cases #0
 error: syntax error: case0.kj:1: unexpected character '@'
 ==== parser cases #1
-error: syntax error: case1.kj:1: 'break' can only be used inside a loop
+error: syntax error: case1.kj:1:1: 'break' can only be used inside a loop
 ==== parser cases #2
-error: syntax error: case2.kj:2: 'continue' can only be used inside a loop
+error: syntax error: case2.kj:2:1: 'continue' can only be used inside a loop
 ==== parser cases #3
-error: syntax error: case3.kj:1: 'return' can only be used inside a function
+error: syntax error: case3.kj:1:1: 'return' can only be used inside a function
 ==== parser cases #4
-error: syntax error: case4.kj:1: 'interface' is a reserved word; to describe the shape of a value, use 'type'
+error: syntax error: case4.kj:1:1: 'interface' is a reserved word; to describe the shape of a value, use 'type'
 ==== parser cases #5
-error: syntax error: case5.kj:1: 'export' is only allowed at the top level of a file
+error: syntax error: case5.kj:1:16: 'export' is only allowed at the top level of a file
 ==== parser cases #6
-error: syntax error: case6.kj:1: Koji has no 'var': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
+error: syntax error: case6.kj:1:1: Koji has no 'var': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
 ==== parser cases #7
-error: syntax error: case7.kj:1: Koji has no 'const': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
+error: syntax error: case7.kj:1:1: Koji has no 'const': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
 ==== parser cases #8
-error: syntax error: case8.kj:1: Koji has no 'let': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
+error: syntax error: case8.kj:1:1: Koji has no 'let': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
 ==== parser cases #9
-error: syntax error: case9.kj:1: declare 'x' with 'mut' or 'immut': 'mut x: ... = ...'
+error: syntax error: case9.kj:1:1: declare 'x' with 'mut' or 'immut': 'mut x: ... = ...'
 ==== parser cases #10
-error: type error: case10.kj:1: undefined variable 'y'
+error: type error: case10.kj:1:18: undefined variable 'y'
 ==== parser cases #11
 module case11.kj
 (at 1 (string 'unterminated\n'):string)
@@ -177,166 +177,166 @@ module case13.kj
 module case14.kj
 (at 1 (immut x _ (decimal 9223372036854775808):decimal)!variable=decimal)
 ==== parser cases #15
-error: type error: case15.kj:1: undefined variable 'y'
+error: type error: case15.kj:1:18: undefined variable 'y'
 ==== parser cases #16
-error: type error: case16.kj:1: undefined variable 'y'
+error: type error: case16.kj:1:18: undefined variable 'y'
 ==== test/checker/cases.txt #0
-error: type error: case0.kj:4: undefined variable 'localVar'
+error: type error: case0.kj:4:7: undefined variable 'localVar'
 ==== test/checker/cases.txt #1
-error: type error: case1.kj:2: cannot modify 'pi': it is immut
+error: type error: case1.kj:2:1: cannot modify 'pi': it is immut
 ==== test/checker/cases.txt #2
-error: type error: case2.kj:1: 'count' is not declared: declare it with 'mut count = ...' (or 'immut' if it never changes)
+error: type error: case2.kj:1:1: 'count' is not declared: declare it with 'mut count = ...' (or 'immut' if it never changes)
 ==== test/checker/cases.txt #3
-error: syntax error: case3.kj:1: declare 'name' with 'mut' or 'immut': 'mut name: ... = ...'
+error: syntax error: case3.kj:1:1: declare 'name' with 'mut' or 'immut': 'mut name: ... = ...'
 ==== test/checker/cases.txt #4
-error: type error: case4.kj:1: list elements must have the same type: found int and string
+error: type error: case4.kj:1:28: list elements must have the same type: found int and string
 ==== test/checker/cases.txt #5
-error: type error: case5.kj:1: cannot assign a value of type decimal to 'x' of type int
+error: type error: case5.kj:1:16: cannot assign a value of type decimal to 'x' of type int
 ==== test/checker/cases.txt #6
-error: type error: case6.kj:3: 'is' checks a variant ('result is Some'); to compare values, use '=='
+error: type error: case6.kj:3:7: 'is' checks a variant ('result is Some'); to compare values, use '=='
 ==== test/checker/cases.txt #7
-error: type error: case7.kj:1: operator '+' cannot be applied to int and string
+error: type error: case7.kj:1:7: operator '+' cannot be applied to int and string
 ==== test/checker/cases.txt #8
-error: type error: case8.kj:1: operator '+' cannot be applied to boolean and int
+error: type error: case8.kj:1:7: operator '+' cannot be applied to boolean and int
 ==== test/checker/cases.txt #9
-error: type error: case9.kj:1: this expression has no value (to be used as a value, every branch must produce a value of the same type, and 'if' needs an 'else')
+error: type error: case9.kj:1:1: this expression has no value (to be used as a value, every branch must produce a value of the same type, and 'if' needs an 'else')
 ==== test/checker/cases.txt #10
-error: type error: case10.kj:1: the condition of 'if' must be boolean, found int
+error: type error: case10.kj:1:1: the condition of 'if' must be boolean, found int
 ==== test/checker/cases.txt #11
-error: syntax error: case11.kj:1: Koji does not have 'else if'; use 'match' with guards
+error: syntax error: case11.kj:1:20: Koji does not have 'else if'; use 'match' with guards
 ==== test/checker/cases.txt #12
-error: syntax error: case12.kj:1: 'break' can only be used inside a loop
+error: syntax error: case12.kj:1:1: 'break' can only be used inside a loop
 ==== test/checker/cases.txt #13
-error: type error: case13.kj:2: match is not exhaustive: None is not handled (add an arm for it or a wildcard '_ => ...')
+error: type error: case13.kj:2:1: match is not exhaustive: None is not handled (add an arm for it or a wildcard '_ => ...')
 ==== test/checker/cases.txt #14
-error: type error: case14.kj:1: match is not exhaustive: add a wildcard arm '_ => ...'
+error: type error: case14.kj:1:1: match is not exhaustive: add a wildcard arm '_ => ...'
 ==== test/checker/cases.txt #15
-error: type error: case15.kj:2: P has no field 'b'
+error: type error: case15.kj:2:14: P has no field 'b'
 ==== test/checker/cases.txt #16
-error: type error: case16.kj:2: missing field(s) b in P
+error: type error: case16.kj:2:14: missing field(s) b in P
 ==== test/checker/cases.txt #17
-error: type error: case17.kj:2: field 'a' of P must be int, found string
+error: type error: case17.kj:2:19: field 'a' of P must be int, found string
 ==== test/checker/cases.txt #18
-error: syntax error: case18.kj:1: untagged union in type 'Result' is not allowed; use a sum type with named variants
+error: syntax error: case18.kj:1:22: untagged union in type 'Result' is not allowed; use a sum type with named variants
 ==== test/checker/cases.txt #19
-error: type error: case19.kj:2: U has no field 'extra'
+error: type error: case19.kj:2:14: U has no field 'extra'
 ==== test/checker/cases.txt #20
-error: syntax error: case20.kj:1: 'interface' is a reserved word; to describe the shape of a value, use 'type'
+error: syntax error: case20.kj:1:1: 'interface' is a reserved word; to describe the shape of a value, use 'type'
 ==== test/checker/cases.txt #21
-error: syntax error: case21.kj:1: 'interface' is a reserved word: it cannot be a name
+error: syntax error: case21.kj:1:7: 'interface' is a reserved word: it cannot be a name
 ==== test/checker/cases.txt #22
-error: type error: case22.kj:2: argument 1 of 'f' must be int, found string
+error: type error: case22.kj:2:3: argument 1 of 'f' must be int, found string
 ==== test/checker/cases.txt #23
-error: type error: case23.kj:2: 'f' must return a value of type int (add a 'return' or end with an expression)
+error: type error: case23.kj:1:1: 'f' must return a value of type int (add a 'return' or end with an expression)
 ==== test/checker/cases.txt #24
-error: type error: case24.kj:1: cannot return a value from a function without a return type
+error: type error: case24.kj:1:16: cannot return a value from a function without a return type
 ==== test/checker/cases.txt #25
-error: type error: case25.kj:3: cannot modify 'items' here: functions capture a read-only copy of the variables around them
+error: type error: case25.kj:3:20: cannot modify 'items' here: functions capture a read-only copy of the variables around them
 ==== test/checker/cases.txt #26
-error: type error: case26.kj:2: '?' cannot convert ParseError into string: use '.mapErr(...)' to convert ParseError into string
+error: type error: case26.kj:2:12: '?' cannot convert ParseError into string: use '.mapErr(...)' to convert ParseError into string
 ==== test/checker/cases.txt #27
-error: type error: case27.kj:3: '?' cannot choose how to convert ParseError into E: the variants A, B all hold a ParseError (use '.mapErr(...)' to convert ParseError into E)
+error: type error: case27.kj:3:12: '?' cannot choose how to convert ParseError into E: the variants A, B all hold a ParseError (use '.mapErr(...)' to convert ParseError into E)
 ==== test/checker/cases.txt #28
-error: type error: case28.kj:1: a value of type Result[int, ParseError] has no method 'message'
+error: type error: case28.kj:1:7: a value of type Result[int, ParseError] has no method 'message'
 ==== test/checker/cases.txt #29
-error: type error: case29.kj:1: 'mapErr' expects a function with one parameter (or a variant with one field), found int
+error: type error: case29.kj:1:11: 'mapErr' expects a function with one parameter (or a variant with one field), found int
 ==== test/checker/cases.txt #30
-error: type error: case30.kj:2: '?' on a Result needs the function to return a Result too, but it returns int
+error: type error: case30.kj:2:9: '?' on a Result needs the function to return a Result too, but it returns int
 ==== test/checker/cases.txt #31
-error: type error: case31.kj:1: '?' can only be used on a Result or an Option, found int
+error: type error: case31.kj:1:11: '?' can only be used on a Result or an Option, found int
 ==== test/checker/cases.txt #32
-error: type error: case32.kj:1: '?' needs the function to declare its return type
+error: type error: case32.kj:1:26: '?' needs the function to declare its return type
 ==== test/checker/cases.txt #33
 error: type error: case33.kj:1: cannot import 'math.kj': No such file or directory (os error 2)
 ==== test/checker/cases.txt #34
-error: syntax error: case34.kj:2: 'export' is only allowed at the top level of a file
+error: syntax error: case34.kj:2:2: 'export' is only allowed at the top level of a file
 ==== test/checker/cases.txt #35
-error: syntax error: case35.kj:1: expected 'function', 'mut', 'immut' or 'type' after 'export', found 'x'
+error: syntax error: case35.kj:1:8: expected 'function', 'mut', 'immut' or 'type' after 'export', found 'x'
 ==== test/checker/cases.txt #36
 error: type error: case36.kj:2: 'make' is exported, but its type uses the private type 'Hidden' (export 'Hidden' too)
 ==== test/checker/cases.txt #37
-error: type error: case37.kj:2: argument 2 of 'file.open' must be Mode, found string
+error: type error: case37.kj:2:26: argument 2 of 'file.open' must be Mode, found string
 ==== test/checker/cases.txt #38
 module case38.kj
 (at 1 (immut x _ (decimal 1e400):decimal)!variable=decimal)
 ==== test/checker/cases.txt #39
-error: type error: case39.kj:2: argument 1 of 'json.stringify' must be Json, found int
+error: type error: case39.kj:2:22: argument 1 of 'json.stringify' must be Json, found int
 ==== test/checker/cases.txt #40
-error: type error: case40.kj:2: module 'regex' has no member 'match'
+error: type error: case40.kj:2:7: module 'regex' has no member 'match'
 ==== test/checker/cases.txt #41
-error: type error: case41.kj:1: cannot modify 'x': parameters can only be modified when declared 'mut'
+error: type error: case41.kj:1:22: cannot modify 'x': parameters can only be modified when declared 'mut'
 ==== test/checker/cases.txt #42
-error: type error: case42.kj:3: argument 1 of 'f' is not a 'mut' parameter: remove 'mut'
+error: type error: case42.kj:3:1: argument 1 of 'f' is not a 'mut' parameter: remove 'mut'
 ==== test/checker/cases.txt #43
-error: type error: case43.kj:3: argument 1 of 'f' is 'mut' and must be exactly float, found int
+error: type error: case43.kj:3:1: argument 1 of 'f' is 'mut' and must be exactly float, found int
 ==== test/checker/cases.txt #44
-error: type error: case44.kj:1: anonymous functions cannot have 'mut' parameters ('x')
+error: type error: case44.kj:1:11: anonymous functions cannot have 'mut' parameters ('x')
 ==== test/checker/cases.txt #45
-error: type error: case45.kj:2: 'mut' is only used before a call argument: 'f(mut x)'
+error: type error: case45.kj:2:1: 'mut' is only used before a call argument: 'f(mut x)'
 ==== test/checker/cases.txt #46
-error: type error: case46.kj:1: cannot modify 'x': the 'for' variable is immut (use 'for mut' to change it)
+error: type error: case46.kj:1:19: cannot modify 'x': the 'for' variable is immut (use 'for mut' to change it)
 ==== test/checker/cases.txt #47
-error: type error: case47.kj:2: cannot modify 'n': variables bound by 'match' are immut
+error: type error: case47.kj:2:14: cannot modify 'n': variables bound by 'match' are immut
 ==== test/checker/cases.txt #48
-error: type error: case48.kj:1: this object literal needs a type: declare one with 'type' and annotate the variable ('person: Person = { ... }')
+error: type error: case48.kj:1:11: this object literal needs a type: declare one with 'type' and annotate the variable ('person: Person = { ... }')
 ==== test/checker/cases.txt #49
-error: type error: case49.kj:1: an object literal cannot be a value of type int
+error: type error: case49.kj:1:16: an object literal cannot be a value of type int
 ==== test/checker/cases.txt #50
-error: type error: case50.kj:2: an object literal cannot be a value of type S
+error: type error: case50.kj:2:14: an object literal cannot be a value of type S
 ==== test/checker/cases.txt #51
-error: type error: case51.kj:4: 'h' cannot be used here: its value was moved (or closed) on line 3; assign it a new value first
+error: type error: case51.kj:4:7: 'h' cannot be used here: its value was moved (or closed) on line 3; assign it a new value first
 ==== test/checker/cases.txt #52
-error: type error: case52.kj:1: 'join' needs a list of strings, found int[]
+error: type error: case52.kj:1:7: 'join' needs a list of strings, found int[]
 ==== test/checker/cases.txt #53
-error: type error: case53.kj:1: 'ab' is not a char: a char literal has exactly one character
+error: type error: case53.kj:1:17: 'ab' is not a char: a char literal has exactly one character
 ==== test/checker/cases.txt #54
-error: type error: case54.kj:1: operator '+' cannot be applied to char and int
+error: type error: case54.kj:1:11: operator '+' cannot be applied to char and int
 ==== test/checker/cases.txt #55
-error: type error: case55.kj:2: cannot assign a value of type int[] to 'values' of type float[]
+error: type error: case55.kj:2:25: cannot assign a value of type int[] to 'values' of type float[]
 ==== test/checker/cases.txt #56
-error: type error: case56.kj:1: list elements must have the same type: found int[] and decimal[]
+error: type error: case56.kj:1:13: list elements must have the same type: found int[] and decimal[]
 ==== test/checker/cases.txt #57
-error: type error: case57.kj:1: 'Ok' expects 1 argument(s), found 0
+error: type error: case57.kj:1:32: 'Ok' expects 1 argument(s), found 0
 ==== test/checker/cases.txt #58
-error: type error: case58.kj:3: match is not exhaustive: A(_) is not handled (add an arm for it or a wildcard '_ => ...')
+error: type error: case58.kj:3:12: match is not exhaustive: A(_) is not handled (add an arm for it or a wildcard '_ => ...')
 ==== test/checker/cases.txt #59
-error: type error: case59.kj:3: match is not exhaustive: A(None) is not handled (add an arm for it or a wildcard '_ => ...')
+error: type error: case59.kj:3:12: match is not exhaustive: A(None) is not handled (add an arm for it or a wildcard '_ => ...')
 ==== test/checker/cases.txt #60
-error: type error: case60.kj:2: match is not exhaustive: false is not handled (add an arm for it or a wildcard '_ => ...')
+error: type error: case60.kj:2:12: match is not exhaustive: false is not handled (add an arm for it or a wildcard '_ => ...')
 ==== test/checker/cases.txt #61
-error: type error: case61.kj:2: match is not exhaustive: add a wildcard arm '_ => ...'
+error: type error: case61.kj:2:12: match is not exhaustive: add a wildcard arm '_ => ...'
 ==== test/checker/cases.txt #62
-error: type error: case62.kj:2: match is not exhaustive: Some(_) is not handled (add an arm for it or a wildcard '_ => ...')
+error: type error: case62.kj:2:12: match is not exhaustive: Some(_) is not handled (add an arm for it or a wildcard '_ => ...')
 ==== test/checker/cases.txt #63
-error: type error: case63.kj:3: '?' cannot choose how to convert ParseError into E: the variants A, B all hold a ParseError (use '.mapErr(...)' to convert ParseError into E)
+error: type error: case63.kj:3:15: '?' cannot choose how to convert ParseError into E: the variants A, B all hold a ParseError (use '.mapErr(...)' to convert ParseError into E)
 ==== test/checker/cases.txt #64
-error: type error: case64.kj:3: '?' cannot convert ParseError into E: no variant of E holds a ParseError (use '.mapErr(...)' to convert ParseError into E)
+error: type error: case64.kj:3:15: '?' cannot convert ParseError into E: no variant of E holds a ParseError (use '.mapErr(...)' to convert ParseError into E)
 ==== test/checker/cases.txt #65
-error: type error: case65.kj:2: '?' cannot convert ParseError into string: use '.mapErr(...)' to convert ParseError into string
+error: type error: case65.kj:2:15: '?' cannot convert ParseError into string: use '.mapErr(...)' to convert ParseError into string
 ==== test/checker/cases.txt #66
-error: type error: case66.kj:2: '?' on an Option needs the function to return an Option too, but it returns Result[int, string]
+error: type error: case66.kj:2:15: '?' on an Option needs the function to return an Option too, but it returns Result[int, string]
 ==== test/checker/cases.txt #67
-error: type error: case67.kj:2: '?' on a Result needs the function to return a Result too, but it returns int
+error: type error: case67.kj:2:12: '?' on a Result needs the function to return a Result too, but it returns int
 ==== test/checker/cases.txt #68
-error: type error: case68.kj:1: '?' can only be used on a Result or an Option, found int
+error: type error: case68.kj:1:23: '?' can only be used on a Result or an Option, found int
 ==== test/checker/cases.txt #69
-error: type error: case69.kj:2: operator '+' cannot be used on 'T': a type parameter only supports the comparisons of its constraint
+error: type error: case69.kj:2:12: operator '+' cannot be used on 'T': a type parameter only supports the comparisons of its constraint
 ==== test/checker/cases.txt #70
-error: type error: case70.kj:2: operator '<' needs 'T' to be orderable: declare it as '[T: orderable]'
+error: type error: case70.kj:2:12: operator '<' needs 'T' to be orderable: declare it as '[T: orderable]'
 ==== test/checker/cases.txt #71
-error: type error: case71.kj:2: operator '==' needs 'T' to be equatable: declare it as '[T: equatable]'
+error: type error: case71.kj:2:12: operator '==' needs 'T' to be equatable: declare it as '[T: equatable]'
 ==== test/checker/cases.txt #72
-error: type error: case72.kj:4: 'print' is a built-in function and must be called
+error: type error: case72.kj:4:17: 'print' is a built-in function and must be called
 ==== test/checker/cases.txt #73
-error: type error: case73.kj:4: (int) => int is not equatable, as 'best' requires
+error: type error: case73.kj:4:7: (int) => int is not equatable, as 'best' requires
 ==== test/checker/cases.txt #74
 error: type error: case74.kj:1: unknown constraint 'sortable' for 'T': the constraints are 'equatable' and 'orderable'
 ==== test/checker/cases.txt #75
-error: type error: case75.kj:2: type 'Pair' expects 2 type argument(s), found 1
+error: type error: case75.kj:2:1: type 'Pair' expects 2 type argument(s), found 1
 ==== test/checker/cases.txt #76
-error: type error: case76.kj:2: type 'Pair' needs 2 type argument(s), e.g. Pair[int]
+error: type error: case76.kj:2:1: type 'Pair' needs 2 type argument(s), e.g. Pair[int]
 ==== test/checker/cases.txt #77
-error: type error: case77.kj:1: type 'int' is not generic
+error: type error: case77.kj:1:1: type 'int' is not generic
 ==== test/checker/cases.txt #78
 error: type error: case78.kj:3: field 'x' has conflicting types in 'C': int and string
 ==== test/checker/cases.txt #79
@@ -360,21 +360,21 @@ error: type error: case87.kj:2: 'self' has no type annotation: in 'P.a' it is al
 ==== test/checker/cases.txt #88
 error: type error: case88.kj:1: cannot declare 'Q.a': methods belong to a type with fields or variants declared in the same file
 ==== test/checker/cases.txt #89
-error: type error: case89.kj:6: 'P.make' has no 'self': call it on the type ('P.make(...)')
+error: type error: case89.kj:6:7: 'P.make' has no 'self': call it on the type ('P.make(...)')
 ==== test/checker/cases.txt #90
-error: type error: case90.kj:5: 'P.get' takes 'self': call it on a value ('value.get(...)')
+error: type error: case90.kj:5:7: 'P.get' takes 'self': call it on a value ('value.get(...)')
 ==== test/checker/cases.txt #91
-error: type error: case91.kj:2: 'P.nothing' is not declared
+error: type error: case91.kj:2:7: 'P.nothing' is not declared
 ==== test/checker/cases.txt #92
-error: type error: case92.kj:7: 'c' cannot be used here: its value was moved (or closed) on line 6; assign it a new value first
+error: type error: case92.kj:7:7: 'c' cannot be used here: its value was moved (or closed) on line 6; assign it a new value first
 ==== test/checker/cases.txt #93
-error: type error: case93.kj:6: 'drop' cannot be called: it runs by itself when the value goes out of scope
+error: type error: case93.kj:6:1: 'drop' cannot be called: it runs by itself when the value goes out of scope
 ==== test/checker/cases.txt #94
-error: type error: case94.kj:6: a value of type Conn cannot be copied out of a field or an element (it is move-only)
+error: type error: case94.kj:6:1: a value of type Conn cannot be copied out of a field or an element (it is move-only)
 ==== test/checker/cases.txt #95
-error: type error: case95.kj:7: 'c' cannot be moved inside a loop: it is declared outside the loop, and the next iteration would use it again
+error: type error: case95.kj:7:5: 'c' cannot be moved inside a loop: it is declared outside the loop, and the next iteration would use it again
 ==== test/checker/cases.txt #96
-error: type error: case96.kj:6: 'c' cannot be moved: it is a parameter, which only borrows its value (Conn is move-only)
+error: type error: case96.kj:6:5: 'c' cannot be moved: it is a parameter, which only borrows its value (Conn is move-only)
 ==== test/checker/cases.txt #97
 module case97.kj
 (at 1 (type Conn () (shape (field id int))))
@@ -382,23 +382,23 @@ module case97.kj
 (at 5 (immut c Conn (object (field 'id' (int 1):int)):Conn!drop=Conn.drop!fields=(id))!declares!variable=Conn)
 (at 6 (immut f _ (lambda () _ (member (name c):Conn id):int):() => int)!variable=() => int)
 ==== test/checker/cases.txt #98
-error: type error: case98.kj:6: a slice copies the items, and Conn is move-only
+error: type error: case98.kj:6:12: a slice copies the items, and Conn is move-only
 ==== test/checker/cases.txt #99
-error: type error: case99.kj:6: 'for mut' would copy each item, and Conn is move-only: use 'for c in'
+error: type error: case99.kj:6:1: 'for mut' would copy each item, and Conn is move-only: use 'for c in'
 ==== test/checker/cases.txt #100
-error: type error: case100.kj:7: a value of type Conn cannot be moved out of a variable inside an 'if', a 'match' or a block; move it first ('x = value')
+error: type error: case100.kj:7:1: a value of type Conn cannot be moved out of a variable inside an 'if', a 'match' or a block; move it first ('x = value')
 ==== test/checker/cases.txt #101
-error: type error: case101.kj:5: undefined variable 'Conn'
+error: type error: case101.kj:5:13: undefined variable 'Conn'
 ==== test/checker/cases.txt #102
-error: type error: case102.kj:9: a type parameter cannot be Conn: type parameters cannot be move-only values yet
+error: type error: case102.kj:9:11: a type parameter cannot be Conn: type parameters cannot be move-only values yet
 ==== test/checker/cases.txt #103
-error: type error: case103.kj:6: values of type Conn cannot be compared with '==': it is not equatable (it holds functions or move-only values)
+error: type error: case103.kj:6:7: values of type Conn cannot be compared with '==': it is not equatable (it holds functions or move-only values)
 ==== test/checker/cases.txt #104
-error: type error: case104.kj:5: 'g' cannot be moved: it is bound by 'match' to a part of a variable, which only borrows its value (File is move-only)
+error: type error: case104.kj:5:9: 'g' cannot be moved: it is bound by 'match' to a part of a variable, which only borrows its value (File is move-only)
 ==== test/checker/cases.txt #105
-error: type error: case105.kj:5: 'g' cannot be used here: its value was moved (or closed) on line 4; assign it a new value first
+error: type error: case105.kj:5:15: 'g' cannot be used here: its value was moved (or closed) on line 4; assign it a new value first
 ==== test/checker/cases.txt #106
-error: type error: case106.kj:9: 'c' cannot be used here: its value was moved (or closed) on line 7; assign it a new value first
+error: type error: case106.kj:9:7: 'c' cannot be used here: its value was moved (or closed) on line 7; assign it a new value first
 ==== test/checker/cases.txt #107
 module case107.kj
 (at 1 (type Conn () (shape (field id int))))
@@ -408,37 +408,37 @@ module case107.kj
 (at 7 (assign = (name c) (object (field 'id' (int 2):int)):Conn!drop=Conn.drop!fields=(id))!replaces)
 (at 8 (call (name print) (member (name c):Conn id):int (member (name d):Conn id):int):void)
 ==== test/checker/cases.txt #108
-error: type error: case108.kj:1: 'f' must return a value of type int (add a 'return' or end with an expression)
+error: type error: case108.kj:1:1: 'f' must return a value of type int (add a 'return' or end with an expression)
 ==== test/checker/cases.txt #109
-error: type error: case109.kj:2: 'f' must return a value of type int (add a 'return' or end with an expression)
+error: type error: case109.kj:1:1: 'f' must return a value of type int (add a 'return' or end with an expression)
 ==== test/checker/cases.txt #110
-error: type error: case110.kj:2: 'f' returns string, but its declared return type is int
+error: type error: case110.kj:1:1: 'f' returns string, but its declared return type is int
 ==== test/checker/cases.txt #111
-error: type error: case111.kj:2: cannot return a value from a function without a return type
+error: type error: case111.kj:2:5: cannot return a value from a function without a return type
 ==== test/checker/cases.txt #112
-error: type error: case112.kj:2: this function must return a value of type int
+error: type error: case112.kj:2:5: this function must return a value of type int
 ==== test/checker/cases.txt #113
-error: type error: case113.kj:3: inconsistent return types: int and string
+error: type error: case113.kj:3:5: inconsistent return types: int and string
 ==== test/checker/cases.txt #114
-error: type error: case114.kj:1: anonymous functions cannot have 'mut' parameters ('x')
+error: type error: case114.kj:1:11: anonymous functions cannot have 'mut' parameters ('x')
 ==== test/checker/cases.txt #115
 error: type error: case115.kj:1: the type of 'items' cannot be inferred (it is ?[]): annotate it, as in 'immut items: int[] = ...'
 ==== test/checker/cases.txt #116
-error: type error: case116.kj:3: map key must be int, found string
+error: type error: case116.kj:3:1: map key must be int, found string
 ==== test/checker/cases.txt #117
-error: type error: case117.kj:3: argument 1 must be int, found string
+error: type error: case117.kj:3:7: argument 1 must be int, found string
 ==== test/checker/cases.txt #118
-error: type error: case118.kj:1: 'Set.from' needs a list, found int
+error: type error: case118.kj:1:11: 'Set.from' needs a list, found int
 ==== test/checker/cases.txt #119
-error: type error: case119.kj:1: 'print' is a built-in function and must be called
+error: type error: case119.kj:1:21: 'print' is a built-in function and must be called
 ==== test/checker/cases.txt #120
 module case120.kj
 (at 1 (immut m _ (map (entry (list (int 1):int):int[] (int 2):int)):Map[int[], int])!variable=Map[int[], int])
 (at 2 (call (name print) (name m):Map[int[], int]):void)
 ==== test/checker/cases.txt #121
-error: type error: case121.kj:1: map values must have the same type: found int and string
+error: type error: case121.kj:1:11: map values must have the same type: found int and string
 ==== test/checker/cases.txt #122
-error: type error: case122.kj:1: list elements must have the same type: found int and string
+error: type error: case122.kj:1:15: list elements must have the same type: found int and string
 ==== test/checker/cases.txt #123
 module case123.kj
 (at 1 (immut x _ (list (int 1):int!decimal (decimal 2.5):decimal):decimal[])!variable=decimal[])
@@ -446,7 +446,7 @@ module case123.kj
 (at 3 (immut z float (int 1):int)!variable=float)
 (at 4 (call (name print) (name x):decimal[] (name y):float[] (name z):float):void)
 ==== test/checker/cases.txt #124
-error: type error: case124.kj:2: cannot assign a value of type int[] to 'y' of type float[]
+error: type error: case124.kj:2:20: cannot assign a value of type int[] to 'y' of type float[]
 ==== test/checker/cases.txt #125
 module case125.kj
 (at 1 (immut c char (string 'a'):char!char)!variable=char)
@@ -458,75 +458,75 @@ module case126.kj
 ==== test/checker/cases.txt #127
 error: type error: case127.kj:1: the type of 'o' cannot be inferred (it is Option[?]): annotate it, as in 'immut o: Option[int] = ...'
 ==== test/checker/cases.txt #128
-error: type error: case128.kj:2: a value of type int has no field 'y'
+error: type error: case128.kj:2:7: a value of type int has no field 'y'
 ==== test/checker/cases.txt #129
-error: type error: case129.kj:2: a value of type Option[int] has no field 'value' (use 'match' or check the variant with 'is' first)
+error: type error: case129.kj:2:7: a value of type Option[int] has no field 'value' (use 'match' or check the variant with 'is' first)
 ==== test/checker/cases.txt #130
-error: type error: case130.kj:3: P has no field 'y'
+error: type error: case130.kj:3:7: P has no field 'y'
 ==== test/checker/cases.txt #131
-error: type error: case131.kj:2: P has no field 'y'
+error: type error: case131.kj:2:14: P has no field 'y'
 ==== test/checker/cases.txt #132
-error: type error: case132.kj:2: missing field(s) y in P
+error: type error: case132.kj:2:14: missing field(s) y in P
 ==== test/checker/cases.txt #133
-error: type error: case133.kj:2: field 'x' of P must be int, found string
+error: type error: case133.kj:2:19: field 'x' of P must be int, found string
 ==== test/checker/cases.txt #134
-error: type error: case134.kj:1: this object literal needs a type: declare one with 'type' and annotate the variable ('person: Person = { ... }')
+error: type error: case134.kj:1:11: this object literal needs a type: declare one with 'type' and annotate the variable ('person: Person = { ... }')
 ==== test/checker/cases.txt #135
-error: type error: case135.kj:1: an object literal cannot be a value of type int
+error: type error: case135.kj:1:16: an object literal cannot be a value of type int
 ==== test/checker/cases.txt #136
-error: type error: case136.kj:1: a map is written with brackets, not braces: ['key': value] (for Map[string, int])
+error: type error: case136.kj:1:29: a map is written with brackets, not braces: ['key': value] (for Map[string, int])
 ==== test/checker/cases.txt #137
-error: type error: case137.kj:2: an object literal cannot be a value of type P
+error: type error: case137.kj:2:14: an object literal cannot be a value of type P
 ==== test/checker/cases.txt #138
-error: type error: case138.kj:2: a value of type int has no method 'push'
+error: type error: case138.kj:2:1: a value of type int has no method 'push'
 ==== test/checker/cases.txt #139
-error: type error: case139.kj:2: cannot call 'push' on 'x', as it changes the value: it is immut
+error: type error: case139.kj:2:1: cannot call 'push' on 'x', as it changes the value: it is immut
 ==== test/checker/cases.txt #140
-error: type error: case140.kj:2: the item must be int, found string
+error: type error: case140.kj:2:1: the item must be int, found string
 ==== test/checker/cases.txt #141
-error: type error: case141.kj:2: the position must be int, found string
+error: type error: case141.kj:2:1: the position must be int, found string
 ==== test/checker/cases.txt #142
-error: type error: case142.kj:1: 'print' is a built-in function and must be called
+error: type error: case142.kj:1:10: 'print' is a built-in function and must be called
 ==== test/checker/cases.txt #143
-error: type error: case143.kj:2: argument 1 must be (int, int) => boolean, found (int, int) => int
+error: type error: case143.kj:2:10: argument 1 must be (int, int) => boolean, found (int, int) => int
 ==== test/checker/cases.txt #144
-error: type error: case144.kj:2: 'join' needs a list of strings, found int[]
+error: type error: case144.kj:2:7: 'join' needs a list of strings, found int[]
 ==== test/checker/cases.txt #145
-error: type error: case145.kj:2: a value of type string has no method 'nope'
+error: type error: case145.kj:2:7: a value of type string has no method 'nope'
 ==== test/checker/cases.txt #146
-error: type error: case146.kj:2: cannot modify 'x': it is immut
+error: type error: case146.kj:2:1: cannot modify 'x': it is immut
 ==== test/checker/cases.txt #147
-error: type error: case147.kj:2: a value of type string has no method 'code'
+error: type error: case147.kj:2:33: a value of type string has no method 'code'
 ==== test/checker/cases.txt #148
-error: type error: case148.kj:2: cannot index a value of type int
+error: type error: case148.kj:2:7: cannot index a value of type int
 ==== test/checker/cases.txt #149
-error: type error: case149.kj:2: cannot slice a value of type int
+error: type error: case149.kj:2:7: cannot slice a value of type int
 ==== test/checker/cases.txt #150
-error: type error: case150.kj:2: list index must be int, found string
+error: type error: case150.kj:2:7: list index must be int, found string
 ==== test/checker/cases.txt #151
-error: type error: case151.kj:2: map key must be string, found int
+error: type error: case151.kj:2:7: map key must be string, found int
 ==== test/checker/cases.txt #152
-error: type error: case152.kj:2: argument 1 must be string, found int
+error: type error: case152.kj:2:10: argument 1 must be string, found int
 ==== test/checker/cases.txt #153
-error: type error: case153.kj:2: cannot call 'remove' on 'm', as it changes the value: it is immut
+error: type error: case153.kj:2:1: cannot call 'remove' on 'm', as it changes the value: it is immut
 ==== test/checker/cases.txt #154
-error: type error: case154.kj:2: the function given to 'mapErr' must accept string, but it accepts int
+error: type error: case154.kj:2:7: the function given to 'mapErr' must accept string, but it accepts int
 ==== test/checker/cases.txt #155
-error: type error: case155.kj:2: 'mapErr' expects a function with one parameter (or a variant with one field), found int
+error: type error: case155.kj:2:7: 'mapErr' expects a function with one parameter (or a variant with one field), found int
 ==== test/checker/cases.txt #156
 module case156.kj
 (at 1 (immut r Result[int, string] (call (name Ok) (int 1):int):Result[int, string])!variable=Result[int, string])
 (at 2 (call (name print) (call (member (name r):Result[int, string] mapErr) (lambda ((param e string)) _ (call (member (name e):string length)):int):(string) => int):Result[int, int]):void)
 ==== test/checker/cases.txt #157
-error: type error: case157.kj:1: cannot convert int[] to int
+error: type error: case157.kj:1:7: cannot convert int[] to int
 ==== test/checker/cases.txt #158
-error: type error: case158.kj:1: argument 1 of 'range' must be int, found string
+error: type error: case158.kj:1:13: argument 1 of 'range' must be int, found string
 ==== test/checker/cases.txt #159
-error: type error: case159.kj:1: 'range' expects 1 to 3 argument(s), found 4
+error: type error: case159.kj:1:7: 'range' expects 1 to 3 argument(s), found 4
 ==== test/checker/cases.txt #160
-error: type error: case160.kj:1: argument 1 of 'char' must be int, found string
+error: type error: case160.kj:780:10: argument 1 of 'char' must be int, found string
 ==== test/checker/cases.txt #161
-error: type error: case161.kj:2: argument 1 of 'math.sqrt' must be a number, found string
+error: type error: case161.kj:2:17: argument 1 of 'math.sqrt' must be a number, found string
 ==== test/checker/cases.txt #162
 module case162.kj
 (at 1 (import math 'math'))
@@ -564,7 +564,7 @@ module math
 (at 119 (function roundFloat () ((param value float) (param here Location)) int (block (at 120 (return (call (name koji_std_float_to_int):(float, Location) => int (call (name round):(float) => float (name value):float):float (name here):Location):int))))!function=(float, Location) => int)
 (at 124 (function isInt () ((param value decimal)) boolean (block (at 125 (if (binary or (binary < (name value):decimal (unary - (int 9223372036854775807):int):int):boolean (binary > (name value):decimal (int 9223372036854775807):int):boolean):boolean (block (at 125 (return (bool false):boolean))) _):void) (at 127 (return (binary == (call (name decimal) (call (name int) (name value):decimal):int):decimal (name value):decimal):boolean))))!function=(decimal) => boolean)
 ==== test/checker/cases.txt #163
-error: type error: case163.kj:2: 'time.now' expects 0 argument(s), found 1
+error: type error: case163.kj:2:7: 'time.now' expects 0 argument(s), found 1
 ==== test/checker/cases.txt #164
 module case164.kj
 (at 1 (import json 'json'))
@@ -873,104 +873,104 @@ module koji:core
 (at 764 (function readLineAfter () ((param prompt string) (param here Location)) Option[string] (block (at 765 (immut status _ (call (name allocate) (int 8):int):Address)!variable=Address) (at 766 (call (name write) (name status):Address (int 0):int (int 0):int):void) (at 767 (immut line _ (call (name koji_read_line):(string, Location, Address) => string (name prompt):string (name here):Location (name status):Address):string)!variable=string) (at 768 (immut ended int (call (name read) (name status):Address (int 0):int):int)!variable=int) (at 769 (call (name free) (name status):Address):void) (at 771 (if (binary == (name ended):int (int 1):int):boolean (block (at 771 (return (name None):Option[string]))) _):void) (at 773 (return (call (name Some) (name line):string):Option[string]))))!function=(string, Location) => Option[string])
 (at 776 (function decimalOf () ((param text string)) Result[decimal, ParseError] (block (at 777 (immut status _ (call (name allocate) (int 8):int):Address)!variable=Address) (at 778 (immut value _ (call (name koji_decimal_parse):(string, Address) => decimal (name text):string (name status):Address):decimal)!variable=decimal) (at 779 (immut code int (call (name read) (name status):Address (int 0):int):int)!variable=int) (at 780 (call (name free) (name status):Address):void) (at 782 (if (binary == (name code):int (int 1):int):boolean (block (at 782 (return (call (name Err) (call (name InvalidNumber) (name text):string):ParseError):Result[decimal, ParseError]))) _):void) (at 784 (if (binary == (name code):int (int 2):int):boolean (block (at 784 (return (call (name Err) (call (name OutOfRange) (name text):string):ParseError):Result[decimal, ParseError]))) _):void) (at 786 (return (call (name Ok) (name value):decimal):Result[decimal, ParseError]))))!function=(string) => Result[decimal, ParseError])
 ==== test/checker/cases.txt #167
-error: type error: case167.kj:2: argument 1 of 'system.exit' must be int, found string
+error: type error: case167.kj:2:19: argument 1 of 'system.exit' must be int, found string
 ==== test/checker/cases.txt #168
 error: type error: case168.kj:1: cannot import 'nothing': No such file or directory (os error 2)
 ==== test/checker/cases.txt #169
-error: type error: case169.kj:2: module 'math' has no member 'nope'
+error: type error: case169.kj:2:11: module 'math' has no member 'nope'
 ==== test/checker/cases.txt #170
-error: type error: case170.kj:2: 'math.sqrt' is a built-in function and must be called
+error: type error: case170.kj:2:7: 'math.sqrt' is a built-in function and must be called
 ==== test/checker/cases.txt #171
-error: type error: case171.kj:2: 'pi' is read-only outside 'math'
+error: type error: case171.kj:2:1: 'pi' is read-only outside 'math'
 ==== test/checker/cases.txt #172
-error: type error: case172.kj:1: undefined variable 'nope'
+error: type error: case172.kj:1:7: undefined variable 'nope'
 ==== test/checker/cases.txt #173
-error: type error: case173.kj:1: 'print' is a built-in function and must be called
+error: type error: case173.kj:1:7: 'print' is a built-in function and must be called
 ==== test/checker/cases.txt #174
-error: type error: case174.kj:2: argument 1 of 'f' must be T0, found int
+error: type error: case174.kj:2:9: argument 1 of 'f' must be T0, found int
 ==== test/checker/cases.txt #175
-error: type error: case175.kj:1: variant 'None' has no fields and is used without '()'
+error: type error: case175.kj:1:7: variant 'None' has no fields and is used without '()'
 ==== test/checker/cases.txt #176
-error: type error: case176.kj:1: 'Some' expects 1 argument(s), found 2
+error: type error: case176.kj:1:7: 'Some' expects 1 argument(s), found 2
 ==== test/checker/cases.txt #177
 module case177.kj
 (at 1 (call (name print) (call (name Some)):Option[void]):void)
 ==== test/checker/cases.txt #178
-error: type error: case178.kj:2: cannot modify 'x': it is immut
+error: type error: case178.kj:2:1: cannot modify 'x': it is immut
 ==== test/checker/cases.txt #179
-error: type error: case179.kj:2: cannot assign a value of type string to 'x' of type int
+error: type error: case179.kj:2:5: cannot assign a value of type string to 'x' of type int
 ==== test/checker/cases.txt #180
-error: type error: case180.kj:1: 'x' is not declared: declare it with 'mut x = ...' (or 'immut' if it never changes)
+error: type error: case180.kj:1:1: 'x' is not declared: declare it with 'mut x = ...' (or 'immut' if it never changes)
 ==== test/checker/cases.txt #181
-error: type error: case181.kj:1: cannot iterate over a value of type int (use a list, a string or range())
+error: type error: case181.kj:1:1: cannot iterate over a value of type int (use a list, a string or range())
 ==== test/checker/cases.txt #182
 module case182.kj
 (at 1 (for x (map (entry (string 'a'):string (int 1):int)):Map[string, int] (block (at 2 (call (name print) (name x):string):void))))
 (at 4 (for y (call (member (name Set) from) (list (int 1):int):int[]):Set[int]!associated=Set.from (block (at 5 (call (name print) (name y):int):void))))
 ==== test/checker/cases.txt #183
-error: type error: case183.kj:1: the condition of 'while' must be boolean, found int
+error: type error: case183.kj:1:1: the condition of 'while' must be boolean, found int
 ==== test/checker/cases.txt #184
-error: type error: case184.kj:1: the condition of 'if' must be boolean, found int
+error: type error: case184.kj:1:1: the condition of 'if' must be boolean, found int
 ==== test/checker/cases.txt #185
-error: type error: case185.kj:1: this expression has no value (to be used as a value, every branch must produce a value of the same type, and 'if' needs an 'else')
+error: type error: case185.kj:1:1: this expression has no value (to be used as a value, every branch must produce a value of the same type, and 'if' needs an 'else')
 ==== test/checker/cases.txt #186
-error: type error: case186.kj:1: if branch has type string, expected int
+error: type error: case186.kj:1:16: if branch has type string, expected int
 ==== test/checker/cases.txt #187
-error: type error: case187.kj:1: this expression has no value (to be used as a value, every branch must produce a value of the same type, and 'if' needs an 'else')
+error: type error: case187.kj:1:1: this expression has no value (to be used as a value, every branch must produce a value of the same type, and 'if' needs an 'else')
 ==== test/checker/cases.txt #188
-error: type error: case188.kj:1: this expression has no value
+error: type error: case188.kj:1:1: this expression has no value
 ==== test/checker/cases.txt #189
-error: type error: case189.kj:1: operator '-' cannot be applied to string
+error: type error: case189.kj:1:11: operator '-' cannot be applied to string
 ==== test/checker/cases.txt #190
-error: type error: case190.kj:1: operator 'not' cannot be applied to int
+error: type error: case190.kj:1:11: operator 'not' cannot be applied to int
 ==== test/checker/cases.txt #191
-error: type error: case191.kj:1: operator '~' cannot be applied to decimal
+error: type error: case191.kj:1:11: operator '~' cannot be applied to decimal
 ==== test/checker/cases.txt #192
-error: type error: case192.kj:1: operator '+' cannot be applied to int and string
+error: type error: case192.kj:1:11: operator '+' cannot be applied to int and string
 ==== test/checker/cases.txt #193
 module case193.kj
 (at 1 (immut x _ (binary * (string 'a'):string (int 2):int):string)!variable=string)
 (at 2 (immut y _ (binary + (list (int 1):int):int[] (list (int 2):int):int[]):int[])!variable=int[])
 (at 3 (call (name print) (name x):string (name y):int[] (binary << (int 1):int (int 2):int):int (binary % (int 7):int (int 2):int):int (binary ** (int 2):int (int 3):int):int (binary ** (decimal 1.5):decimal (int 2):int):decimal):void)
 ==== test/checker/cases.txt #194
-error: type error: case194.kj:1: operator '+' cannot be applied to int[] and string[]
+error: type error: case194.kj:1:11: operator '+' cannot be applied to int[] and string[]
 ==== test/checker/cases.txt #195
-error: type error: case195.kj:1: 'is' checks a variant ('result is Some'); to compare values, use '=='
+error: type error: case195.kj:1:11: 'is' checks a variant ('result is Some'); to compare values, use '=='
 ==== test/checker/cases.txt #196
-error: type error: case196.kj:2: 'Ok' is not a variant of Option[int]
+error: type error: case196.kj:2:7: 'Ok' is not a variant of Option[int]
 ==== test/checker/cases.txt #197
 module case197.kj
 (at 1 (immut x _ (call (name Some) (int 1):int):Option[int])!variable=Option[int])
 (at 2 (if (binary is (name x):Option[int] (name Some)):boolean (block (at 3 (call (name print) (member (name x):Option[int].Some value):int):void)) _):void)
 ==== test/checker/cases.txt #198
-error: type error: case198.kj:1: 'print' is a built-in function and must be called
+error: type error: case198.kj:1:17: 'print' is a built-in function and must be called
 ==== test/checker/cases.txt #199
 module case199.kj
 (at 1 (immut x _ (binary in (string 'a'):string (map (entry (string 'a'):string (int 1):int)):Map[string, int]):boolean)!variable=boolean)
 (at 2 (immut y _ (binary in (int 1):int (call (member (name Set) from) (list (int 1):int):int[]):Set[int]!associated=Set.from):boolean)!variable=boolean)
 (at 3 (call (name print) (name x):boolean (name y):boolean):void)
 ==== test/checker/cases.txt #200
-error: type error: case200.kj:1: operator 'in' cannot be applied to int and Map[string, int]
+error: type error: case200.kj:1:11: operator 'in' cannot be applied to int and Map[string, int]
 ==== test/checker/cases.txt #201
-error: type error: case201.kj:2: 'f' expects 1 argument(s), found 2
+error: type error: case201.kj:2:7: 'f' expects 1 argument(s), found 2
 ==== test/checker/cases.txt #202
-error: type error: case202.kj:2: argument 1 of 'f' must be int, found string
+error: type error: case202.kj:2:9: argument 1 of 'f' must be int, found string
 ==== test/checker/cases.txt #203
-error: type error: case203.kj:2: a value of type int cannot be called
+error: type error: case203.kj:2:7: a value of type int cannot be called
 ==== test/checker/cases.txt #204
-error: type error: case204.kj:5: argument 1 of 'f' is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')
+error: type error: case204.kj:5:3: argument 1 of 'f' is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')
 ==== test/checker/cases.txt #205
-error: type error: case205.kj:4: argument 1 of 'f' is not a 'mut' parameter: remove 'mut'
+error: type error: case205.kj:4:1: argument 1 of 'f' is not a 'mut' parameter: remove 'mut'
 ==== test/checker/cases.txt #206
-error: type error: case206.kj:4: argument 1 of 'f' is 'mut' and must be exactly float, found int
+error: type error: case206.kj:4:1: argument 1 of 'f' is 'mut' and must be exactly float, found int
 ==== test/checker/cases.txt #207
-error: type error: case207.kj:4: cannot pass 'y' as 'mut': it is immut
+error: type error: case207.kj:4:1: cannot pass 'y' as 'mut': it is immut
 ==== test/checker/cases.txt #208
-error: type error: case208.kj:3: only a variable, a field or an element can be passed as 'mut'
+error: type error: case208.kj:3:1: only a variable, a field or an element can be passed as 'mut'
 ==== test/checker/cases.txt #209
-error: type error: case209.kj:2: cannot modify 'x': parameters can only be modified when declared 'mut'
+error: type error: case209.kj:2:5: cannot modify 'x': parameters can only be modified when declared 'mut'
 ==== test/checker/cases.txt #210
-error: type error: case210.kj:3: cannot modify 'x' here: functions capture a read-only copy of the variables around them
+error: type error: case210.kj:3:9: cannot modify 'x' here: functions capture a read-only copy of the variables around them
 ==== test/checker/cases.txt #211
 module case211.kj
 (at 1 (mut total _ (int 0):int)!variable=int)
@@ -978,33 +978,33 @@ module case211.kj
 (at 5 (call (name add):() => void):void)
 (at 6 (call (name print) (name total):int):void)
 ==== test/checker/cases.txt #212
-error: type error: case212.kj:4: cannot modify 'n' here: functions capture a read-only copy of the variables around them
+error: type error: case212.kj:4:9: cannot modify 'n' here: functions capture a read-only copy of the variables around them
 ==== test/checker/cases.txt #213
-error: type error: case213.kj:4: variant 'A' has fields; use 'A(...)' in the pattern
+error: type error: case213.kj:3:1: variant 'A' has fields; use 'A(...)' in the pattern
 ==== test/checker/cases.txt #214
-error: type error: case214.kj:4: variant 'A' has 1 field(s), but the pattern has 2
+error: type error: case214.kj:3:1: variant 'A' has 1 field(s), but the pattern has 2
 ==== test/checker/cases.txt #215
-error: type error: case215.kj:4: 'B' is not a variant of T
+error: type error: case215.kj:3:1: 'B' is not a variant of T
 ==== test/checker/cases.txt #216
-error: type error: case216.kj:4: 'Some' is not a variant of T
+error: type error: case216.kj:3:1: 'Some' is not a variant of T
 ==== test/checker/cases.txt #217
-error: type error: case217.kj:4: pattern of type string does not match a value of type T
+error: type error: case217.kj:3:1: pattern of type string does not match a value of type T
 ==== test/checker/cases.txt #218
-error: type error: case218.kj:2: pattern 'None' does not match a value of type int
+error: type error: case218.kj:1:1: pattern 'None' does not match a value of type int
 ==== test/checker/cases.txt #219
-error: type error: case219.kj:1: '?' can only be used on a Result or an Option, found int
+error: type error: case219.kj:1:11: '?' can only be used on a Result or an Option, found int
 ==== test/checker/cases.txt #220
-error: syntax error: case220.kj:2: 'break' can only be used inside a loop
+error: syntax error: case220.kj:2:1: 'break' can only be used inside a loop
 ==== test/checker/cases.txt #221
 error: type error: case221.kj:2: type 'Point' is already declared in this scope
 ==== test/checker/cases.txt #222
-error: type error: case222.kj:2: 'x' is already declared in this scope
+error: type error: case222.kj:2:1: 'x' is already declared in this scope
 ==== test/checker/cases.txt #223
 error: type error: case223.kj:1: type 'Option' needs 1 type argument(s), e.g. Option[int]
 ==== test/checker/cases.txt #224
 error: type error: case224.kj:1: the alias 'A' cannot have type parameters
 ==== test/checker/cases.txt #225
-error: type error: case225.kj:3: 1.0 is a decimal: write float(1.0) for the nearest float, or the float in hexadecimal
+error: type error: case225.kj:3:12: 1.0 is a decimal: write float(1.0) for the nearest float, or the float in hexadecimal
 ==== test/checker/cases.txt #226
 module case226.kj
 (at 1 (export (type P () (shape (field x int)))))
@@ -1034,7 +1034,7 @@ module case230.kj
 (at 6 (call (member (name s):Stack[int] push) (int 1):int):void!type-args=(int)!method=Stack.push)
 (at 7 (call (name print) (name s):Stack[int]):void)
 ==== test/checker/cases.txt #231
-error: type error: case231.kj:6: cannot call 'Stack.push' on 's', as it changes the value: it is immut
+error: type error: case231.kj:6:1: cannot call 'Stack.push' on 's', as it changes the value: it is immut
 ==== test/checker/cases.txt #232
 module case232.kj
 (at 1 (type Box () (shape (field f (int) => int))))
@@ -1524,7 +1524,7 @@ module case239.kj
 (at 2 (immut f _ (decimal 0.2):decimal)!variable=decimal)
 (at 3 (call (name print) (binary + (name a):decimal (name f):decimal):decimal):void)
 ==== test/checker/cases.txt #240
-error: type error: case240.kj:1: decimal literal 1234567890123456789012345678901234567.0 has more than 34 significant digits, the precision of a decimal
+error: type error: case240.kj:1:20: decimal literal 1234567890123456789012345678901234567.0 has more than 34 significant digits, the precision of a decimal
 ==== test/checker/cases.txt #241
 module case241.kj
 (at 1 (match (call (name decimal) (int 1):int):decimal (arm (literal (decimal 1.5):decimal) _ (call (name print) (int 1):int):void) (arm (wildcard) _ (call (name print) (int 2):int):void)):void)
@@ -1533,9 +1533,9 @@ module case242.kj
 (at 1 (call (name assert) (binary == (binary + (int 1):int (int 1):int):int (int 2):int):boolean (string 'arithmetic'):string):void)
 (at 3 (function test 'checked like a function' () () _ (block (at 4 (immut x int (int 3):int)!variable=int) (at 5 (call (name assert) (binary > (name x):int (int 2):int):boolean):void)))!function=() => void)
 ==== test/checker/cases.txt #243
-error: type error: case243.kj:1: argument 1 of 'assert' must be boolean, found int
+error: type error: case243.kj:1:8: argument 1 of 'assert' must be boolean, found int
 ==== test/checker/cases.txt #244
-error: type error: case244.kj:1: argument 2 of 'assert' must be string, found int
+error: type error: case244.kj:1:14: argument 2 of 'assert' must be string, found int
 ==== test/checker/cases.txt #245
 module case245.kj
 (at 1 (function assert () ((param value int)) _ (block (at 2 (call (name print) (name value):int):void)))!function=(int) => void)
@@ -1543,24 +1543,24 @@ module case245.kj
 ==== test/checker/cycle.kj
 error: type error: cycle_b.kj:1: circular import of 'cycle_a.kj'
 ==== test/checker/generic_value.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/missing.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/modules.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/mut_value.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/nofile.kj
 error: type error: test/checker/nofile.kj:1: cannot import 'lib/none.kj': No such file or directory (os error 2)
 ==== test/checker/private.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/private_type.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/readonly.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/readonly_member.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/syntax.kj
-error: syntax error: lib/broken.kj:1: expected parameter name, found '{'
+error: syntax error: lib/broken.kj:1:20: expected parameter name, found '{'
 ==== test/checker/wrap.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)

@@ -2,7 +2,7 @@
 // moves, drops...) by the node's id; `kojic dump types` prints the text of `dumpTypes`.
 
 import file
-import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Part, Entry, ObjectEntry, ParsedFile, parseFrom, annotated } from 'parser.kj'
+import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Part, Entry, ObjectEntry, ParsedFile, Span, parseFrom, annotated } from 'parser.kj'
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, MethodSignature, NamedParts, unconstrained, equatable, orderable, constraintName, isNumeric, mixesFloatAndDecimal, containsUnknown, anyUnknown, fillUnknown, substitute, substituteAll, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, substituteFields, variantsOf, findField } from 'types.kj'
 import { decimalLiteral } from 'decimal.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
@@ -152,6 +152,9 @@ type ModuleState = {
     path: string
     dir: string
     line: int
+    // The node being checked (an error points at it), and the lines of the file (to show them).
+    span: Span
+    lines: string[]
     moved: Moves
     // The scope index where each loop being checked starts.
     loopScopes: int[]
@@ -162,7 +165,7 @@ type ModuleState = {
 function emptyState(): ModuleState {
     return {
         isEntry: false, scopes: [], functionScopes: [], returns: [], file: '', path: '', dir: '', line: 0,
-        moved: [:], loopScopes: [], borrowingMatch: false
+        span: noSpan(), lines: [], moved: [:], loopScopes: [], borrowingMatch: false
     }
 }
 
@@ -262,6 +265,8 @@ type Checker = {
     methods: Map[string, MethodInfo]
     // The argument types of the last built-in call checked.
     lastArgTypes: Type[]
+    // The arguments of the built-in function being checked (its errors point at them).
+    builtinArgs: Node[]
     // The type arguments of the last generic call checked, until the call records them.
     typeArgs: Option[Type[]]
     tables: Tables
@@ -387,7 +392,7 @@ function Checker.create(): Checker {
     }
     return {
         table: table, builtins: builtins, modules: [], moduleByPath: [:], stdlib: [:], loading: [], loaded: [],
-        methods: [:], lastArgTypes: [], typeArgs: None, tables: emptyTables(), state: emptyState(), nextId: 0,
+        methods: [:], lastArgTypes: [], builtinArgs: [], typeArgs: None, tables: emptyTables(), state: emptyState(), nextId: 0,
         moveOnly: [:]
     }
 }
@@ -639,29 +644,112 @@ function readSource(path: string): Result[string, file.FileError] {
 }
 
 // Turns `line N: message` into `file:N: message`.
+// A message of the parser (`line 3:12: message`, or `line 3: message`) with the file instead.
 function prefixError(file: string, message: string): string {
-    if (message.startsWith('line ')) {
-        immut rest = message[5..]
+    immut place = parserPlace(message)
 
-        match (rest.indexOf(': ')) {
-            Some(colon) => {
-                immut line = rest[..colon]
+    if (place.line == 0) { return `${file}: ${message}` }
 
-                if (line.length() > 0 and line.isNumeric()) { return `${file}:${line}: ${rest[colon + 2..]}` }
-            }
-            None => {}
+    immut column = if (place.column > 0) { `:${place.column}` } else { '' }
+    return `${file}:${place.line}${column}: ${place.text}`
+}
+
+// Where a message of the parser is: its line and column (0 when it gives none), and its text.
+type ParserPlace = {
+    line: int
+    column: int
+    text: string
+}
+
+function parserPlace(message: string): ParserPlace {
+    immut none: ParserPlace = { line: 0, column: 0, text: message }
+
+    if (not message.startsWith('line ')) { return none }
+
+    immut rest = message[5..]
+    immut colon = match (rest.indexOf(': ')) {
+        Some(found) => found
+        None => return none
+    }
+    immut numbers = rest[..colon].split(':')
+    immut line = match (int(numbers[0])) {
+        Ok(found) => found
+        Err(_) => return none
+    }
+    mut column = 0
+
+    if (numbers.length() == 2) {
+        column = match (int(numbers[1])) {
+            Ok(found) => found
+            Err(_) => return none
         }
     }
 
-    return `${file}: ${message}`
+    return { line: line, column: column, text: rest[colon + 2..] }
+}
+
+// A syntax error of a file: the message, then the line marked where the parser stopped.
+function syntaxError(file: string, message: string, source: string): string {
+    immut place = parserPlace(message)
+    immut text = `syntax error: ${prefixError(file, message)}`
+
+    if (place.column == 0) { return text }
+
+    return text + excerpt(source.split('\n'), { line: place.line, column: place.column, endLine: place.line, endColumn: place.column + 1 })
 }
 
 // Scopes and errors
 
 // A type error at the current line.
+// A type error at the node being checked: `type error: main.kj:3:16: message`, then the line of
+// the file with the node marked.
 function Checker.failure(self, message: string): string {
+    immut span = self.state.span
+
+    if (span.line > 0) {
+        return `type error: ${self.state.file}:${span.line}:${span.column}: ${message}${excerpt(self.state.lines, span)}`
+    }
+
     immut location = if (self.state.line == 0) { self.state.file } else { `${self.state.file}:${self.state.line}` }
     return `type error: ${location}: ${message}`
+}
+
+// A type error at a node (an argument, a value), not at the whole statement.
+function Checker.failureAt(self, node: Node, message: string): string {
+    if (node.span.line == 0) { return self.failure(message) }
+
+    return `type error: ${self.state.file}:${node.span.line}:${node.span.column}: ${message}${excerpt(self.state.lines, node.span)}`
+}
+
+// A type error at the argument `index` of the built-in function being checked.
+function Checker.argumentFailure(self, index: int, message: string): string {
+    if (index < self.builtinArgs.length()) { return self.failureAt(self.builtinArgs[index], message) }
+
+    return self.failure(message)
+}
+
+function noSpan(): Span {
+    return { line: 0, column: 0, endLine: 0, endColumn: 0 }
+}
+
+// The line of a span, with its characters marked below (to the end of the line when the span goes
+// on): `    3 |     immut x: int = 'text'` and `      |                    ^^^^^^`. The marks keep
+// the tabs of the line, so that they fall under its characters.
+export function excerpt(lines: string[], span: Span): string {
+    if (span.line < 1 or span.line > lines.length()) { return '' }
+
+    immut text = lines[span.line - 1].replace('\r', '')
+    immut chars = text.chars()
+    immut number = `${span.line}`
+    mut marks = ''
+
+    for i in range(span.column - 1) {
+        marks += if (i < chars.length() and chars[i] == '\t') { '\t' } else { ' ' }
+    }
+
+    immut end = if (span.endLine == span.line and span.endColumn > span.column) { span.endColumn } else { chars.length() + 1 }
+    immut count = if (end > span.column) { end - span.column } else { 1 }
+    return `\n    ${number} | ${text}\n    ${' ' * number.length()} | ${marks}${'^' * count}`
 }
 
 function Checker.show(self, ty: Type): string {
@@ -854,7 +942,7 @@ function Checker.setLine(mut self, node: Node) {
 function Checker.checkModule(mut self, path: string, display: string, source: string): Result[int, string] {
     immut parsed = match (parseFrom(source, self.nextId)) {
         Ok(parsed) => parsed
-        Err(message) => return Err(`syntax error: ${prefixError(display, message)}`)
+        Err(message) => return Err(syntaxError(display, message, source))
     }
 
     self.nextId = parsed.nextId
@@ -866,6 +954,7 @@ function Checker.checkModule(mut self, path: string, display: string, source: st
     state.isEntry = self.loading.length() == 1
     state.scopes = [prelude, emptyScope()]
     state.file = display
+    state.lines = source.split('\n')
     state.path = path
     state.dir = parentDir(path)
     self.state = state
@@ -2115,7 +2204,7 @@ function Checker.checkGenericCall(mut self, signature: Type, initial: Type[], co
         self.noteConversion(arg, target, actual)
 
         if (not assignable(target, actual)) {
-            return Err(self.failure(`${argumentOf(what, i)} must be ${self.show(target)}, found ${self.show(actual)}`))
+            return Err(self.failureAt(arg, `${argumentOf(what, i)} must be ${self.show(target)}, found ${self.show(actual)}`))
         }
 
         if (mode == 'take') { self.consume(arg, actual)? }
@@ -2438,6 +2527,16 @@ function Checker.checkBlock(mut self, node: Node, expected: Option[Type], bindin
 }
 
 function Checker.checkStatement(mut self, node: Node, expected: Option[Type]): Result[Type, string] {
+    immut saved = self.state.span
+
+    if (node.span.line > 0) { self.state.span = node.span }
+
+    immut result = self.statementType(node, expected)
+    self.state.span = saved
+    return result
+}
+
+function Checker.statementType(mut self, node: Node, expected: Option[Type]): Result[Type, string] {
     match (node.kind) {
         Located(line, statement) => {
             self.state.line = line
@@ -2462,7 +2561,7 @@ function Checker.checkStatement(mut self, node: Node, expected: Option[Type]): R
             match (declared) {
                 Some(wanted) => {
                     if (not assignable(wanted, valueType)) {
-                        return Err(self.failure(`cannot assign a value of type ${self.show(valueType)} to '${name}' of type ${self.show(wanted)}`))
+                        return Err(self.failureAt(value, `cannot assign a value of type ${self.show(valueType)} to '${name}' of type ${self.show(wanted)}`))
                     }
 
                     variableType = wanted
@@ -2939,7 +3038,7 @@ function Checker.checkAssignedValue(mut self, targetType: Type, op: string, valu
     }
 
     if (not assignable(targetType, valueType)) {
-        return Err(self.failure(`cannot assign a value of type ${self.show(valueType)} to '${name}' of type ${self.show(targetType)}`))
+        return Err(self.failureAt(value, `cannot assign a value of type ${self.show(valueType)} to '${name}' of type ${self.show(targetType)}`))
     }
 
     return Ok(valueType)
@@ -3088,7 +3187,13 @@ function Checker.checkValue(mut self, node: Node, expected: Option[Type]): Resul
 
 // Checks an expression and records its type for the compiler.
 function Checker.checkExpression(mut self, node: Node, expected: Option[Type]): Result[Type, string] {
-    immut ty = self.expressionType(node, expected)?
+    immut saved = self.state.span
+
+    if (node.span.line > 0) { self.state.span = node.span }
+
+    immut result = self.expressionType(node, expected)
+    self.state.span = saved
+    immut ty = result?
     self.tables.types[nodeId(node)] = ty
     return Ok(ty)
 }
@@ -3165,7 +3270,7 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
                 itemType = match (join(itemType, ty)) {
                     Some(joined) => joined
                     None => {
-                        return Err(self.failure(`list elements must have the same type: found ${self.show(itemType)} and ${self.show(ty)}`))
+                        return Err(self.failureAt(item, `list elements must have the same type: found ${self.show(itemType)} and ${self.show(ty)}`))
                     }
                 }
             }
@@ -3938,7 +4043,7 @@ function Checker.checkObject(mut self, entries: ObjectEntry[], expected: Option[
                                 immut target = substitute(fieldType, generic)
 
                                 if (not assignable(target, valueType)) {
-                                    return Err(self.failure(`field '${entry.key}' of ${typeName} must be ${self.show(target)}, found ${self.show(valueType)}`))
+                                    return Err(self.failureAt(entry.value, `field '${entry.key}' of ${typeName} must be ${self.show(target)}, found ${self.show(valueType)}`))
                                 }
                             }
                             None => return Err(self.failure(`${typeName} has no field '${entry.key}'`))
@@ -4337,7 +4442,7 @@ function Checker.checkArgsMut(mut self, given: Type[], modes: string[], args: No
                 // The function may store any value of the parameter type in the variable, so the
                 // types must be the same.
                 if (not assignable(param, ty) or not assignable(ty, param)) {
-                    return Err(self.failure(`${argumentOf(callee, i)} is 'mut' and must be exactly ${self.show(param)}, found ${self.show(ty)}`))
+                    return Err(self.failureAt(args[i], `${argumentOf(callee, i)} is 'mut' and must be exactly ${self.show(param)}, found ${self.show(ty)}`))
                 }
 
                 types.push(ty)
@@ -4345,7 +4450,7 @@ function Checker.checkArgsMut(mut self, given: Type[], modes: string[], args: No
             }
             _ => {
                 if (isMut) {
-                    return Err(self.failure(`${argumentOf(callee, i)} is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')`))
+                    return Err(self.failureAt(args[i], `${argumentOf(callee, i)} is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')`))
                 }
             }
         }
@@ -4379,7 +4484,7 @@ function Checker.checkArgsMut(mut self, given: Type[], modes: string[], args: No
                 _ => {}
             }
 
-            return Err(self.failure(`${argumentOf(callee, i)} must be ${self.show(param)}, found ${self.show(ty)}${hint}`))
+            return Err(self.failureAt(args[i], `${argumentOf(callee, i)} must be ${self.show(param)}, found ${self.show(ty)}${hint}`))
         }
 
         types.push(ty)
@@ -4451,7 +4556,7 @@ function Checker.checkConstructor(mut self, id: int, variantName: string, args: 
         }
 
         if (not assignable(wanted, actual)) {
-            return Err(self.failure(`field '${fields[i].name}' of '${variantName}' must be ${self.show(wanted)}, found ${self.show(actual)}`))
+            return Err(self.failureAt(args[i], `field '${fields[i].name}' of '${variantName}' must be ${self.show(wanted)}, found ${self.show(actual)}`))
         }
     }
 
@@ -4749,14 +4854,14 @@ function Checker.arity(self, name: string, args: Type[], min: int, max: int): Re
 function Checker.expectArg(self, name: string, index: int, expected: Type, actual: Type): Result[void, string] {
     if (assignable(expected, actual)) { return Ok() }
 
-    return Err(self.failure(`argument ${index + 1} of '${name}' must be ${self.show(expected)}, found ${self.show(actual)}`))
+    return Err(self.argumentFailure(index, `argument ${index + 1} of '${name}' must be ${self.show(expected)}, found ${self.show(actual)}`))
 }
 
 // An `int`, a `float` or a `decimal`.
 function Checker.expectNumberArg(self, name: string, index: int, actual: Type): Result[void, string] {
     if (isNumeric(actual) or actual == UnknownType) { return Ok() }
 
-    return Err(self.failure(`argument ${index + 1} of '${name}' must be a number, found ${self.show(actual)}`))
+    return Err(self.argumentFailure(index, `argument ${index + 1} of '${name}' must be a number, found ${self.show(actual)}`))
 }
 
 // The arguments must be exactly `expected`.
@@ -4794,6 +4899,8 @@ function Checker.noteConversion(mut self, node: Node, wanted: Type, actual: Type
 // Checks a call of a built-in function and returns its result type.
 function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected: Option[Type]): Result[Type, string] {
     immut types = self.argTypes(args)?
+    // After the arguments, which may call built-in functions too.
+    self.builtinArgs = args
 
     // `float(1e400)`: a literal too large for a float.
     if (name == 'float' and args.length() == 1) {
@@ -5756,7 +5863,8 @@ function annotation(program: Program, node: Node): string {
 export function dumpTypes(path: string): string[] {
     immut program = match (check(path)) {
         Ok(program) => program
-        Err(message) => return [`error: ${message}`]
+        // The first line: the line of the file shown after it is for people.
+        Err(message) => return [`error: ${message.split('\n')[0]}`]
     }
 
     mut lines: string[] = []

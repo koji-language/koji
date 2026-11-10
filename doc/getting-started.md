@@ -68,10 +68,12 @@ kojic check hello.kj
 It prints nothing when the program is correct. If `hello.kj` called `greet(42)`, both `kojic run` and `kojic check` would report:
 
 ```
-type error: hello.kj:5: argument 1 must be string, found int
+type error: hello.kj:5:13: argument 1 of 'greet' must be string, found int
+    5 | print(greet(42))
+      |             ^^
 ```
 
-The message gives the file and the line of the error.
+The message gives the file, the line and the column of the error, and shows the line with the part in error marked.
 
 ## Commands
 

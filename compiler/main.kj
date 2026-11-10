@@ -86,7 +86,7 @@ function dumpStage(stage: string, name: string) {
         'ir' => {
             match (lowered(name)) {
                 Ok(program) => print(programText(program).join('\n'))
-                Err(message) => print(`error: ${message}`)
+                Err(message) => print(`error: ${message.split('\n')[0]}`)
             }
 
             return
@@ -94,7 +94,7 @@ function dumpStage(stage: string, name: string) {
         'c' => {
             match (lowered(name)) {
                 Ok(program) => print(generate(program).join('\n'))
-                Err(message) => print(`error: ${message}`)
+                Err(message) => print(`error: ${message.split('\n')[0]}`)
             }
 
             return

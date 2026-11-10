@@ -3707,27 +3707,27 @@ function f1 describe(l0: Record(0)): Str
 ==== test/checker/cycle.kj
 error: type error: cycle_b.kj:1: circular import of 'cycle_a.kj'
 ==== test/checker/generic_value.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/missing.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/modules.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/mut_value.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/nofile.kj
 error: type error: test/checker/nofile.kj:1: cannot import 'lib/none.kj': No such file or directory (os error 2)
 ==== test/checker/private.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/private_type.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/readonly.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/readonly_member.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/checker/syntax.kj
-error: syntax error: lib/broken.kj:1: expected parameter name, found '{'
+error: syntax error: lib/broken.kj:1:20: expected parameter name, found '{'
 ==== test/checker/wrap.kj
-error: type error: lib/shapes.kj:16: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+error: type error: lib/shapes.kj:17:27: operator '*' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
 ==== test/ir/cases.txt #0
 record r0 environment
     {} ()
@@ -3757,7 +3757,7 @@ function f2 inner(l0: Record(0)): Int
 ==== test/ir/cases.txt #1
 error: compile error: case1.kj:2: a type declared inside a block is not supported by 'kojic build' yet (use 'kojic run')
 ==== test/ir/cases.txt #2
-error: type error: case2.kj:4: 'apply' has 'mut' or 'take' parameters and can only be called, not used as a value
+error: type error: case2.kj:4:11: 'apply' has 'mut' or 'take' parameters and can only be called, not used as a value
 ==== test/ir/cases.txt #3
 global g0: Int // x
 

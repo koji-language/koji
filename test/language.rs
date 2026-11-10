@@ -1722,9 +1722,9 @@ fn floats_have_no_nan_or_infinity() {
     assert_error("immut x = (-8.0) ** 0.5", "-8 ** 0.5 is not a real number");
     assert_error("immut x = 0.0 ** -1.0", "division by zero");
     // `1e400` is a finite number too large for a `float` (not an infinity).
-    assert_error("immut x = float(1e400)", "test.kj:1: 1e400 is too large for a float");
-    assert_error("immut x = 0x1p1024", "test.kj:1: 0x1p1024 is too large for a float");
-    assert_error("match (float(1.5)) {\n    -0x1p2000 => print(0)\n    _ => print(1)\n}", "test.kj:2: 0x1p2000 is too large for a float");
+    assert_error("immut x = float(1e400)", "test.kj:1:11: 1e400 is too large for a float");
+    assert_error("immut x = 0x1p1024", "test.kj:1:11: 0x1p1024 is too large for a float");
+    assert_error("match (float(1.5)) {\n    -0x1p2000 => print(0)\n    _ => print(1)\n}", "test.kj:2:6: 0x1p2000 is too large for a float");
     assert_eq!(run("print(2.0 ** 0.5 > 1.41, 2 ** 3, (-8.0) ** 2.0, float(2) ** float(0.5) > float(1.41))"), "true 8 64 true\n");
     // 0 ** 0 is 1: the value of the expression (the indeterminate form only concerns limits).
     assert_eq!(run("print(0 ** 0, 0.0 ** 0.0, float(0) ** float(0))"), "1 1 0x1p0\n");
