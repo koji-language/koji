@@ -589,7 +589,7 @@ function declares(statement: Node, name: string): boolean {
         ForC(inner) => declares(inner, name)
         VarDecl(declared, _, _, _) => declared == name
         FunctionDecl(declared, owner, _, _, _, _) => declared == name and owner is None
-        ExternDecl(declared, _, _) => declared == name
+        ExternDecl(declared, _, _, _, _) => declared == name
         TypeDecl(declared, _, _) => declared == name
         _ => false
     }

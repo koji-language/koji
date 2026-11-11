@@ -221,6 +221,47 @@ export function generate(program: IrProgram): string[] {
     return generator.out
 }
 
+// A function of a library that blocks: the job that calls it (runtime/prelude.h), made by a thread
+// that helps while other tasks are alive, and the function the program calls, which waits for it.
+function Generator.blockingExtern(mut self, found: IrExtern) {
+    mut unpacked: string[] = []
+    mut params: string[] = []
+    mut packed: string[] = []
+
+    for i in range(found.params.length()) {
+        immut c = found.params[i]
+        params.push(`${c} p${i}`)
+        unpacked.push(fromWord(c, `job->arguments[${i}]`))
+        packed.push(toWord(c, `p${i}`))
+    }
+
+    immut call = `${found.name}_raw(${unpacked.join(', ')})`
+    immut run = if (found.returns == 'void') { `${call};` } else { `job->result = ${toWord(found.returns, call)};` }
+    self.line(`static void koji_run_${found.name}(KojiJob *job) { ${run} }`)
+    immut list = if (params.length() == 0) { 'void' } else { params.join(', ') }
+    immut arguments = if (packed.length() == 0) { '0' } else { packed.join(', ') }
+    immut wait = 'koji_task_blocking(&job)'
+    immut back = if (found.returns == 'void') { `${wait};` } else { `return ${fromWord(found.returns, wait)};` }
+    self.line(`static inline ${found.returns} ${found.name}(${list}) { KojiJob job = { koji_run_${found.name}, { ${arguments} }, 0, 0, 0, 0 }; ${back} }`)
+}
+
+// A value of C as the word of a job, and back.
+function toWord(c: string, value: string): string {
+    if (c == 'double') { return `koji_double_bits(${value})` }
+
+    if (c.endsWith('*')) { return `(int64_t)(intptr_t)(${value})` }
+
+    return `(int64_t)(${value})`
+}
+
+function fromWord(c: string, word: string): string {
+    if (c == 'double') { return `koji_bits_double(${word})` }
+
+    if (c.endsWith('*')) { return `(${c})(intptr_t)(${word})` }
+
+    return `(${c})(${word})`
+}
+
 function Generator.generateProgram(mut self) {
     // What the prelude has only once, in the library (the switch between the stacks of tasks).
     if (self.program.library) { self.line('#define KOJI_LIBRARY 1') }
@@ -246,8 +287,19 @@ function Generator.generateProgram(mut self) {
 
     for found in self.program.externs {
         immut params = if (found.params.length() == 0) { 'void' } else { found.params.join(', ') }
-        immut symbol = if (found.name in inode64) { ` KOJI_INODE64(${found.name})` } else { '' }
         immut returned = if (found.returns == 'never') { '_Noreturn void' } else { found.returns }
+
+        // Another name in the library (a foreign block): the symbol, under a name of its own.
+        if (found.symbol != found.name or found.blocking) {
+            immut raw = if (found.blocking) { `${found.name}_raw` } else { found.name }
+            self.line(`${returned} ${raw}(${params}) __asm__(KOJI_SYMBOL(${found.symbol}));`)
+
+            if (found.blocking) { self.blockingExtern(found) }
+
+            continue
+        }
+
+        immut symbol = if (found.name in inode64) { ` KOJI_INODE64(${found.name})` } else { '' }
         self.line(`${returned} ${found.name}(${params})${symbol};`)
     }
 

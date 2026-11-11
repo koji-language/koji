@@ -36,6 +36,8 @@ This document outlines the planned features and milestones for the Koji programm
 -   [x] Concurrency: lightweight tasks in groups, channels and shared values (`task`), on one thread
 -   [x] An HTTP server (`http.serve`), each connection in a task
 -   [ ] Tasks over several threads
+-   [x] Foreign functions: `foreign` blocks with safe types and handles
+-   [ ] Generating machine code without a C compiler
 -   [ ] WebAssembly (WASM) compilation
 -   [ ] Editor support (syntax highlighting, LSP integration)
 -   [ ] Runtime optimizations

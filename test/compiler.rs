@@ -2739,3 +2739,77 @@ printError(`${late < 0.1}`)
     assert_eq!(lines.iter().filter(|line| line.starts_with("line ") && line.len() == 6 + line[5..].find(' ').unwrap() + 90).count(), 2000);
     assert_eq!(lines.iter().filter(|line| line.len() == 10000 && line.bytes().all(|b| b == b'a')).count(), 3);
 }
+
+#[test]
+fn foreign_functions_of_the_libraries_of_the_system() {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler");
+    let written = directory.join("foreign.txt");
+    let source = format!(
+        r#"import task
+import time
+
+foreign 'c' {{
+    type Stream = handle(fclose)
+
+    function strlen(text: string): CSize
+    function getenv(name: string): Option[string]
+    function abs(value: CInt): CInt
+    function strtol(text: string, end: int, base: CInt): CLong
+    function fopen(path: string, mode: string): Option[Stream]
+    function fputs(text: string, stream: Stream): CInt
+    function getentropy(mut buffer: byte[], size: CSize): CInt
+    function size(text: string): CSize from 'strlen'
+    blocking function usleep(microseconds: CInt): CInt
+}}
+
+foreign 'm' {{
+    function cbrt(value: float): float
+}}
+
+print(strlen('héllo'))
+print(size('abc'))
+print(getenv('KOJI_FOREIGN_TEST'))
+print(getenv('KOJI_NOT_SET_ANYWHERE'))
+print(abs(-42))
+print(strtol('ff', 0, 16))
+print(cbrt(float(64)) > float(3.99))
+mut bytes: byte[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+print(getentropy(mut bytes, 16))
+print(bytes != [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+// The stream is closed (its text written) when it is dropped.
+match (fopen('{}', 'w')) {{
+    Some(stream) => fputs('written by Koji\n', stream)
+    None => -1
+}}
+
+// Blocking functions wait on a thread that helps, one at a time, while the other tasks go on.
+immut ticks = task.shared(0)
+immut start = time.monotonic()
+task.group((tasks) => {{
+    tasks.spawn(() => {{
+        for i in range(10) {{
+            time.sleep(0.01)
+            ticks.update((n) => n + 1)
+        }}
+    }})
+    tasks.spawn(() => usleep(100000))
+    tasks.spawn(() => usleep(100000))
+}})
+print(ticks.get())
+print(time.monotonic() - start >= 0.2)
+print(abs(3000000000))
+"#,
+        written.display()
+    );
+    let path = source_file("foreign", &source);
+    let executable = path.with_extension("");
+    build(&path, &executable);
+    let run = Command::new(&executable).env("KOJI_FOREIGN_TEST", "yes").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "6\n3\nSome('yes')\nNone\n42\n255\ntrue\n0\ntrue\n10\ntrue\n");
+    assert!(String::from_utf8_lossy(&run.stderr).ends_with(":54: argument 1 ('value') of 'abs' must be from -2147483648 to 2147483647, found 3000000000\n"), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(std::fs::read_to_string(&written).unwrap(), "written by Koji\n");
+    // What a foreign function cannot take.
+    let wrong = koji::finish(koji::kojic().arg("check").arg(source_file("foreign_wrong", "foreign 'c' {\n    function qsort(items: int[], count: CSize)\n}\n")), "");
+    assert!(wrong.stderr.contains("foreign_wrong.kj:1: parameter 'items' of the foreign function 'qsort' cannot be int[]"), "{}", wrong.stderr);
+}

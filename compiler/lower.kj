@@ -3,9 +3,10 @@
 
 import { Node, NodeKind, Pattern, TypeExpr, Param, TypeParam, Arm, Part, Entry, ObjectEntry, isTestName } from 'parser.kj'
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, substitute, display } from 'types.kj'
-import { MethodRef, TryWrap, LoadedModule, Tables, Program, coreStringMethods, libraryModules, parentDir, resolvePath } from 'checker.kj'
+import { MethodRef, TryWrap, LoadedModule, Tables, Program, coreStringMethods, libraryModules, parentDir, resolvePath, foreignPrefix, foreignPath } from 'checker.kj'
 import { IrExtern, IrForC, IrTest, Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
 import { decimalLiteral } from 'decimal.kj'
+import { foreignModule } from 'foreign.kj'
 import { kojiModules } from 'stdlib.kj'
 
 // The functions of `math` for several types of numbers: a call is one of the function of
@@ -211,6 +212,7 @@ type Lowerer = {
     assertText: string
     // The C functions of the `extern` declarations.
     externs: IrExtern[]
+    libraries: string[]
     // The functions C calls by their names (`extern function name(...) { ... }`).
     forC: IrForC[]
     // The top-level `immut` ints whose value is known while compiling (`immut limit = 1 << 49`):
@@ -672,6 +674,11 @@ function importOf(node: Node): Option[Import] {
     return match (unlocated(node).kind) {
         ImportModule(name, path) => Some({ name: name, names: None, path: path })
         ImportNames(names, path) => Some({ name: '', names: Some(names), path: path })
+        // A foreign block imports the names of its module.
+        Foreign(library, handles, functions) => match (foreignModule(library, handles, functions)) {
+            Ok(module) => Some({ name: '', names: Some(module.names), path: foreignPath(module.source) })
+            Err(_) => None
+        }
         _ => None
     }
 }
@@ -780,6 +787,8 @@ function Lowerer.externNamed(self, name: string): Option[IrExtern] {
 // The key of an imported module: `std:json` for a module of the standard library written in Koji
 // (as the checker names it), the resolved path of a file otherwise.
 function modulePath(directory: string, path: string): string {
+    if (path.startsWith(foreignPrefix)) { return path }
+
     if (isKojiModule(path)) { return if (path.startsWith('koji:')) { `std:${path[5..]}` } else { `std:${path}` } }
 
     return resolvePath(directory, path)
@@ -837,7 +846,12 @@ function Lowerer.loadModule(mut self, path: string, isEntry: boolean): Result[in
         match (importOf(statement)) {
             Some(found) => {
                 // The standard library is in the runtime, but the modules written in Koji (std/).
-                if (not found.path.endsWith('.kj') and not isKojiModule(found.path)) {
+                match (unlocated(statement).kind) {
+                    Foreign(library, _, _) if (library != 'c' and not (library in self.libraries)) => self.libraries.push(library)
+                    _ => {}
+                }
+
+                if (not found.path.endsWith('.kj') and not isKojiModule(found.path) and not found.path.startsWith(foreignPrefix)) {
                     imports.push(-1)
                     self.importTargets[nodeId(statement)] = -1
                     continue
@@ -1074,7 +1088,7 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
                     self.forC.push({ name: name, function: self.functions.length() - 1, params: types, taken: taken, returns: returned })
                 }
             }
-            ExternDecl(name, params, returns) => {
+            ExternDecl(name, params, returns, symbol, blocking) => {
                 self.modules[self.module].names[name] = ExternItem(name)
                 mut types: string[] = []
 
@@ -1090,7 +1104,7 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
                     None => 'void'
                 }
 
-                if (self.externNamed(name) is None) { self.externs.push({ name: name, params: types, returns: returned }) }
+                if (self.externNamed(name) is None) { self.externs.push({ name: name, params: types, returns: returned, symbol: symbol, blocking: blocking }) }
             }
             _ => {}
         }
@@ -1740,10 +1754,11 @@ function isExpression(node: Node): boolean {
         Break => false
         Continue => false
         FunctionDecl(_, _, _, _, _, _) => false
-        ExternDecl(_, _, _) => false
+        ExternDecl(_, _, _, _, _) => false
         TypeDecl(_, _, _) => false
         ImportModule(_, _) => false
         ImportNames(_, _) => false
+        Foreign(_, _, _) => false
         _ => true
     }
 }
@@ -2045,7 +2060,7 @@ function Lowerer.statement(mut self, mut builder: Builder, node: Node): Result[v
         Export(declaration, _) => return self.statement(mut builder, declaration)
         ForC(declaration) => return self.statement(mut builder, declaration)
         // Declared with the module's functions.
-        ExternDecl(_, _, _) => return Ok()
+        ExternDecl(_, _, _, _, _) => return Ok()
         FunctionDecl(name, owner, typeParams, params, _, body) => {
             if (self.atTopLevel(builder)) { return Ok() }
 
@@ -2078,6 +2093,7 @@ function Lowerer.statement(mut self, mut builder: Builder, node: Node): Result[v
         // Hoisted to the start of the block (`enterImports`).
         ImportModule(_, _) => return Ok()
         ImportNames(_, _) => return Ok()
+        Foreign(_, _, _) => return Ok()
         VarDecl(name, annotation, value, _) => {
             immut variableType = self.variableType(node, annotation, value)?
             immut operand = self.valueAs(mut builder, value, variableType)?
@@ -5053,7 +5069,7 @@ function lowerProgram(program: Program, testing: boolean): Result[IrProgram, str
         table: program.table, tables: program.tables, records: [], recordIds: [:], file: entry.display, line: 0,
         functions: [], signatures: [:], globals: [], strings: [], stringIds: [:], emptyEnvironment: None, wrappers: [:],
         genericFunctions: [:], instances: [:], pending: [], substitution: [], typeNames: [], recordTypes: [:],
-        externs: [], forC: [], constants: [:], dropFunctions: [:], modules: [], moduleIds: [:], module: 0, owningMatch: false, importTargets: [:], blockItems: [],
+        externs: [], libraries: [], forC: [], constants: [:], dropFunctions: [:], modules: [], moduleIds: [:], module: 0, owningMatch: false, importTargets: [:], blockItems: [],
         checked: checked
     }
     // The top-level statements of the main file are function 0.
@@ -5104,7 +5120,7 @@ function lowerProgram(program: Program, testing: boolean): Result[IrProgram, str
 
     return Ok({
         file: entry.display, functions: functions, main: 0, globals: lowerer.globals, strings: lowerer.strings,
-        records: lowerer.records, externs: lowerer.externs, forC: lowerer.forC, library: entry.path == 'std:library',
+        records: lowerer.records, externs: lowerer.externs, libraries: lowerer.libraries, forC: lowerer.forC, library: entry.path == 'std:library',
         testing: testing, tests: lowerer.tests
     })
 }

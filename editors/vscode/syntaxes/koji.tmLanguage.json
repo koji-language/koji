@@ -56,6 +56,18 @@
                     "captures": { "1": { "name": "storage.modifier.koji" } }
                 },
                 {
+                    "match": "^\\s*(foreign)\\s+(?=['\"])",
+                    "captures": { "1": { "name": "storage.modifier.koji" } }
+                },
+                {
+                    "match": "\\b(blocking)\\s+(?=function\\b)",
+                    "captures": { "1": { "name": "storage.modifier.koji" } }
+                },
+                {
+                    "match": "=\\s*(handle)\\s*(?=\\()",
+                    "captures": { "1": { "name": "storage.type.koji" } }
+                },
+                {
                     "match": "\\b(mut|immut)\\s+([A-Za-z_][A-Za-z0-9_]*)",
                     "captures": {
                         "1": { "name": "storage.modifier.koji" },

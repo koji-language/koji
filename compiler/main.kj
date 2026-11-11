@@ -252,7 +252,7 @@ function runtimeLibrary(): Option[string] {
 }
 
 // Compiles the C of a program to `output` with the system's C compiler, linked with the runtime.
-function compileC(source: string, output: string): Result[void, string] {
+function compileC(source: string, output: string, libraries: string[]): Result[void, string] {
     immut runtime = match (runtimeLibrary()) {
         Some(runtime) => runtime
         None => return Err('compile error: the runtime library (libkoji_runtime.a) is not next to kojic: set KOJI_RUNTIME to its path')
@@ -262,6 +262,11 @@ function compileC(source: string, output: string): Result[void, string] {
     writeFile(c, source)?
     immut compiler = variable('KOJI_CC', 'cc')
     mut args = ['-O2', '-o', output, c, runtime]
+
+    // The libraries of the foreign blocks, then those of the system.
+    for library in libraries {
+        args.push(`-l${library}`)
+    }
 
     for library in systemLibraries() {
         args.push(library)
@@ -295,7 +300,7 @@ function build(args: string[]) {
     immut result = match (options.emit) {
         'ir' => writeFile(options.output, text(programText(program)))
         'c' => writeFile(options.output, text(generate(program)))
-        _ => compileC(text(generate(program)), options.output)
+        _ => compileC(text(generate(program)), options.output, program.libraries)
     }
 
     match (result) {
@@ -319,7 +324,7 @@ function runProgram(args: string[]) {
     }
     immut executable = temporary('')
 
-    match (compileC(text(generate(program)), executable)) {
+    match (compileC(text(generate(program)), executable, program.libraries)) {
         Ok(_) => {}
         Err(message) => {
             printError(message)
@@ -482,7 +487,7 @@ function testCommand(args: string[]) {
         }
         immut executable = temporary('')
 
-        match (compileC(text(generate(lowered)), executable)) {
+        match (compileC(text(generate(lowered)), executable, lowered.libraries)) {
             Ok(_) => {}
             Err(message) => {
                 print(`FAIL  ${name}\n${indented(message)}`)

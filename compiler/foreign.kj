@@ -1,0 +1,346 @@
+// Foreign functions: a block `foreign 'library' { ... }` declares functions of a library of the
+// system (and the handles it gives), which the module that writes it calls as functions of Koji.
+// The block becomes a module of its own, written here as text and checked like the modules of the
+// standard library: for each function, the function of the library (an `extern` with the types of
+// the system) and a function of Koji around it that converts its values safely. A string goes as a
+// copy that ends with a zero byte, an int checked to fit its type of the system, a list of bytes as
+// a copy of its bytes, a handle as its address; an address of nothing (NULL) comes back as `None`.
+// A handle is a move-only value whose destructor runs when it is dropped. The functions of a block
+// with a `blocking` one run one at a time, and the `blocking` ones on a thread that helps
+// (koji:task) while other tasks are alive.
+
+import { Param, TypeExpr, ForeignHandle, ForeignFunction } from 'parser.kj'
+
+// The module of a block: its text, and the names it gives the module of the block.
+export type ForeignModule = {
+    source: string
+    names: string[]
+}
+
+// How a value crosses: the type written, as Koji has it (`koji`), as the library has it (`raw`).
+type Crossing = {
+    kind: string
+    koji: string
+    raw: string
+}
+
+immut integers = ['int', 'CInt', 'CLong', 'CSize']
+
+// How a value of a written type crosses (as a parameter when `param`), or an error.
+function crossingOf(written: TypeExpr, handles: ForeignHandle[], param: boolean, isMut: boolean, what: string): Result[Crossing, string] {
+    match (written) {
+        Named(name) => {
+            if (name in integers) { return Ok({ kind: name, koji: 'int', raw: if (name == 'CInt' or name == 'CSize') { name } else { 'int' } }) }
+
+            if (name == 'float') { return Ok({ kind: 'float', koji: 'float', raw: 'float' }) }
+
+            if (name == 'boolean' and not isMut) { return Ok({ kind: 'boolean', koji: 'boolean', raw: 'boolean' }) }
+
+            if (name == 'byte' and not isMut) { return Ok({ kind: 'byte', koji: 'byte', raw: 'byte' }) }
+
+            if (name == 'string' and not isMut) { return Ok({ kind: 'string', koji: 'string', raw: 'Address' }) }
+
+            if (isHandle(handles, name) and not isMut) { return Ok({ kind: 'handle', koji: name, raw: 'Address' }) }
+        }
+        ArrayOf(item) if (param and item == Named('byte')) => return Ok({ kind: 'bytes', koji: 'byte[]', raw: 'Address' })
+        Generic(generic, args) if (generic == 'Option' and args.length() == 1) => {
+            immut name = match (args[0]) {
+                Named(found) => found
+                _ => ''
+            }
+
+            if (isHandle(handles, name)) { return Ok({ kind: 'optionalHandle', koji: `Option[${name}]`, raw: 'Address' }) }
+
+            if (name == 'string' and not param) { return Ok({ kind: 'optionalString', koji: 'Option[string]', raw: 'Address' }) }
+        }
+        _ => {}
+    }
+
+    return Err(`${what} cannot be ${typeName(written)}: foreign functions take and return int, CInt, CLong, CSize, float, boolean, byte, string, a handle of the block or an Option of one; they also take byte[], and return Option[string]; a 'mut' parameter is an integer, a float, byte[] or an Option of a handle`)
+}
+
+function isHandle(handles: ForeignHandle[], name: string): boolean {
+    for handle in handles {
+        if (handle.name == name) { return true }
+    }
+
+    return false
+}
+
+function typeName(written: TypeExpr): string {
+    return match (written) {
+        Named(name) => name
+        Generic(name, args) => `${name}[${args.length()} types]`
+        ArrayOf(item) => `${typeName(item)}[]`
+        FunctionOf(_, _) => 'a function'
+    }
+}
+
+// The module of a block of `library`, or an error (`line N: ...` is the parser's to place).
+export function foreignModule(library: string, handles: ForeignHandle[], functions: ForeignFunction[]): Result[ForeignModule, string] {
+    immut serialized = anyBlocking(functions)
+    mut names: string[] = []
+    mut text = `// The functions of the library '${library}' (a block \`foreign\`, written by compiler/foreign.kj).\n\n`
+    text += "import { Address, CInt, CSize, Location, allocate, free, isNull, nullAddress, panicAt, read, write } from 'koji:unsafe'\n"
+    text += "import { cString, cText, hasNul } from 'koji:core'\n\n"
+
+    if (serialized) {
+        text += 'extern function koji_task_current(): int\n'
+        text += 'extern function koji_task_suspend()\n'
+        text += 'extern function koji_task_wake(id: int)\n\n'
+        text += '// The functions of the library run one at a time: the task that runs one, and those waiting.\n'
+        text += 'mut kojiBusy = false\n'
+        text += 'mut kojiWaiting: int[] = []\n\n'
+        text += 'function kojiEnter() {\n'
+        text += '    while (kojiBusy) {\n'
+        text += '        kojiWaiting.push(koji_task_current())\n'
+        text += '        koji_task_suspend()\n'
+        text += '    }\n\n'
+        text += '    kojiBusy = true\n'
+        text += '}\n\n'
+        text += 'function kojiLeave() {\n'
+        text += '    kojiBusy = false\n'
+        text += '    immut waiting = kojiWaiting\n'
+        text += '    kojiWaiting = []\n\n'
+        text += '    for id in waiting {\n'
+        text += '        koji_task_wake(id)\n'
+        text += '    }\n'
+        text += '}\n\n'
+    }
+
+    text += helpers()
+
+    for handle in handles {
+        if (handle.name in names) { return Err(`'${handle.name}' is declared twice in the block`) }
+
+        names.push(handle.name)
+        text += `extern function koji_destroy_${handle.destructor}(handle: Address) from '${handle.destructor}'\n\n`
+        text += `export opaque type ${handle.name} = {\n    pointer: Address\n}\n\n`
+        text += `function ${handle.name}.drop(mut self) {\n    if (not isNull(self.pointer)) { koji_destroy_${handle.destructor}(self.pointer) }\n}\n\n`
+    }
+
+    for each in functions {
+        if (each.name in names) { return Err(`'${each.name}' is declared twice in the block`) }
+
+        names.push(each.name)
+        text += functionText(each, handles, serialized)?
+    }
+
+    return Ok({ source: text, names: names })
+}
+
+function anyBlocking(functions: ForeignFunction[]): boolean {
+    for each in functions {
+        if (each.blocking) { return true }
+    }
+
+    return false
+}
+
+// What the functions around those of the library use.
+function helpers(): string {
+    mut text = '// An int that a type of the system must hold, a string without zero bytes, and the bytes of a list.\n'
+    text += 'function kojiFits(value: int, low: int, high: int, what: string, here: Location) {\n'
+    text += '    if (value < low or value > high) { panicAt(here, `${what} must be from ${low} to ${high}, found ${value}`) }\n'
+    text += '}\n\n'
+    text += 'function kojiString(text: string, what: string, here: Location): Address {\n'
+    text += '    if (hasNul(text)) { panicAt(here, `${what} cannot hold a zero byte for a function of C`) }\n\n'
+    text += '    return cString(text)\n'
+    text += '}\n\n'
+    text += 'function kojiPacked(items: byte[]): Address {\n'
+    text += '    immut bytes = allocate(items.length() + 1)\n\n'
+    text += '    for i in range(items.length()) {\n'
+    text += '        write(bytes, i, items[i])\n'
+    text += '    }\n\n'
+    text += '    return bytes\n'
+    text += '}\n\n'
+    text += 'function kojiUnpack(bytes: Address, mut items: byte[]) {\n'
+    text += '    for i in range(items.length()) {\n'
+    text += '        immut b: byte = read(bytes, i)\n'
+    text += '        items[i] = b\n'
+    text += '    }\n'
+    text += '}\n\n'
+    text += '// The int of C (4 bytes) that a function wrote.\n'
+    text += 'function kojiCInt(slot: Address): int {\n'
+    text += '    mut value = 0\n\n'
+    text += '    for i in range(4) {\n'
+    text += '        immut b: byte = read(slot, i)\n'
+    text += '        value += int(b) << (8 * i)\n'
+    text += '    }\n\n'
+    text += '    if (value >= 2147483648) { return value - 4294967296 }\n\n'
+    text += '    return value\n'
+    text += '}\n\n'
+    return text
+}
+
+// The `extern` of a function of the library, and the function of Koji around it.
+function functionText(each: ForeignFunction, handles: ForeignHandle[], serialized: boolean): Result[string, string] {
+    mut rawParams: string[] = []
+    mut rawTypes: string[] = []
+    mut kojiParams: string[] = []
+    mut before = ''
+    mut after = ''
+    mut args: string[] = []
+
+    for i in range(each.params.length()) {
+        immut param = each.params[i]
+
+        if (param.isTake) { return Err(`parameter '${param.name}' of '${each.name}': a foreign function cannot take its parameters ('take')`) }
+
+        immut written = match (param.annotation) {
+            Some(found) => found
+            None => return Err(`parameter '${param.name}' of '${each.name}' needs a type`)
+        }
+        immut crossing = crossingOf(written, handles, true, param.isMut, `parameter '${param.name}' of the foreign function '${each.name}'`)?
+        immut name = param.name
+        immut what = `argument ${i + 1} ('${name}') of '${each.name}'`
+        rawParams.push(`p${i}: ${crossing.raw}`)
+        rawTypes.push(crossing.raw)
+        kojiParams.push(if (param.isMut) { `mut ${name}: ${crossing.koji}` } else { `${name}: ${crossing.koji}` })
+        immut slot = `kojiArg${i}`
+
+        if (param.isMut) {
+            match (crossing.kind) {
+                'bytes' => {
+                    before += `    immut ${slot} = kojiPacked(${name})\n`
+                    after += `    kojiUnpack(${slot}, mut ${name})\n    free(${slot})\n`
+                }
+                'optionalHandle' => {
+                    before += `    immut ${slot} = allocate(8)\n    write(${slot}, 0, nullAddress())\n`
+                    after += `    immut kojiFound${i}: Address = read(${slot}, 0)\n    free(${slot})\n`
+                    after += `    if (isNull(kojiFound${i})) {\n        ${name} = None\n    } else {\n        immut kojiHandle${i}: ${handleOf(crossing.koji)} = { pointer: kojiFound${i} }\n        ${name} = Some(kojiHandle${i})\n    }\n`
+                }
+                'float' => {
+                    before += `    immut ${slot} = allocate(8)\n    write(${slot}, 0, ${name})\n`
+                    after += `    immut kojiFound${i}: float = read(${slot}, 0)\n    free(${slot})\n    ${name} = kojiFound${i}\n`
+                }
+                kind => {
+                    before += fitting(kind, name, what)
+                    before += `    immut ${slot} = allocate(8)\n    write(${slot}, 0, ${name})\n`
+                    immut value = if (kind == 'CInt') { `kojiCInt(${slot})` } else { `read(${slot}, 0)` }
+                    after += `    immut kojiFound${i}: int = ${value}\n    free(${slot})\n    ${name} = kojiFound${i}\n`
+                }
+            }
+
+            rawParams[i] = `p${i}: Address`
+            rawTypes[i] = 'Address'
+            args.push(slot)
+            continue
+        }
+
+        match (crossing.kind) {
+            'string' => {
+                before += `    immut ${slot} = kojiString(${name}, ${quoted(what)}, kojiPlace)\n`
+                after += `    free(${slot})\n`
+                args.push(slot)
+            }
+            'bytes' => {
+                before += `    immut ${slot} = kojiPacked(${name})\n`
+                after += `    free(${slot})\n`
+                args.push(slot)
+            }
+            'handle' => args.push(`${name}.pointer`)
+            'optionalHandle' => {
+                before += `    immut ${slot} = match (${name}) {\n        Some(kojiHandle) => kojiHandle.pointer\n        None => nullAddress()\n    }\n`
+                args.push(slot)
+            }
+            kind => {
+                before += fitting(kind, name, what)
+                args.push(name)
+            }
+        }
+    }
+
+    immut returned = match (each.returns) {
+        Some(written) => Some(crossingOf(written, handles, false, false, `the result of the foreign function '${each.name}'`)?)
+        None => None
+    }
+    immut rawReturn = match (returned) {
+        Some(crossing) => `: ${crossing.raw}`
+        None => ''
+    }
+    immut kojiReturn = match (returned) {
+        Some(crossing) => `: ${crossing.koji}`
+        None => ''
+    }
+    immut marker = if (each.blocking) { 'blocking ' } else { '' }
+    kojiParams.push('kojiPlace: Location')
+    // The name of the `extern`, the same for the same function of the library with the same types
+    // in any block (and only then): the symbol, the name, and the types of the system.
+    mut codes = ''
+
+    for kind in rawTypes {
+        codes += codeOf(kind)
+    }
+
+    immut raw = match (returned) {
+        Some(crossing) => `koji_foreign_${each.symbol}_${each.name}_${codes}_${codeOf(crossing.raw)}`
+        None => `koji_foreign_${each.symbol}_${each.name}_${codes}_v`
+    }
+    mut text = `extern ${marker}function ${raw}(${rawParams.join(', ')})${rawReturn} from '${each.symbol}'\n\n`
+    text += `export function ${each.name}(${kojiParams.join(', ')})${kojiReturn} {\n`
+    text += before
+
+    if (serialized) { text += '    kojiEnter()\n' }
+
+    immut call = `${raw}(${args.join(', ')})`
+    text += match (returned) {
+        Some(_) => `    immut kojiResult = ${call}\n`
+        None => `    ${call}\n`
+    }
+
+    if (serialized) { text += '    kojiLeave()\n' }
+
+    text += after
+    text += match (returned) {
+        Some(crossing) => resultText(crossing, each.name)
+        None => ''
+    }
+    text += '}\n\n'
+    return Ok(text)
+}
+
+// The handle of `Option[Handle]`.
+function handleOf(koji: string): string {
+    return koji[7..koji.length() - 1]
+}
+
+// The check that an int fits the type of the system it goes as.
+function fitting(kind: string, name: string, what: string): string {
+    if (kind == 'CInt') { return `    kojiFits(${name}, -2147483648, 2147483647, ${quoted(what)}, kojiPlace)\n` }
+
+    if (kind == 'CSize') { return `    kojiFits(${name}, 0, 9223372036854775807, ${quoted(what)}, kojiPlace)\n` }
+
+    return ''
+}
+
+// What a function gives for the result of the library.
+function resultText(crossing: Crossing, name: string): string {
+    immut noString = quoted(`'${name}' returned no string (NULL)`)
+    immut noHandle = quoted(`'${name}' returned no handle (NULL)`)
+    return match (crossing.kind) {
+        'string' => `    if (isNull(kojiResult)) { panicAt(kojiPlace, ${noString}) }\n\n    return cText(kojiResult)\n`
+        'optionalString' => '    if (isNull(kojiResult)) { return None }\n\n    return Some(cText(kojiResult))\n'
+        'handle' => `    if (isNull(kojiResult)) { panicAt(kojiPlace, ${noHandle}) }\n\n    immut kojiHandle: ${crossing.koji} = { pointer: kojiResult }\n    return kojiHandle\n`
+        'optionalHandle' => `    if (isNull(kojiResult)) { return None }\n\n    immut kojiHandle: ${handleOf(crossing.koji)} = { pointer: kojiResult }\n    return Some(kojiHandle)\n`
+        _ => '    return kojiResult\n'
+    }
+}
+
+// A string literal of Koji.
+function quoted(text: string): string {
+    return `'${text.replace('\\', '\\\\').replace("'", "\\'")}'`
+}
+
+// A letter for a type of the system, in the names of the `extern` functions.
+function codeOf(raw: string): string {
+    return match (raw) {
+        'CInt' => 'c'
+        'CSize' => 'z'
+        'float' => 'f'
+        'boolean' => 'b'
+        'byte' => 'y'
+        'Address' => 'p'
+        _ => 'i'
+    }
+}

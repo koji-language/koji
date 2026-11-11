@@ -6,6 +6,7 @@ import system
 import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Part, Entry, ObjectEntry, ParsedFile, Span, parseFrom, annotated } from 'parser.kj'
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, MethodSignature, NamedParts, unconstrained, equatable, orderable, constraintName, isNumeric, mixesFloatAndDecimal, containsUnknown, anyUnknown, fillUnknown, substitute, substituteAll, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, substituteFields, variantsOf, findField } from 'types.kj'
 import { decimalLiteral } from 'decimal.kj'
+import { foreignModule } from 'foreign.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
@@ -565,7 +566,7 @@ function isExported(node: Node): boolean {
 function declaredName(node: Node): Option[string] {
     return match (unlocated(node).kind) {
         FunctionDecl(name, None, _, _, _, _) => Some(name)
-        ExternDecl(name, _, _) => Some(name)
+        ExternDecl(name, _, _, _, _) => Some(name)
         VarDecl(name, _, _, _) => Some(name)
         TypeDecl(name, _, _) => Some(name)
         _ => None
@@ -579,10 +580,11 @@ function isStatement(node: Node): boolean {
         Assign(_, _, _) => true
         VarDecl(_, _, _, _) => true
         FunctionDecl(_, _, _, _, _, _) => true
-        ExternDecl(_, _, _) => true
+        ExternDecl(_, _, _, _, _) => true
         TypeDecl(_, _, _) => true
         ImportModule(_, _) => true
         ImportNames(_, _) => true
+        Foreign(_, _, _) => true
         _ => false
     }
 }
@@ -1374,6 +1376,25 @@ function Checker.importedModule(mut self, path: string): Result[int, string] {
     return self.checkModule(resolved, path, source)
 }
 
+// The modules of foreign blocks: their source after this (compiler/foreign.kj).
+export immut foreignPrefix = 'std:foreign:'
+
+export function foreignPath(source: string): string {
+    return `${foreignPrefix}${source}`
+}
+
+// `foreign 'library' { ... }`: its module, checked like one of the standard library, gives the
+// names it declares to the module of the block.
+function Checker.checkForeign(mut self, library: string, source: string, names: string[]): Result[void, string] {
+    immut path = foreignPath(source)
+    immut moduleId = match (self.moduleByPath.get(path)) {
+        Some(id) => id
+        None => self.checkModule(path, `foreign '${library}'`, source)?
+    }
+
+    return self.importNames(moduleId, names)
+}
+
 function Checker.checkImport(mut self, names: Option[string[]], moduleName: string, path: string): Result[void, string] {
     immut moduleId = self.importedModule(path)?
     immut wanted = match (names) {
@@ -1381,6 +1402,10 @@ function Checker.checkImport(mut self, names: Option[string[]], moduleName: stri
         None => return self.declare(moduleName, valueSymbol(ModuleType(moduleId), true))
     }
 
+    return self.importNames(moduleId, wanted)
+}
+
+function Checker.importNames(mut self, moduleId: int, wanted: string[]): Result[void, string] {
     immut module = self.modules[moduleId]
 
     for name in wanted {
@@ -1677,6 +1702,12 @@ function Checker.hoist(mut self, statements: Node[]): Result[void, string] {
         match (unlocated(statement).kind) {
             ImportModule(name, path) => self.checkImport(None, name, path)?
             ImportNames(names, path) => self.checkImport(Some(names), '', path)?
+            Foreign(library, handles, functions) => {
+                match (foreignModule(library, handles, functions)) {
+                    Ok(module) => self.checkForeign(library, module.source, module.names)?
+                    Err(message) => return Err(self.failure(message))
+                }
+            }
             _ => {}
         }
     }
@@ -1764,7 +1795,7 @@ function Checker.hoist(mut self, statements: Node[]): Result[void, string] {
 
                 self.declare(name, symbol)?
             }
-            ExternDecl(name, params, returns) => self.declareExtern(name, params, returns)?
+            ExternDecl(name, params, returns, _, _) => self.declareExtern(name, params, returns)?
             _ => {}
         }
     }
@@ -2838,7 +2869,7 @@ function Checker.statementType(mut self, node: Node, expected: Option[Type]): Re
             self.exitTypeParams(pushed)
             return Ok(VoidType)
         }
-        ExternDecl(_, _, _) => return Ok(VoidType)
+        ExternDecl(_, _, _, _, _) => return Ok(VoidType)
         FunctionDecl(name, None, typeParams, params, returns, body) => {
             mut signature = VoidType
 
@@ -2861,6 +2892,7 @@ function Checker.statementType(mut self, node: Node, expected: Option[Type]): Re
         // Imports are processed when the block is hoisted.
         ImportModule(_, _) => return Ok(VoidType)
         ImportNames(_, _) => return Ok(VoidType)
+        Foreign(_, _, _) => return Ok(VoidType)
         While(condition, body) => {
             self.checkCondition(condition, 'while')?
             self.state.loopScopes.push(self.state.scopes.length())

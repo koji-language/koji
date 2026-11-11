@@ -930,6 +930,17 @@ KOJI_INLINE bool koji_output_ready(int64_t fd) {
     return koji_c_poll(&ready, 1, 0) == 1 && (ready.revents & 4) != 0;
 }
 
+/* The bits of a double in a word of a job, and back (the `blocking` functions of foreign blocks). */
+KOJI_INLINE int64_t koji_double_bits(double value) {
+    int64_t bits;
+    __builtin_memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+KOJI_INLINE double koji_bits_double(int64_t bits) {
+    double value;
+    __builtin_memcpy(&value, &bits, sizeof value);
+    return value;
+}
 #define KOJI_A(i) (job->arguments[i])
 #define KOJI_P(i) ((void *)(intptr_t)job->arguments[i])
 #define KOJI_JOB(...) KojiJob job = { NULL, { __VA_ARGS__ }, 0, 0, 0, 0 }
