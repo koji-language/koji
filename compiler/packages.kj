@@ -1,0 +1,844 @@
+// Packages: a program in a directory with a `koji.mod` (or under one) is a module, which may require
+// the modules of others, by the paths of their repositories of git (`github.com/bia/toml`), at a
+// version, a tag (`v1.4.0`). The versions a program builds with are chosen by minimal version
+// selection (MVS, as Go does): each module asks for the least version it works with, and of a module
+// the greatest of the versions asked for is taken. The modules are downloaded with `git` into a
+// cache (`~/.cache/koji/packages/github.com/bia/toml@v1.4.0`), and `koji.sum` keeps the digest of
+// each: a module whose files are not those of its digest is refused.
+//
+//     module github.com/ana/agenda
+//
+//     require github.com/bia/toml v1.4.0
+//     allow foreign github.com/caio/sqlite
+//     replace github.com/bia/toml => ../toml
+//
+// From v2, the major version ends the path of a module (`github.com/bia/toml/v2`), so that two of
+// them are two modules. A module that a dependency gives with foreign functions (a `foreign`
+// block) is built only when the program allows it (`allow foreign`). `replace` takes a module from
+// a directory instead, for working on it (only in the `koji.mod` of the program).
+//
+// An import of a module (`import toml from 'github.com/bia/toml'`) is its file named as the last
+// part of its path (`toml.kj` at the root of the repository), and an import of a path in it is the
+// file of that path (`github.com/bia/toml/parser` is `parser.kj`).
+
+import file
+import hash
+import system
+
+foreign 'c' {
+    function getcwd(mut buffer: byte[], size: CSize): Option[string]
+}
+
+export type Requirement = {
+    path: string
+    version: string
+}
+
+export type Replacement = {
+    path: string
+    directory: string
+}
+
+// A `koji.mod`: its directory, and its lines as written (the commands rewrite them).
+export type ModFile = {
+    directory: string
+    module: string
+    requires: Requirement[]
+    allowed: string[]
+    replacements: Replacement[]
+    lines: string[]
+}
+
+// A module of the build: its path, its version ('' for the program and one replaced), and its
+// directory.
+type Root = {
+    path: string
+    version: string
+    directory: string
+}
+
+// The modules of the program being built (none outside a module), and the paths of those allowed
+// to have foreign functions.
+mut roots: Root[] = []
+mut allowedForeign: string[] = []
+
+// The directory where the program runs.
+export function currentDirectory(): string {
+    mut buffer: byte[] = []
+
+    for i in range(4096) {
+        buffer.push(0)
+    }
+
+    return match (getcwd(mut buffer, 4096)) {
+        Some(found) => found
+        None => '.'
+    }
+}
+
+// `path`, absolute.
+export function absolute(path: string): string {
+    if (path.startsWith('/')) { return path }
+
+    return normalized(`${currentDirectory()}/${path}`)
+}
+
+function normalized(path: string): string {
+    mut parts: string[] = []
+
+    for part in path.split('/') {
+        if (part == '' or part == '.') { continue }
+
+        if (part == '..') {
+            parts.pop()
+            continue
+        }
+
+        parts.push(part)
+    }
+
+    return `/${parts.join('/')}`
+}
+
+function directoryOf(path: string): string {
+    immut parts = path.split('/')
+
+    if (parts.length() <= 2) { return '/' }
+
+    return parts[..parts.length() - 1].join('/')
+}
+
+// The `koji.mod` of the module of the file or directory `start`: in it or in one above.
+export function findModFile(start: string): Option[string] {
+    mut directory = absolute(start)
+
+    if (not file.exists(`${directory}/`) or directory.endsWith('.kj')) { directory = directoryOf(directory) }
+
+    while (true) {
+        immut candidate = if (directory == '/') { '/koji.mod' } else { `${directory}/koji.mod` }
+
+        if (file.exists(candidate)) { return Some(candidate) }
+
+        if (directory == '/') { return None }
+
+        directory = directoryOf(directory)
+    }
+
+    return None
+}
+
+function readText(path: string): Result[string, string] {
+    return match (readFile(path)) {
+        Ok(text) => Ok(text)
+        Err(error) => Err(`cannot read '${path}': ${error}`)
+    }
+}
+
+function readFile(path: string): Result[string, file.FileError] {
+    immut input = file.open(path, file.Read)?
+    return input.read()
+}
+
+function writeText(path: string, text: string): Result[void, string] {
+    return match (writeFile(path, text)) {
+        Ok(_) => Ok()
+        Err(error) => Err(`cannot write '${path}': ${error}`)
+    }
+}
+
+function writeFile(path: string, text: string): Result[void, file.FileError] {
+    immut output = file.open(path, file.Write)?
+    return output.write(text)
+}
+
+// Reads a `koji.mod`.
+export function readModFile(path: string): Result[ModFile, string] {
+    immut text = readText(path)?
+    return parseModFile(path, text)
+}
+
+export function parseModFile(path: string, text: string): Result[ModFile, string] {
+    mut mod: ModFile = { directory: directoryOf(path), module: '', requires: [], allowed: [], replacements: [], lines: text.split('\n') }
+
+    for i in range(mod.lines.length()) {
+        immut line = mod.lines[i].trim()
+        immut place = `${path}:${i + 1}`
+
+        if (line == '' or line.startsWith('//')) { continue }
+
+        immut words = wordsOf(line)
+
+        match (words[0]) {
+            'module' => {
+                if (words.length() != 2) { return Err(`${place}: 'module' names the path of the module: 'module github.com/ana/agenda'`) }
+
+                if (mod.module != '') { return Err(`${place}: a koji.mod names one module`) }
+
+                validPath(words[1], place)?
+                mod.module = words[1]
+            }
+            'require' => {
+                if (words.length() != 3) { return Err(`${place}: 'require' names a module and a version: 'require github.com/bia/toml v1.4.0'`) }
+
+                validPath(words[1], place)?
+                validVersion(words[1], words[2], place)?
+
+                for each in mod.requires {
+                    if (each.path == words[1]) { return Err(`${place}: '${words[1]}' is required twice`) }
+                }
+
+                mod.requires.push({ path: words[1], version: words[2] })
+            }
+            'allow' => {
+                if (words.length() != 3 or words[1] != 'foreign') { return Err(`${place}: 'allow foreign' names a module whose foreign functions the program may use: 'allow foreign github.com/caio/sqlite'`) }
+
+                mod.allowed.push(words[2])
+            }
+            'replace' => {
+                if (words.length() != 4 or words[2] != '=>') { return Err(`${place}: 'replace' names a module and the directory it is taken from: 'replace github.com/bia/toml => ../toml'`) }
+
+                immut directory = if (words[3].startsWith('/')) { words[3] } else { normalized(`${mod.directory}/${words[3]}`) }
+                mod.replacements.push({ path: words[1], directory: directory })
+            }
+            other => return Err(`${place}: unknown line '${other}': a koji.mod has 'module', 'require', 'allow foreign' and 'replace' lines`)
+        }
+    }
+
+    if (mod.module == '') { return Err(`${path}: a koji.mod starts with the path of its module: 'module github.com/ana/agenda'`) }
+
+    return Ok(mod)
+}
+
+function wordsOf(line: string): string[] {
+    mut words: string[] = []
+
+    for word in line.replace('\t', ' ').split(' ') {
+        if (word != '') { words.push(word) }
+    }
+
+    return words
+}
+
+// A path of a module: a host with a dot, then parts of letters, digits, `-`, `_` and `.`.
+function validPath(path: string, place: string): Result[void, string] {
+    immut parts = path.split('/')
+
+    if (parts.length() < 2 or not ('.' in parts[0])) { return Err(`${place}: '${path}' is not the path of a module: it starts with a host ('github.com/ana/agenda')`) }
+
+    for part in parts {
+        if (part == '' or part == '.' or part == '..') { return Err(`${place}: '${path}' is not the path of a module`) }
+
+        for c in part {
+            immut letter = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')
+
+            if (not (letter or c == '-' or c == '_' or c == '.' or c == '~')) { return Err(`${place}: '${path}' is not the path of a module: '${c}' cannot be in it`) }
+        }
+    }
+
+    return Ok()
+}
+
+// Versions
+
+// A version of semver: `v1.4.0`, `v2.0.0-beta.1`.
+type Version = {
+    major: int
+    minor: int
+    patch: int
+    pre: string
+}
+
+function versionOf(text: string): Option[Version] {
+    if (not text.startsWith('v')) { return None }
+
+    immut dash = match (text.indexOf('-')) {
+        Some(at) => at
+        None => text.length()
+    }
+    immut numbers = text[1..dash].split('.')
+
+    if (numbers.length() != 3) { return None }
+
+    mut values: int[] = []
+
+    for number in numbers {
+        if (number == '' or (number.length() > 1 and number.startsWith('0'))) { return None }
+
+        for c in number {
+            if (c < '0' or c > '9') { return None }
+        }
+
+        match (int(number)) {
+            Ok(value) => values.push(value)
+            Err(_) => return None
+        }
+    }
+
+    immut pre = if (dash < text.length()) { text[dash + 1..] } else { '' }
+
+    if (dash < text.length() and pre == '') { return None }
+
+    return Some({ major: values[0], minor: values[1], patch: values[2], pre: pre })
+}
+
+// Whether `a` is before `b` (a pre-release before its release).
+function earlier(a: Version, b: Version): boolean {
+    if (a.major != b.major) { return a.major < b.major }
+
+    if (a.minor != b.minor) { return a.minor < b.minor }
+
+    if (a.patch != b.patch) { return a.patch < b.patch }
+
+    if (a.pre == b.pre) { return false }
+
+    if (a.pre == '') { return false }
+
+    if (b.pre == '') { return true }
+
+    return a.pre < b.pre
+}
+
+function textEarlier(a: string, b: string): boolean {
+    return match (versionOf(a)) {
+        Some(first) => match (versionOf(b)) {
+            Some(second) => earlier(first, second)
+            None => false
+        }
+        None => true
+    }
+}
+
+// The major version a path stands for: 2 for `.../v2`, 1 (or 0) without.
+function pathMajor(path: string): int {
+    immut parts = path.split('/')
+    immut last = parts[parts.length() - 1]
+
+    if (last.length() >= 2 and last.startsWith('v') and parts.length() > 2) {
+        match (int(last[1..])) {
+            Ok(major) if (major >= 2 and isDigits(last[1..])) => return major
+            _ => {}
+        }
+    }
+
+    return 1
+}
+
+function isDigits(text: string): boolean {
+    for c in text {
+        if (c < '0' or c > '9') { return false }
+    }
+
+    return text != ''
+}
+
+function validVersion(path: string, version: string, place: string): Result[void, string] {
+    immut parsed = match (versionOf(version)) {
+        Some(found) => found
+        None => return Err(`${place}: '${version}' is not a version: a version is a tag of semver ('v1.4.0')`)
+    }
+    immut major = pathMajor(path)
+
+    if (major >= 2 and parsed.major != major) { return Err(`${place}: the versions of '${path}' are v${major}.x.y, not ${version}`) }
+
+    if (major == 1 and parsed.major >= 2) { return Err(`${place}: ${version} is a major version of its own: its path ends with '/v${parsed.major}' ('${path}/v${parsed.major}')`) }
+
+    return Ok()
+}
+
+// The repository of a module: its path without the major version (`github.com/bia/toml/v2` is in
+// `github.com/bia/toml`), at the address of `KOJI_GIT_URL` (for a mirror) or `https://`.
+function repositoryOf(path: string): string {
+    mut repository = path
+
+    if (pathMajor(path) >= 2) { repository = path[..path.length() - path.split('/')[path.split('/').length() - 1].length() - 1] }
+
+    immut base = match (system.env('KOJI_GIT_URL')) {
+        Some(found) => found
+        None => 'https://'
+    }
+    return `${base}${repository}`
+}
+
+// The cache
+
+function cacheDirectory(): string {
+    match (system.env('KOJI_CACHE')) {
+        Some(found) => return found
+        None => {}
+    }
+
+    match (system.env('XDG_CACHE_HOME')) {
+        Some(found) if (found != '') => return `${found}/koji`
+        _ => {}
+    }
+
+    immut home = match (system.env('HOME')) {
+        Some(found) => found
+        None => '/tmp'
+    }
+    return `${home}/.cache/koji`
+}
+
+function makeDirectories(path: string) {
+    mut done = ''
+
+    for part in path.split('/') {
+        if (part == '') { continue }
+
+        done += `/${part}`
+
+        if (not file.exists(`${done}/`)) { file.createDir(done) }
+    }
+}
+
+// The directory of a module at a version in the cache, downloaded the first time.
+function fetched(path: string, version: string): Result[string, string] {
+    immut directory = `${cacheDirectory()}/packages/${path}@${version}`
+
+    if (file.exists(`${directory}/.git/`)) { return Ok(directory) }
+
+    makeDirectories(directoryOf(directory))
+    immut repository = repositoryOf(path)
+    immut cloned = system.capture('git', ['-c', 'advice.detachedHead=false', 'clone', '--quiet', '--depth', '1', '--branch', version, repository, directory])
+
+    return match (cloned) {
+        Ok(run) => {
+            if (run.status != 0) { return Err(`cannot download ${path} ${version} from ${repository}: ${run.stderr.trim()}`) }
+
+            Ok(directory)
+        }
+        Err(_) => Err("cannot run 'git', which downloads the modules: install it")
+    }
+}
+
+// The latest version of a module (of its major version): the greatest tag of semver of its
+// repository, a release rather than a pre-release.
+export function latestVersion(path: string): Result[string, string] {
+    immut repository = repositoryOf(path)
+    immut listed = match (system.capture('git', ['ls-remote', '--tags', '--refs', repository])) {
+        Ok(run) => {
+            if (run.status != 0) { return Err(`cannot read the versions of ${path} from ${repository}: ${run.stderr.trim()}`) }
+
+            run.stdout
+        }
+        Err(_) => return Err("cannot run 'git', which downloads the modules: install it")
+    }
+    immut major = pathMajor(path)
+    mut best = ''
+    mut bestRelease = ''
+
+    for line in listed.split('\n') {
+        immut at = match (line.indexOf('refs/tags/')) {
+            Some(found) => found + 10
+            None => continue
+        }
+        immut tag = line[at..].trim()
+        immut version = match (versionOf(tag)) {
+            Some(found) => found
+            None => continue
+        }
+        immut fits = if (major >= 2) { version.major == major } else { version.major <= 1 }
+
+        if (not fits) { continue }
+
+        if (best == '' or textEarlier(best, tag)) { best = tag }
+
+        if (version.pre == '' and (bestRelease == '' or textEarlier(bestRelease, tag))) { bestRelease = tag }
+    }
+
+    if (bestRelease != '') { return Ok(bestRelease) }
+
+    if (best != '') { return Ok(best) }
+
+    return Err(`${path} has no version: its repository (${repository}) has no tag of semver ('v1.0.0')`)
+}
+
+// The digest of the files of a module that its build reads (its `.kj` files and its `koji.mod`),
+// by their paths in order: `sha256:` and the hexadecimal.
+function digestOf(directory: string): Result[string, string] {
+    mut files: string[] = []
+    sourceFiles(directory, '', mut files)
+    files.sort()
+    mut text = ''
+
+    for name in files {
+        immut content = readText(`${directory}/${name}`)?
+        text += `${name}\n${content.length()}\n${content}\n`
+    }
+
+    return Ok(`sha256:${hash.sha256(text)}`)
+}
+
+function sourceFiles(directory: string, prefix: string, mut out: string[]) {
+    immut names = match (file.list(if (prefix == '') { directory } else { `${directory}/${prefix}` })) {
+        Ok(found) => found
+        Err(_) => return
+    }
+
+    for name in names {
+        if (name == '.git') { continue }
+
+        immut relative = if (prefix == '') { name } else { `${prefix}/${name}` }
+
+        if (file.exists(`${directory}/${relative}/`)) {
+            sourceFiles(directory, relative, mut out)
+            continue
+        }
+
+        if (name.endsWith('.kj') or name == 'koji.mod') { out.push(relative) }
+    }
+}
+
+// The build
+
+// The requirements of a module at a version, from its `koji.mod` (none without one), checking that
+// it names the module it was required as.
+function requirementsOf(path: string, directory: string): Result[Requirement[], string] {
+    immut modPath = `${directory}/koji.mod`
+
+    if (not file.exists(modPath)) { return Ok([]) }
+
+    immut mod = readModFile(modPath)?
+
+    if (mod.module != path) { return Err(`${modPath}: the module is '${mod.module}', required as '${path}'`) }
+
+    return Ok(mod.requires)
+}
+
+// The digests of `koji.sum`: a line `path version digest` for each module.
+function readSums(path: string): Result[Map[string, string], string] {
+    mut sums: Map[string, string] = [:]
+
+    if (not file.exists(path)) { return Ok(sums) }
+
+    immut text = readText(path)?
+
+    for line in text.split('\n') {
+        immut words = wordsOf(line)
+
+        if (words.length() == 0) { continue }
+
+        if (words.length() != 3) { return Err(`${path}: '${line}' is not a line of koji.sum ('path version digest')`) }
+
+        sums[`${words[0]} ${words[1]}`] = words[2]
+    }
+
+    return Ok(sums)
+}
+
+// Chooses the versions of the modules a program requires (MVS), downloads those missing, checks
+// them against `koji.sum` (and adds the new ones to it), and keeps the modules for the imports.
+export function prepare(mod: ModFile): Result[void, string] {
+    mut selected: Map[string, string] = [:]
+    mut visited: Set[string] = Set.from([])
+    mut queue = mod.requires
+    mut directories: Map[string, string] = [:]
+    immut sumPath = `${mod.directory}/koji.sum`
+    mut sums = readSums(sumPath)?
+    mut added = false
+
+    while (queue.length() > 0) {
+        immut next = queue[0]
+        queue = queue[1..]
+        immut key = `${next.path} ${next.version}`
+
+        if (visited.has(key)) { continue }
+
+        visited.add(key)
+
+        match (selected.get(next.path)) {
+            Some(version) if (not textEarlier(version, next.version)) => {}
+            _ => selected[next.path] = next.version
+        }
+
+        // A module replaced by a directory: its requirements are those of the directory.
+        mut replaced = ''
+
+        for each in mod.replacements {
+            if (each.path == next.path) { replaced = each.directory }
+        }
+
+        if (replaced != '') {
+            directories[next.path] = replaced
+            queue = queue + requirementsOf(next.path, replaced)?
+            continue
+        }
+
+        immut directory = fetched(next.path, next.version)?
+        immut digest = digestOf(directory)?
+
+        match (sums.get(key)) {
+            Some(recorded) => {
+                if (recorded != digest) { return Err(`the files of ${next.path} ${next.version} are not those of koji.sum (${recorded}): the tag was moved, or the copy in ${directory} was changed (remove it to download it again)`) }
+            }
+            None => {
+                sums[key] = digest
+                added = true
+            }
+        }
+
+        directories[key] = directory
+        queue = queue + requirementsOf(next.path, directory)?
+    }
+
+    if (added) {
+        mut lines: string[] = []
+
+        for key in sums.keys() {
+            lines.push(`${key} ${sums[key]}`)
+        }
+
+        lines.sort()
+        writeText(sumPath, `${lines.join('\n')}\n`)?
+    }
+
+    mut found: Root[] = [{ path: mod.module, version: '', directory: mod.directory }]
+
+    for path in selected.keys() {
+        immut version = selected[path]
+        immut directory = match (directories.get(path)) {
+            Some(replaced) => replaced
+            None => directories[`${path} ${version}`]
+        }
+        found.push({ path: path, version: if (directories.has(path)) { '' } else { version }, directory: directory })
+    }
+
+    roots = found
+    allowedForeign = mod.allowed
+    return Ok()
+}
+
+// The modules of the program for its imports, without downloading anything (the language server):
+// those already in the cache.
+export function prepareCached(mod: ModFile) {
+    mut found: Root[] = [{ path: mod.module, version: '', directory: mod.directory }]
+
+    for each in mod.requires {
+        mut directory = `${cacheDirectory()}/packages/${each.path}@${each.version}`
+
+        for replacement in mod.replacements {
+            if (replacement.path == each.path) { directory = replacement.directory }
+        }
+
+        found.push({ path: each.path, version: each.version, directory: directory })
+    }
+
+    roots = found
+    allowedForeign = mod.allowed
+}
+
+// Imports
+
+// Whether an import names a module of a package: a path that starts with a host (`github.com/...`),
+// not a file (`util.kj`) nor a module of the standard library (`json`).
+export function isPackagePath(path: string): boolean {
+    if (path.endsWith('.kj') or path.startsWith('.') or path.startsWith('/')) { return false }
+
+    immut first = path.split('/')[0]
+    return '.' in first and '/' in path
+}
+
+// The file of an import of a module of a package, or why there is none.
+export function packageFile(path: string): Result[string, string] {
+    mut best = -1
+
+    for i in range(roots.length()) {
+        immut root = roots[i].path
+
+        if (path == root or path.startsWith(`${root}/`)) {
+            if (best < 0 or root.length() > roots[best].path.length()) { best = i }
+        }
+    }
+
+    if (best < 0) {
+        if (roots.length() == 0) { return Err(`'${path}' is the module of a package, and this program has no koji.mod: make one with 'kojic init <path of the module>', then 'kojic add ${path}'`) }
+
+        return Err(`'${path}' is not a module that koji.mod requires: add it with 'kojic add ${path}'`)
+    }
+
+    immut root = roots[best]
+    immut rest = path[root.path.length()..]
+    immut name = if (rest == '') { `/${lastName(root.path)}` } else { rest }
+    return Ok(`${root.directory}${name}.kj`)
+}
+
+// The last part of the path of a module, but its major version: `toml` for `github.com/bia/toml/v2`.
+function lastName(path: string): string {
+    immut parts = path.split('/')
+
+    if (pathMajor(path) >= 2) { return parts[parts.length() - 2] }
+
+    return parts[parts.length() - 1]
+}
+
+// Whether the file of a module may declare foreign functions: those of the program, and of the
+// modules it allows.
+export function foreignAllowed(path: string): Result[void, string] {
+    for i in range(roots.length()) {
+        immut root = roots[i]
+
+        if (i == 0 or not path.startsWith(`${root.directory}/`)) { continue }
+
+        if (root.path in allowedForeign) { return Ok() }
+
+        return Err(`the module ${root.path} has foreign functions (a 'foreign' block), which call code that is not Koji: if you trust it, allow it in koji.mod with 'allow foreign ${root.path}'`)
+    }
+
+    return Ok()
+}
+
+// The commands
+
+// `kojic init <path>`: a koji.mod in the current directory.
+export function initModule(path: string): Result[string, string] {
+    validPath(path, 'kojic init')?
+
+    if (file.exists('koji.mod')) { return Err('there is already a koji.mod here') }
+
+    writeText('koji.mod', `module ${path}\n`)?
+    return Ok(`made koji.mod for the module ${path}`)
+}
+
+// The koji.mod of the current directory (or above).
+function currentModFile(): Result[ModFile, string] {
+    immut found = match (findModFile(currentDirectory())) {
+        Some(path) => path
+        None => return Err("there is no koji.mod here: make one with 'kojic init <path of the module>'")
+    }
+
+    return readModFile(found)
+}
+
+// `kojic add <path>[@version]`: requires a module (at its latest version, or the one given).
+export function addModule(given: string): Result[string, string] {
+    mut mod = currentModFile()?
+    immut at = match (given.indexOf('@')) {
+        Some(found) => found
+        None => given.length()
+    }
+    immut path = given[..at]
+    validPath(path, 'kojic add')?
+    immut version = if (at < given.length()) { given[at + 1..] } else { latestVersion(path)? }
+    validVersion(path, version, 'kojic add')?
+    setRequirement(mut mod, path, version)?
+    return Ok(`added ${path} ${version}`)
+}
+
+// `kojic update [path]`: each module the program requires (or the one given) at its latest version.
+export function updateModules(only: Option[string]): Result[string, string] {
+    mut mod = currentModFile()?
+    mut changed: string[] = []
+
+    for each in mod.requires {
+        match (only) {
+            Some(path) if (path != each.path) => continue
+            _ => {}
+        }
+
+        immut latest = latestVersion(each.path)?
+
+        if (textEarlier(each.version, latest)) {
+            setRequirement(mut mod, each.path, latest)?
+            changed.push(`${each.path} ${each.version} -> ${latest}`)
+        }
+    }
+
+    match (only) {
+        Some(path) => {
+            mut required = false
+
+            for each in mod.requires {
+                if (each.path == path) { required = true }
+            }
+
+            if (not required) { return Err(`koji.mod does not require ${path}`) }
+        }
+        None => {}
+    }
+
+    if (changed.length() == 0) { return Ok('every module is at its latest version') }
+
+    return Ok(changed.join('\n'))
+}
+
+// Writes the requirement in koji.mod (in place of the one of the module, or after the others), then
+// prepares the build, which downloads it and adds it to koji.sum.
+function setRequirement(mut mod: ModFile, path: string, version: string): Result[void, string] {
+    immut line = `require ${path} ${version}`
+    mut lines = mod.lines
+    mut placed = false
+    mut last = -1
+
+    for i in range(lines.length()) {
+        immut words = wordsOf(lines[i])
+
+        if (words.length() >= 1 and words[0] == 'require') {
+            last = i
+
+            if (words.length() >= 2 and words[1] == path) {
+                lines[i] = line
+                placed = true
+            }
+        }
+    }
+
+    if (not placed) {
+        if (last >= 0) {
+            lines.insert(last + 1, line)
+        } else {
+            // After the line of the module, with an empty line between.
+            while (lines.length() > 0 and lines[lines.length() - 1].trim() == '') {
+                lines.pop()
+            }
+
+            lines.push('')
+            lines.push(line)
+        }
+    }
+
+    mut text = lines.join('\n')
+
+    if (not text.endsWith('\n')) { text += '\n' }
+
+    immut path0 = `${mod.directory}/koji.mod`
+    immut updated = parseModFile(path0, text)?
+    prepare(updated)?
+    writeText(path0, text)?
+    mod = updated
+    return Ok()
+}
+
+// Prepares the packages of the program of the file `entry` (nothing outside a module): with
+// `download`, as `prepare` does; without, from the cache only (the language server). Once for each
+// koji.mod.
+mut preparedFor = ''
+
+export function preparePackages(entry: string, download: boolean): Result[void, string] {
+    immut found = match (findModFile(entry)) {
+        Some(path) => path
+        None => {
+            roots = []
+            preparedFor = ''
+            return Ok()
+        }
+    }
+
+    if (found == preparedFor) { return Ok() }
+
+    immut mod = match (readModFile(found)) {
+        Ok(read) => read
+        Err(message) => return Err(`package error: ${message}`)
+    }
+
+    if (download) {
+        match (prepare(mod)) {
+            Ok(_) => {}
+            Err(message) => return Err(`package error: ${message}`)
+        }
+    } else {
+        prepareCached(mod)
+    }
+
+    preparedFor = found
+    return Ok()
+}

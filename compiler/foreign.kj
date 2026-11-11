@@ -291,11 +291,17 @@ function functionText(each: ForeignFunction, handles: ForeignHandle[], serialize
 
     if (serialized) { text += '    kojiLeave()\n' }
 
-    text += after
-    text += match (returned) {
-        Some(crossing) => resultText(crossing, each.name)
-        None => ''
+    // The result is read before the arguments are freed: it may point into one of them (`getcwd`
+    // returns its buffer).
+    match (returned) {
+        Some(crossing) => text += resultText(crossing, each.name)
+        None => {}
     }
+
+    text += after
+
+    if (returned is Some) { text += '    return kojiValue\n' }
+
     text += '}\n\n'
     return Ok(text)
 }
@@ -319,11 +325,11 @@ function resultText(crossing: Crossing, name: string): string {
     immut noString = quoted(`'${name}' returned no string (NULL)`)
     immut noHandle = quoted(`'${name}' returned no handle (NULL)`)
     return match (crossing.kind) {
-        'string' => `    if (isNull(kojiResult)) { panicAt(kojiPlace, ${noString}) }\n\n    return cText(kojiResult)\n`
-        'optionalString' => '    if (isNull(kojiResult)) { return None }\n\n    return Some(cText(kojiResult))\n'
-        'handle' => `    if (isNull(kojiResult)) { panicAt(kojiPlace, ${noHandle}) }\n\n    immut kojiHandle: ${crossing.koji} = { pointer: kojiResult }\n    return kojiHandle\n`
-        'optionalHandle' => `    if (isNull(kojiResult)) { return None }\n\n    immut kojiHandle: ${handleOf(crossing.koji)} = { pointer: kojiResult }\n    return Some(kojiHandle)\n`
-        _ => '    return kojiResult\n'
+        'string' => `    if (isNull(kojiResult)) { panicAt(kojiPlace, ${noString}) }\n\n    immut kojiValue = cText(kojiResult)\n`
+        'optionalString' => '    immut kojiValue: Option[string] = if (isNull(kojiResult)) { None } else { Some(cText(kojiResult)) }\n'
+        'handle' => `    if (isNull(kojiResult)) { panicAt(kojiPlace, ${noHandle}) }\n\n    immut kojiValue: ${crossing.koji} = { pointer: kojiResult }\n`
+        'optionalHandle' => `    mut kojiValue: ${crossing.koji} = None\n\n    if (not isNull(kojiResult)) {\n        immut kojiHandle: ${handleOf(crossing.koji)} = { pointer: kojiResult }\n        kojiValue = Some(kojiHandle)\n    }\n`
+        _ => '    immut kojiValue = kojiResult\n'
     }
 }
 

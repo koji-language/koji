@@ -1,0 +1,15 @@
+// The `hash` module: the digests of texts (see doc/standard-library/hash.md), by the SHA-2 of
+// koji:sha, the library written in Koji.
+
+extern function koji_sha256_hex(text: string): string
+extern function koji_sha512_hex(text: string): string
+
+// The SHA-256 of the UTF-8 bytes of `text`: 64 hexadecimal digits in lower case.
+export function sha256(text: string): string {
+    return koji_sha256_hex(text)
+}
+
+// The SHA-512 of the UTF-8 bytes of `text`: 128 hexadecimal digits in lower case.
+export function sha512(text: string): string {
+    return koji_sha512_hex(text)
+}

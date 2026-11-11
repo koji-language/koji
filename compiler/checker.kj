@@ -7,6 +7,7 @@ import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Ar
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, MethodSignature, NamedParts, unconstrained, equatable, orderable, constraintName, isNumeric, mixesFloatAndDecimal, containsUnknown, anyUnknown, fillUnknown, substitute, substituteAll, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, substituteFields, variantsOf, findField } from 'types.kj'
 import { decimalLiteral } from 'decimal.kj'
 import { foreignModule } from 'foreign.kj'
+import { isPackagePath, packageFile, foreignAllowed, preparePackages } from 'packages.kj'
 import { kojiModules, stdSource } from 'stdlib.kj'
 
 // Names of the standard library modules (`import math`).
@@ -1359,7 +1360,15 @@ function Checker.importedModule(mut self, path: string): Result[int, string] {
         return Ok(id)
     }
 
-    immut resolved = resolvePath(self.state.dir, path)
+    // A module of a package (`github.com/bia/toml`): its file, in the cache or in the program.
+    mut resolved = resolvePath(self.state.dir, path)
+
+    if (isPackagePath(path)) {
+        resolved = match (packageFile(path)) {
+            Ok(found) => found
+            Err(message) => return Err(self.failure(message))
+        }
+    }
 
     match (self.moduleByPath.get(resolved)) {
         Some(id) => return Ok(id)
@@ -1386,6 +1395,11 @@ export function foreignPath(source: string): string {
 // `foreign 'library' { ... }`: its module, checked like one of the standard library, gives the
 // names it declares to the module of the block.
 function Checker.checkForeign(mut self, library: string, source: string, names: string[]): Result[void, string] {
+    match (foreignAllowed(self.state.path)) {
+        Ok(_) => {}
+        Err(message) => return Err(self.failure(message))
+    }
+
     immut path = foreignPath(source)
     immut moduleId = match (self.moduleByPath.get(path)) {
         Some(id) => id
@@ -6045,6 +6059,8 @@ export type Checked = {
 }
 
 export function checkText(path: string, source: string): Checked {
+    // The packages already downloaded (the language server downloads nothing).
+    preparePackages(path, false)
     mut checker = Checker.create()
     immut result = checker.checkModule(resolvePath('', path), path, source)
     mut errors = checker.errors
@@ -6065,6 +6081,7 @@ export function check(path: string): Result[Program, string] {
         Err(error) => return Err(`import error: cannot read '${path}': ${ioMessage(error)}`)
     }
 
+    preparePackages(path, true)?
     mut checker = Checker.create()
     immut result = checker.checkModule(resolvePath('', path), path, source)
     return checker.finished(result)

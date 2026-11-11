@@ -2,7 +2,7 @@
 // json` compiles std/json.kj. Generated: test/stages.rs checks that it is up to date, and rewrites
 // it when run with KOJI_UPDATE_STDLIB=1.
 
-export immut kojiModules = ['datetime', 'file', 'http', 'json', 'math', 'path', 'regex', 'system', 'task', 'time']
+export immut kojiModules = ['datetime', 'file', 'hash', 'http', 'json', 'math', 'path', 'regex', 'system', 'task', 'time']
 
 // The source of the module `name` of the standard library (`koji:core` for an internal one).
 export function stdSource(name: string): Option[string] {
@@ -571,6 +571,26 @@ export function stdSource(name: string): Option[string] {
             'function byteAt(bytes: Address, at: int): int {',
             '    immut b: byte = read(bytes, at)',
             '    return int(b)',
+            '}',
+        ].join('\n'))
+    }
+
+    if (name == 'hash') {
+        return Some([
+            '// The `hash` module: the digests of texts (see doc/standard-library/hash.md), by the SHA-2 of',
+            '// koji:sha, the library written in Koji.',
+            '',
+            'extern function koji_sha256_hex(text: string): string',
+            'extern function koji_sha512_hex(text: string): string',
+            '',
+            '// The SHA-256 of the UTF-8 bytes of `text`: 64 hexadecimal digits in lower case.',
+            'export function sha256(text: string): string {',
+            '    return koji_sha256_hex(text)',
+            '}',
+            '',
+            '// The SHA-512 of the UTF-8 bytes of `text`: 128 hexadecimal digits in lower case.',
+            'export function sha512(text: string): string {',
+            '    return koji_sha512_hex(text)',
             '}',
         ].join('\n'))
     }
@@ -11832,6 +11852,33 @@ export function stdSource(name: string): Option[string] {
             '    hkdfExtract(hash, salt, saltSize, secret, secretSize, key)',
             '    hkdfExpand(hash, key, digestSize(hash), info, infoSize, length, out)',
             '    free(key)',
+            '}',
+            '',
+            '// The `hash` module: the digest of SHA-256 (or SHA-512) of the UTF-8 bytes of a text, in',
+            '// hexadecimal (lower case).',
+            'extern function koji_sha256_hex(text: string): string {',
+            '    return hexDigest(0, text)',
+            '}',
+            '',
+            'extern function koji_sha512_hex(text: string): string {',
+            '    return hexDigest(2, text)',
+            '}',
+            '',
+            'function hexDigest(hash: int, text: string): string {',
+            '    immut size = digestSize(hash)',
+            '    immut out = allocate(size)',
+            '    digest(hash, stringBytes(text), stringSize(text), out)',
+            '    immut digits = \'0123456789abcdef\'',
+            '    mut hex = \'\'',
+            '',
+            '    for i in range(size) {',
+            '        immut b: byte = read(out, i)',
+            '        immut value = int(b)',
+            '        hex += `${digits[value >> 4]}${digits[value & 15]}`',
+            '    }',
+            '',
+            '    free(out)',
+            '    return hex',
             '}',
         ].join('\n'))
     }

@@ -25,6 +25,9 @@ The **Koji Standard Library** provides a collection of built-in modules to help 
 -   [`http`](standard-library/http.md)  
     Send HTTP requests such as GET, POST, PUT, and DELETE, and serve them.
 
+-   [`hash`](standard-library/hash.md)  
+    Compute the SHA-256 and SHA-512 digests of texts.
+
 -   [`json`](standard-library/json.md)  
     Parse JSON strings and convert data to JSON format.
 

@@ -71,6 +71,16 @@ fn assert_same(name: &str, source: &str, expected: &str) {
     assert!(compiled.success, "the program failed: {}", compiled.error);
 }
 
+/// Like `assert_same`, without valgrind.
+fn assert_same_native(name: &str, source: &str, expected: &str) {
+    let path = source_file(name, source);
+    let executable = path.with_extension("");
+    build(&path, &executable);
+    let run = Command::new(&executable).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+    assert!(run.status.success(), "the program failed: {}", String::from_utf8_lossy(&run.stderr));
+}
+
 /// Like `assert_same`, for a program that panics with `message` (after the location).
 fn assert_same_panic(name: &str, source: &str, message: &str) {
     let path = source_file(name, source);
@@ -2601,7 +2611,8 @@ print(failed)
 
 #[test]
 fn tasks_that_compute_let_the_others_run() {
-    assert_same(
+    // It measures time: without valgrind, which runs one thread at a time.
+    assert_same_native(
         "task_preemption",
         r#"import task
 import time
@@ -2812,4 +2823,110 @@ print(abs(3000000000))
     // What a foreign function cannot take.
     let wrong = koji::finish(koji::kojic().arg("check").arg(source_file("foreign_wrong", "foreign 'c' {\n    function qsort(items: int[], count: CSize)\n}\n")), "");
     assert!(wrong.stderr.contains("foreign_wrong.kj:1: parameter 'items' of the foreign function 'qsort' cannot be int[]"), "{}", wrong.stderr);
+}
+
+/// Runs `git` in `directory` (a test of packages makes its repositories).
+fn git(directory: &Path, args: &[&str]) {
+    let run = Command::new("git").args(["-c", "user.name=koji", "-c", "user.email=koji@localhost", "-c", "init.defaultBranch=main"]).args(args).current_dir(directory).output().unwrap();
+    assert!(run.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&run.stderr));
+}
+
+/// A repository of a module, with a commit and a tag for each version: (tag, files).
+fn repository(root: &Path, path: &str, versions: &[(&str, &[(&str, &str)])]) {
+    let directory = root.join(path.trim_end_matches("/v2"));
+    std::fs::create_dir_all(&directory).unwrap();
+    if !directory.join(".git").exists() {
+        git(&directory, &["init", "-q"]);
+    }
+    for (tag, files) in versions {
+        for (name, text) in *files {
+            std::fs::write(directory.join(name), text).unwrap();
+        }
+        git(&directory, &["add", "-A"]);
+        git(&directory, &["commit", "-qm", tag]);
+        git(&directory, &["tag", tag]);
+    }
+}
+
+#[test]
+fn packages_from_repositories_of_git_at_the_versions_mvs_chooses() {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("packages");
+    let _ = std::fs::remove_dir_all(&root);
+    let repositories = root.join("repositories");
+    repository(
+        &repositories,
+        "github.com/bia/greet",
+        &[
+            ("v1.0.0", &[("koji.mod", "module github.com/bia/greet\n"), ("greet.kj", "export function hello(name: string): string {\n    return `hello, ${name}`\n}\n")]),
+            (
+                "v1.1.0",
+                &[
+                    ("greet.kj", "import { upper } from 'text.kj'\n\nexport function hello(name: string): string {\n    return `hello, ${upper(name)}`\n}\n"),
+                    ("text.kj", "export function upper(name: string): string {\n    return name.upper()\n}\n"),
+                ],
+            ),
+        ],
+    );
+    repository(&repositories, "github.com/bia/greet/v2", &[("v2.0.0", &[("koji.mod", "module github.com/bia/greet/v2\n"), ("greet.kj", "export function hello(name: string): string {\n    return `HELLO ${name}`\n}\n")])]);
+    repository(
+        &repositories,
+        "github.com/caio/helper",
+        &[("v1.0.0", &[("koji.mod", "module github.com/caio/helper\n\nrequire github.com/bia/greet v1.1.0\n"), ("helper.kj", "import { hello } from 'github.com/bia/greet'\n\nexport function twice(name: string): string {\n    return `${hello(name)} / ${hello(name)}`\n}\n")])],
+    );
+    repository(&repositories, "github.com/dan/native", &[("v1.0.0", &[("koji.mod", "module github.com/dan/native\n"), ("native.kj", "foreign 'c' {\n    function abs(value: CInt): CInt\n}\n\nexport function positive(value: int): int {\n    return abs(value)\n}\n")])]);
+    let app = root.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("main.kj"),
+        "import { hello } from 'github.com/bia/greet'\nimport greet2 from 'github.com/bia/greet/v2'\nimport { twice } from 'github.com/caio/helper'\nimport { upper } from 'github.com/bia/greet/text'\n\nprint(hello('ana'))\nprint(greet2.hello('ana'))\nprint(twice('bia'))\nprint(upper('x'))\n",
+    )
+    .unwrap();
+    let kojic = |args: &[&str]| {
+        let mut command = koji::kojic();
+        command.args(args).current_dir(&app).env("KOJI_GIT_URL", format!("file://{}/", repositories.display())).env("KOJI_CACHE", root.join("cache"));
+        koji::finish(&mut command, "")
+    };
+    // Without a koji.mod, a package cannot be imported.
+    assert!(kojic(&["check", "main.kj"]).stderr.contains("this program has no koji.mod: make one with 'kojic init <path of the module>'"));
+    assert_eq!(kojic(&["init", "github.com/ana/app"]).stdout, "made koji.mod for the module github.com/ana/app\n");
+    assert_eq!(kojic(&["add", "github.com/bia/greet@v1.0.0"]).stdout, "added github.com/bia/greet v1.0.0\n");
+    assert_eq!(kojic(&["add", "github.com/bia/greet/v2"]).stdout, "added github.com/bia/greet/v2 v2.0.0\n");
+    assert_eq!(kojic(&["add", "github.com/caio/helper"]).stdout, "added github.com/caio/helper v1.0.0\n");
+    // The program asks for greet v1.0.0, helper for v1.1.0: the program builds with v1.1.0.
+    let run = kojic(&["run", "main.kj"]);
+    assert_eq!(run.stdout, "hello, ANA\nHELLO ana\nhello, BIA / hello, BIA\nX\n", "{}", run.stderr);
+    let sums = std::fs::read_to_string(app.join("koji.sum")).unwrap();
+    assert_eq!(sums.lines().count(), 4, "{}", sums);
+    assert!(sums.contains("github.com/bia/greet v1.1.0 sha256:"));
+    // A copy changed in the cache is refused.
+    let copy = root.join("cache/packages/github.com/bia/greet@v1.1.0/greet.kj");
+    std::fs::write(&copy, std::fs::read_to_string(&copy).unwrap() + "// changed\n").unwrap();
+    assert!(kojic(&["run", "main.kj"]).stderr.contains("the files of github.com/bia/greet v1.1.0 are not those of koji.sum"));
+    std::fs::remove_dir_all(root.join("cache/packages/github.com/bia/greet@v1.1.0")).unwrap();
+    assert_eq!(kojic(&["run", "main.kj"]).stdout, "hello, ANA\nHELLO ana\nhello, BIA / hello, BIA\nX\n");
+    // A module with foreign functions needs leave.
+    kojic(&["add", "github.com/dan/native"]);
+    std::fs::write(app.join("native.kj"), "import { positive } from 'github.com/dan/native'\nprint(positive(-5))\n").unwrap();
+    assert!(kojic(&["run", "native.kj"]).stderr.contains("if you trust it, allow it in koji.mod with 'allow foreign github.com/dan/native'"));
+    let mod_file = std::fs::read_to_string(app.join("koji.mod")).unwrap();
+    std::fs::write(app.join("koji.mod"), mod_file + "allow foreign github.com/dan/native\n").unwrap();
+    assert_eq!(kojic(&["run", "native.kj"]).stdout, "5\n");
+    // A module that koji.mod does not require, and a version of another major version.
+    std::fs::write(app.join("missing.kj"), "import x from 'github.com/zed/none'\n").unwrap();
+    assert!(kojic(&["check", "missing.kj"]).stderr.contains("'github.com/zed/none' is not a module that koji.mod requires: add it with 'kojic add github.com/zed/none'"));
+    assert!(kojic(&["add", "github.com/bia/greet@v2.0.0"]).stderr.contains("v2.0.0 is a major version of its own: its path ends with '/v2'"));
+    // A new version, then `update`.
+    repository(&repositories, "github.com/caio/helper", &[("v1.0.1", &[("helper.kj", "export function twice(name: string): string {\n    return 'v1.0.1'\n}\n")])]);
+    let updated = kojic(&["update"]).stdout;
+    assert!(updated.contains("github.com/bia/greet v1.0.0 -> v1.1.0") && updated.contains("github.com/caio/helper v1.0.0 -> v1.0.1"), "{}", updated);
+    assert!(kojic(&["run", "main.kj"]).stdout.ends_with("v1.0.1\nX\n"));
+}
+
+#[test]
+fn digests_of_texts() {
+    assert_same(
+        "hashes",
+        "import hash\nprint(hash.sha256('abc'))\nprint(hash.sha256(''))\nprint(hash.sha512('abc').length())\n",
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n128\n",
+    );
 }

@@ -7,6 +7,7 @@ import { MethodRef, TryWrap, LoadedModule, Tables, Program, coreStringMethods, l
 import { IrExtern, IrForC, IrTest, Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
 import { decimalLiteral } from 'decimal.kj'
 import { foreignModule } from 'foreign.kj'
+import { isPackagePath, packageFile } from 'packages.kj'
 import { kojiModules } from 'stdlib.kj'
 
 // The functions of `math` for several types of numbers: a call is one of the function of
@@ -789,6 +790,13 @@ function Lowerer.externNamed(self, name: string): Option[IrExtern] {
 function modulePath(directory: string, path: string): string {
     if (path.startsWith(foreignPrefix)) { return path }
 
+    if (isPackagePath(path)) {
+        return match (packageFile(path)) {
+            Ok(found) => found
+            Err(_) => path
+        }
+    }
+
     if (isKojiModule(path)) { return if (path.startsWith('koji:')) { `std:${path[5..]}` } else { `std:${path}` } }
 
     return resolvePath(directory, path)
@@ -851,7 +859,7 @@ function Lowerer.loadModule(mut self, path: string, isEntry: boolean): Result[in
                     _ => {}
                 }
 
-                if (not found.path.endsWith('.kj') and not isKojiModule(found.path) and not found.path.startsWith(foreignPrefix)) {
+                if (not found.path.endsWith('.kj') and not isKojiModule(found.path) and not found.path.startsWith(foreignPrefix) and not isPackagePath(found.path)) {
                     imports.push(-1)
                     self.importTargets[nodeId(statement)] = -1
                     continue
@@ -882,7 +890,7 @@ function Lowerer.loadModule(mut self, path: string, isEntry: boolean): Result[in
         }
         mut module = -1
 
-        if (found.path.endsWith('.kj') or isKojiModule(found.path)) {
+        if (found.path.endsWith('.kj') or isKojiModule(found.path) or isPackagePath(found.path)) {
             module = self.loadModule(modulePath(directory, found.path), false)?
             modules.push(module)
         }

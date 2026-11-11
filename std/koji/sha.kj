@@ -419,3 +419,30 @@ extern function koji_hkdf(hash: CInt, salt: Address, saltSize: CSize, secret: Ad
     hkdfExpand(hash, key, digestSize(hash), info, infoSize, length, out)
     free(key)
 }
+
+// The `hash` module: the digest of SHA-256 (or SHA-512) of the UTF-8 bytes of a text, in
+// hexadecimal (lower case).
+extern function koji_sha256_hex(text: string): string {
+    return hexDigest(0, text)
+}
+
+extern function koji_sha512_hex(text: string): string {
+    return hexDigest(2, text)
+}
+
+function hexDigest(hash: int, text: string): string {
+    immut size = digestSize(hash)
+    immut out = allocate(size)
+    digest(hash, stringBytes(text), stringSize(text), out)
+    immut digits = '0123456789abcdef'
+    mut hex = ''
+
+    for i in range(size) {
+        immut b: byte = read(out, i)
+        immut value = int(b)
+        hex += `${digits[value >> 4]}${digits[value & 15]}`
+    }
+
+    free(out)
+    return hex
+}

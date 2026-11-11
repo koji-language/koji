@@ -140,3 +140,7 @@ immut other: Counter = { name: 'x', count: 0 } // Error! Counter is opaque: it i
 ```
 
 Since its structure is hidden, an opaque value is always shown by its type's `display` method, also inside other values and by `debug()`; without one, by its name (`<Counter>`). The structure of an opaque type may use the private types of its module. The `Regex` of the standard library is an opaque type.
+
+## Packages
+
+Modules of other projects are imported by the path of their repository (`import toml from 'github.com/bia/toml'`), once the program's `koji.mod` requires them: see [Packages](packages.md).

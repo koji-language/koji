@@ -31,7 +31,7 @@ This document outlines the planned features and milestones for the Koji programm
 
 ## Long-term
 
--   [ ] Package manager
+-   [x] Package manager: packages are repositories of git, versions are tags, chosen by MVS (`koji.mod`, `koji.sum`)
 -   [x] Built-in testing framework (`test` blocks, `assert`, `kojic test`)
 -   [x] Concurrency: lightweight tasks in groups, channels and shared values (`task`), on one thread
 -   [x] An HTTP server (`http.serve`), each connection in a task
