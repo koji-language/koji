@@ -390,3 +390,21 @@ The check goes on after an error, statement by statement, and reports every erro
 
 **Alternatives**: a server of its own, apart from the compiler (as rust-analyzer), which can be incremental but repeats the language; a server in another language (TypeScript), which would need the compiler anyway.
 
+
+### Concurrency: light tasks in groups, on one thread
+
+**Decision**: concurrency is the `task` module: a task runs a function on a stack of its own (1 MB the system gives as it is used, with a guard page below), and code in a task is ordinary code, with no `async` or `await`. In this first phase, the tasks take turns on the one thread of the program: a task runs until it waits (for a timer, the network, another task), and the runtime (`koji:task`, written in Koji, with the switch between stacks and the poller of the system in the prelude: epoll on Linux, kqueue on macOS and the BSDs) then runs the next one, and waits for the timers and sockets when none is ready. Tasks are structured: each belongs to a group (`task.group`), which waits for all of its tasks before it returns, so no task outlives the code that started it. Tasks share data through channels (`task.channel`, with a capacity, 0 for a meeting) and shared values (`task.shared`, whose `update` no other task interleaves); everything else a task uses is a copy, as in any closure. A program where every task waits for another stops with a panic that says so.
+
+**Why**: Koji is for scripts, CLIs, courses and small services: sending requests at the same time, and later serving them, is what they need, and lightweight tasks with sequential code do it without dividing functions into two colors (as `async` does in JavaScript, Rust and Python), as Go and Erlang show. One thread first means no data races at all, and the runtime stays as it is (counts of references that are not atomic, the caches of the library): code that does not wait is never interrupted. Structured groups (as Swift, Kotlin and Trio have them) make a task's life visible in the code: no task is lost or left running, and an error has a place to go. Shared values cover the simple case (a counter, a cache), channels the coordination of tasks.
+
+**Alternatives**: `async` and `await` (JavaScript, Rust, Python), which color functions; threads of the system (Java before 21, C), heavy and with data races; tasks over several threads at once (Go), the second phase, which needs atomic counts of references and a runtime safe for threads; tasks without groups (Go's `go`), which can be forgotten.
+
+The value of `Shared` is the one reference of Koji, which its copies share: the cells of `std/task.kj` are lists of one item that only `sharedGet` and `sharedSet` of `koji:unsafe` read and change in place. Reading files, `input()`, `system.run` and DNS still wait the whole program in this phase; a computation that never waits keeps the others from running, unless it calls `task.yield()`. The library is compiled without the shadow stacks of x86-64 (CET), which forbid switching stacks.
+
+### Anonymous functions take their parameter types from where they are written
+
+**Decision**: a parameter of an anonymous function written without a type has the one of the function type expected where it is written (`task.group((tasks) => ...)`, `immut f: (int) => int = (x) => x * 2`); with no such type, it needs one.
+
+**Why**: the type is already written once, in the signature; writing it again at each call is noise, the more so for the functions given to tasks. It is what TypeScript, Kotlin and Swift do.
+
+**Alternatives**: always writing the types (as before), clearer for a reader without an editor but heavy; inferring them from the body too (as ML), which gives errors far from their cause.

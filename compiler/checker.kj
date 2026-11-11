@@ -2,6 +2,7 @@
 // moves, drops...) by the node's id; `kojic dump types` prints the text of `dumpTypes`.
 
 import file
+import system
 import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Part, Entry, ObjectEntry, ParsedFile, Span, parseFrom, annotated } from 'parser.kj'
 import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, MethodSignature, NamedParts, unconstrained, equatable, orderable, constraintName, isNumeric, mixesFloatAndDecimal, containsUnknown, anyUnknown, fillUnknown, substitute, substituteAll, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, substituteFields, variantsOf, findField } from 'types.kj'
 import { decimalLiteral } from 'decimal.kj'
@@ -17,8 +18,8 @@ export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'end
 // The internal modules (std/koji/): `koji:core`, compiled with the programs that use it, and those
 // of the library of the runtime written in Koji, compiled once (`kojic dump library`) and linked
 // into every program.
-immut internalModules = ['koji:aes', 'koji:bignum', 'koji:chacha', 'koji:closure', 'koji:core', 'koji:decimal', 'koji:ecc', 'koji:list', 'koji:map', 'koji:memory', 'koji:numbers', 'koji:output', 'koji:record', 'koji:roots', 'koji:rsa', 'koji:ryu', 'koji:sha', 'koji:start', 'koji:text', 'koji:tls', 'koji:unicode', 'koji:x25519', 'koji:x509']
-export immut libraryModules = ['koji:aes', 'koji:bignum', 'koji:chacha', 'koji:closure', 'koji:decimal', 'koji:ecc', 'koji:list', 'koji:map', 'koji:memory', 'koji:numbers', 'koji:output', 'koji:record', 'koji:roots', 'koji:rsa', 'koji:ryu', 'koji:sha', 'koji:start', 'koji:text', 'koji:tls', 'koji:unicode', 'koji:x25519', 'koji:x509']
+immut internalModules = ['koji:aes', 'koji:bignum', 'koji:chacha', 'koji:closure', 'koji:core', 'koji:decimal', 'koji:ecc', 'koji:list', 'koji:map', 'koji:memory', 'koji:numbers', 'koji:output', 'koji:record', 'koji:roots', 'koji:rsa', 'koji:ryu', 'koji:sha', 'koji:start', 'koji:task', 'koji:text', 'koji:tls', 'koji:unicode', 'koji:x25519', 'koji:x509']
+export immut libraryModules = ['koji:aes', 'koji:bignum', 'koji:chacha', 'koji:closure', 'koji:decimal', 'koji:ecc', 'koji:list', 'koji:map', 'koji:memory', 'koji:numbers', 'koji:output', 'koji:record', 'koji:roots', 'koji:rsa', 'koji:ryu', 'koji:sha', 'koji:start', 'koji:task', 'koji:text', 'koji:tls', 'koji:unicode', 'koji:x25519', 'koji:x509']
 
 type SymbolKind = {
     ValueSymbol
@@ -639,6 +640,22 @@ function ioMessage(error: file.FileError): string {
         IsDirectory(_) => 'Is a directory (os error 21)'
         InvalidUtf8(_) => 'stream did not contain valid UTF-8'
         Io(_, message) => message
+    }
+}
+
+// The source of a module of the standard library: the one the compiler carries, or, to work on
+// the standard library without building the compiler again, the file of the directory that the
+// environment variable KOJI_STD names (std/).
+function standardSource(path: string): Option[string] {
+    immut directory = match (system.env('KOJI_STD')) {
+        Some(found) => found
+        None => return stdSource(path)
+    }
+    immut name = if (path.startsWith('koji:')) { `koji/${path[5..]}` } else { path }
+
+    return match (readSource(`${directory}/${name}.kj`)) {
+        Ok(text) => Some(text)
+        Err(_) => stdSource(path)
     }
 }
 
@@ -1328,7 +1345,7 @@ function Checker.importedModule(mut self, path: string): Result[int, string] {
             None => {}
         }
 
-        immut source = match (stdSource(path)) {
+        immut source = match (standardSource(path)) {
             Some(text) => text
             None => return Err(self.failure(`cannot import '${path}'`))
         }
@@ -1557,6 +1574,59 @@ function Checker.functionSignature(mut self, name: string, params: Param[], retu
     return Ok(FunctionType(types, returned))
 }
 
+// The type of an anonymous function: a parameter written without its type has the one the
+// expected type gives it (`group.spawn((item) => ...)`, `immut f: (int) => int = (x) => x * 2`).
+function Checker.lambdaSignature(mut self, params: Param[], returns: Option[TypeExpr], expected: Option[Type]): Result[Type, string] {
+    immut given: Type[] = match (expected) {
+        Some(FunctionType(types, _)) if (types.length() == params.length()) => types
+        _ => []
+    }
+    mut types: Type[] = []
+
+    for i in range(params.length()) {
+        immut param = params[i]
+
+        match (param.annotation) {
+            Some(annotation) => types.push(self.resolveType(annotation)?)
+            None => {
+                if (given.length() == 0 or not isComplete(given[i])) {
+                    return Err(self.failure(`parameter '${param.name}' of 'anonymous function' needs a type annotation: its type is not known here`))
+                }
+
+                types.push(given[i])
+            }
+        }
+    }
+
+    immut returned = match (returns) {
+        Some(annotation) => self.resolveType(annotation)?
+        None => UnknownType
+    }
+
+    return Ok(FunctionType(types, returned))
+}
+
+// Whether a type is fully known: no unknown part and no type parameter of a signature.
+function isComplete(ty: Type): boolean {
+    return match (ty) {
+        UnknownType => false
+        ParamType(_) => false
+        ListType(item) => isComplete(item)
+        FunctionType(params, returns) => allComplete(params) and isComplete(returns)
+        NamedType(_, args) => allComplete(args)
+        VariantType(_, args, _) => allComplete(args)
+        _ => true
+    }
+}
+
+function allComplete(types: Type[]): boolean {
+    for ty in types {
+        if (not isComplete(ty)) { return false }
+    }
+
+    return true
+}
+
 function Checker.expectType(self, expected: Type, actual: Type, what: string): Result[void, string] {
     if (assignable(expected, actual)) { return Ok() }
 
@@ -1713,7 +1783,7 @@ function Checker.declareExtern(mut self, name: string, params: Param[], returns:
         FunctionType(paramTypes, returned) => {
             for each in paramTypes {
                 // A string is read by the function (the caller keeps it).
-                if (not self.isCValue(each) and each != StringType and each != U128Type) { return Err(self.failure(`'${name}' is extern: its parameters must be int, CInt, float, decimal, boolean, char, byte, U128, string, Address or Location, found ${self.show(each)}`)) }
+                if (not self.isCValue(each) and each != StringType and each != U128Type and not isFunction(each)) { return Err(self.failure(`'${name}' is extern: its parameters must be int, CInt, float, decimal, boolean, char, byte, U128, string, Address, Location or a function, found ${self.show(each)}`)) }
             }
 
             // A string returned is a new reference, as the functions of the library give them.
@@ -1748,7 +1818,7 @@ function Checker.checkForC(mut self, declaration: Node): Result[void, string] {
     match (ty) {
         FunctionType(paramTypes, returned) => {
             for each in paramTypes {
-                if (not self.isCValue(each) and each != U128Type and each != StringType) { return Err(self.failure(`'${name}' is for C: its parameters must be int, CInt, float, decimal, boolean, U128, string, Address or Location, found ${self.show(each)}`)) }
+                if (not self.isCValue(each) and each != U128Type and each != StringType and not isFunction(each)) { return Err(self.failure(`'${name}' is for C: its parameters must be int, CInt, float, decimal, boolean, U128, string, Address, Location or a function, found ${self.show(each)}`)) }
             }
 
             // A string is a new reference for C, as the runtime gives them.
@@ -1777,6 +1847,14 @@ function Checker.isMemoryValue(self, ty: Type): boolean {
 
 // The values an `extern` function takes and gives: a decimal is the one of the runtime, a
 // `Location` a string of C.
+// A function is a closure for C, which it only passes on (to koji:task).
+function isFunction(ty: Type): boolean {
+    return match (ty) {
+        FunctionType(_, _) => true
+        _ => false
+    }
+}
+
 function Checker.isCValue(self, ty: Type): boolean {
     return match (ty) {
         IntType => true
@@ -1808,7 +1886,7 @@ function Checker.internalModule(mut self, path: string): Result[int, string] {
         None => {}
     }
 
-    immut source = match (stdSource(path)) {
+    immut source = match (standardSource(path)) {
         Some(text) => text
         None => return Err(self.failure(`cannot find '${path}'`))
     }
@@ -1836,7 +1914,14 @@ function Checker.addBuiltins(mut self, path: string, id: int) {
     }
 }
 
-// The first argument of `reserve`, `listItems` and `setListLength`: a list.
+function listItem(ty: Type): Type {
+    return match (ty) {
+        ListType(item) => item
+        _ => UnknownType
+    }
+}
+
+// The first argument of `reserve`, `listItems`, `setListLength`, `sharedGet` and `sharedSet`: a list.
 function Checker.expectList(self, name: string, ty: Type): Result[void, string] {
     return match (ty) {
         ListType(_) => Ok()
@@ -1853,7 +1938,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize', 'charOfCode', 'truncate', 'reserve', 'listItems', 'setListLength', 'locationAddress'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize', 'charOfCode', 'truncate', 'reserve', 'listItems', 'setListLength', 'locationAddress', 'sharedGet', 'sharedSet'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -3247,7 +3332,8 @@ function Checker.checkFunction(mut self, name: string, params: Param[], signatur
             }
         }
         _ => {
-            bodyType = self.checkValue(inner, valueExpected)?
+            // `() => print(x)`: an expression without a value is the body of a function without one.
+            bodyType = self.checkExpression(inner, valueExpected)?
             tail = Some(inner)
         }
     }
@@ -3633,7 +3719,7 @@ function Checker.expressionType(mut self, node: Node, expected: Option[Type]): R
         }
         Match(scrutinee, arms) => return self.checkMatch(scrutinee, arms, expected)
         Lambda(params, returns, body) => {
-            immut signature = self.functionSignature('anonymous function', params, returns, false)?
+            immut signature = self.lambdaSignature(params, returns, expected)?
             return self.checkFunction('anonymous function', params, signature, body)
         }
         Block(_) => return self.checkBlock(node, expected, [])
@@ -5243,6 +5329,22 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
             self.arity(name, types, 2, 2)?
             self.expectList(name, types[0])?
             self.expectArg(name, 1, IntType, types[1])?
+            return Ok(VoidType)
+        }
+        // `sharedGet(items, 0)`: a copy of an item of a list that several values share, and
+        // `sharedSet(items, 0, value)` changes it in place, for all of them (the cells of
+        // std/task.kj: the list is never changed otherwise).
+        'unsafe.sharedGet' => {
+            self.arity(name, types, 2, 2)?
+            self.expectList(name, types[0])?
+            self.expectArg(name, 1, IntType, types[1])?
+            return Ok(listItem(types[0]))
+        }
+        'unsafe.sharedSet' => {
+            self.arity(name, types, 3, 3)?
+            self.expectList(name, types[0])?
+            self.expectArg(name, 1, IntType, types[1])?
+            self.expectArg(name, 2, listItem(types[0]), types[2])?
             return Ok(VoidType)
         }
         // The text of a place (`main.kj:12`), as C has it.

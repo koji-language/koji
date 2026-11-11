@@ -2320,3 +2320,185 @@ fn the_language_server() {
     send(r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string());
     assert_eq!(server.wait().unwrap().code(), Some(0));
 }
+
+#[test]
+fn tasks_take_turns_in_groups() {
+    assert_same(
+        "tasks",
+        r#"import task
+import time
+
+immut start = time.monotonic()
+immut results = task.group((tasks) => {
+    immut slow = tasks.spawn(() => {
+        time.sleep(0.4)
+        return 'slow'
+    })
+    immut fast = tasks.spawn(() => {
+        time.sleep(0.2)
+        print('fast first')
+        return 'fast'
+    })
+    return [slow.wait(), fast.wait()]
+})
+print(results)
+print(time.monotonic() - start < 0.55)
+print(task.all([() => 1, () => 2, () => 3]))
+
+// Tasks without a result, which start more tasks of the group.
+immut nothing = task.group((tasks) => {
+    tasks.spawn(() => {
+        tasks.spawn(() => print('inner'))
+        print('outer')
+    })
+    return 'done'
+})
+print(nothing)
+
+// Many tasks, each on a stack of its own, deep enough to need it.
+function depth(n: int): int {
+    if (n == 0) { return 0 }
+    return depth(n - 1) + 1
+}
+immut sum = task.group((tasks) => {
+    mut started: task.Task[int][] = []
+    for i in range(2000) {
+        started.push(tasks.spawn(() => depth(500) + i))
+    }
+    mut total = 0
+    for each in started {
+        total += each.wait()
+    }
+    return total
+})
+print(sum)
+"#,
+        "fast first\n['slow', 'fast']\ntrue\n[1, 2, 3]\nouter\ninner\ndone\n2999000\n",
+    );
+}
+
+#[test]
+fn tasks_share_through_channels_and_shared_values() {
+    assert_same(
+        "task_sharing",
+        r#"import task
+
+immut counter = task.shared(0)
+task.group((tasks) => {
+    for i in range(100) {
+        tasks.spawn(() => {
+            task.yield()
+            counter.update((n) => n + 1)
+        })
+    }
+})
+print(counter.get())
+
+immut names = task.shared(['a'])
+names.set(names.get() + ['b'])
+print(names.get())
+
+immut jobs: task.Channel[int] = task.channel(3)
+immut total = task.group((tasks) => {
+    tasks.spawn(() => {
+        for i in range(100) {
+            jobs.send(i)
+        }
+        jobs.close()
+    })
+    immut summer = tasks.spawn(() => {
+        mut sum = 0
+        while (true) {
+            match (jobs.receive()) {
+                Some(n) => sum += n
+                None => break
+            }
+        }
+        return sum
+    })
+    return summer.wait()
+})
+print(total)
+
+// With no capacity, a send waits for its value to be received.
+immut meeting: task.Channel[string] = task.channel(0)
+task.group((tasks) => {
+    tasks.spawn(() => {
+        meeting.send('hello')
+        print('received')
+    })
+    tasks.spawn(() => {
+        print('receiving')
+        print(meeting.receive())
+    })
+})
+"#,
+        "100\n['a', 'b']\n4950\nreceiving\nSome('hello')\nreceived\n",
+    );
+}
+
+#[test]
+fn tasks_that_wait_for_each_other_are_a_deadlock() {
+    assert_same_panic(
+        "task_deadlock",
+        "import task\nimmut empty: task.Channel[int] = task.channel(1)\ntask.group((tasks) => {\n    tasks.spawn(() => empty.receive())\n})\n",
+        "none can go on: a deadlock",
+    );
+    assert_same_panic(
+        "task_update_inside_update",
+        "import task\nimmut n = task.shared(1)\nn.update((value) => {\n    n.set(2)\n    return value\n})\n",
+        "'set' of a shared value inside the function of its own 'update'",
+    );
+}
+
+#[test]
+fn requests_in_tasks_are_sent_at_the_same_time() {
+    use std::io::{Read, Write};
+    // A server that answers each request after 0.3 seconds, several at once.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            std::thread::spawn(move || {
+                let mut request = [0u8; 1024];
+                let size = stream.read(&mut request).unwrap();
+                let path = String::from_utf8_lossy(&request[..size]).split(' ').nth(1).unwrap_or("").to_string();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let body = format!("path {}", path);
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+            });
+        }
+    });
+    let source = format!(
+        r#"import http
+import task
+import time
+
+immut start = time.monotonic()
+immut bodies = task.all([
+    () => http.get('http://127.0.0.1:{port}/a'),
+    () => http.get('http://127.0.0.1:{port}/b'),
+    () => http.get('http://127.0.0.1:{port}/c'),
+    () => http.get('http://127.0.0.1:{port}/d'),
+])
+for each in bodies {{
+    match (each) {{
+        Ok(response) => print(response.body)
+        Err(error) => print(error)
+    }}
+}}
+print(time.monotonic() - start < 0.9)
+"#
+    );
+    assert_same("task_requests", &source, "path /a\npath /b\npath /c\npath /d\ntrue\n");
+}
+
+#[test]
+fn anonymous_functions_take_the_expected_parameter_types() {
+    assert_same(
+        "lambda_inference",
+        "immut half: (int) => int = (x) => x / 2\nfunction twice(f: (int) => int, x: int): int {\n    return f(f(x))\n}\nprint(half(9))\nprint(twice((x) => x + 1, 5))\n",
+        "4\n7\n",
+    );
+}

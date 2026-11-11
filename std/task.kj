@@ -1,0 +1,310 @@
+// The `task` module: tasks, functions that run at the same time (see doc/standard-library/task.md).
+// The tasks are those of koji:task, the library written in Koji: they take turns on the one thread
+// of the program, each running until it waits (for another task, a channel, a time or the
+// network). A task belongs to a group, which waits for all of its tasks before it ends.
+//
+// What tasks share is in cells: a cell is a list of one item that its copies share, which only
+// `sharedGet` and `sharedSet` of koji:unsafe read and change (in place, for all the copies). A
+// record of cells is copied into the functions of the tasks, and all its copies see the same
+// values.
+
+import { sharedGet, sharedSet } from 'koji:unsafe'
+
+extern function koji_task_spawn(work: () => void): int
+extern function koji_task_current(): int
+extern function koji_task_suspend()
+extern function koji_task_wake(id: int)
+extern function koji_task_yield()
+
+type Cell[T] = {
+    items: T[]
+}
+
+function cellOf[T](value: T): Cell[T] {
+    return { items: [value] }
+}
+
+function Cell.get(self): T {
+    return sharedGet(self.items, 0)
+}
+
+function Cell.set(self, value: T) {
+    sharedSet(self.items, 0, value)
+}
+
+// The current task waits in `waiters` until `wakeAll`. It may be woken before (for something else
+// it waited for), so it checks again what it waits for.
+function waitIn(waiters: Cell[int[]]) {
+    waiters.set(waiters.get() + [koji_task_current()])
+    koji_task_suspend()
+}
+
+function wakeAll(waiters: Cell[int[]]) {
+    immut ids = waiters.get()
+
+    if (ids.length() == 0) { return }
+
+    waiters.set([])
+
+    for id in ids {
+        koji_task_wake(id)
+    }
+}
+
+// Groups and tasks
+
+// The tasks of a call of `group`, which waits for them.
+export opaque type Group = {
+    // The tasks of the group that have not ended.
+    running: Cell[int]
+    // Whether the group takes new tasks: until it ends.
+    open: Cell[boolean]
+    // The task that waits for the group.
+    owner: int
+}
+
+// A task that runs a function: its result when it ends.
+export opaque type Task[T] = {
+    result: Cell[Option[T]]
+    waiters: Cell[int[]]
+}
+
+// Calls `body` with a new group, then waits for every task of the group (those `body` started,
+// and those they started in it) to end: what `body` returned.
+export function group[R](body: (Group) => R): R {
+    immut tasks: Group = { running: cellOf(0), open: cellOf(true), owner: koji_task_current() }
+    immut result = body(tasks)
+
+    while (tasks.running.get() > 0) {
+        koji_task_suspend()
+    }
+
+    tasks.open.set(false)
+    return result
+}
+
+// Starts a task that runs `work`, in this group: it runs when the current task waits.
+function Group.spawn[T](self, work: () => T): Task[T] {
+    if (not self.open.get()) { panic('this group has ended: a task can only start in a group that has not') }
+
+    immut started: Task[T] = { result: cellOf(None), waiters: cellOf([]) }
+    immut tasks = self
+    tasks.running.set(tasks.running.get() + 1)
+    koji_task_spawn(() => {
+        started.finish(work())
+        tasks.finish()
+    })
+    return started
+}
+
+function Group.finish(self) {
+    immut left = self.running.get() - 1
+    self.running.set(left)
+
+    if (left == 0) { koji_task_wake(self.owner) }
+}
+
+function Task.finish(self, value: T) {
+    self.result.set(Some(value))
+    wakeAll(self.waiters)
+}
+
+// Waits for the task to end: what its function returned.
+function Task.wait(self): T {
+    while (not self.done()) {
+        waitIn(self.waiters)
+    }
+
+    return match (self.result.get()) {
+        Some(value) => value
+        None => panic('a task that ended has no result')
+    }
+}
+
+// Whether the task has ended.
+function Task.done(self): boolean {
+    return self.result.get() is Some
+}
+
+// Runs each function in a task of its own, all at the same time, and waits for them: what they
+// returned, in order.
+export function all[T](works: (() => T)[]): T[] {
+    return group((tasks: Group) => {
+        mut started: Task[T][] = []
+
+        for work in works {
+            started.push(tasks.spawn(work))
+        }
+
+        mut results: T[] = []
+
+        for each in started {
+            results.push(each.wait())
+        }
+
+        return results
+    })
+}
+
+// Lets the other tasks that are ready run before the current one goes on (a long computation
+// does not wait for anything, so the others only run when it does this).
+export function yield() {
+    koji_task_yield()
+}
+
+// Channels
+
+// Where a channel is: its items are in a ring of places, from `first`.
+type Ring = {
+    first: int
+    count: int
+    closed: boolean
+    // The items sent and received so far.
+    sent: int
+    received: int
+}
+
+// A queue of values between tasks: `send` waits while it is full, `receive` while it is empty.
+export opaque type Channel[T] = {
+    // The ring: shared, like the items of a cell.
+    places: Option[T][]
+    capacity: int
+    ring: Cell[Ring]
+    senders: Cell[int[]]
+    receivers: Cell[int[]]
+}
+
+// A new channel, which holds up to `capacity` values that were sent and not received yet. With 0,
+// each `send` waits until its value is received.
+export function channel[T](capacity: int): Channel[T] {
+    if (capacity < 0) { panic(`the capacity of a channel cannot be negative (${capacity})`) }
+
+    mut places: Option[T][] = []
+
+    for _ in range(maxOf(capacity, 1)) {
+        places.push(None)
+    }
+
+    return { places: places, capacity: capacity, ring: cellOf({ first: 0, count: 0, closed: false, sent: 0, received: 0 }), senders: cellOf([]), receivers: cellOf([]) }
+}
+
+function maxOf(a: int, b: int): int {
+    if (a > b) { return a }
+
+    return b
+}
+
+// Sends a value, after waiting for room for it (and with a capacity of 0, until it is received). A
+// channel that is closed takes no value: it panics.
+function Channel.send(self, value: T) {
+    immut room = self.places.length()
+    mut ring = self.ring.get()
+
+    while (ring.count == room and not ring.closed) {
+        waitIn(self.senders)
+        ring = self.ring.get()
+    }
+
+    if (ring.closed) { panic('a value was sent to a closed channel') }
+
+    sharedSet(self.places, (ring.first + ring.count) % room, Some(value))
+    ring.count += 1
+    ring.sent += 1
+    immut ticket = ring.sent
+    self.ring.set(ring)
+    wakeAll(self.receivers)
+
+    if (self.capacity > 0) { return }
+
+    while (self.ring.get().received < ticket) {
+        waitIn(self.senders)
+    }
+}
+
+// The next value, after waiting for one: `None` when the channel is closed and has no values left.
+function Channel.receive(self): Option[T] {
+    mut ring = self.ring.get()
+
+    while (ring.count == 0 and not ring.closed) {
+        waitIn(self.receivers)
+        ring = self.ring.get()
+    }
+
+    if (ring.count == 0) { return None }
+
+    immut value = sharedGet(self.places, ring.first)
+    sharedSet(self.places, ring.first, None)
+    ring.first = (ring.first + 1) % self.places.length()
+    ring.count -= 1
+    ring.received += 1
+    self.ring.set(ring)
+    wakeAll(self.senders)
+    return value
+}
+
+// Closes the channel: it takes no more values, and once its values are received, `receive` gives
+// `None`.
+function Channel.close(self) {
+    mut ring = self.ring.get()
+
+    if (ring.closed) { panic('the channel is already closed') }
+
+    ring.closed = true
+    self.ring.set(ring)
+    wakeAll(self.receivers)
+    wakeAll(self.senders)
+}
+
+// Shared values
+
+// A value that tasks share: all the copies of a `Shared` see the same value.
+export opaque type Shared[T] = {
+    value: Cell[T]
+    // The task that changes it (`update`), or -1.
+    owner: Cell[int]
+    waiters: Cell[int[]]
+}
+
+// A new shared value.
+export function shared[T](value: T): Shared[T] {
+    return { value: cellOf(value), owner: cellOf(-1), waiters: cellOf([]) }
+}
+
+// The value.
+function Shared.get(self): T {
+    return self.value.get()
+}
+
+// Gives it a new value.
+function Shared.set(self, value: T) {
+    self.acquire('set')
+    self.value.set(value)
+    self.release()
+}
+
+// Gives it the value `change` returns for its value, which no other task changes meanwhile: the
+// new value.
+function Shared.update(self, change: (T) => T): T {
+    self.acquire('update')
+    immut changed = change(self.value.get())
+    self.value.set(changed)
+    self.release()
+    return changed
+}
+
+function Shared.acquire(self, what: string) {
+    immut me = koji_task_current()
+
+    while (self.owner.get() != -1) {
+        if (self.owner.get() == me) { panic(`'${what}' of a shared value inside the function of its own 'update'`) }
+
+        waitIn(self.waiters)
+    }
+
+    self.owner.set(me)
+}
+
+function Shared.release(self) {
+    self.owner.set(-1)
+    wakeAll(self.waiters)
+}

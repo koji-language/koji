@@ -50,6 +50,18 @@ print(triple(10)) // 30
 
 The type of a function is written `(parameters) => return type`: `(int) => int`.
 
+Where the type of the function is known (a variable with a type, the parameter of a function), its parameters need no types: they have the ones of that type.
+
+```koji
+immut half: (int) => int = (x) => x / 2
+
+function twice(f: (int) => int, x: int): int {
+    return f(f(x))
+}
+
+print(twice((x) => x + 1, 5)) // 7
+```
+
 ## Capturing Variables
 
 A function created inside another function can read the variables around it. It captures a **read-only copy**: it sees the values from the moment it was created, and cannot change them.

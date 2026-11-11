@@ -705,7 +705,19 @@ function cTypeOf(written: Option[TypeExpr]): string {
         Some(Named('string')) => 'KojiString *'
         Some(Named('char')) => 'uint32_t'
         Some(Named('byte')) => 'uint8_t'
+        // A closure, which C only passes on (koji:task keeps the work of a task).
+        Some(FunctionOf(_, _)) => 'KojiClosure *'
         _ => 'int64_t'
+    }
+}
+
+// The C type of a parameter that C only reads: an address (as the functions of its library that
+// only read memory declare it, `memcmp`) or a closure.
+function constOf(written: string): string {
+    return match (written) {
+        'void *' => 'const void *'
+        'KojiClosure *' => 'const KojiClosure *'
+        _ => written
     }
 }
 
@@ -733,6 +745,11 @@ function Lowerer.externCall(mut self, mut builder: Builder, call: Node, name: st
     mut values: StdArg[] = []
 
     for i in range(args.length()) {
+        if (found.params[i] == 'const KojiClosure *') {
+            values.push(ValueArg(self.value(mut builder, args[i])?))
+            continue
+        }
+
         values.push(ValueArg(self.valueOf(mut builder, args[i], externTy(found.params[i]))?))
     }
 
@@ -1046,7 +1063,7 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
                         immut written = cTypeOf(param.annotation)
                         // C keeps a string it gives to read: `const`, as the prelude declares it; an
                         // address is a `const void *`, as `extern` declarations make it.
-                        types.push(if (written == 'KojiString *' and not param.isTake) { 'const KojiString *' } else { if (written == 'void *') { 'const void *' } else { written } })
+                        types.push(if (written == 'KojiString *' and not param.isTake) { 'const KojiString *' } else { constOf(written) })
                         taken.push(param.isTake)
                     }
 
@@ -1065,7 +1082,7 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
                     // An address is a `const void *` for C, as the functions of its library that
                     // only read memory declare it (`memcmp`): declared otherwise, gcc warns.
                     immut written = cTypeOf(param.annotation)
-                    types.push(if (written == 'void *') { 'const void *' } else { if (written == 'KojiString *') { 'const KojiString *' } else { written } })
+                    types.push(if (written == 'KojiString *') { 'const KojiString *' } else { constOf(written) })
                 }
 
                 immut returned = match (returns) {
@@ -2627,11 +2644,12 @@ function Lowerer.assign(mut self, mut builder: Builder, node: Node, target: Node
     }
 }
 
-// A value that must be there (an expression of type `void` has none).
+// A value that must be there: an expression of type `void` (`Some(work())`, where the type
+// argument of a generic function or type is `void`) has the word 0.
 function Lowerer.required(self, value: Option[Operand]): Result[Operand, string] {
     return match (value) {
         Some(operand) => Ok(operand)
-        None => Err(self.unsupported('an expression without a value here'))
+        None => Ok(IntOp(0))
     }
 }
 
@@ -4204,6 +4222,25 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
         'koji:unsafe.setListLength' => {
             immut list = self.value(mut builder, args[0])?
             builder.emit(StdCallIns(None, 'koji_unsafe_set_list_length', [ValueArg(list), self.stdValue(mut builder, args, 1, IntTy)?]))
+            return Ok(None)
+        }
+        // A copy of an item of a list that several values share (std/task.kj), never borrowed:
+        // another task may change the item while this one waits.
+        'koji:unsafe.sharedGet' => {
+            immut item = itemOf(self.typeIn(builder, args[0])?)
+            immut list = self.value(mut builder, args[0])?
+            immut index = self.stdValue(mut builder, args, 1, IntTy)?
+            immut dest = builder.local(item, None)
+            builder.emit(StdCallIns(Some(dest), 'koji_list_shared_get', [ValueArg(list), index, LocationArg(line)]))
+            return Ok(Some(LocalOp(dest)))
+        }
+        // The item changed in place, for every value that shares the list.
+        'koji:unsafe.sharedSet' => {
+            immut item = itemOf(self.typeIn(builder, args[0])?)
+            immut list = self.value(mut builder, args[0])?
+            immut index = self.stdValue(mut builder, args, 1, IntTy)?
+            immut value = self.stdValue(mut builder, args, 2, item)?
+            builder.emit(StdCallIns(None, 'koji_list_shared_set', [ValueArg(list), index, value, LocationArg(line)]))
             return Ok(None)
         }
         'koji:unsafe.setStringSize' => {

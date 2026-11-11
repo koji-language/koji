@@ -54,8 +54,16 @@ function cType(ty: Ty): string {
         MapTy(_, _) => 'KojiMap *'
         SetTy(_) => 'KojiMap *'
         FunctionTy(_, _) => 'KojiClosure *'
-        VoidTy => 'void'
+        // A value of a type argument `void` (the result of a task without one): nothing, as a word.
+        VoidTy => 'int64_t'
     }
+}
+
+// The C type a function returns: `void` for none.
+function returnType(ty: Ty): string {
+    if (ty == VoidTy) { return 'void' }
+
+    return cType(ty)
 }
 
 // The runtime's name for the values of a managed type (`string` in `koji_string_retain`).
@@ -214,6 +222,9 @@ export function generate(program: IrProgram): string[] {
 }
 
 function Generator.generateProgram(mut self) {
+    // What the prelude has only once, in the library (the switch between the stacks of tasks).
+    if (self.program.library) { self.line('#define KOJI_LIBRARY 1') }
+
     for text in preludeLines {
         self.line(text)
     }
@@ -337,6 +348,8 @@ function fromC(written: string, value: string): string {
     if (written == 'void *' or written == 'const void *' or written == 'const char *') { return `(int64_t)(intptr_t)${value}` }
 
     if (written == 'const KojiString *') { return `(KojiString *)${value}` }
+
+    if (written == 'const KojiClosure *') { return `(KojiClosure *)${value}` }
 
     return value
 }
@@ -484,7 +497,7 @@ function signature(id: int, routine: IrFunction, inlined: boolean): string {
     immut list = if (params.length() == 0) { 'void' } else { params.join(', ') }
     immut inline = if (inlined) { 'KOJI_INLINE' } else { 'static' }
     // In a comment: the name of a test may hold `*/`.
-    return `${inline} ${cType(routine.returns)} ${functionName(id)}(${list}) /* ${routine.name.replace('*/', '* /')} */`
+    return `${inline} ${returnType(routine.returns)} ${functionName(id)}(${list}) /* ${routine.name.replace('*/', '* /')} */`
 }
 
 // The functions of a few instructions that call no other ones but such functions (`Lexer.at`,
@@ -965,6 +978,19 @@ function Generator.setLocal(mut self, routine: IrFunction, dest: int, expression
 }
 
 // `dest = expression`, or the expression as a statement without a destination.
+// The C of an argument of a function of the standard library.
+function Generator.stdArg(self, arg: StdArg): string {
+    return match (arg) {
+        ValueArg(value) => operand(value)
+        ModeArg(mode) => string(mode)
+        RecordArg(record) => `&koji_record_${record}`
+        ElementArg(ty) => elementType(ty)
+        LocationArg(line) => self.location(line)
+        PlaceArg(value) => `(const char *)(intptr_t)${operand(value)}`
+        NullArg => 'NULL'
+    }
+}
+
 function Generator.result(mut self, routine: IrFunction, dest: Option[int], expression: string) {
     match (dest) {
         Some(local) => self.setLocal(routine, local, expression)
@@ -1365,19 +1391,30 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             }
             self.line(`    { ${cType(itemType)} item; KojiRecord *option; if (${remove}) { option = koji_record_new(&koji_record_${option}, ${positions.some}); koji_record_init(option, 0, &item);${releaseItem} } else { option = koji_record_new(&koji_record_${option}, ${positions.none}); } koji_record_set_variable(&l${dest}, option); }`)
         }
+        StdCallIns(Some(dest), name, args) if (name == 'koji_list_shared_get') => {
+            immut ty = routine.locals[dest].ty
+            immut item = `*(${cType(ty)} const *)koji_list_at(${self.stdArg(args[0])}, ${self.stdArg(args[1])}, ${words(ty)}, ${self.stdArg(args[2])})`
+            self.set(`l${dest}`, ty, share(ty, item))
+        }
+        // In place, even when the list is shared: that is what the cells of std/task.kj are.
+        StdCallIns(None, name, args) if (name == 'koji_list_shared_set') => {
+            immut value = match (args[2]) {
+                ValueArg(found) => found
+                _ => IntOp(0)
+            }
+            immut ty = self.operandType(routine, value)
+            immut c = cType(ty)
+            immut freeing = match (release(ty)) {
+                Some(name) => ` ${name}(old);`
+                None => ''
+            }
+            self.line(`    { ${c} fresh = ${share(ty, operand(value))}; ${c} *slot = (${c} *)koji_list_at(${self.stdArg(args[0])}, ${self.stdArg(args[1])}, ${words(ty)}, ${self.stdArg(args[3])}); ${c} old = *slot; *slot = fresh;${freeing} (void)old; }`)
+        }
         StdCallIns(dest, name, args) => {
             mut values: string[] = []
 
             for arg in args {
-                values.push(match (arg) {
-                    ValueArg(value) => operand(value)
-                    ModeArg(mode) => string(mode)
-                    RecordArg(record) => `&koji_record_${record}`
-                    ElementArg(ty) => elementType(ty)
-                    LocationArg(line) => self.location(line)
-                    PlaceArg(value) => `(const char *)(intptr_t)${operand(value)}`
-                    NullArg => 'NULL'
-                })
+                values.push(self.stdArg(arg))
             }
 
             // A C function of an `extern` declaration: an `Address` is a `void *` for it.
@@ -1445,7 +1482,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                 values.push(operand(arg))
             }
 
-            self.result(routine, dest, `((${cType(returns)} (*)(${types.join(', ')}))koji_closure_code(${callee}))(${values.join(', ')})`)
+            self.result(routine, dest, `((${returnType(returns)} (*)(${types.join(', ')}))koji_closure_code(${callee}))(${values.join(', ')})`)
         }
         ListSortByIns(list, comparison, line) => {
             mut before = 'int'
@@ -1740,7 +1777,10 @@ function Generator.terminator(mut self, routine: IrFunction, terminator: Termina
                 }
             }
 
-            match (value) {
+            // A function without a result returns nothing, even a value of `void`.
+            immut result = if (routine.returns == VoidTy) { None } else { value }
+
+            match (result) {
                 // The result is computed before the locals are released: it may be one of them.
                 Some(returned) => {
                     // A local returned moves out of the function, which ends.

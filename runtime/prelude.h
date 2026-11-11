@@ -532,6 +532,232 @@ KOJI_INLINE bool koji_call_before(const void *call, const void *comparison, cons
     return ((bool (*)(const KojiClosure *, const void *, const void *))call)((const KojiClosure *)comparison, a, b);
 }
 
+/* Tasks (std/koji/task.kj): lightweight tasks on the one thread of a program, each on a stack of
+   its own, which the library switches between when a task waits (for another task, a timer or a
+   socket). What only C and the assembler can do is here: the switch between two stacks, the stacks,
+   the clock, and the poller of the system (epoll on Linux, kqueue on macOS and the BSDs). */
+int64_t koji_task_wait_fd(int64_t fd, bool write, int64_t deadline);
+void koji_task_main(int64_t task);
+/* Saves the registers that a call keeps (the ABI of the system) on the current stack, its top at
+   `save`, and goes on with the stack whose top is `to`, as saved by an earlier switch or made by
+   koji_task_stack_start: it returns when another switch comes back to this stack. */
+void koji_task_switch(const void *save, const void *to);
+#if defined(__APPLE__)
+#define KOJI_SYMBOL(name) "_" #name
+#define KOJI_FUNCTION(name) ".globl _" #name "\n.p2align 4\n_" #name ":\n"
+#else
+#define KOJI_SYMBOL(name) #name
+#define KOJI_FUNCTION(name) ".globl " #name "\n.type " #name ", @function\n.p2align 4\n" #name ":\n"
+#endif
+/* Once, in the library: the code of a new task starts at koji_task_entry, which calls
+   koji_task_main(task) with the task that koji_task_stack_start left in a register the switch
+   restores (rbx, x19). */
+#if defined(KOJI_LIBRARY) && defined(__x86_64__)
+__asm__(".text\n" KOJI_FUNCTION(koji_task_switch)
+        "pushq %rbp\npushq %rbx\npushq %r12\npushq %r13\npushq %r14\npushq %r15\n"
+        "subq $8, %rsp\nstmxcsr (%rsp)\nfnstcw 4(%rsp)\n"
+        "movq %rsp, (%rdi)\nmovq %rsi, %rsp\n"
+        "ldmxcsr (%rsp)\nfldcw 4(%rsp)\naddq $8, %rsp\n"
+        "popq %r15\npopq %r14\npopq %r13\npopq %r12\npopq %rbx\npopq %rbp\nret\n"
+        KOJI_FUNCTION(koji_task_entry)
+        "movq %rbx, %rdi\nandq $-16, %rsp\ncall " KOJI_SYMBOL(koji_task_main) "\nud2\n");
+#elif defined(KOJI_LIBRARY) && defined(__aarch64__)
+__asm__(".text\n" KOJI_FUNCTION(koji_task_switch)
+        "sub sp, sp, #176\n"
+        "stp x19, x20, [sp, #0]\nstp x21, x22, [sp, #16]\nstp x23, x24, [sp, #32]\n"
+        "stp x25, x26, [sp, #48]\nstp x27, x28, [sp, #64]\nstp x29, x30, [sp, #80]\n"
+        "stp d8, d9, [sp, #96]\nstp d10, d11, [sp, #112]\nstp d12, d13, [sp, #128]\nstp d14, d15, [sp, #144]\n"
+        "mrs x9, fpcr\nstr x9, [sp, #160]\n"
+        "mov x9, sp\nstr x9, [x0]\nmov sp, x1\n"
+        "ldr x9, [sp, #160]\nmsr fpcr, x9\n"
+        "ldp x19, x20, [sp, #0]\nldp x21, x22, [sp, #16]\nldp x23, x24, [sp, #32]\n"
+        "ldp x25, x26, [sp, #48]\nldp x27, x28, [sp, #64]\nldp x29, x30, [sp, #80]\n"
+        "ldp d8, d9, [sp, #96]\nldp d10, d11, [sp, #112]\nldp d12, d13, [sp, #128]\nldp d14, d15, [sp, #144]\n"
+        "add sp, sp, #176\nret\n"
+        KOJI_FUNCTION(koji_task_entry)
+        "mov x0, x19\nbl " KOJI_SYMBOL(koji_task_main) "\nbrk #1\n");
+#endif
+void koji_task_entry(void);
+void *mmap(void *address, size_t size, int protection, int flags, int fd, int64_t offset);
+int munmap(void *address, size_t size);
+int mprotect(void *address, size_t size, int protection);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#define KOJI_MAP_ANONYMOUS 0x1000
+#define KOJI_MAP_NORESERVE 0
+#else
+#define KOJI_MAP_ANONYMOUS 0x20
+#define KOJI_MAP_NORESERVE 0x4000
+#endif
+/* Below each stack, a guard that nothing may touch (16 KB, a page of any system): a task that
+   overflows its stack stops the program there instead of writing over other memory. */
+#define KOJI_STACK_GUARD 16384
+/* A request to valgrind, when the program runs under it (its "client requests", valgrind.h): a
+   sequence of instructions that changes nothing otherwise. Its answer, or `otherwise`. */
+KOJI_INLINE uint64_t koji_valgrind(uint64_t request, uint64_t first, uint64_t second, uint64_t otherwise) {
+    volatile uint64_t arguments[6] = { request, first, second, 0, 0, 0 };
+    uint64_t answer = otherwise;
+#if defined(__x86_64__)
+    __asm__ volatile("rolq $3, %%rdi; rolq $13, %%rdi; rolq $61, %%rdi; rolq $51, %%rdi; xchgq %%rbx, %%rbx"
+                     : "=d"(answer) : "a"(&arguments[0]), "0"(answer) : "cc", "memory");
+#elif defined(__aarch64__)
+    __asm__ volatile("mov x3, %1; mov x4, %2; ror x12, x12, #3; ror x12, x12, #13; ror x12, x12, #51; ror x12, x12, #61; orr x10, x10, x10; mov %0, x3"
+                     : "=r"(answer) : "r"(answer), "r"(&arguments[0]) : "cc", "memory", "x3", "x4");
+#endif
+    return answer;
+}
+/* A stack of `size` bytes (a multiple of the guard): its lowest address, above the guard, or NULL.
+   The system gives its memory as it is first used. Valgrind is told of it (VG_USERREQ__STACK_REGISTER),
+   which keeps the number it gives in the last word of the stack. */
+KOJI_INLINE void *koji_task_stack_new(int64_t size) {
+    char *block = (char *)mmap(NULL, (size_t)size + KOJI_STACK_GUARD, 3 /* read, write */, 2 /* private */ | KOJI_MAP_ANONYMOUS | KOJI_MAP_NORESERVE, -1, 0);
+    if (block == (char *)-1) return NULL;
+    if (mprotect(block, KOJI_STACK_GUARD, 0) != 0) {
+        munmap(block, (size_t)size + KOJI_STACK_GUARD);
+        return NULL;
+    }
+    char *stack = block + KOJI_STACK_GUARD;
+    ((uint64_t *)(stack + size))[-1] = koji_valgrind(0x1501, (uint64_t)(uintptr_t)stack, (uint64_t)(uintptr_t)(stack + size), 0);
+    return stack;
+}
+KOJI_INLINE void koji_task_stack_free(const void *stack, int64_t size) {
+    koji_valgrind(0x1502, ((const uint64_t *)((const char *)stack + size))[-1], 0, 0);
+    munmap((char *)stack - KOJI_STACK_GUARD, (size_t)size + KOJI_STACK_GUARD);
+}
+/* The top of a new stack for koji_task_switch, which then starts `task` at koji_task_entry: the
+   registers it restores, zero but for the task and where it returns, and the control words of
+   floating point of the current task. */
+KOJI_INLINE void *koji_task_stack_start(const void *stack, int64_t size, int64_t task) {
+    /* Below the number of valgrind, and aligned to 16 bytes. */
+    uint64_t *top = (uint64_t *)((char *)stack + size) - 2;
+#if defined(__x86_64__)
+    uint64_t *sp = top - 9;
+    for (int i = 0; i < 9; i++) sp[i] = 0;
+    uint32_t mxcsr;
+    uint16_t control;
+    __asm__ volatile("stmxcsr %0" : "=m"(mxcsr));
+    __asm__ volatile("fnstcw %0" : "=m"(control));
+    sp[0] = mxcsr | (uint64_t)control << 32;
+    sp[5] = (uint64_t)task; /* rbx */
+    sp[7] = (uint64_t)(uintptr_t)koji_task_entry;
+    return sp;
+#elif defined(__aarch64__)
+    uint64_t *sp = top - 22;
+    for (int i = 0; i < 22; i++) sp[i] = 0;
+    uint64_t control;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(control));
+    sp[0] = (uint64_t)task; /* x19 */
+    sp[11] = (uint64_t)(uintptr_t)koji_task_entry; /* x30 */
+    sp[20] = control;
+    return sp;
+#else
+    (void)top;
+    (void)task;
+    return NULL;
+#endif
+}
+/* Whether this processor has tasks (koji_task_switch). */
+KOJI_INLINE bool koji_task_supported(void) {
+#if defined(__x86_64__) || defined(__aarch64__)
+    return true;
+#else
+    return false;
+#endif
+}
+struct koji_timespec {
+    int64_t seconds, nanoseconds;
+};
+/* By other names, which do not clash with the `extern` declarations of std/time.kj. */
+int koji_clock_gettime(int clock, struct koji_timespec *time) __asm__(KOJI_SYMBOL(clock_gettime));
+int koji_nanosleep(const struct koji_timespec *request, struct koji_timespec *remaining) __asm__(KOJI_SYMBOL(nanosleep));
+/* The nanoseconds of a clock that only grows (CLOCK_MONOTONIC). */
+KOJI_INLINE int64_t koji_monotonic_nanoseconds(void) {
+    struct koji_timespec now;
+#if defined(__APPLE__)
+    koji_clock_gettime(6, &now);
+#else
+    koji_clock_gettime(1, &now);
+#endif
+    return now.seconds * 1000000000 + now.nanoseconds;
+}
+/* Sleeps until the monotonic clock is at `deadline` (in nanoseconds). */
+KOJI_INLINE void koji_sleep_until(int64_t deadline) {
+    for (;;) {
+        int64_t left = deadline - koji_monotonic_nanoseconds();
+        if (left <= 0) return;
+        struct koji_timespec request = { left / 1000000000, left % 1000000000 };
+        koji_nanosleep(&request, NULL);
+    }
+}
+/* The poller: a handle of the system that says which sockets are ready, each watched once (a
+   socket that becomes ready is watched no more), with the number of the socket as its token. */
+#if defined(__linux__)
+struct koji_epoll_event {
+    uint32_t events;
+    uint64_t data;
+}
+#if defined(__x86_64__)
+__attribute__((packed))
+#endif
+;
+int epoll_create1(int flags);
+int epoll_ctl(int poller, int operation, int fd, struct koji_epoll_event *event);
+int epoll_wait(int poller, struct koji_epoll_event *events, int capacity, int milliseconds);
+KOJI_INLINE int64_t koji_poller_new(void) { return epoll_create1(0x80000 /* EPOLL_CLOEXEC */); }
+/* Watches `fd` until it is ready to read (or to write): 0, or -1 (errno says why). */
+KOJI_INLINE int64_t koji_poller_watch(int64_t poller, int64_t fd, bool write) {
+    /* EPOLLIN or EPOLLOUT, EPOLLONESHOT. */
+    struct koji_epoll_event event = { (write ? 4u : 1u) | 1u << 30, (uint64_t)fd };
+    if (epoll_ctl((int)poller, 3 /* EPOLL_CTL_MOD */, (int)fd, &event) == 0) return 0;
+    if (errno != ENOENT) return -1;
+    return epoll_ctl((int)poller, 1 /* EPOLL_CTL_ADD */, (int)fd, &event);
+}
+/* Waits for the sockets watched, at most `milliseconds` (-1: as long as it takes): how many are
+   ready (0 when the time ran out or a signal came), their numbers at `ready`, or -1. */
+KOJI_INLINE int64_t koji_poller_wait(int64_t poller, int64_t milliseconds, const void *ready, int64_t capacity) {
+    struct koji_epoll_event events[64];
+    int count = epoll_wait((int)poller, events, capacity < 64 ? (int)capacity : 64, (int)milliseconds);
+    if (count < 0) return errno == EINTR ? 0 : -1;
+    for (int i = 0; i < count; i++) ((int64_t *)ready)[i] = (int64_t)events[i].data;
+    return count;
+}
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+struct koji_kevent {
+    uintptr_t ident;
+    int16_t filter;
+    uint16_t flags;
+    uint32_t fflags;
+    intptr_t data;
+    void *udata;
+#if defined(__FreeBSD__)
+    uint64_t ext[4];
+#endif
+};
+int kqueue(void);
+int kevent(int poller, const struct koji_kevent *changes, int changeCount, struct koji_kevent *events, int capacity, const struct koji_timespec *timeout);
+KOJI_INLINE int64_t koji_poller_new(void) { return kqueue(); }
+KOJI_INLINE int64_t koji_poller_watch(int64_t poller, int64_t fd, bool write) {
+    /* EVFILT_READ or EVFILT_WRITE, EV_ADD | EV_ONESHOT. */
+    struct koji_kevent change = { 0 };
+    change.ident = (uintptr_t)fd;
+    change.filter = write ? -2 : -1;
+    change.flags = 0x1 | 0x10;
+    return kevent((int)poller, &change, 1, NULL, 0, NULL) == 0 ? 0 : -1;
+}
+KOJI_INLINE int64_t koji_poller_wait(int64_t poller, int64_t milliseconds, const void *ready, int64_t capacity) {
+    struct koji_kevent events[64];
+    struct koji_timespec limit = { milliseconds / 1000, milliseconds % 1000 * 1000000 };
+    int count = kevent((int)poller, NULL, 0, events, capacity < 64 ? (int)capacity : 64, milliseconds < 0 ? NULL : &limit);
+    if (count < 0) return errno == EINTR ? 0 : -1;
+    for (int i = 0; i < count; i++) ((int64_t *)ready)[i] = (int64_t)events[i].ident;
+    return count;
+}
+#else
+/* No poller here: tasks cannot wait for sockets while others run (std/koji/task.kj says so). */
+KOJI_INLINE int64_t koji_poller_new(void) { return -1; }
+KOJI_INLINE int64_t koji_poller_watch(int64_t poller, int64_t fd, bool write) { (void)poller; (void)fd; (void)write; return -1; }
+KOJI_INLINE int64_t koji_poller_wait(int64_t poller, int64_t milliseconds, const void *ready, int64_t capacity) { (void)poller; (void)milliseconds; (void)ready; (void)capacity; return -1; }
+#endif
+
 /* Networking, for std/http.kj: what the system gives in different ways (the order of the fields of
    `struct addrinfo`, the numbers of the options of sockets, how a write to a closed connection is
    kept from raising SIGPIPE), with the types of its `extern` declarations. */
@@ -545,7 +771,6 @@ struct koji_addrinfo {
     struct koji_addrinfo *ai_next;
 };
 #define KOJI_SOL_SOCKET 0xffff
-#define KOJI_SO_SNDTIMEO 0x1005
 #define KOJI_MSG_NOSIGNAL 0
 #else
 struct koji_addrinfo {
@@ -556,7 +781,6 @@ struct koji_addrinfo {
     struct koji_addrinfo *ai_next;
 };
 #define KOJI_SOL_SOCKET 1
-#define KOJI_SO_SNDTIMEO 21
 #define KOJI_MSG_NOSIGNAL 0x4000
 #endif
 int getaddrinfo(const char *node, const char *service, const struct koji_addrinfo *hints, struct koji_addrinfo **found);
@@ -569,15 +793,22 @@ long send(int fd, const void *bytes, size_t size, int flags);
 long recv(int fd, void *bytes, size_t size, int flags);
 int close(int fd);
 
-/* Sets the time a send (and so a connect) may take, 0 for no limit. */
-KOJI_INLINE void koji_net_send_timeout(int fd, int64_t seconds) {
-    struct { int64_t seconds, micros; } limit = { seconds, 0 };
-    setsockopt(fd, KOJI_SOL_SOCKET, KOJI_SO_SNDTIMEO, &limit, sizeof limit);
-}
+int fcntl(int fd, int command, ...);
+int getsockopt(int fd, int level, int name, void *value, uint32_t *length);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#define KOJI_O_NONBLOCK 0x4
+#define KOJI_SO_ERROR 0x1007
+#define KOJI_MSG_DONTWAIT 0x80
+#else
+#define KOJI_O_NONBLOCK 0x800
+#define KOJI_SO_ERROR 4
+#define KOJI_MSG_DONTWAIT 0x40
+#endif
 
 /* Connects to `host` at `port` (strings of C), trying each of its addresses, each for at most
-   `seconds`: the socket, or -1 for an error of DNS (the code of `gai_strerror` in `*code`), -2 for
-   one of the connection (errno in `*code`), -3 when it took too long. */
+   `seconds`, while the other tasks go on (std/koji/task.kj; finding the addresses does not let
+   them): the socket, or -1 for an error of DNS (the code of `gai_strerror` in `*code`), -2 for one
+   of the connection (errno in `*code`), -3 when it took too long. */
 KOJI_INLINE int64_t koji_net_connect(const void *host, const void *port, int64_t seconds, const void *code) {
     struct koji_addrinfo hints = { 0 };
     hints.ai_socktype = 1; /* SOCK_STREAM */
@@ -598,26 +829,49 @@ KOJI_INLINE int64_t koji_net_connect(const void *host, const void *port, int64_t
         int on = 1;
         setsockopt(fd, KOJI_SOL_SOCKET, 0x1022 /* SO_NOSIGPIPE */, &on, sizeof on);
 #endif
-        koji_net_send_timeout(fd, seconds);
-        if (connect(fd, address->ai_addr, address->ai_addrlen) == 0) {
-            koji_net_send_timeout(fd, 0);
+        /* Without waiting: the task waits for the socket to be writable, its connection made. */
+        int flags = fcntl(fd, 3 /* F_GETFL */);
+        fcntl(fd, 4 /* F_SETFL */, flags | KOJI_O_NONBLOCK);
+        int connected = connect(fd, address->ai_addr, address->ai_addrlen);
+        if (connected != 0 && errno == EINPROGRESS) {
+            int64_t waited = koji_task_wait_fd(fd, true, koji_monotonic_nanoseconds() + seconds * 1000000000);
+            uint32_t size = sizeof error;
+            if (waited != 0) {
+                error = waited > 0 ? ETIMEDOUT : errno;
+            } else if (getsockopt(fd, KOJI_SOL_SOCKET, KOJI_SO_ERROR, &error, &size) != 0) {
+                error = errno;
+            }
+            connected = error == 0 ? 0 : -1;
+        } else if (connected != 0) {
+            error = errno;
+        }
+        if (connected == 0) {
+            fcntl(fd, 4 /* F_SETFL */, flags);
             freeaddrinfo(found);
             return fd;
         }
-        error = errno;
         close(fd);
     }
     freeaddrinfo(found);
     *(int64_t *)code = error;
-    return error == EINPROGRESS || error == EAGAIN || error == EWOULDBLOCK || error == ETIMEDOUT ? -3 : -2;
+    return error == ETIMEDOUT ? -3 : -2;
 }
 KOJI_INLINE void *koji_net_dns_message(int64_t code) { return (void *)gai_strerror((int)code); }
-/* Bytes sent or received, or -1 (errno says why). */
+/* Bytes sent or received, or -1 (errno says why): when the socket is not ready, the task waits
+   for it while the others go on. */
 KOJI_INLINE int64_t koji_net_send(int64_t fd, const void *bytes, int64_t size) {
-    return send((int)fd, bytes, (size_t)size, KOJI_MSG_NOSIGNAL);
+    for (;;) {
+        long sent = send((int)fd, bytes, (size_t)size, KOJI_MSG_NOSIGNAL | KOJI_MSG_DONTWAIT);
+        if (sent >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) return sent;
+        if (errno != EINTR && koji_task_wait_fd(fd, true, -1) < 0) return -1;
+    }
 }
 KOJI_INLINE int64_t koji_net_receive(int64_t fd, const void *bytes, int64_t size) {
-    return recv((int)fd, (void *)bytes, (size_t)size, 0);
+    for (;;) {
+        long got = recv((int)fd, (void *)bytes, (size_t)size, KOJI_MSG_DONTWAIT);
+        if (got >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) return got;
+        if (errno != EINTR && koji_task_wait_fd(fd, false, -1) < 0) return -1;
+    }
 }
 KOJI_INLINE void koji_net_close(int64_t fd) { close((int)fd); }
 /* The name of an entry of `readdir` (where `d_name` is in a `struct dirent`, for koji:x509). */

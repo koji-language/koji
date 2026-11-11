@@ -4,13 +4,14 @@
 
 import math
 import system
-import { Address, CInt, allocate, free, read, write } from 'koji:unsafe'
+import { Address, CInt, allocate, free, read } from 'koji:unsafe'
 
-// `int clock_gettime(clockid_t clock, struct timespec *time)` and
-// `int nanosleep(const struct timespec *request, struct timespec *remaining)`: a `timespec` is two
-// 8-byte words, seconds and nanoseconds.
+// `int clock_gettime(clockid_t clock, struct timespec *time)`: a `timespec` is two 8-byte words,
+// seconds and nanoseconds. The waits of tasks (koji:task) and the monotonic clock in nanoseconds
+// (runtime/prelude.h).
 extern function clock_gettime(clock: CInt, time: Address): CInt
-extern function nanosleep(request: Address, remaining: Address): CInt
+extern function koji_task_sleep_until(deadline: int)
+extern function koji_monotonic_nanoseconds(): int
 
 // The seconds from 0000-01-01 to 1970-01-01, the epoch of Unix and of the clock of the system
 // (719,528 days).
@@ -32,27 +33,14 @@ export function monotonic(): decimal {
     return clock(id)
 }
 
-// Pauses for `seconds` (nothing for zero or less).
+// Pauses for `seconds` (nothing for zero or less): the current task waits, and the other tasks run
+// (see the `task` module).
 export function sleep(seconds: decimal) {
     if (seconds <= 0) { return }
 
-    immut whole = math.floor(seconds)
-    immut nanoseconds = math.floor((seconds - whole) * 1000000000)
-    immut request = allocate(16)
-    immut remaining = allocate(16)
-    write(request, 0, whole)
-    write(request, 8, nanoseconds)
-
-    // Interrupted by a signal, it goes on with what remains.
-    while (nanosleep(request, remaining) != 0) {
-        immut seconds: int = read(remaining, 0)
-        immut rest: int = read(remaining, 8)
-        write(request, 0, seconds)
-        write(request, 8, rest)
-    }
-
-    free(request)
-    free(remaining)
+    // At most a hundred years, which the nanoseconds of an int still count.
+    immut capped = if (seconds > 3155760000) { decimal(3155760000) } else { seconds }
+    koji_task_sleep_until(koji_monotonic_nanoseconds() + math.floor(capped * 1000000000))
 }
 
 // The time of a clock of the system, in seconds.

@@ -1,0 +1,415 @@
+// `koji:task`: the tasks of a program, in the library of the runtime written in Koji (std/task.kj,
+// the sockets of runtime/prelude.h and so koji:tls call these functions by their names). A task
+// runs a function on a stack of its own, on the one thread of the program: it runs until it waits
+// (to be woken by another task, for a time or for a socket), and then the next task that is ready
+// runs. No task runs while another one does, so they share the memory of the library without
+// locks. The first task, 0, is the program itself, on the stack the system gave it.
+//
+// A task waits in `suspend`, and returns from it when something wakes it: `koji_task_wake`, its
+// socket, its time. A wait may also end early (a task woken for something it waited for before),
+// so each one waits again until what it waits for is there. When no task is ready, `poll` waits for
+// the timers and the sockets; when none can wake a task, the tasks wait for each other forever,
+// and the program stops with a panic.
+
+import { Address, allocate, isNull, nullAddress, read, write } from 'koji:unsafe'
+
+extern function koji_task_switch(save: Address, to: Address)
+extern function koji_task_stack_new(size: int): Address
+extern function koji_task_stack_free(stack: Address, size: int)
+extern function koji_task_stack_start(stack: Address, size: int, task: int): Address
+extern function koji_task_supported(): boolean
+extern function koji_monotonic_nanoseconds(): int
+extern function koji_sleep_until(deadline: int)
+extern function koji_poller_new(): int
+extern function koji_poller_watch(poller: int, fd: int, write: boolean): int
+extern function koji_poller_wait(poller: int, milliseconds: int, ready: Address, capacity: int): int
+
+// The stack of a task: 1 MB, of which the system only gives the memory a task uses (a few pages,
+// for most of them).
+immut stackSize = 1048576
+// The stacks of ended tasks kept for new ones, at most.
+immut keptStacks = 16
+// The sockets that one wait of the poller can find ready, at most.
+immut readyCapacity = 64
+
+// What a task is doing.
+immut running = 0
+immut ready = 1
+immut waiting = 2
+immut ended = 3
+
+type Task = {
+    // What it runs, until it starts.
+    work: Option[() => void]
+    // The lowest address of its stack (none for the task 0).
+    stack: Address
+    // A word with the top of its stack while it does not run (koji_task_switch).
+    top: Address
+    state: int
+    // Woken while it did not wait: its next wait ends at once.
+    woken: boolean
+    // Its waits so far: the timer of an earlier one does not wake it.
+    waits: int
+    // Whether its last wait ended with its time.
+    late: boolean
+}
+
+// A time a task waits for (a monotonic time in nanoseconds), in its wait number `wait`.
+type Timer = {
+    at: int
+    task: int
+    wait: int
+}
+
+// The tasks, by number: an ended one leaves its number to a new one (the list is empty before the
+// first task).
+mut tasks: Task[] = []
+// The task that runs.
+mut current = 0
+// The tasks that are ready, in turn: those of `queue` from `head`.
+mut queue: int[] = []
+mut head = 0
+// The numbers of ended tasks, for new ones.
+mut freeTasks: int[] = []
+// A task that ended, whose stack the next task to run keeps or frees (it ran on it).
+mut finished = -1
+// The stacks kept for new tasks.
+mut stacks: Address[] = []
+// The timers, a heap: the first is the earliest.
+mut timers: Timer[] = []
+// The poller of the system, made for the first socket a task waits for, the numbers of the
+// sockets ready at `readyFds`, and for each socket, the task that waits for it, or -1.
+mut poller = -1
+mut readyFds = nullAddress()
+mut socketTasks: int[] = []
+// The tasks that wait for a socket.
+mut sockets = 0
+
+function newTask(stack: Address): Task {
+    return { work: None, stack: stack, top: allocate(8), state: ended, woken: false, waits: 0, late: false }
+}
+
+// The task 0, the program, the first time a function of tasks is called.
+function start() {
+    if (tasks.length() > 0) { return }
+
+    tasks.push(newTask(nullAddress()))
+    tasks[0].state = running
+}
+
+// A new task, which will run `work` when its turn comes: its number.
+extern function koji_task_spawn(work: () => void): int {
+    if (not koji_task_supported()) { panic('tasks need a processor of x86-64 or arm64') }
+
+    start()
+    reap()
+    mut stack = nullAddress()
+
+    match (stacks.pop()) {
+        Some(kept) => stack = kept
+        None => {
+            stack = koji_task_stack_new(stackSize)
+
+            if (isNull(stack)) { panic('there is no memory for the stack of a new task') }
+        }
+    }
+
+    mut id = tasks.length()
+
+    match (freeTasks.pop()) {
+        Some(free) => id = free
+        None => tasks.push(newTask(stack))
+    }
+
+    tasks[id].work = Some(work)
+    tasks[id].stack = stack
+    tasks[id].state = ready
+    tasks[id].woken = false
+    write(tasks[id].top, 0, koji_task_stack_start(stack, stackSize, id))
+    queue.push(id)
+    return id
+}
+
+// Where a new task starts, on its stack (koji_task_entry of runtime/prelude.h): it runs its work,
+// then the next task, and its stack is never used again.
+extern function koji_task_main(id: int) {
+    reap()
+    run(id)
+    tasks[id].state = ended
+    finished = id
+    schedule()
+}
+
+// Runs the work of a task, which it then releases.
+function run(id: int) {
+    immut work = match (tasks[id].work) {
+        Some(found) => found
+        None => return
+    }
+
+    tasks[id].work = None
+    work()
+}
+
+// Keeps or frees the stack of the task that ended (another stack runs now).
+function reap() {
+    if (finished < 0) { return }
+
+    immut id = finished
+    finished = -1
+
+    if (stacks.length() < keptStacks) {
+        stacks.push(tasks[id].stack)
+    } else {
+        koji_task_stack_free(tasks[id].stack, stackSize)
+    }
+
+    tasks[id].stack = nullAddress()
+    freeTasks.push(id)
+}
+
+// The task that runs: 0 for the program.
+extern function koji_task_current(): int {
+    return current
+}
+
+// Waits until another task wakes this one (koji_task_wake), at once if one did since its last wait.
+extern function koji_task_suspend() {
+    start()
+    suspend(-1)
+}
+
+// Makes a task that waits ready; one that does not wait will not wait next time.
+extern function koji_task_wake(id: int) {
+    if (id < 0 or id >= tasks.length()) { return }
+
+    immut state = tasks[id].state
+
+    if (state == waiting) {
+        tasks[id].state = ready
+        queue.push(id)
+        return
+    }
+
+    if (state != ended) { tasks[id].woken = true }
+}
+
+// Lets the tasks that are ready run before this one goes on.
+extern function koji_task_yield() {
+    start()
+
+    if (head == queue.length()) { return }
+
+    tasks[current].state = ready
+    queue.push(current)
+    schedule()
+}
+
+// Waits until the monotonic clock is at `deadline` (nanoseconds) while the other tasks run.
+extern function koji_task_sleep_until(deadline: int) {
+    start()
+
+    while (koji_monotonic_nanoseconds() < deadline) {
+        suspend(deadline)
+    }
+}
+
+// Waits until the socket `fd` is ready to read (or to write) while the other tasks run, at most
+// until `deadline` (a monotonic time in nanoseconds, or -1): 0 when it may be ready, 1 when the
+// time ran out first, -1 when the system cannot watch it (errno says why).
+extern function koji_task_wait_fd(fd: int, write: boolean, deadline: int): int {
+    start()
+
+    if (poller < 0) {
+        poller = koji_poller_new()
+
+        if (poller < 0) { return -1 }
+
+        readyFds = allocate(readyCapacity * 8)
+    }
+
+    if (koji_poller_watch(poller, fd, write) != 0) { return -1 }
+
+    while (socketTasks.length() <= fd) {
+        socketTasks.push(-1)
+    }
+
+    if (socketTasks[fd] >= 0) { panic(`two tasks wait for the same socket (${fd})`) }
+
+    socketTasks[fd] = current
+    sockets += 1
+    immut late = suspend(deadline)
+
+    // Woken by something else (or by its time): the socket is not its to wait for anymore.
+    if (socketTasks[fd] == current) {
+        socketTasks[fd] = -1
+        sockets -= 1
+    }
+
+    if (late) { return 1 }
+
+    return 0
+}
+
+// The current task waits until it is woken, or until `deadline` (or -1): whether its time ran out.
+function suspend(deadline: int): boolean {
+    if (tasks[current].woken) {
+        tasks[current].woken = false
+        return false
+    }
+
+    tasks[current].state = waiting
+    tasks[current].waits += 1
+    tasks[current].late = false
+
+    if (deadline >= 0) { addTimer({ at: deadline, task: current, wait: tasks[current].waits }) }
+
+    schedule()
+    return tasks[current].late
+}
+
+// Runs the next task that is ready, after waiting for one when none is: it returns when the current
+// task runs again (at once if it is the next one).
+function schedule() {
+    while (true) {
+        if (head < queue.length()) {
+            immut next = queue[head]
+            head += 1
+
+            // The queue is used again from its start when it is empty, and copied when most of
+            // it was used.
+            if (head == queue.length()) {
+                queue = []
+                head = 0
+            } else {
+                if (head >= 256 and head * 2 >= queue.length()) {
+                    queue = queue[head..]
+                    head = 0
+                }
+            }
+
+            tasks[next].state = running
+
+            if (next == current) { return }
+
+            immut previous = current
+            current = next
+            immut to: Address = read(tasks[next].top, 0)
+            koji_task_switch(tasks[previous].top, to)
+            // Back on this stack: the task that ran before may have ended.
+            reap()
+            return
+        }
+
+        poll()
+    }
+}
+
+// Waits for the next timer or socket, and wakes the tasks waiting for them.
+function poll() {
+    if (timers.length() == 0 and sockets == 0) {
+        panic('every task waits for another one (for its result, a channel or a shared value), so none can go on: a deadlock')
+    }
+
+    // Only timers: the system sleeps until the first one, to the nanosecond.
+    if (sockets == 0) {
+        koji_sleep_until(timers[0].at)
+        expire()
+        return
+    }
+
+    mut milliseconds = -1
+
+    if (timers.length() > 0) {
+        immut left = timers[0].at - koji_monotonic_nanoseconds()
+        milliseconds = if (left <= 0) { 0 } else { (left + 999999) / 1000000 }
+    }
+
+    immut count = koji_poller_wait(poller, milliseconds, readyFds, readyCapacity)
+
+    if (count < 0) { panic('the system failed to wait for sockets') }
+
+    for i in range(count) {
+        immut fd: int = read(readyFds, i * 8)
+        wakeSocket(fd)
+    }
+
+    expire()
+}
+
+function wakeSocket(fd: int) {
+    if (fd < 0 or fd >= socketTasks.length()) { return }
+
+    immut id = socketTasks[fd]
+
+    if (id < 0) { return }
+
+    socketTasks[fd] = -1
+    sockets -= 1
+    koji_task_wake(id)
+}
+
+// Wakes the tasks whose time has come.
+function expire() {
+    immut now = koji_monotonic_nanoseconds()
+
+    while (timers.length() > 0 and timers[0].at <= now) {
+        immut timer = takeTimer()
+
+        if (tasks[timer.task].state == waiting and tasks[timer.task].waits == timer.wait) {
+            tasks[timer.task].late = true
+            koji_task_wake(timer.task)
+        }
+    }
+}
+
+function addTimer(timer: Timer) {
+    timers.push(timer)
+    mut at = timers.length() - 1
+
+    while (at > 0) {
+        immut parent = (at - 1) / 2
+
+        if (timers[parent].at <= timers[at].at) { break }
+
+        swapTimers(at, parent)
+        at = parent
+    }
+}
+
+// The first timer, out of the heap.
+function takeTimer(): Timer {
+    immut first = timers[0]
+    immut last = match (timers.pop()) {
+        Some(found) => found
+        None => return first
+    }
+
+    if (timers.length() == 0) { return first }
+
+    timers[0] = last
+    mut at = 0
+
+    while (true) {
+        immut left = at * 2 + 1
+        immut right = left + 1
+        mut smallest = at
+
+        if (left < timers.length() and timers[left].at < timers[smallest].at) { smallest = left }
+
+        if (right < timers.length() and timers[right].at < timers[smallest].at) { smallest = right }
+
+        if (smallest == at) { break }
+
+        swapTimers(at, smallest)
+        at = smallest
+    }
+
+    return first
+}
+
+function swapTimers(a: int, b: int) {
+    immut saved = timers[a]
+    timers[a] = timers[b]
+    timers[b] = saved
+}

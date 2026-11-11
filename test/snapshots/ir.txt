@@ -13661,24 +13661,16 @@ function f22 monotonic(): Decimal
 function f23 sleep(l0: Decimal): Void
     local l1: Decimal
     local l2: Bool
-    local l3: Int
-    local l4: Int // whole
-    local l5: Decimal
+    local l3: Decimal
+    local l4: Decimal
+    local l5: Bool
     local l6: Decimal
-    local l7: Decimal
-    local l8: Decimal
-    local l9: Int
-    local l10: Int // nanoseconds
+    local l7: Decimal // capped
+    local l8: Int
+    local l9: Decimal
+    local l10: Decimal
     local l11: Int
-    local l12: Int // request
-    local l13: Int
-    local l14: Int // remaining
-    local l15: Int
-    local l16: Bool
-    local l17: Int
-    local l18: Int // seconds
-    local l19: Int
-    local l20: Int // rest
+    local l12: Int
   b0:
     l1 = IntToDecimal 0
     l2 = DecimalCompare(LessEqual) l0, l1
@@ -13686,36 +13678,24 @@ function f23 sleep(l0: Decimal): Void
   b1:
     return
   b2:
-    l3 = call f14(l0, location(time:39))
-    l4 = l3
-    l5 = IntToDecimal l4
-    l6 = DecimalSub l0, l5
-    l7 = IntToDecimal 1000000000
-    l8 = DecimalMul l6, l7
-    l9 = call f14(l8, location(time:40))
-    l10 = l9
-    l11 = koji_unsafe_allocate([Value(Int(16))])
-    l12 = l11
-    l13 = koji_unsafe_allocate([Value(Int(16))])
-    l14 = l13
-    koji_unsafe_write_int([Value(Local(12)), Value(Int(0)), Value(Local(4))])
-    koji_unsafe_write_int([Value(Local(12)), Value(Int(8)), Value(Local(10))])
-    goto b3
+    l4 = IntToDecimal 3155760000
+    l5 = DecimalCompare(Greater) l0, l4
+    branch l5, b3, b4
   b3:
-    l15 = nanosleep([Value(Local(12)), Value(Local(14))])
-    l16 = IntCompare(NotEqual) l15, 0
-    branch l16, b4, b5
+    l6 = IntToDecimal 3155760000
+    l3 = l6
+    goto b5
   b4:
-    l17 = koji_unsafe_read_int([Value(Local(14)), Value(Int(0))])
-    l18 = l17
-    l19 = koji_unsafe_read_int([Value(Local(14)), Value(Int(8))])
-    l20 = l19
-    koji_unsafe_write_int([Value(Local(12)), Value(Int(0)), Value(Local(18))])
-    koji_unsafe_write_int([Value(Local(12)), Value(Int(8)), Value(Local(20))])
-    goto b3
+    l3 = l0
+    goto b5
   b5:
-    koji_unsafe_free([Value(Local(12))])
-    koji_unsafe_free([Value(Local(14))])
+    l7 = l3
+    l8 = koji_monotonic_nanoseconds([])
+    l9 = IntToDecimal 1000000000
+    l10 = DecimalMul l7, l9
+    l11 = call f14(l10, location(time:43))
+    l12 = IntAdd l8, l11
+    koji_task_sleep_until([Value(Local(12))])
     return
 
 function f24 clock(l0: Int): Decimal
@@ -37139,24 +37119,16 @@ function f21 monotonic(): Decimal
 function f22 sleep(l0: Decimal): Void
     local l1: Decimal
     local l2: Bool
-    local l3: Int
-    local l4: Int // whole
-    local l5: Decimal
+    local l3: Decimal
+    local l4: Decimal
+    local l5: Bool
     local l6: Decimal
-    local l7: Decimal
-    local l8: Decimal
-    local l9: Int
-    local l10: Int // nanoseconds
+    local l7: Decimal // capped
+    local l8: Int
+    local l9: Decimal
+    local l10: Decimal
     local l11: Int
-    local l12: Int // request
-    local l13: Int
-    local l14: Int // remaining
-    local l15: Int
-    local l16: Bool
-    local l17: Int
-    local l18: Int // seconds
-    local l19: Int
-    local l20: Int // rest
+    local l12: Int
   b0:
     l1 = IntToDecimal 0
     l2 = DecimalCompare(LessEqual) l0, l1
@@ -37164,36 +37136,24 @@ function f22 sleep(l0: Decimal): Void
   b1:
     return
   b2:
-    l3 = call f32(l0, location(time:39))
-    l4 = l3
-    l5 = IntToDecimal l4
-    l6 = DecimalSub l0, l5
-    l7 = IntToDecimal 1000000000
-    l8 = DecimalMul l6, l7
-    l9 = call f32(l8, location(time:40))
-    l10 = l9
-    l11 = koji_unsafe_allocate([Value(Int(16))])
-    l12 = l11
-    l13 = koji_unsafe_allocate([Value(Int(16))])
-    l14 = l13
-    koji_unsafe_write_int([Value(Local(12)), Value(Int(0)), Value(Local(4))])
-    koji_unsafe_write_int([Value(Local(12)), Value(Int(8)), Value(Local(10))])
-    goto b3
+    l4 = IntToDecimal 3155760000
+    l5 = DecimalCompare(Greater) l0, l4
+    branch l5, b3, b4
   b3:
-    l15 = nanosleep([Value(Local(12)), Value(Local(14))])
-    l16 = IntCompare(NotEqual) l15, 0
-    branch l16, b4, b5
+    l6 = IntToDecimal 3155760000
+    l3 = l6
+    goto b5
   b4:
-    l17 = koji_unsafe_read_int([Value(Local(14)), Value(Int(0))])
-    l18 = l17
-    l19 = koji_unsafe_read_int([Value(Local(14)), Value(Int(8))])
-    l20 = l19
-    koji_unsafe_write_int([Value(Local(12)), Value(Int(0)), Value(Local(18))])
-    koji_unsafe_write_int([Value(Local(12)), Value(Int(8)), Value(Local(20))])
-    goto b3
+    l3 = l0
+    goto b5
   b5:
-    koji_unsafe_free([Value(Local(12))])
-    koji_unsafe_free([Value(Local(14))])
+    l7 = l3
+    l8 = koji_monotonic_nanoseconds([])
+    l9 = IntToDecimal 1000000000
+    l10 = DecimalMul l7, l9
+    l11 = call f32(l10, location(time:43))
+    l12 = IntAdd l8, l11
+    koji_task_sleep_until([Value(Local(12))])
     return
 
 function f23 clock(l0: Int): Decimal

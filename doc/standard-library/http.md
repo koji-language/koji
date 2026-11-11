@@ -32,6 +32,8 @@ A response with an error status (such as `404` or `500`) is still `Ok(Response)`
 
 Requests use HTTP/1.1. A connection may take at most 30 seconds; up to 5 redirects are followed (`301`, `302` and `303` become a `GET` without the body; `307` and `308` are followed for a `GET` only); a body is sent as `application/json` when it starts with `{` or `[` (after white space), otherwise as `text/plain; charset=utf-8`; the body of a response is read as UTF-8 (invalid bytes become U+FFFD), up to 10 MB. Responses may come with a length, in chunks (with extensions and trailers) or until the server closes the connection.
 
+While a request waits for the network (to connect, to send, to receive), the other [tasks](task.md) of the program run: requests in several tasks are sent at the same time.
+
 ## `https://`
 
 Secure requests use TLS 1.3 (only: a server that has only TLS 1.2 is refused, with an error that says so), written in Koji. The certificate of the server is verified, with its name (the DNS names and IP addresses of the certificate; a wildcard stands for one label), against the certificate authorities of the system: the file named by the environment variable `SSL_CERT_FILE`, or the first of the usual files (`/etc/ssl/certs/ca-certificates.crt` on Debian and Ubuntu, `/etc/pki/tls/certs/ca-bundle.crt` on Fedora, `/etc/ssl/cert.pem` on macOS and Alpine...), then the files of the directories in `SSL_CERT_DIR` (separated by `:`). When the system has none, the authorities of Mozilla's list, built in, are used. The ciphers are AES-GCM, when the processor has instructions for it, and ChaCha20-Poly1305.

@@ -19,6 +19,9 @@ The **Koji Standard Library** provides a collection of built-in modules to help 
 -   [`math`](standard-library/math.md)  
     Perform basic mathematical operations and access constants like `pi`.
 
+-   [`task`](standard-library/task.md)  
+    Run functions at the same time: groups of tasks, channels and shared values.
+
 -   [`http`](standard-library/http.md)  
     Send HTTP requests such as GET, POST, PUT, and DELETE.
 

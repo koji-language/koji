@@ -164,11 +164,13 @@ Notes for writing the compiler in Koji:
 | **5. Maintenance** | A bootstrap policy (decided: a seed in C, see below): done, and the compiler and the interpreter in Rust are removed | The tests build the compiler from the seed; `cargo test --test bootstrap -- --ignored` checks the fixed point |
 | **6. Optimization** | The optimizations below, in the compiler written in Koji | A benchmark (the compiler checking and lowering its own files) measures each one; every test still gives the same output |
 | **7. A runtime in Koji** | The runtime and the standard library in Koji, TLS included, and no Rust in what builds Koji ([below](#a-runtime-in-koji-phase-7)): done | The same results, tests and speed as the runtime in Rust, module by module; `bootstrap/build.sh` without `cargo` |
+| **8. Concurrency** | Tasks on one thread ([design](design.md#concurrency-light-tasks-in-groups-on-one-thread)): stacks of their own and the switch between them (x86-64, arm64), the scheduler and the poller (epoll, kqueue) in `koji:task`, the `task` module (groups, channels, shared values), `time.sleep` and the sockets of `http` and TLS that let the other tasks run: done. Next: an HTTP server on them, then tasks over several threads | Tests of groups, channels, shared values, deadlocks and requests at the same time (`test/compiler.rs`); the switch of arm64 run under an emulator |
 
 Notes:
 
 -   **Compiled standard library**: `json` and `regex` can be rewritten in Koji. `http` with TLS is heavy: it can go through FFI (e.g. libcurl) or stay outside the core.
 -   **Rule for `kojic`**: it may only use features supported by the previous compiler version, otherwise the bootstrap breaks.
+-   **Working on the standard library**: with `KOJI_STD=std`, the compiler reads the modules of the standard library from that directory instead of the copies it carries, so a change to `std/*.kj` is tried without building the compiler again (the library of the runtime, `std/koji/`, still needs `kojic dump library`).
 
 ### The seed (phase 5)
 

@@ -16,7 +16,14 @@ fn main() {
     std::fs::write(&source, unpacked.stdout).expect("cannot write libkoji.c");
     let object = out_dir.join("libkoji.o");
     let cc = env::var("KOJI_CC").unwrap_or_else(|_| "cc".to_string());
-    let compiled = Command::new(&cc).args(["-O2", "-c", "-o"]).arg(&object).arg(&source).status().expect("cannot run the C compiler");
+    let mut flags = vec!["-O2"];
+    // The tasks of the library switch between stacks (std/koji/task.kj), which the shadow stack of
+    // x86-64 (CET) forbids: without its mark on the library, no program asks the system for one.
+    let probe = Command::new(&cc).args(["-fcf-protection=none", "-E", "-x", "c", "/dev/null"]).output();
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") && probe.is_ok_and(|probed| probed.status.success()) {
+        flags.push("-fcf-protection=none");
+    }
+    let compiled = Command::new(&cc).args(&flags).args(["-c", "-o"]).arg(&object).arg(&source).status().expect("cannot run the C compiler");
     assert!(compiled.success(), "compiling the library written in Koji failed");
     let library = out_dir.join("libkoji_runtime.a");
     // A new archive each time (`ar` adds to an existing one).
