@@ -2502,3 +2502,84 @@ fn anonymous_functions_take_the_expected_parameter_types() {
         "4\n7\n",
     );
 }
+
+#[test]
+fn a_server_answers_requests_in_tasks() {
+    use std::io::{Read, Write};
+    // A free port, given to the server.
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let path = source_file(
+        "server",
+        r#"import http
+import system
+import time
+
+immut port = match (int(system.args()[0])) {
+    Ok(n) => n
+    Err(_) => 0
+}
+immut failed = http.serve(port, (request) => {
+    if (request.path == '/slow') {
+        time.sleep(0.3)
+        return http.text(200, 'slow')
+    }
+    if (request.path == '/echo') {
+        return http.json(201, `{"method": "${request.method}", "body": "${request.body}", "q": "${request.query.get('q')}", "host": "${request.headers.get('host')}"}`)
+    }
+    if (request.path == '/close') {
+        immut response: http.Response = { status: 200, body: 'bye', headers: ['connection': 'close', 'x-custom': 'one\r\ntwo'] }
+        return response
+    }
+    return http.text(404, `no ${request.path}`)
+})
+print(failed)
+"#,
+    );
+    let executable = path.with_extension("");
+    build(&path, &executable);
+    let mut server = Command::new(&executable).arg(port.to_string()).spawn().unwrap();
+    let exchange = move |request: &[u8]| -> String {
+        let mut stream = loop {
+            match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => break stream,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        };
+        stream.write_all(request).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut answer = Vec::new();
+        let _ = stream.read_to_end(&mut answer);
+        String::from_utf8(answer).unwrap()
+    };
+    let echo = exchange(b"POST /echo?q=a%20b+c HTTP/1.1\r\nHost: here\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
+    assert!(echo.starts_with("HTTP/1.1 201 Created\r\n"), "{}", echo);
+    assert!(echo.contains("content-type: application/json\r\n"), "{}", echo);
+    assert!(echo.ends_with(r#"{"method": "POST", "body": "hello", "q": "Some('a b c')", "host": "Some('here')"}"#), "{}", echo);
+    // Two requests on one connection, the second sent before the first is answered; the second
+    // asks to close it.
+    let two = exchange(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\nConnection: close\r\n\r\n");
+    assert_eq!(two.matches("HTTP/1.1 404 Not Found").count(), 2, "{}", two);
+    assert!(two.ends_with("no /b"), "{}", two);
+    let chunked = exchange(b"POST /echo HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n");
+    assert!(chunked.contains(r#""body": "hello world""#), "{}", chunked);
+    // What is not HTTP, a length and chunks at once (how requests are smuggled), another version.
+    assert!(exchange(b"GARBAGE\r\n\r\n").starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    assert!(exchange(b"GET / HTTP/1.1\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n").starts_with("HTTP/1.1 400 "));
+    assert!(exchange(b"GET / HTTP/2.0\r\n\r\n").starts_with("HTTP/1.1 505 "));
+    // A header of the handler cannot add another one; the handler closes the connection.
+    let closed = exchange(b"GET /close HTTP/1.1\r\n\r\n");
+    assert!(closed.contains("x-custom: one  two\r\n") && closed.contains("connection: close\r\n"), "{}", closed);
+    assert!(exchange(b"HEAD /x HTTP/1.1\r\nConnection: close\r\n\r\n").ends_with("content-length: 5\r\nconnection: close\r\n\r\n"));
+    // Ten slow requests at once take the time of one.
+    let start = std::time::Instant::now();
+    let slow: Vec<_> = (0..10).map(|_| std::thread::spawn(move || exchange(b"GET /slow HTTP/1.1\r\nConnection: close\r\n\r\n"))).collect();
+    for each in slow {
+        assert!(each.join().unwrap().ends_with("\r\n\r\nslow"));
+    }
+    assert!(start.elapsed() < std::time::Duration::from_millis(1500), "{:?}", start.elapsed());
+    // A second server cannot listen on the same port.
+    let second = Command::new(&executable).arg(port.to_string()).output().unwrap();
+    assert!(String::from_utf8_lossy(&second.stdout).starts_with(&format!("Err(CannotListen({}, ", port)));
+    server.kill().unwrap();
+    let _ = server.wait();
+}

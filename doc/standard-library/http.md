@@ -1,6 +1,6 @@
 # http
 
-The `http` module allows sending HTTP requests and handling responses.
+The `http` module sends HTTP requests, and serves them.
 
 ## Functions
 
@@ -26,6 +26,9 @@ The response to a request has these fields:
 -   `body: string`  
     The body content of the response.
 
+-   `headers: Map[string, string]`  
+    Its headers, by name in lower case (`response.headers.get('content-type')`). The values of a header sent several times are joined with `, `.
+
 A response with an error status (such as `404` or `500`) is still `Ok(Response)`: the request reached the server. Only failures to communicate are errors.
 
 ## How requests are made
@@ -49,8 +52,11 @@ type HttpError = {
     Timeout(url: string)
     Tls(url: string, message: string)
     InvalidResponse(url: string, message: string)
+    CannotListen(port: int, message: string)
 }
 ```
+
+`CannotListen` is the error of `serve`.
 
 `Tls` is a failure of the secure connection: an invalid certificate (`invalid certificate: the certificate is not valid for this name`, `...has expired or is not yet valid`, `...is not signed by a known authority`...), a server without TLS 1.3, or an alert of the server.
 
@@ -67,3 +73,51 @@ match (http.get('https://example.com/api')) {
     Err(error) => print(error)
 }
 ```
+
+## Serving
+
+-   `serve(port: int, handler: (Request) -> Response) -> Result[void, HttpError]`  
+    Serves HTTP/1.1 on `port`, on every IPv4 address of the machine: `handler` answers each request. It runs until the program ends, and returns only when it cannot listen on the port (`CannotListen`, when another program uses it).
+
+-   `text(status: int, body: string) -> Response`, `html(status: int, body: string) -> Response`, `json(status: int, body: string) -> Response`  
+    A response with a body of plain text, HTML or JSON (its `content-type`, in UTF-8).
+
+```koji
+import http
+
+immut failed = http.serve(8080, (request) => {
+    if (request.path == '/hello') {
+        immut name = match (request.query.get('name')) {
+            Some(given) => given
+            None => 'world'
+        }
+
+        return http.text(200, `Hello, ${name}!`)
+    }
+
+    return http.text(404, 'not found')
+})
+
+print(failed) // only when port 8080 is taken
+```
+
+A request has these fields:
+
+-   `method: string`: `GET`, `POST`...
+-   `path: string`: the path, without the query, decoded (`/users/42`).
+-   `query: Map[string, string]`: the parameters of the query (`?page=2&sort=name`), decoded (`+` is a space).
+-   `headers: Map[string, string]`: the headers, by name in lower case.
+-   `body: string`: the body, read as UTF-8 (invalid bytes become U+FFFD).
+
+A handler can answer with headers of its own: `immut response: http.Response = { status: 302, body: '', headers: ['location': '/new'] }`. The server writes `content-length` itself; a `content-type` the response does not give is `text/plain; charset=utf-8`; a header `connection: close` closes the connection after the response.
+
+Each connection is served in a [task](task.md) of its own, so while a handler waits (for a request of its own to another server, a timer...), the other connections are served; a handler that computes for long without waiting holds the others up. A panic in a handler ends the program, as anywhere else.
+
+The server keeps connections open for further requests (HTTP/1.1 keep-alive, and requests sent before the previous one is answered), and closes those that the client asks to close or leaves idle for 60 seconds. A client has 30 seconds to send a request (and to receive its response). It answers by itself, before closing the connection:
+
+-   `400` to what is not a request of HTTP/1.x, to a request with both a length and chunks (how requests are smuggled past proxies) and to malformed headers;
+-   `413` to a body over 10 MB, `431` to headers over 64 KB;
+-   `501` to a body coded other than in chunks, `505` to another version of HTTP.
+
+Bodies come with a length or in chunks, and a client that waits for leave to send its body (`Expect: 100-continue`) is given it. The response to a `HEAD` is sent without its body.
+

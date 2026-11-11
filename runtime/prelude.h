@@ -858,19 +858,83 @@ KOJI_INLINE int64_t koji_net_connect(const void *host, const void *port, int64_t
 }
 KOJI_INLINE void *koji_net_dns_message(int64_t code) { return (void *)gai_strerror((int)code); }
 /* Bytes sent or received, or -1 (errno says why): when the socket is not ready, the task waits
-   for it while the others go on. */
-KOJI_INLINE int64_t koji_net_send(int64_t fd, const void *bytes, int64_t size) {
+   for it while the others go on, at most until `deadline` (a monotonic time in nanoseconds, or
+   -1), after which errno is ETIMEDOUT. */
+KOJI_INLINE int64_t koji_net_send_within(int64_t fd, const void *bytes, int64_t size, int64_t deadline) {
     for (;;) {
         long sent = send((int)fd, bytes, (size_t)size, KOJI_MSG_NOSIGNAL | KOJI_MSG_DONTWAIT);
         if (sent >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) return sent;
-        if (errno != EINTR && koji_task_wait_fd(fd, true, -1) < 0) return -1;
+        if (errno == EINTR) continue;
+        int64_t waited = koji_task_wait_fd(fd, true, deadline);
+        if (waited < 0) return -1;
+        if (waited > 0) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
     }
 }
-KOJI_INLINE int64_t koji_net_receive(int64_t fd, const void *bytes, int64_t size) {
+KOJI_INLINE int64_t koji_net_receive_within(int64_t fd, const void *bytes, int64_t size, int64_t deadline) {
     for (;;) {
         long got = recv((int)fd, (void *)bytes, (size_t)size, KOJI_MSG_DONTWAIT);
         if (got >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) return got;
-        if (errno != EINTR && koji_task_wait_fd(fd, false, -1) < 0) return -1;
+        if (errno == EINTR) continue;
+        int64_t waited = koji_task_wait_fd(fd, false, deadline);
+        if (waited < 0) return -1;
+        if (waited > 0) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+    }
+}
+KOJI_INLINE int64_t koji_net_send(int64_t fd, const void *bytes, int64_t size) { return koji_net_send_within(fd, bytes, size, -1); }
+KOJI_INLINE int64_t koji_net_receive(int64_t fd, const void *bytes, int64_t size) { return koji_net_receive_within(fd, bytes, size, -1); }
+int bind(int fd, const struct koji_sockaddr *address, uint32_t length);
+int listen(int fd, int backlog);
+int accept(int fd, struct koji_sockaddr *address, uint32_t *length);
+/* A socket that listens on `port` of every IPv4 address of the machine, or -1 (errno in `*code`). */
+KOJI_INLINE int64_t koji_net_listen(int64_t port, const void *code) {
+    int fd = socket(2 /* AF_INET */, 1 /* SOCK_STREAM */, 0);
+    if (fd < 0) {
+        *(int64_t *)code = errno;
+        return -1;
+    }
+    int on = 1;
+    unsigned char address[16] = { 0 };
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    setsockopt(fd, KOJI_SOL_SOCKET, 0x4 /* SO_REUSEADDR */, &on, sizeof on);
+    address[0] = sizeof address;
+    address[1] = 2;
+#else
+    setsockopt(fd, KOJI_SOL_SOCKET, 2 /* SO_REUSEADDR */, &on, sizeof on);
+    address[0] = 2;
+#endif
+    address[2] = (unsigned char)(port >> 8);
+    address[3] = (unsigned char)port;
+    if (bind(fd, (const struct koji_sockaddr *)address, sizeof address) != 0 || listen(fd, 1024) != 0) {
+        *(int64_t *)code = errno;
+        close(fd);
+        return -1;
+    }
+    fcntl(fd, 4 /* F_SETFL */, fcntl(fd, 3 /* F_GETFL */) | KOJI_O_NONBLOCK);
+    return fd;
+}
+/* The next connection to a socket that listens, while the other tasks go on: its socket, or -1
+   (errno says why). */
+KOJI_INLINE int64_t koji_net_accept(int64_t listener) {
+    for (;;) {
+        int fd = accept((int)listener, NULL, NULL);
+        if (fd >= 0) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+            /* The BSDs give it the flags of the socket that listens. */
+            fcntl(fd, 4 /* F_SETFL */, fcntl(fd, 3 /* F_GETFL */) & ~KOJI_O_NONBLOCK);
+            int on = 1;
+            setsockopt(fd, KOJI_SOL_SOCKET, 0x1022 /* SO_NOSIGPIPE */, &on, sizeof on);
+#endif
+            return fd;
+        }
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+        if (koji_task_wait_fd(listener, false, -1) < 0) return -1;
     }
 }
 KOJI_INLINE void koji_net_close(int64_t fd) { close((int)fd); }

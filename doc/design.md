@@ -408,3 +408,11 @@ The value of `Shared` is the one reference of Koji, which its copies share: the 
 **Why**: the type is already written once, in the signature; writing it again at each call is noise, the more so for the functions given to tasks. It is what TypeScript, Kotlin and Swift do.
 
 **Alternatives**: always writing the types (as before), clearer for a reader without an editor but heavy; inferring them from the body too (as ML), which gives errors far from their cause.
+
+### The HTTP server: a handler from requests to responses, a task for each connection
+
+**Decision**: `http.serve(port, handler)` serves HTTP/1.1: the handler is a function from a `Request` (method, decoded path, query and headers by lower-case name, body) to a `Response` (the type the client returns, with its headers), built by hand or by `http.text`, `http.html` and `http.json`. Each connection is a task of the group of `serve`, kept open for further requests (keep-alive, pipelining) until the client closes it, asks to, or leaves it idle 60 seconds; a request has 30 seconds to come. The server protects itself on its own: 400 for a request with both a length and chunks (smuggling), for white space before the colon of a header and for folded headers; 413, 431, 501 and 505; header values of the handler with a line break have it replaced, so they cannot add headers. It listens on every IPv4 address. A panic in a handler ends the program.
+
+**Why**: a function from a request to a response is the smallest server to learn, and the whole of what small services need (as Go's `http.HandleFunc` or Python's WSGI, without the objects); with tasks, the handler is ordinary code that may wait without holding the others up. The protections and the limits are the defaults that a beginner would not know to add.
+
+**Alternatives**: a router and middleware in the module (as Express), which belong in a library on top; a handler that writes to a stream (Go's `ResponseWriter`), for streaming bodies, later; recovering from a panic in a handler with a 500 (as Go), which Koji, without catching panics, does not do.

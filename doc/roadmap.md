@@ -34,7 +34,7 @@ This document outlines the planned features and milestones for the Koji programm
 -   [ ] Package manager
 -   [x] Built-in testing framework (`test` blocks, `assert`, `kojic test`)
 -   [x] Concurrency: lightweight tasks in groups, channels and shared values (`task`), on one thread
--   [ ] An HTTP server (`http.serve`)
+-   [x] An HTTP server (`http.serve`), each connection in a task
 -   [ ] Tasks over several threads
 -   [ ] WebAssembly (WASM) compilation
 -   [ ] Editor support (syntax highlighting, LSP integration)

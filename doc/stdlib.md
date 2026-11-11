@@ -23,7 +23,7 @@ The **Koji Standard Library** provides a collection of built-in modules to help 
     Run functions at the same time: groups of tasks, channels and shared values.
 
 -   [`http`](standard-library/http.md)  
-    Send HTTP requests such as GET, POST, PUT, and DELETE.
+    Send HTTP requests such as GET, POST, PUT, and DELETE, and serve them.
 
 -   [`json`](standard-library/json.md)  
     Parse JSON strings and convert data to JSON format.
