@@ -448,3 +448,11 @@ The value of `Shared` is the one reference of Koji, which its copies share: the 
 **Why**: a declaration that looks like its help is read at once, also by someone who never saw the module (as commander.js does); everything a small program of the command line needs, the help included, is in one place. Values by name keep it without reflection or macros, which Koji has not.
 
 **Alternatives**: a record whose fields are the options (as Rust's clap with derive, Python's typer), which needs reflection; a function per kind of declaration with separate short and long names (as Go's flag), more to write; `system.args()` alone, as before, which leaves the help and the mistakes to each program.
+
+### Machine code: the compiler writes the object file itself
+
+**Decision**: the native backend (`compiler/native.kj`, `kojic build --native`) generates the machine code of the IR and writes the object file itself (ELF for Linux on x86-64 first), which the linker of the system links with the runtime library: no C is generated nor compiled. It grows in steps, each checked against the C backend (the same output and panics, under valgrind): the integers, booleans, chars and strings, control flow, calls and globals first; then every type (records, lists, maps, closures, decimals, floats); then the allocation of registers; then arm64 and Mach-O; then the library of the runtime itself, whose C (the prelude) becomes Koji, foreign declarations of the system and code of the generator; then a linker of Koji's own. Until it covers the language and generates code as fast, the C backend stays the default, and what the native one does not support yet is an error, never a wrong program.
+
+**Why**: Koji aims to depend on no other language, C included: the compiler is written in Koji, and with its own code generation it needs nothing of C to build a program but, for a while, the linker. Writing the object file (rather than assembly for an assembler) keeps the whole path in Koji. Growing it under the C backend keeps Koji usable and correct at each step, with the C backend as the reference of every behavior.
+
+**Alternatives**: LLVM (excellent code, but a large dependency in C++); a backend of assembly text for the system's assembler, one tool more; replacing the C backend at once, which would leave Koji broken for months.

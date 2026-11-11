@@ -133,13 +133,63 @@ function File.read(self, here: Location): Result[string, FileError] {
     return Ok(text)
 }
 
+// The bytes of the file, whatever they are (a file that is not text).
+function File.readBytes(self, here: Location): Result[byte[], FileError] {
+    if (self.mode != Read) { panicAt(here, `file '${self.path}' was not opened for reading (Read)`) }
+
+    immut fd = fileno(self.handle)
+    immut chunk = allocate(65536)
+    mut bytes: byte[] = []
+
+    while (true) {
+        immut got = transfer(false, fd, chunk, 65536)
+
+        if (got < 0) {
+            immut code = koji_system_errno()
+
+            if (code == 4) { continue }
+
+            free(chunk)
+            return Err(failure(self.path, code))
+        }
+
+        if (got == 0) { break }
+
+        for i in range(got) {
+            immut b: byte = read(chunk, i)
+            bytes.push(b)
+        }
+    }
+
+    free(chunk)
+    return Ok(bytes)
+}
+
 // Writes `text` to the file.
 function File.write(self, text: string, here: Location): Result[void, FileError] {
     if (self.mode == Read) { panicAt(here, `file '${self.path}' was opened for reading; use Write or Append to write`) }
 
+    return self.writeAt(stringBytes(text), stringSize(text))
+}
+
+// Writes the bytes to the file.
+function File.writeBytes(self, bytes: byte[], here: Location): Result[void, FileError] {
+    if (self.mode == Read) { panicAt(here, `file '${self.path}' was opened for reading; use Write or Append to write`) }
+
+    immut size = bytes.length()
+    immut buffer = allocate(size + 1)
+
+    for i in range(size) {
+        write(buffer, i, bytes[i])
+    }
+
+    immut written = self.writeAt(buffer, size)
+    free(buffer)
+    return written
+}
+
+function File.writeAt(self, bytes: Address, size: int): Result[void, FileError] {
     immut fd = fileno(self.handle)
-    immut bytes = stringBytes(text)
-    immut size = stringSize(text)
     mut done = 0
 
     while (done < size) {

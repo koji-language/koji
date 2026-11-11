@@ -2981,3 +2981,41 @@ match (cli.parseArgs(todo, ['lst'])) {
         "hello ana x1 loud=false []\nhello ana x2 loud=true ['bia', 'caio']\noi ana x3 loud=false []\nhello -ana x1 loud=false []\ngreet: unknown option '--lod' (did you mean '--loud'?)\ngreet: missing <name>\ngreet: '--times' needs an integer, found 'x'\ngreet: '--times' needs a value (<n>)\ngreet 1.0.0\nGreets someone.\nadd: ['buy', 'milk'] high\ntodo: unknown command 'lst' (did you mean 'list'?)\n",
     );
 }
+
+#[test]
+fn the_native_backend_agrees_with_the_c_backend() {
+    // Programs in what the native backend supports yet: the same output, the same panics.
+    let programs = [
+        (
+            "native_numbers",
+            "function fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\n\nimmut limit = 20\nmut total = 0\n\nfor i in range(limit) {\n    total += fib(i)\n}\n\nfor i in range(10, 0, -3) {\n    total = total * 2 - i\n}\n\nprint(total)\nprint(-7 % 3)\nprint(7 / -2)\nprint((6 & 3) | 8)\nprint(10 / 3 > 2 and true)\nprint('x' == 'y' or not false)\n",
+        ),
+        (
+            "native_strings",
+            "function describe(n: int): string {\n    mut text = ''\n    for i in range(n) {\n        text = text + `${i},`\n    }\n    if (text == '0,1,2,') { return 'three' }\n    return text\n}\n\nmut names = 'a'\nnames = names + 'b'\nprint(describe(3))\nprint(describe(5))\nprint(names < 'ac')\nprint(`${names}: ${names.length()}`)\n",
+        ),
+        ("native_overflow", "function grow(n: int): int {\n    return n * 3037000500\n}\n\nprint(grow(1))\nprint(grow(3037000500))\n"),
+        ("native_division", "function divide(a: int, b: int): int {\n    return a / b\n}\n\nprint(divide(9, 2))\nprint(divide(9, 0))\n"),
+    ];
+    for (name, source) in programs {
+        let path = source_file(name, source);
+        let c = path.with_extension("c-backend");
+        build(&path, &c);
+        let native = path.with_extension("native");
+        let built = koji::finish(koji::kojic().arg("build").arg("--native").arg(&path).arg("-o").arg(&native), "");
+        assert_eq!(built.code, Some(0), "{}: {}", name, built.stderr);
+        let expected = Command::new(&c).output().unwrap();
+        let found = if has_valgrind() {
+            Command::new("valgrind").env("KOJI_POOL", "0").args(["-q", "--error-exitcode=99"]).arg(&native).output().unwrap()
+        } else {
+            Command::new(&native).output().unwrap()
+        };
+        assert_eq!(String::from_utf8_lossy(&found.stdout), String::from_utf8_lossy(&expected.stdout), "{}", name);
+        assert_eq!(String::from_utf8_lossy(&found.stderr), String::from_utf8_lossy(&expected.stderr), "{}", name);
+        assert_eq!(found.status.code(), expected.status.code(), "{}", name);
+    }
+    // What it does not support yet is an error, not a wrong program.
+    let path = source_file("native_unsupported", "print([1, 2, 3])\n");
+    let built = koji::finish(koji::kojic().arg("build").arg("--native").arg(&path).arg("-o").arg(path.with_extension("native")), "");
+    assert!(built.stderr.contains("the native backend does not support"), "{}", built.stderr);
+}
