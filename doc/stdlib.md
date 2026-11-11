@@ -19,6 +19,9 @@ The **Koji Standard Library** provides a collection of built-in modules to help 
 -   [`math`](standard-library/math.md)  
     Perform basic mathematical operations and access constants like `pi`.
 
+-   [`cli`](standard-library/cli.md)  
+    Read the options and arguments of a program of the command line, with its help.
+
 -   [`task`](standard-library/task.md)  
     Run functions at the same time: groups of tasks, channels and shared values.
 

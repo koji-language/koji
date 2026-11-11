@@ -2930,3 +2930,54 @@ fn digests_of_texts() {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n128\n",
     );
 }
+
+#[test]
+fn the_arguments_of_a_command_line() {
+    assert_same(
+        "cli",
+        r#"import cli
+
+immut command = cli.command('greet', 'Greets someone.')
+    .flag('-l, --loud', 'Shout the greeting')
+    .number('-t, --times <n>', 'How many times', 1)
+    .option('-g, --greeting <text>', 'The greeting', 'hello')
+    .argument('<name>', 'Who to greet')
+    .argument('[others...]', 'More people')
+    .version('1.0.0')
+
+function show(args: string[]) {
+    match (cli.parseArgs(command, args)) {
+        Ok(parsed) => print(`${parsed.value('greeting')} ${parsed.value('name')} x${parsed.number('times')} loud=${parsed.flag('loud')} ${parsed.list('others')}`)
+        Err(Invalid(message)) => print(message.split('\n')[0])
+        Err(other) => print(other.display().split('\n')[0])
+    }
+}
+
+show(['ana'])
+show(['-lt2', 'ana', 'bia', 'caio'])
+show(['--times=3', '--greeting', 'oi', 'ana'])
+show(['--', '-ana'])
+show(['--lod', 'ana'])
+show([])
+show(['-t', 'x', 'ana'])
+show(['ana', '--times'])
+show(['--version'])
+show(['--help'])
+
+immut todo = cli.command('todo', 'A list.')
+    .subcommand(cli.command('add', 'Adds an item.').option('-p, --priority <level>', 'Its priority', 'normal').argument('<text...>', 'What to do'))
+    .subcommand(cli.command('list', 'Shows the items.').flag('-a, --all', 'Also those done'))
+
+match (cli.parseArgs(todo, ['add', 'buy', 'milk', '-p', 'high'])) {
+    Ok(parsed) => print(`${parsed.command()}: ${parsed.list('text')} ${parsed.value('priority')}`)
+    Err(error) => print(error)
+}
+
+match (cli.parseArgs(todo, ['lst'])) {
+    Ok(_) => print('?')
+    Err(error) => print(error.display().split('\n')[0])
+}
+"#,
+        "hello ana x1 loud=false []\nhello ana x2 loud=true ['bia', 'caio']\noi ana x3 loud=false []\nhello -ana x1 loud=false []\ngreet: unknown option '--lod' (did you mean '--loud'?)\ngreet: missing <name>\ngreet: '--times' needs an integer, found 'x'\ngreet: '--times' needs a value (<n>)\ngreet 1.0.0\nGreets someone.\nadd: ['buy', 'milk'] high\ntodo: unknown command 'lst' (did you mean 'list'?)\n",
+    );
+}
