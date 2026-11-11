@@ -633,6 +633,11 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
     self.releases = self.localReleases(routine)
     self.live = lastUses(routine)
 
+    // A function that calls others may be called again and again (recursion): where it starts, the
+    // task that runs it lets the others run when it has run long enough (`KOJI_PREEMPT`, the
+    // prelude), as at the end of each turn of a loop (see `terminator`).
+    if (self.preemptible() and not self.smalls[id] and makesCalls(routine)) { self.line('    KOJI_PREEMPT();') }
+
     for block in range(routine.blocks.length()) {
         self.line(`b${block}:;`)
         self.block = block
@@ -647,6 +652,28 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
     }
 
     self.line('}')
+}
+
+// Whether a task may be preempted in the code generated: in a program, but neither in the library
+// (where the scheduler of tasks is) nor in the module `task`, whose groups, channels and shared
+// values change their cells in steps that no other task may come between.
+function Generator.preemptible(self): boolean {
+    return not self.program.library and self.file != 'task'
+}
+
+// Whether a function calls functions of the program (or closures).
+function makesCalls(routine: IrFunction): boolean {
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            match (instruction) {
+                CallIns(_, _, _, _, _) => return true
+                CallClosureIns(_, _, _, _) => return true
+                _ => {}
+            }
+        }
+    }
+
+    return false
 }
 
 function operand(value: Operand): string {
@@ -1758,8 +1785,17 @@ function Generator.releaseLocals(mut self, routine: IrFunction) {
 
 function Generator.terminator(mut self, routine: IrFunction, terminator: Terminator) {
     match (terminator) {
-        GotoT(block) => self.line(`    goto b${block};`)
-        BranchT(condition, thenBlock, elseBlock) => self.line(`    if (${operand(condition)}) goto b${thenBlock}; else goto b${elseBlock};`)
+        GotoT(block) => {
+            // A jump back is the end of a turn of a loop (every loop has one).
+            if (block <= self.block and self.preemptible()) { self.line('    KOJI_PREEMPT();') }
+
+            self.line(`    goto b${block};`)
+        }
+        BranchT(condition, thenBlock, elseBlock) => {
+            if ((thenBlock <= self.block or elseBlock <= self.block) and self.preemptible()) { self.line('    KOJI_PREEMPT();') }
+
+            self.line(`    if (${operand(condition)}) goto b${thenBlock}; else goto b${elseBlock};`)
+        }
         ReturnT(value) => {
             // The `mut` parameters give their final values back: they move out, unless the value
             // returned is one of them.

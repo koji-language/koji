@@ -10,7 +10,7 @@ use std::process::Command;
 const RUNTIME: &str = env!("KOJI_RUNTIME_LIB");
 
 /// The libraries a program needs from the system besides the C library.
-const SYSTEM_LIBRARIES: &[&str] = &["-lm"];
+const SYSTEM_LIBRARIES: &[&str] = &["-lm", "-lpthread"];
 
 /// Builds `source` (C) with the runtime and runs it: what it printed.
 fn run_c(name: &str, source: &str) -> String {

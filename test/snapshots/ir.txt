@@ -14423,7 +14423,7 @@ function f37 wait(l0: Int): Int
     l2 = l1
     goto b1
   b1:
-    l4 = waitpid([Value(Local(0)), Value(Local(2)), Value(Int(0))])
+    l4 = koji_blocking_waitpid([Value(Local(0)), Value(Local(2)), Value(Int(0))])
     l5 = IntCompare(Less) l4, 0
     l3 = l5
     branch l3, b4, b5
@@ -14598,7 +14598,7 @@ function f38 readBoth(l0: Int, l1: Int): List(Str)
     branch l28, b9, b10
   b8:
     l34 = IntNeg 1
-    l35 = poll([Value(Local(3)), Value(Local(19)), Value(Local(34))])
+    l35 = koji_blocking_poll([Value(Local(3)), Value(Local(19)), Value(Local(34))])
     l36 = IntCompare(Less) l35, 0
     branch l36, b11, b12
   b9:
@@ -30978,7 +30978,7 @@ function f7 open(l0: Str, l1: Record(2)): Record(3)
   b3:
     l15 = call f59(l7)
     l16 = l15
-    l17 = fopen([Value(Local(6)), Value(Local(16))])
+    l17 = koji_blocking_fopen([Value(Local(6)), Value(Local(16))])
     l18 = l17
     l19 = koji_system_errno([])
     l20 = l19
@@ -31262,7 +31262,7 @@ function f11 list(l0: Str): Record(6)
   b2:
     l4 = call f59(l0)
     l5 = l4
-    l6 = opendir([Value(Local(5))])
+    l6 = koji_blocking_opendir([Value(Local(5))])
     l7 = l6
     l8 = koji_system_errno([])
     l9 = l8
@@ -31294,7 +31294,7 @@ function f11 list(l0: Str): Record(6)
   b9:
     branch true, b10, b11
   b10:
-    l20 = readdir([Value(Local(7))])
+    l20 = koji_blocking_readdir([Value(Local(7))])
     l21 = l20
     l22 = IntCompare(Equal) l21, 0
     branch l22, b12, b13
@@ -31363,7 +31363,7 @@ function f13 remove(l0: Str): Record(5)
   b2:
     l4 = call f59(l0)
     l5 = l4
-    l6 = unlink([Value(Local(5))])
+    l6 = koji_blocking_unlink([Value(Local(5))])
     l7 = IntCompare(Equal) l6, 0
     l8 = l7
     l9 = koji_system_errno([])
@@ -31492,7 +31492,7 @@ function f16 makeDirectory(l0: Str): Int
   b0:
     l1 = call f59(l0)
     l2 = l1
-    l3 = mkdir([Value(Local(2)), Value(Int(511))])
+    l3 = koji_blocking_mkdir([Value(Local(2)), Value(Int(511))])
     l4 = IntCompare(Equal) l3, 0
     l5 = l4
     l6 = koji_system_errno([])
@@ -31611,7 +31611,7 @@ function f19 reachable(l0: Str): Bool
   b0:
     l1 = call f59(l0)
     l2 = l1
-    l3 = access([Value(Local(2)), Value(Int(0))])
+    l3 = koji_blocking_access([Value(Local(2)), Value(Int(0))])
     l4 = IntCompare(Equal) l3, 0
     l5 = l4
     koji_unsafe_free([Value(Local(2))])
@@ -31688,11 +31688,11 @@ function f22 transfer(l0: Bool, l1: Int, l2: Int, l3: Int): Int
     koji_unsafe_write_int([Value(Local(5)), Value(Int(8)), Value(Local(3))])
     branch l0, b1, b2
   b1:
-    l7 = writev([Value(Local(1)), Value(Local(5)), Value(Int(1))])
+    l7 = koji_blocking_writev([Value(Local(1)), Value(Local(5)), Value(Int(1))])
     l6 = l7
     goto b3
   b2:
-    l8 = readv([Value(Local(1)), Value(Local(5)), Value(Int(1))])
+    l8 = koji_blocking_readv([Value(Local(1)), Value(Local(5)), Value(Int(1))])
     l6 = l8
     goto b3
   b3:
@@ -32406,7 +32406,7 @@ function f36 wait(l0: Int): Int
     l2 = l1
     goto b1
   b1:
-    l4 = waitpid([Value(Local(0)), Value(Local(2)), Value(Int(0))])
+    l4 = koji_blocking_waitpid([Value(Local(0)), Value(Local(2)), Value(Int(0))])
     l5 = IntCompare(Less) l4, 0
     l3 = l5
     branch l3, b4, b5
@@ -32581,7 +32581,7 @@ function f37 readBoth(l0: Int, l1: Int): List(Str)
     branch l28, b9, b10
   b8:
     l34 = IntNeg 1
-    l35 = poll([Value(Local(3)), Value(Local(19)), Value(Local(34))])
+    l35 = koji_blocking_poll([Value(Local(3)), Value(Local(19)), Value(Local(34))])
     l36 = IntCompare(Less) l35, 0
     branch l36, b11, b12
   b9:
@@ -38191,7 +38191,7 @@ function f51 wait(l0: Int): Int
     l2 = l1
     goto b1
   b1:
-    l4 = waitpid([Value(Local(0)), Value(Local(2)), Value(Int(0))])
+    l4 = koji_blocking_waitpid([Value(Local(0)), Value(Local(2)), Value(Int(0))])
     l5 = IntCompare(Less) l4, 0
     l3 = l5
     branch l3, b4, b5
@@ -38366,7 +38366,7 @@ function f52 readBoth(l0: Int, l1: Int): List(Str)
     branch l28, b9, b10
   b8:
     l34 = IntNeg 1
-    l35 = poll([Value(Local(3)), Value(Local(19)), Value(Local(34))])
+    l35 = koji_blocking_poll([Value(Local(3)), Value(Local(19)), Value(Local(34))])
     l36 = IntCompare(Less) l35, 0
     branch l36, b11, b12
   b9:
@@ -50894,7 +50894,7 @@ function f7 open(l0: Str, l1: Record(2)): Record(3)
   b3:
     l15 = call f59(l7)
     l16 = l15
-    l17 = fopen([Value(Local(6)), Value(Local(16))])
+    l17 = koji_blocking_fopen([Value(Local(6)), Value(Local(16))])
     l18 = l17
     l19 = koji_system_errno([])
     l20 = l19
@@ -51178,7 +51178,7 @@ function f11 list(l0: Str): Record(6)
   b2:
     l4 = call f59(l0)
     l5 = l4
-    l6 = opendir([Value(Local(5))])
+    l6 = koji_blocking_opendir([Value(Local(5))])
     l7 = l6
     l8 = koji_system_errno([])
     l9 = l8
@@ -51210,7 +51210,7 @@ function f11 list(l0: Str): Record(6)
   b9:
     branch true, b10, b11
   b10:
-    l20 = readdir([Value(Local(7))])
+    l20 = koji_blocking_readdir([Value(Local(7))])
     l21 = l20
     l22 = IntCompare(Equal) l21, 0
     branch l22, b12, b13
@@ -51279,7 +51279,7 @@ function f13 remove(l0: Str): Record(5)
   b2:
     l4 = call f59(l0)
     l5 = l4
-    l6 = unlink([Value(Local(5))])
+    l6 = koji_blocking_unlink([Value(Local(5))])
     l7 = IntCompare(Equal) l6, 0
     l8 = l7
     l9 = koji_system_errno([])
@@ -51408,7 +51408,7 @@ function f16 makeDirectory(l0: Str): Int
   b0:
     l1 = call f59(l0)
     l2 = l1
-    l3 = mkdir([Value(Local(2)), Value(Int(511))])
+    l3 = koji_blocking_mkdir([Value(Local(2)), Value(Int(511))])
     l4 = IntCompare(Equal) l3, 0
     l5 = l4
     l6 = koji_system_errno([])
@@ -51527,7 +51527,7 @@ function f19 reachable(l0: Str): Bool
   b0:
     l1 = call f59(l0)
     l2 = l1
-    l3 = access([Value(Local(2)), Value(Int(0))])
+    l3 = koji_blocking_access([Value(Local(2)), Value(Int(0))])
     l4 = IntCompare(Equal) l3, 0
     l5 = l4
     koji_unsafe_free([Value(Local(2))])
@@ -51604,11 +51604,11 @@ function f22 transfer(l0: Bool, l1: Int, l2: Int, l3: Int): Int
     koji_unsafe_write_int([Value(Local(5)), Value(Int(8)), Value(Local(3))])
     branch l0, b1, b2
   b1:
-    l7 = writev([Value(Local(1)), Value(Local(5)), Value(Int(1))])
+    l7 = koji_blocking_writev([Value(Local(1)), Value(Local(5)), Value(Int(1))])
     l6 = l7
     goto b3
   b2:
-    l8 = readv([Value(Local(1)), Value(Local(5)), Value(Int(1))])
+    l8 = koji_blocking_readv([Value(Local(1)), Value(Local(5)), Value(Int(1))])
     l6 = l8
     goto b3
   b3:
@@ -52322,7 +52322,7 @@ function f36 wait(l0: Int): Int
     l2 = l1
     goto b1
   b1:
-    l4 = waitpid([Value(Local(0)), Value(Local(2)), Value(Int(0))])
+    l4 = koji_blocking_waitpid([Value(Local(0)), Value(Local(2)), Value(Int(0))])
     l5 = IntCompare(Less) l4, 0
     l3 = l5
     branch l3, b4, b5
@@ -52497,7 +52497,7 @@ function f37 readBoth(l0: Int, l1: Int): List(Str)
     branch l28, b9, b10
   b8:
     l34 = IntNeg 1
-    l35 = poll([Value(Local(3)), Value(Local(19)), Value(Local(34))])
+    l35 = koji_blocking_poll([Value(Local(3)), Value(Local(19)), Value(Local(34))])
     l36 = IntCompare(Less) l35, 0
     branch l36, b11, b12
   b9:

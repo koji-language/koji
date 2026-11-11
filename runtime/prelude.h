@@ -532,6 +532,18 @@ KOJI_INLINE bool koji_call_before(const void *call, const void *comparison, cons
     return ((bool (*)(const KojiClosure *, const void *, const void *))call)((const KojiClosure *)comparison, a, b);
 }
 
+/* For sockets and pipes. */
+int fcntl(int fd, int command, ...);
+int getsockopt(int fd, int level, int name, void *value, uint32_t *length);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#define KOJI_O_NONBLOCK 0x4
+#define KOJI_SO_ERROR 0x1007
+#define KOJI_MSG_DONTWAIT 0x80
+#else
+#define KOJI_O_NONBLOCK 0x800
+#define KOJI_SO_ERROR 4
+#define KOJI_MSG_DONTWAIT 0x40
+#endif
 /* Tasks (std/koji/task.kj): lightweight tasks on the one thread of a program, each on a stack of
    its own, which the library switches between when a task waits (for another task, a timer or a
    socket). What only C and the assembler can do is here: the switch between two stacks, the stacks,
@@ -758,6 +770,232 @@ KOJI_INLINE int64_t koji_poller_watch(int64_t poller, int64_t fd, bool write) { 
 KOJI_INLINE int64_t koji_poller_wait(int64_t poller, int64_t milliseconds, const void *ready, int64_t capacity) { (void)poller; (void)milliseconds; (void)ready; (void)capacity; return -1; }
 #endif
 
+/* Calls that block (reading a file, waiting for a program, finding the addresses of a host): while
+   other tasks are alive, a thread that helps runs the call, and the task waits for it as for a
+   socket; alone, a task makes the call itself. A job is the call: its function, its arguments, its
+   result and errno, and the task that waits for it (std/koji/task.kj reads `task` and `done`). The
+   helping threads run no Koji: they take jobs from a pipe and give them back through another, which
+   the poller watches, so they need no lock. */
+typedef struct KojiJob KojiJob;
+struct KojiJob {
+    void (*run)(KojiJob *job);
+    int64_t arguments[6];
+    int64_t result;
+    int64_t error;
+    int64_t task;
+    int64_t done;
+};
+bool koji_task_alone(void);
+void koji_task_offload(const void *job);
+/* The result of a job, with errno, made by a helping thread unless the task is alone. */
+KOJI_INLINE int64_t koji_task_blocking(KojiJob *job) {
+    if (koji_task_alone()) {
+        job->run(job);
+        return job->result;
+    }
+    koji_task_offload(job);
+    errno = (int)job->error;
+    return job->result;
+}
+int koji_c_pipe(int fds[2]) __asm__(KOJI_SYMBOL(pipe));
+long read(int fd, void *bytes, size_t size);
+long write(int fd, const void *bytes, size_t size);
+int pthread_create(uintptr_t *thread, const void *attributes, void *(*start)(void *), void *argument);
+int pthread_detach(uintptr_t thread);
+/* The two pipes: the jobs to run, and the jobs done. */
+#if defined(KOJI_LIBRARY)
+static int koji_jobs[2] = { -1, -1 }, koji_jobs_done[2] = { -1, -1 };
+static void *koji_helper(void *unused) {
+    (void)unused;
+    for (;;) {
+        KojiJob *job;
+        long got = read(koji_jobs[0], &job, sizeof job);
+        if (got != sizeof job) {
+            if (got < 0 && errno == EINTR) continue;
+            return NULL;
+        }
+        job->run(job);
+        job->error = errno;
+        while (write(koji_jobs_done[1], &job, sizeof job) < 0 && errno == EINTR) {}
+    }
+}
+/* Makes the pipes (closed in the programs a program runs): the end the jobs done come from, which
+   reads without waiting, or -1. */
+int64_t koji_helpers_start(void) {
+    if (koji_c_pipe(koji_jobs) != 0) return -1;
+    if (koji_c_pipe(koji_jobs_done) != 0) return -1;
+    for (int i = 0; i < 2; i++) {
+        fcntl(koji_jobs[i], 2 /* F_SETFD */, 1 /* FD_CLOEXEC */);
+        fcntl(koji_jobs_done[i], 2 /* F_SETFD */, 1 /* FD_CLOEXEC */);
+    }
+    fcntl(koji_jobs_done[0], 4 /* F_SETFL */, fcntl(koji_jobs_done[0], 3 /* F_GETFL */) | KOJI_O_NONBLOCK);
+    return koji_jobs_done[0];
+}
+/* One more helping thread: whether the system made it. */
+bool koji_helpers_add(void) {
+    uintptr_t thread;
+    if (pthread_create(&thread, NULL, koji_helper, NULL) != 0) return false;
+    pthread_detach(thread);
+    return true;
+}
+void koji_helpers_submit(const void *job) {
+    while (write(koji_jobs[1], &job, sizeof job) < 0 && errno == EINTR) {}
+}
+/* The jobs done (their addresses at `out`, at most `capacity`), without waiting: how many. */
+int64_t koji_helpers_finished(const void *out, int64_t capacity) {
+    long got = read(koji_jobs_done[0], (void *)out, (size_t)capacity * sizeof(KojiJob *));
+    return got <= 0 ? 0 : got / (long)sizeof(KojiJob *);
+}
+#endif
+
+/* Preemption: a task that runs long without waiting lets the others run. The generated code checks
+   `koji_preempt_flag` at the end of each turn of a loop and where a function that calls others
+   starts (cgen.kj); a thread of the library sets it every 10 ms while several tasks are alive, and
+   koji_task_preempt (std/koji/task.kj) then runs the tasks that are ready. */
+extern volatile int koji_preempt_flag;
+void koji_task_preempt(void);
+#define KOJI_PREEMPT()                                                                             \
+    do {                                                                                           \
+        if (__builtin_expect(koji_preempt_flag, 0)) koji_task_preempt();                           \
+    } while (0)
+#if defined(KOJI_LIBRARY)
+volatile int koji_preempt_flag = 0;
+static volatile int koji_ticking = 0;
+static int koji_tick_pipe[2] = { -1, -1 };
+static void *koji_ticker(void *unused) {
+    (void)unused;
+    for (;;) {
+        /* Stopped: it waits for a byte of the pipe. */
+        if (!koji_ticking) {
+            char resumed;
+            if (read(koji_tick_pipe[0], &resumed, 1) < 0 && errno != EINTR) return NULL;
+            continue;
+        }
+        struct koji_timespec slice = { 0, 10000000 };
+        koji_nanosleep(&slice, NULL);
+        if (koji_ticking) koji_preempt_flag = 1;
+    }
+}
+/* Starts or stops the ticks: whether the system could start them. */
+bool koji_ticks(bool on) {
+    if (koji_tick_pipe[0] < 0) {
+        if (!on) return true;
+        if (koji_c_pipe(koji_tick_pipe) != 0) return false;
+        fcntl(koji_tick_pipe[0], 2 /* F_SETFD */, 1 /* FD_CLOEXEC */);
+        fcntl(koji_tick_pipe[1], 2 /* F_SETFD */, 1 /* FD_CLOEXEC */);
+        koji_ticking = 1;
+        uintptr_t thread;
+        if (pthread_create(&thread, NULL, koji_ticker, NULL) != 0) return false;
+        pthread_detach(thread);
+        return true;
+    }
+    if (on && !koji_ticking) {
+        char resume = 1;
+        koji_ticking = 1;
+        while (write(koji_tick_pipe[1], &resume, 1) < 0 && errno == EINTR) {}
+    }
+    if (!on) koji_ticking = 0;
+    return true;
+}
+#endif
+/* Clears the flag (koji_task_preempt). */
+KOJI_INLINE void koji_preempt_clear(void) { koji_preempt_flag = 0; }
+
+/* The calls that block, as jobs. By other names than the C library's, which the `extern`
+   declarations of the standard library use (with other types). */
+#if defined(__APPLE__) && defined(__x86_64__)
+#define KOJI_DIRECTORY_SYMBOL(name) __asm__("_" #name "$INODE64")
+#else
+#define KOJI_DIRECTORY_SYMBOL(name) __asm__(KOJI_SYMBOL(name))
+#endif
+long koji_c_getline(char **line, size_t *capacity, void *stream) __asm__(KOJI_SYMBOL(getline));
+size_t koji_c_fread(void *target, size_t size, size_t count, void *stream) __asm__(KOJI_SYMBOL(fread));
+int koji_c_waitpid(int pid, int *status, int options) __asm__(KOJI_SYMBOL(waitpid));
+int koji_c_poll(void *fds, size_t count, int timeout) __asm__(KOJI_SYMBOL(poll));
+void *koji_c_fopen(const char *path, const char *mode) __asm__(KOJI_SYMBOL(fopen));
+long koji_c_readv(int fd, const void *vectors, int count) __asm__(KOJI_SYMBOL(readv));
+long koji_c_writev(int fd, const void *vectors, int count) __asm__(KOJI_SYMBOL(writev));
+void *koji_c_opendir(const char *path) KOJI_DIRECTORY_SYMBOL(opendir);
+void *koji_c_readdir(void *directory) KOJI_DIRECTORY_SYMBOL(readdir);
+int koji_c_access(const char *path, int mode) __asm__(KOJI_SYMBOL(access));
+int koji_c_unlink(const char *path) __asm__(KOJI_SYMBOL(unlink));
+int koji_c_mkdir(const char *path, int mode) __asm__(KOJI_SYMBOL(mkdir));
+#define KOJI_A(i) (job->arguments[i])
+#define KOJI_P(i) ((void *)(intptr_t)job->arguments[i])
+#define KOJI_JOB(...) KojiJob job = { NULL, { __VA_ARGS__ }, 0, 0, 0, 0 }
+static __attribute__((unused)) void koji_run_getline(KojiJob *job) { job->result = koji_c_getline((char **)KOJI_P(0), (size_t *)KOJI_P(1), KOJI_P(2)); }
+static __attribute__((unused)) void koji_run_fread(KojiJob *job) { job->result = (int64_t)koji_c_fread(KOJI_P(0), (size_t)KOJI_A(1), (size_t)KOJI_A(2), KOJI_P(3)); }
+static __attribute__((unused)) void koji_run_waitpid(KojiJob *job) { job->result = koji_c_waitpid((int)KOJI_A(0), (int *)KOJI_P(1), (int)KOJI_A(2)); }
+static __attribute__((unused)) void koji_run_poll(KojiJob *job) { job->result = koji_c_poll(KOJI_P(0), (size_t)KOJI_A(1), (int)KOJI_A(2)); }
+static __attribute__((unused)) void koji_run_fopen(KojiJob *job) { job->result = (int64_t)(intptr_t)koji_c_fopen((const char *)KOJI_P(0), (const char *)KOJI_P(1)); }
+static __attribute__((unused)) void koji_run_readv(KojiJob *job) { job->result = koji_c_readv((int)KOJI_A(0), KOJI_P(1), (int)KOJI_A(2)); }
+static __attribute__((unused)) void koji_run_writev(KojiJob *job) { job->result = koji_c_writev((int)KOJI_A(0), KOJI_P(1), (int)KOJI_A(2)); }
+static __attribute__((unused)) void koji_run_opendir(KojiJob *job) { job->result = (int64_t)(intptr_t)koji_c_opendir((const char *)KOJI_P(0)); }
+static __attribute__((unused)) void koji_run_readdir(KojiJob *job) { job->result = (int64_t)(intptr_t)koji_c_readdir(KOJI_P(0)); }
+static __attribute__((unused)) void koji_run_access(KojiJob *job) { job->result = koji_c_access((const char *)KOJI_P(0), (int)KOJI_A(1)); }
+static __attribute__((unused)) void koji_run_unlink(KojiJob *job) { job->result = koji_c_unlink((const char *)KOJI_P(0)); }
+static __attribute__((unused)) void koji_run_mkdir(KojiJob *job) { job->result = koji_c_mkdir((const char *)KOJI_P(0), (int)KOJI_A(1)); }
+KOJI_INLINE int64_t koji_blocking_getline(const void *line, const void *capacity, const void *stream) {
+    KOJI_JOB((int64_t)(intptr_t)line, (int64_t)(intptr_t)capacity, (int64_t)(intptr_t)stream);
+    job.run = koji_run_getline;
+    return koji_task_blocking(&job);
+}
+KOJI_INLINE size_t koji_blocking_fread(const void *target, size_t size, size_t count, const void *stream) {
+    KOJI_JOB((int64_t)(intptr_t)target, (int64_t)size, (int64_t)count, (int64_t)(intptr_t)stream);
+    job.run = koji_run_fread;
+    return (size_t)koji_task_blocking(&job);
+}
+KOJI_INLINE int koji_blocking_waitpid(int pid, const void *status, int options) {
+    KOJI_JOB(pid, (int64_t)(intptr_t)status, options);
+    job.run = koji_run_waitpid;
+    return (int)koji_task_blocking(&job);
+}
+KOJI_INLINE int koji_blocking_poll(const void *fds, size_t count, int timeout) {
+    KOJI_JOB((int64_t)(intptr_t)fds, (int64_t)count, timeout);
+    job.run = koji_run_poll;
+    return (int)koji_task_blocking(&job);
+}
+KOJI_INLINE void *koji_blocking_fopen(const void *path, const void *mode) {
+    KOJI_JOB((int64_t)(intptr_t)path, (int64_t)(intptr_t)mode);
+    job.run = koji_run_fopen;
+    return (void *)(intptr_t)koji_task_blocking(&job);
+}
+KOJI_INLINE int64_t koji_blocking_readv(int fd, const void *vectors, int count) {
+    KOJI_JOB(fd, (int64_t)(intptr_t)vectors, count);
+    job.run = koji_run_readv;
+    return koji_task_blocking(&job);
+}
+KOJI_INLINE int64_t koji_blocking_writev(int fd, const void *vectors, int count) {
+    KOJI_JOB(fd, (int64_t)(intptr_t)vectors, count);
+    job.run = koji_run_writev;
+    return koji_task_blocking(&job);
+}
+KOJI_INLINE void *koji_blocking_opendir(const void *path) {
+    KOJI_JOB((int64_t)(intptr_t)path);
+    job.run = koji_run_opendir;
+    return (void *)(intptr_t)koji_task_blocking(&job);
+}
+KOJI_INLINE void *koji_blocking_readdir(const void *directory) {
+    KOJI_JOB((int64_t)(intptr_t)directory);
+    job.run = koji_run_readdir;
+    return (void *)(intptr_t)koji_task_blocking(&job);
+}
+KOJI_INLINE int koji_blocking_access(const void *path, int mode) {
+    KOJI_JOB((int64_t)(intptr_t)path, mode);
+    job.run = koji_run_access;
+    return (int)koji_task_blocking(&job);
+}
+KOJI_INLINE int koji_blocking_unlink(const void *path) {
+    KOJI_JOB((int64_t)(intptr_t)path);
+    job.run = koji_run_unlink;
+    return (int)koji_task_blocking(&job);
+}
+KOJI_INLINE int koji_blocking_mkdir(const void *path, int mode) {
+    KOJI_JOB((int64_t)(intptr_t)path, mode);
+    job.run = koji_run_mkdir;
+    return (int)koji_task_blocking(&job);
+}
+
 /* Networking, for std/http.kj: what the system gives in different ways (the order of the fields of
    `struct addrinfo`, the numbers of the options of sockets, how a write to a closed connection is
    kept from raising SIGPIPE), with the types of its `extern` declarations. */
@@ -793,17 +1031,15 @@ long send(int fd, const void *bytes, size_t size, int flags);
 long recv(int fd, void *bytes, size_t size, int flags);
 int close(int fd);
 
-int fcntl(int fd, int command, ...);
-int getsockopt(int fd, int level, int name, void *value, uint32_t *length);
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
-#define KOJI_O_NONBLOCK 0x4
-#define KOJI_SO_ERROR 0x1007
-#define KOJI_MSG_DONTWAIT 0x80
-#else
-#define KOJI_O_NONBLOCK 0x800
-#define KOJI_SO_ERROR 4
-#define KOJI_MSG_DONTWAIT 0x40
-#endif
+
+static __attribute__((unused)) void koji_run_getaddrinfo(KojiJob *job) {
+    job->result = getaddrinfo((const char *)KOJI_P(0), (const char *)KOJI_P(1), (const struct koji_addrinfo *)KOJI_P(2), (struct koji_addrinfo **)KOJI_P(3));
+}
+/* A socket that the programs a program runs do not get (FD_CLOEXEC). */
+KOJI_INLINE int koji_net_private(int fd) {
+    if (fd >= 0) fcntl(fd, 2 /* F_SETFD */, 1 /* FD_CLOEXEC */);
+    return fd;
+}
 
 /* Connects to `host` at `port` (strings of C), trying each of its addresses, each for at most
    `seconds`, while the other tasks go on (std/koji/task.kj; finding the addresses does not let
@@ -813,14 +1049,17 @@ KOJI_INLINE int64_t koji_net_connect(const void *host, const void *port, int64_t
     struct koji_addrinfo hints = { 0 };
     hints.ai_socktype = 1; /* SOCK_STREAM */
     struct koji_addrinfo *found = NULL;
-    int failure = getaddrinfo((const char *)host, (const char *)port, &hints, &found);
+    /* Finding the addresses waits for the network: a job. */
+    KOJI_JOB((int64_t)(intptr_t)host, (int64_t)(intptr_t)port, (int64_t)(intptr_t)&hints, (int64_t)(intptr_t)&found);
+    job.run = koji_run_getaddrinfo;
+    int failure = (int)koji_task_blocking(&job);
     if (failure != 0) {
         *(int64_t *)code = failure;
         return -1;
     }
     int error = 0;
     for (struct koji_addrinfo *address = found; address; address = address->ai_next) {
-        int fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        int fd = koji_net_private(socket(address->ai_family, address->ai_socktype, address->ai_protocol));
         if (fd < 0) {
             error = errno;
             continue;
@@ -893,7 +1132,7 @@ int listen(int fd, int backlog);
 int accept(int fd, struct koji_sockaddr *address, uint32_t *length);
 /* A socket that listens on `port` of every IPv4 address of the machine, or -1 (errno in `*code`). */
 KOJI_INLINE int64_t koji_net_listen(int64_t port, const void *code) {
-    int fd = socket(2 /* AF_INET */, 1 /* SOCK_STREAM */, 0);
+    int fd = koji_net_private(socket(2 /* AF_INET */, 1 /* SOCK_STREAM */, 0));
     if (fd < 0) {
         *(int64_t *)code = errno;
         return -1;
@@ -922,7 +1161,7 @@ KOJI_INLINE int64_t koji_net_listen(int64_t port, const void *code) {
    (errno says why). */
 KOJI_INLINE int64_t koji_net_accept(int64_t listener) {
     for (;;) {
-        int fd = accept((int)listener, NULL, NULL);
+        int fd = koji_net_private(accept((int)listener, NULL, NULL));
         if (fd >= 0) {
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
             /* The BSDs give it the flags of the socket that listens. */

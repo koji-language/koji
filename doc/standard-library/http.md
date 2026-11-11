@@ -111,7 +111,7 @@ A request has these fields:
 
 A handler can answer with headers of its own: `immut response: http.Response = { status: 302, body: '', headers: ['location': '/new'] }`. The server writes `content-length` itself; a `content-type` the response does not give is `text/plain; charset=utf-8`; a header `connection: close` closes the connection after the response.
 
-Each connection is served in a [task](task.md) of its own, so while a handler waits (for a request of its own to another server, a timer...), the other connections are served; a handler that computes for long without waiting holds the others up. A panic in a handler ends the program, as anywhere else.
+Each connection is served in a [task](task.md) of its own, so while a handler waits (for a request of its own to another server, a file, a timer...) or computes for long, the other connections are served. A panic in a handler ends the program, as anywhere else: in a handler, read a parameter or a header with `get` (`request.query.get('page')`), which gives `None` when it is missing, rather than with `[]`, which panics.
 
 The server keeps connections open for further requests (HTTP/1.1 keep-alive, and requests sent before the previous one is answered), and closes those that the client asks to close or leaves idle for 60 seconds. A client has 30 seconds to send a request (and to receive its response). It answers by itself, before closing the connection:
 

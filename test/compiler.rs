@@ -2382,12 +2382,13 @@ fn tasks_share_through_channels_and_shared_values() {
     assert_same(
         "task_sharing",
         r#"import task
+import time
 
 immut counter = task.shared(0)
 task.group((tasks) => {
     for i in range(100) {
         tasks.spawn(() => {
-            task.yield()
+            time.sleep(0.001)
             counter.update((n) => n + 1)
         })
     }
@@ -2526,6 +2527,13 @@ immut failed = http.serve(port, (request) => {
     if (request.path == '/echo') {
         return http.json(201, `{"method": "${request.method}", "body": "${request.body}", "q": "${request.query.get('q')}", "host": "${request.headers.get('host')}"}`)
     }
+    if (request.path == '/cpu') {
+        mut total = 0
+        for i in range(3000000000) {
+            total += i % 7
+        }
+        return http.text(200, `${total}`)
+    }
     if (request.path == '/close') {
         immut response: http.Response = { status: 200, body: 'bye', headers: ['connection': 'close', 'x-custom': 'one\r\ntwo'] }
         return response
@@ -2577,9 +2585,103 @@ print(failed)
         assert!(each.join().unwrap().ends_with("\r\n\r\nslow"));
     }
     assert!(start.elapsed() < std::time::Duration::from_millis(1500), "{:?}", start.elapsed());
+    // A handler that computes for long does not hold the others up.
+    let busy = std::thread::spawn(move || exchange(b"GET /cpu HTTP/1.1\r\nConnection: close\r\n\r\n"));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let start = std::time::Instant::now();
+    assert!(exchange(b"GET /quick HTTP/1.1\r\nConnection: close\r\n\r\n").ends_with("no /quick"));
+    assert!(start.elapsed() < std::time::Duration::from_millis(500), "{:?}", start.elapsed());
+    drop(busy);
     // A second server cannot listen on the same port.
     let second = Command::new(&executable).arg(port.to_string()).output().unwrap();
     assert!(String::from_utf8_lossy(&second.stdout).starts_with(&format!("Err(CannotListen({}, ", port)));
     server.kill().unwrap();
     let _ = server.wait();
+}
+
+#[test]
+fn tasks_that_compute_let_the_others_run() {
+    assert_same(
+        "task_preemption",
+        r#"import task
+import time
+
+function fib(n: int): int {
+    if (n < 2) { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+// Two tasks that compute for half a second without waiting (time.monotonic does not wait), and one
+// that sleeps: it wakes on time all the same.
+immut start = time.monotonic()
+immut late = task.group((tasks) => {
+    tasks.spawn(() => {
+        mut total = 0
+        while (time.monotonic() - start < 0.5) {
+            total += 1
+        }
+        return total
+    })
+    tasks.spawn(() => {
+        mut total = 0
+        while (time.monotonic() - start < 0.5) {
+            total += fib(15)
+        }
+        return total
+    })
+    immut sleeper = tasks.spawn(() => {
+        mut worst: decimal = 0
+        for i in range(5) {
+            immut before = time.monotonic()
+            time.sleep(0.02)
+            immut delay = time.monotonic() - before - 0.02
+            if (delay > worst) { worst = delay }
+        }
+        return worst
+    })
+    return sleeper.wait()
+})
+print(late < 0.1)
+"#,
+        "true\n",
+    );
+}
+
+#[test]
+fn calls_that_block_let_the_other_tasks_run() {
+    assert_same(
+        "task_blocking",
+        r#"import file
+import system
+import task
+import time
+
+immut start = time.monotonic()
+immut ticks = task.shared(0)
+immut results = task.group((tasks) => {
+    tasks.spawn(() => {
+        for i in range(20) {
+            time.sleep(0.01)
+            ticks.update((n) => n + 1)
+        }
+    })
+    immut sleeper = tasks.spawn(() => match (system.capture('sleep', ['0.3'])) {
+        Ok(output) => output.status
+        Err(_) => -1
+    })
+    immut echo = tasks.spawn(() => match (system.run('sh', ['-c', 'sleep 0.2'])) {
+        Ok(status) => status
+        Err(_) => -1
+    })
+    immut listed = tasks.spawn(() => match (file.list('.')) {
+        Ok(names) => names.length() > 0
+        Err(_) => false
+    })
+    return `${sleeper.wait()} ${echo.wait()} ${listed.wait()} ${ticks.get() >= 10}`
+})
+print(results)
+print(time.monotonic() - start < 0.6)
+"#,
+        "0 0 true true\ntrue\n",
+    );
 }

@@ -200,8 +200,10 @@ function buildOptions(args: string[]): Build {
 }
 
 // The libraries a program needs from the system besides the C library: the mathematics (`math.h`).
+// The libraries of the system that programs link: the mathematics of C, and the threads that help
+// tasks with the calls that block (in the C library itself on recent systems).
 function systemLibraries(): string[] {
-    return ['-lm']
+    return ['-lm', '-lpthread']
 }
 
 function variable(name: string, otherwise: string): string {

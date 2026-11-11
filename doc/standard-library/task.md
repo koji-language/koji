@@ -14,11 +14,11 @@ immut pages = task.all([() => http.get(urls[0]), () => http.get(urls[1])])
 
 ## How Tasks Run
 
-Tasks are light: each has a stack of its own (the system only gives it the memory it uses), so a program can have thousands of them. They take turns on the one thread of the program: a task runs until it waits, and then the next task that is ready runs.
+Tasks are light: each has a stack of its own (the system only gives it the memory it uses), so a program can have thousands of them. They take turns on the one thread of the program: when a task waits, the next task that is ready runs.
 
--   A task waits in `time.sleep`, in the requests of `http` (to connect, send and receive), in `Task.wait`, and in the channels and shared values below.
--   Code that does not wait is never interrupted: two tasks cannot change the same value at the same time, so there are no data races. A long computation that never waits keeps the others from running: `task.yield()` lets them run.
--   Reading files, `input()`, `system.run` and finding the address of a host (DNS) still wait the whole program.
+-   A task waits in `time.sleep`, in the requests and the server of `http`, in `Task.wait`, in the channels and shared values below, and in the calls that wait for the system: reading and writing files, listing directories, `input()`, `system.run` and `system.capture`, and finding the address of a host. While other tasks are alive, a thread that helps makes those calls, so they do not hold the others up.
+-   A task that computes for long without waiting lets the others run every 10 milliseconds or so: a loop or a recursion never holds them up for longer. To use several processors, split the work into several tasks.
+-   Only one task runs at a time, and a task changes only its own values: the values that tasks share are in channels and shared values, whose operations no other task comes between, so there are no data races.
 
 The code of a task is ordinary code: there is no `async` or `await`, and a function does not need to know whether it runs in a task.
 
@@ -40,9 +40,6 @@ A task always belongs to a **group**, and a group waits for its tasks before it 
 
 -   `all(works: (() -> T)[]) -> T[]`  
     Runs each function in a task of its own, in one group, and returns their results in order.
-
--   `yield() -> void`  
-    Lets the other tasks that are ready run before the current one goes on.
 
 ```koji
 import task

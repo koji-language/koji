@@ -33,7 +33,7 @@ export KOJI_RUNTIME="$PWD/build/libkoji_runtime.a"
 # Stage 1, the seed: built without optimizations, which is faster, since it only builds stage 2.
 echo "building stage 1 from the seed"
 gzip -dc bootstrap/kojic.c.gz > build/stage1.c
-"$cc" -O0 -o build/stage1 build/stage1.c "$KOJI_RUNTIME" -lm
+"$cc" -O0 -o build/stage1 build/stage1.c "$KOJI_RUNTIME" -lm -lpthread
 
 # Stage 2, the compiler of compiler/.
 echo "building kojic from compiler/"

@@ -17,12 +17,12 @@ extern function posix_spawn_file_actions_destroy(actions: Address): CInt
 extern function posix_spawn_file_actions_adddup2(actions: Address, fd: CInt, target: CInt): CInt
 extern function posix_spawn_file_actions_addclose(actions: Address, fd: CInt): CInt
 extern function posix_spawn_file_actions_addopen(actions: Address, fd: CInt, path: Address, flags: CInt, mode: CInt): CInt
-extern function waitpid(pid: CInt, status: Address, options: CInt): CInt
+extern function koji_blocking_waitpid(pid: CInt, status: Address, options: CInt): CInt
 extern function pipe(fds: Address): CInt
 extern function close(fd: CInt): CInt
 // `read` of C, with one buffer (`read` is that of `koji:unsafe` here).
 extern function readv(fd: CInt, buffers: Address, count: CInt): int
-extern function poll(fds: Address, count: CSize, timeout: CInt): CInt
+extern function koji_blocking_poll(fds: Address, count: CSize, timeout: CInt): CInt
 extern function realloc(memory: Address, size: CSize): Address
 
 // What the system gives in different ways: small inline functions of the prelude (runtime/prelude.h).
@@ -266,7 +266,7 @@ function wait(pid: int): int {
     immut status = allocate(8)
 
     // EINTR: a signal interrupted the wait.
-    while (waitpid(pid, status, 0) < 0 and koji_system_errno() == 4) {}
+    while (koji_blocking_waitpid(pid, status, 0) < 0 and koji_system_errno() == 4) {}
 
     immut code = readInt32(status, 0)
     free(status)
@@ -299,7 +299,7 @@ function readBoth(stdout: int, stderr: int): string[] {
             count += 1
         }
 
-        if (poll(fds, count, -1) < 0) {
+        if (koji_blocking_poll(fds, count, -1) < 0) {
             if (koji_system_errno() == 4) { continue }
 
             break

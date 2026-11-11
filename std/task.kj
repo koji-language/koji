@@ -14,7 +14,6 @@ extern function koji_task_spawn(work: () => void): int
 extern function koji_task_current(): int
 extern function koji_task_suspend()
 extern function koji_task_wake(id: int)
-extern function koji_task_yield()
 
 type Cell[T] = {
     items: T[]
@@ -144,12 +143,6 @@ export function all[T](works: (() => T)[]): T[] {
 
         return results
     })
-}
-
-// Lets the other tasks that are ready run before the current one goes on (a long computation
-// does not wait for anything, so the others only run when it does this).
-export function yield() {
-    koji_task_yield()
 }
 
 // Channels

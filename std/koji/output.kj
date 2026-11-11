@@ -10,9 +10,9 @@ extern function writev(fd: CInt, buffers: Address, count: CInt): int
 extern function strerror(code: CInt): Address
 extern function exit(code: CInt): Never
 extern function fdopen(fd: CInt, mode: Address): Address
-extern function getline(line: Address, capacity: Address, stream: Address): int
+extern function koji_blocking_getline(line: Address, capacity: Address, stream: Address): int
 extern function ferror(stream: Address): CInt
-extern function fread(target: Address, size: CSize, count: CSize, file: Address): CSize
+extern function koji_blocking_fread(target: Address, size: CSize, count: CSize, file: Address): CSize
 extern function clearerr(stream: Address)
 extern function koji_system_errno(): CInt
 
@@ -164,7 +164,7 @@ extern function koji_read_line(prompt: string, here: Location, status: Address):
     }
 
     clearerr(input)
-    immut size = getline(line, offset(line, 8), input)
+    immut size = koji_blocking_getline(line, offset(line, 8), input)
 
     if (size < 0) {
         immut code = koji_system_errno()
@@ -203,7 +203,7 @@ extern function koji_read_bytes(count: int, here: Location, status: Address): st
     mut done = 0
 
     while (done < count) {
-        immut got = fread(offset(block, done), 1, count - done, input)
+        immut got = koji_blocking_fread(offset(block, done), 1, count - done, input)
 
         if (got == 0) {
             immut code = koji_system_errno()

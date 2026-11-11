@@ -6,19 +6,21 @@ import { Address, CInt, CSize, Location, allocate, free, isNull, newString, offs
 import { cString, cText, hasNul, isUtf8, textOf } from 'koji:core'
 
 // The C library. A file is opened with `fopen` (which takes no variadic arguments, unlike
-// `open`), then read and written through its descriptor, without the buffers of `FILE`.
-extern function fopen(path: Address, mode: Address): Address
+// `open`), then read and written through its descriptor, without the buffers of `FILE`. The calls
+// that may wait are made by a thread that helps while other tasks run (`koji_blocking_*` of
+// runtime/prelude.h).
+extern function koji_blocking_fopen(path: Address, mode: Address): Address
 extern function fclose(file: Address): CInt
 extern function fileno(file: Address): CInt
 // `read` and `write` of C, with one buffer (`read` and `write` are those of `koji:unsafe` here).
-extern function readv(fd: CInt, buffers: Address, count: CInt): int
-extern function writev(fd: CInt, buffers: Address, count: CInt): int
-extern function opendir(path: Address): Address
-extern function readdir(directory: Address): Address
+extern function koji_blocking_readv(fd: CInt, buffers: Address, count: CInt): int
+extern function koji_blocking_writev(fd: CInt, buffers: Address, count: CInt): int
+extern function koji_blocking_opendir(path: Address): Address
+extern function koji_blocking_readdir(directory: Address): Address
 extern function closedir(directory: Address): CInt
-extern function access(path: Address, mode: CInt): CInt
-extern function unlink(path: Address): CInt
-extern function mkdir(path: Address, mode: CInt): CInt
+extern function koji_blocking_access(path: Address, mode: CInt): CInt
+extern function koji_blocking_unlink(path: Address): CInt
+extern function koji_blocking_mkdir(path: Address, mode: CInt): CInt
 extern function strlen(text: Address): CSize
 extern function strerror(code: CInt): Address
 extern function realloc(memory: Address, size: CSize): Address
@@ -79,7 +81,7 @@ export function open(path: string, mode: Mode): Result[File, FileError] {
         Write => 'we'
         Append => 'ae'
     })
-    immut handle = fopen(cPath, cMode)
+    immut handle = koji_blocking_fopen(cPath, cMode)
     immut code = koji_system_errno()
     free(cPath)
     free(cMode)
@@ -165,7 +167,7 @@ export function list(path: string): Result[string[], FileError] {
     if (hasNul(path)) { return Err(invalidPath(path)) }
 
     immut cPath = cString(path)
-    immut directory = opendir(cPath)
+    immut directory = koji_blocking_opendir(cPath)
     immut code = koji_system_errno()
     free(cPath)
 
@@ -179,7 +181,7 @@ export function list(path: string): Result[string[], FileError] {
     mut names: string[] = []
 
     while (true) {
-        immut entry = readdir(directory)
+        immut entry = koji_blocking_readdir(directory)
 
         if (isNull(entry)) { break }
 
@@ -206,7 +208,7 @@ export function remove(path: string): Result[void, FileError] {
     if (hasNul(path)) { return Err(invalidPath(path)) }
 
     immut cPath = cString(path)
-    immut removed = unlink(cPath) == 0
+    immut removed = koji_blocking_unlink(cPath) == 0
     immut code = koji_system_errno()
     free(cPath)
 
@@ -248,7 +250,7 @@ function createAll(path: string): Result[void, FileError] {
 // `mkdir`: 0, or the error of the system.
 function makeDirectory(path: string): int {
     immut cPath = cString(path)
-    immut made = mkdir(cPath, 0x1FF) == 0
+    immut made = koji_blocking_mkdir(cPath, 0x1FF) == 0
     immut code = koji_system_errno()
     free(cPath)
     return if (made) { 0 } else { code }
@@ -278,10 +280,10 @@ function isDirectory(path: string): boolean {
     return reachable(`${path}/.`)
 }
 
-// `access(path, F_OK)`.
+// `access(path, F_OK)`, by a thread that helps while other tasks run (runtime/prelude.h).
 function reachable(path: string): boolean {
     immut cPath = cString(path)
-    immut found = access(cPath, 0) == 0
+    immut found = koji_blocking_access(cPath, 0) == 0
     free(cPath)
     return found
 }
@@ -308,7 +310,7 @@ function transfer(writing: boolean, fd: int, at: Address, size: int): int {
     immut vector = allocate(16)
     write(vector, 0, at)
     write(vector, 8, size)
-    immut done = if (writing) { writev(fd, vector, 1) } else { readv(fd, vector, 1) }
+    immut done = if (writing) { koji_blocking_writev(fd, vector, 1) } else { koji_blocking_readv(fd, vector, 1) }
     free(vector)
     return done
 }

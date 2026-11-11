@@ -1,9 +1,10 @@
 // `koji:task`: the tasks of a program, in the library of the runtime written in Koji (std/task.kj,
 // the sockets of runtime/prelude.h and so koji:tls call these functions by their names). A task
 // runs a function on a stack of its own, on the one thread of the program: it runs until it waits
-// (to be woken by another task, for a time or for a socket), and then the next task that is ready
-// runs. No task runs while another one does, so they share the memory of the library without
-// locks. The first task, 0, is the program itself, on the stack the system gave it.
+// (to be woken by another task, for a time, a socket or a job of a thread that helps) or has run
+// long enough (`koji_task_preempt`), and then the next task that is ready runs. No task runs while
+// another one does, so they share the memory of the library without locks. The first task, 0, is
+// the program itself, on the stack the system gave it.
 //
 // A task waits in `suspend`, and returns from it when something wakes it: `koji_task_wake`, its
 // socket, its time. A wait may also end early (a task woken for something it waited for before),
@@ -23,6 +24,12 @@ extern function koji_sleep_until(deadline: int)
 extern function koji_poller_new(): int
 extern function koji_poller_watch(poller: int, fd: int, write: boolean): int
 extern function koji_poller_wait(poller: int, milliseconds: int, ready: Address, capacity: int): int
+extern function koji_helpers_start(): int
+extern function koji_helpers_add(): boolean
+extern function koji_helpers_submit(job: Address)
+extern function koji_helpers_finished(out: Address, capacity: int): int
+extern function koji_ticks(on: boolean): boolean
+extern function koji_preempt_clear()
 
 // The stack of a task: 1 MB, of which the system only gives the memory a task uses (a few pages,
 // for most of them).
@@ -31,6 +38,11 @@ immut stackSize = 1048576
 immut keptStacks = 16
 // The sockets that one wait of the poller can find ready, at most.
 immut readyCapacity = 64
+// The threads that help with the calls that block, at most (runtime/prelude.h), and where a job
+// has the task that waits for it and whether it is done.
+immut maxHelpers = 16
+immut jobTask = 72
+immut jobDone = 80
 
 // What a task is doing.
 immut running = 0
@@ -84,6 +96,19 @@ mut readyFds = nullAddress()
 mut socketTasks: int[] = []
 // The tasks that wait for a socket.
 mut sockets = 0
+// When the sockets and the timers were last looked at (a monotonic time in nanoseconds), and how
+// often `schedule` looks at them while tasks are ready: every millisecond.
+mut lastPoll = 0
+immut pollInterval = 1000000
+// The tasks that have not ended, the program included.
+mut alive = 1
+// The jobs of the threads that help (made for the first one): the end of the pipe the jobs done
+// come back from (watched by the poller while jobs are out), the threads, the jobs out.
+mut jobsDone = -1
+mut helpers = 0
+mut jobs = 0
+mut jobsWatched = false
+mut jobsBack = nullAddress()
 
 function newTask(stack: Address): Task {
     return { work: None, stack: stack, top: allocate(8), state: ended, woken: false, waits: 0, late: false }
@@ -127,6 +152,11 @@ extern function koji_task_spawn(work: () => void): int {
     tasks[id].woken = false
     write(tasks[id].top, 0, koji_task_stack_start(stack, stackSize, id))
     queue.push(id)
+    alive += 1
+
+    // Two tasks: the one that runs long lets the other run (koji_task_preempt).
+    if (alive == 2 and not koji_ticks(true)) { panic('the system cannot start the clock of tasks') }
+
     return id
 }
 
@@ -136,6 +166,10 @@ extern function koji_task_main(id: int) {
     reap()
     run(id)
     tasks[id].state = ended
+    alive -= 1
+
+    if (alive == 1) { koji_ticks(false) }
+
     finished = id
     schedule()
 }
@@ -194,10 +228,24 @@ extern function koji_task_wake(id: int) {
     if (state != ended) { tasks[id].woken = true }
 }
 
-// Lets the tasks that are ready run before this one goes on.
-extern function koji_task_yield() {
-    start()
+// The current task has run for a while without waiting (the clock set `koji_preempt_flag`): the
+// tasks that sockets, timers and jobs woke meanwhile, and those that are ready, run before it goes
+// on.
+extern function koji_task_preempt() {
+    koji_preempt_clear()
 
+    if (tasks.length() == 0) { return }
+
+    if (sockets + jobs > 0 or timers.length() > 0) {
+        lastPoll = koji_monotonic_nanoseconds()
+        pollReady(0)
+    }
+
+    giveWay()
+}
+
+// Lets the tasks that are ready run before the current one goes on.
+function giveWay() {
     if (head == queue.length()) { return }
 
     tasks[current].state = ready
@@ -220,13 +268,7 @@ extern function koji_task_sleep_until(deadline: int) {
 extern function koji_task_wait_fd(fd: int, write: boolean, deadline: int): int {
     start()
 
-    if (poller < 0) {
-        poller = koji_poller_new()
-
-        if (poller < 0) { return -1 }
-
-        readyFds = allocate(readyCapacity * 8)
-    }
+    if (not startPoller()) { return -1 }
 
     if (koji_poller_watch(poller, fd, write) != 0) { return -1 }
 
@@ -251,6 +293,76 @@ extern function koji_task_wait_fd(fd: int, write: boolean, deadline: int): int {
     return 0
 }
 
+// Whether no other task is alive: the calls that block are then made by the task itself.
+extern function koji_task_alone(): boolean {
+    return alive <= 1
+}
+
+// Runs a job (runtime/prelude.h) on a thread that helps, while the other tasks run: it returns when
+// the job is done.
+extern function koji_task_offload(job: Address) {
+    start()
+
+    if (jobsDone < 0) {
+        jobsDone = koji_helpers_start()
+
+        if (jobsDone < 0 or not startPoller()) { panic('the system cannot make the threads that help tasks') }
+
+        jobsBack = allocate(readyCapacity * 8)
+    }
+
+    // A thread for each job out, up to the most.
+    if (jobs >= helpers and helpers < maxHelpers) {
+        if (koji_helpers_add()) { helpers += 1 }
+    }
+
+    if (helpers == 0) { panic('the system cannot make the threads that help tasks') }
+
+    write(job, jobTask, current)
+    write(job, jobDone, 0)
+    jobs += 1
+    koji_helpers_submit(job)
+
+    while (true) {
+        immut done: int = read(job, jobDone)
+
+        if (done != 0) { return }
+
+        suspend(-1)
+    }
+}
+
+// The jobs that came back: done, and their tasks woken.
+function finishJobs() {
+    jobsWatched = false
+
+    while (true) {
+        immut count = koji_helpers_finished(jobsBack, readyCapacity)
+
+        if (count == 0) { return }
+
+        for i in range(count) {
+            immut job: Address = read(jobsBack, i * 8)
+            immut task: int = read(job, jobTask)
+            write(job, jobDone, 1)
+            jobs -= 1
+            koji_task_wake(task)
+        }
+    }
+}
+
+// Makes the poller, the first time: whether the system did.
+function startPoller(): boolean {
+    if (poller >= 0) { return true }
+
+    poller = koji_poller_new()
+
+    if (poller < 0) { return false }
+
+    readyFds = allocate(readyCapacity * 8)
+    return true
+}
+
 // The current task waits until it is woken, or until `deadline` (or -1): whether its time ran out.
 function suspend(deadline: int): boolean {
     if (tasks[current].woken) {
@@ -271,6 +383,17 @@ function suspend(deadline: int): boolean {
 // Runs the next task that is ready, after waiting for one when none is: it returns when the current
 // task runs again (at once if it is the next one).
 function schedule() {
+    // The tasks that sockets and timers woke meanwhile take their turn too, after those already
+    // ready: a queue of tasks that never wait does not keep them waiting.
+    if (head < queue.length() and (sockets + jobs > 0 or timers.length() > 0)) {
+        immut now = koji_monotonic_nanoseconds()
+
+        if (now - lastPoll >= pollInterval) {
+            lastPoll = now
+            pollReady(0)
+        }
+    }
+
     while (true) {
         if (head < queue.length()) {
             immut next = queue[head]
@@ -302,17 +425,18 @@ function schedule() {
         }
 
         poll()
+        lastPoll = koji_monotonic_nanoseconds()
     }
 }
 
 // Waits for the next timer or socket, and wakes the tasks waiting for them.
 function poll() {
-    if (timers.length() == 0 and sockets == 0) {
+    if (timers.length() == 0 and sockets + jobs == 0) {
         panic('every task waits for another one (for its result, a channel or a shared value), so none can go on: a deadlock')
     }
 
     // Only timers: the system sleeps until the first one, to the nanosecond.
-    if (sockets == 0) {
+    if (sockets + jobs == 0) {
         koji_sleep_until(timers[0].at)
         expire()
         return
@@ -323,6 +447,23 @@ function poll() {
     if (timers.length() > 0) {
         immut left = timers[0].at - koji_monotonic_nanoseconds()
         milliseconds = if (left <= 0) { 0 } else { (left + 999999) / 1000000 }
+    }
+
+    pollReady(milliseconds)
+}
+
+// Waits at most `milliseconds` (0: not at all, -1: as long as it takes) for the sockets, then wakes
+// the tasks of the sockets ready and of the timers that are due.
+function pollReady(milliseconds: int) {
+    if (sockets + jobs == 0) {
+        expire()
+        return
+    }
+
+    if (jobs > 0 and not jobsWatched) {
+        if (koji_poller_watch(poller, jobsDone, false) != 0) { panic('the system failed to wait for the threads that help tasks') }
+
+        jobsWatched = true
     }
 
     immut count = koji_poller_wait(poller, milliseconds, readyFds, readyCapacity)
@@ -338,6 +479,11 @@ function poll() {
 }
 
 function wakeSocket(fd: int) {
+    if (fd == jobsDone) {
+        finishJobs()
+        return
+    }
+
     if (fd < 0 or fd >= socketTasks.length()) { return }
 
     immut id = socketTasks[fd]
