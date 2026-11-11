@@ -2685,3 +2685,57 @@ print(time.monotonic() - start < 0.6)
         "0 0 true true\ntrue\n",
     );
 }
+
+#[test]
+fn printing_to_a_full_pipe_lets_the_other_tasks_run() {
+    let path = source_file(
+        "task_print",
+        r#"import task
+import time
+
+function repeated(text: string, count: int): string {
+    mut out = ''
+    for i in range(count) {
+        out += text
+    }
+    return out
+}
+
+immut late = task.group((tasks) => {
+    tasks.spawn(() => {
+        for i in range(2000) {
+            print(`line ${i} ${repeated('x', 90)}`)
+        }
+    })
+    tasks.spawn(() => {
+        for i in range(3) {
+            print(repeated('a', 10000))
+        }
+    })
+    immut sleeper = tasks.spawn(() => {
+        mut worst: decimal = 0
+        for i in range(20) {
+            immut before = time.monotonic()
+            time.sleep(0.02)
+            immut delay = time.monotonic() - before - 0.02
+            if (delay > worst) { worst = delay }
+        }
+        return worst
+    })
+    return sleeper.wait()
+})
+printError(`${late < 0.1}`)
+"#,
+    );
+    let executable = path.with_extension("");
+    build(&path, &executable);
+    // The pipe is read only after a second: the tasks that print wait for it, and the one that
+    // sleeps wakes on time.
+    let run = Command::new("sh").arg("-c").arg(format!("'{}' | (sleep 1; cat)", executable.display())).output().unwrap();
+    let output = String::from_utf8(run.stdout).unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stderr), "true\n");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines.len(), 2003);
+    assert_eq!(lines.iter().filter(|line| line.starts_with("line ") && line.len() == 6 + line[5..].find(' ').unwrap() + 90).count(), 2000);
+    assert_eq!(lines.iter().filter(|line| line.len() == 10000 && line.bytes().all(|b| b == b'a')).count(), 3);
+}

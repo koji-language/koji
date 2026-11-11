@@ -16,7 +16,7 @@ immut pages = task.all([() => http.get(urls[0]), () => http.get(urls[1])])
 
 Tasks are light: each has a stack of its own (the system only gives it the memory it uses), so a program can have thousands of them. They take turns on the one thread of the program: when a task waits, the next task that is ready runs.
 
--   A task waits in `time.sleep`, in the requests and the server of `http`, in `Task.wait`, in the channels and shared values below, and in the calls that wait for the system: reading and writing files, listing directories, `input()`, `system.run` and `system.capture`, and finding the address of a host. While other tasks are alive, a thread that helps makes those calls, so they do not hold the others up.
+-   A task waits in `time.sleep`, in the requests and the server of `http`, in `Task.wait`, in the channels and shared values below, and in the calls that wait for the system: reading and writing files, listing directories, `input()`, `print` to a pipe that is full, `system.run` and `system.capture`, and finding the address of a host. While other tasks are alive, a thread that helps makes those calls, so they do not hold the others up; the texts that tasks print never mix, and come out in the order the tasks printed them.
 -   A task that computes for long without waiting lets the others run every 10 milliseconds or so: a loop or a recursion never holds them up for longer. To use several processors, split the work into several tasks.
 -   Only one task runs at a time, and a task changes only its own values: the values that tasks share are in channels and shared values, whose operations no other task comes between, so there are no data races.
 
