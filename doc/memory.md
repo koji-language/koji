@@ -21,6 +21,8 @@ print(b) // [9, 2, 3]
 
 Copies are cheap: the memory is shared until one of the copies changes (copy-on-write), and only then is the changed part copied.
 
+A value changed through a `mut` parameter is not copied either, also when it is a field or an item (`add(mut self.code, byte)`) or a global: the compiler gives the function the value itself, and puts nothing in its place until the call returns, so the function sees no other copy and changes it in place.
+
 There are no references, so there is no aliasing: a function can only change a variable passed with [`mut`](functions.md#mut-parameters), and a closure keeps the values it had when it was created. `==` compares values, and [`is`](operators.md#comparison-operators) only checks variants.
 
 ## Move-Only Values

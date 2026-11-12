@@ -1,0 +1,258 @@
+// Which globals each function may read or change, itself or through the functions it calls (so a
+// call can take the value of a global the function never sees: `items.add(x)` at the top level of
+// a program, where `items` is a global, changes the list in place instead of a copy; see cgen.kj
+// and native.kj). A function called through a closure, or by the runtime (a `display` method,
+// which shows a value when it is printed or turned into text), may run where the code does not
+// say: those that call closures, or call the runtime, may see the globals of all of them.
+
+import { Operand, Place, Target, Step, StdArg, Instruction, IrFunction, IrProgram } from 'ir.kj'
+
+// For each function, the globals it may see.
+export function globalsSeen(program: IrProgram): Set[int][] {
+    immut count = program.functions.length()
+    mut seen: Set[int][] = []
+    mut callees: int[][] = []
+    mut indirect: boolean[] = []
+    mut runtime: boolean[] = []
+    mut hidden: Set[int] = Set.from([])
+
+    // The functions that run where the code does not say: those of closures, `display` methods.
+    for record in program.records {
+        match (record.display) {
+            Some(code) => hidden.add(code)
+            None => {}
+        }
+    }
+
+    for id in range(count) {
+        mut direct: Set[int] = Set.from([])
+        mut called: int[] = []
+        mut throughClosure = false
+        mut throughRuntime = false
+
+        for block in program.functions[id].blocks {
+            for instruction in block.instructions {
+                for global in globalsOf(instruction) {
+                    direct.add(global)
+                }
+
+                match (instruction) {
+                    CallIns(_, callee, _, _, _) => called.push(callee)
+                    DropIns(_, dropper) => called.push(dropper)
+                    MakeClosureIns(_, code, _) => hidden.add(code)
+                    CallClosureIns(_, _, _, _) => throughClosure = true
+                    ListSortByIns(_, _, _) => throughClosure = true
+                    StdCallIns(_, _, _) => throughRuntime = true
+                    PrintIns(_, _) => throughRuntime = true
+                    UnaryIns(_, op, _, _) => {
+                        if (op.endsWith('ToStr') or op.endsWith('Repr')) { throughRuntime = true }
+                    }
+                    BinaryIns(_, op, _, _, _) => {
+                        if (op == 'StrConcat' or op == 'ListJoin' or op.startsWith('ListCompare') or op.startsWith('MapCompare') or op.startsWith('RecordCompare')) { throughRuntime = true }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        seen.push(direct)
+        callees.push(called)
+        indirect.push(throughClosure)
+        runtime.push(throughRuntime)
+    }
+
+    // Until nothing changes: a function sees what its callees see, and the globals of the hidden
+    // functions when it calls closures or the runtime.
+    mut changed = true
+
+    while (changed) {
+        changed = false
+        mut hiddenSeen: Set[int] = Set.from([])
+
+        for code in hidden {
+            for global in seen[code] {
+                hiddenSeen.add(global)
+            }
+        }
+
+        for id in range(count) {
+            immut before = seen[id].length()
+            mut grown = seen[id]
+
+            for callee in callees[id] {
+                for global in seen[callee] {
+                    grown.add(global)
+                }
+            }
+
+            if (indirect[id] or runtime[id]) {
+                for global in hiddenSeen {
+                    grown.add(global)
+                }
+            }
+
+            if (grown.length() != before) {
+                seen[id] = grown
+                changed = true
+            }
+        }
+    }
+
+    return seen
+}
+
+function globalsOf(instruction: Instruction): int[] {
+    mut found: int[] = []
+
+    match (instruction) {
+        CopyIns(dest, value) => {
+            place(dest, mut found)
+            operand(value, mut found)
+        }
+        UnaryIns(_, _, value, _) => operand(value, mut found)
+        BinaryIns(_, _, left, right, _) => {
+            operand(left, mut found)
+            operand(right, mut found)
+        }
+        CallIns(_, _, args, writebacks, _) => {
+            for arg in args {
+                operand(arg, mut found)
+            }
+
+            for writeback in writebacks {
+                target(writeback.target, mut found)
+            }
+        }
+        ListNewIns(_, items) => {
+            for item in items {
+                operand(item, mut found)
+            }
+        }
+        ListGetIns(_, list, index, _) => {
+            operand(list, mut found)
+            operand(index, mut found)
+        }
+        ListSetIns(list, index, value, _) => {
+            target(list, mut found)
+            operand(index, mut found)
+            operand(value, mut found)
+        }
+        ListPushIns(list, value, _) => {
+            target(list, mut found)
+            operand(value, mut found)
+        }
+        ListInsertIns(list, index, value, _) => {
+            target(list, mut found)
+            operand(index, mut found)
+            operand(value, mut found)
+        }
+        ListSortIns(list, _) => target(list, mut found)
+        ListSliceIns(_, list, start, end, _) => {
+            operand(list, mut found)
+            optional(start, mut found)
+            optional(end, mut found)
+        }
+        RecordNewIns(_, _, fields) => {
+            for field in fields {
+                operand(field, mut found)
+            }
+        }
+        FieldGetIns(_, record, _) => operand(record, mut found)
+        FieldSetIns(record, _, value, _) => {
+            target(record, mut found)
+            operand(value, mut found)
+        }
+        ListRemoveIns(_, list, index, _) => {
+            target(list, mut found)
+            optional(index, mut found)
+        }
+        StdCallIns(_, _, args) => {
+            for arg in args {
+                match (arg) {
+                    ValueArg(value) => operand(value, mut found)
+                    PlaceArg(value) => operand(value, mut found)
+                    _ => {}
+                }
+            }
+        }
+        TakeIns(_, source) => place(source, mut found)
+        DropIns(value, _) => place(value, mut found)
+        MakeClosureIns(_, _, environment) => optional(environment, mut found)
+        CallClosureIns(_, closure, args, _) => {
+            operand(closure, mut found)
+
+            for arg in args {
+                operand(arg, mut found)
+            }
+        }
+        ListSortByIns(list, comparison, _) => {
+            target(list, mut found)
+            operand(comparison, mut found)
+        }
+        MapNewIns(_, entries) => {
+            for entry in entries {
+                operand(entry.key, mut found)
+                operand(entry.value, mut found)
+            }
+        }
+        MapGetIns(_, map, key, _) => {
+            operand(map, mut found)
+            operand(key, mut found)
+        }
+        MapLookupIns(_, map, key) => {
+            operand(map, mut found)
+            operand(key, mut found)
+        }
+        MapSetIns(map, key, value, _) => {
+            target(map, mut found)
+            operand(key, mut found)
+            optional(value, mut found)
+        }
+        MapRemoveIns(_, map, key, _) => {
+            target(map, mut found)
+            operand(key, mut found)
+        }
+        FailIns(message, _) => operand(message, mut found)
+        PrintIns(value, _) => operand(value, mut found)
+        RangeNextIns(_, _, _, end, step, _) => {
+            operand(end, mut found)
+            operand(step, mut found)
+        }
+        RangeCheckIns(step, _) => operand(step, mut found)
+    }
+
+    return found
+}
+
+function operand(value: Operand, mut found: int[]) {
+    match (value) {
+        GlobalOp(id) => found.push(id)
+        _ => {}
+    }
+}
+
+function optional(value: Option[Operand], mut found: int[]) {
+    match (value) {
+        Some(given) => operand(given, mut found)
+        None => {}
+    }
+}
+
+function place(where: Place, mut found: int[]) {
+    match (where) {
+        GlobalPlace(id) => found.push(id)
+        _ => {}
+    }
+}
+
+function target(where: Target, mut found: int[]) {
+    place(where.root, mut found)
+
+    for step in where.path {
+        match (step) {
+            IndexStep(index) => operand(index, mut found)
+            KeyStep(key) => operand(key, mut found)
+            FieldStep(_) => {}
+        }
+    }
+}

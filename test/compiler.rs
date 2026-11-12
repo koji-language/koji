@@ -3032,3 +3032,70 @@ fn the_native_backend_agrees_with_the_c_backend() {
     assert_eq!(found.code, Some(0), "{}", found.stderr);
     assert!(found.stdout == expected.stdout, "the compiler in machine code generates other C");
 }
+
+#[test]
+fn mut_parts_change_in_place() {
+    // A `mut` argument that is a field (`mut self.code`) or a global gives its reference for the
+    // call, so the function changes it in place: 200,000 pushes take milliseconds, not the minute
+    // that copying the list at each call took. A function that sees the global (itself, through
+    // another function or a closure) gets a copy, and the program stays right.
+    assert_same(
+        "mut_parts",
+        r#"type Box = {
+    code: int[]
+    n: int
+}
+
+function put(mut out: int[], v: int) {
+    out.push(v)
+}
+
+function Box.add(mut self, v: int) {
+    put(mut self.code, v)
+    self.n += 1
+}
+
+mut box: Box = { code: [], n: 0 }
+for i in range(200000) {
+    box.add(i)
+}
+print(box.n, box.code.length(), box.code[199999])
+
+function inside() {
+    mut local: Box = { code: [], n: 0 }
+    for i in range(200000) {
+        local.add(i)
+    }
+    print(local.code.length())
+}
+inside()
+
+// Functions that read the global they are given.
+mut seen: int[] = [1, 2]
+
+function peek(mut items: int[]) {
+    items.push(seen.length())
+}
+
+function peekLater(mut items: int[]) {
+    items.push(count())
+}
+
+function count(): int {
+    return seen.length()
+}
+
+peek(mut seen)
+peekLater(mut seen)
+print(seen)
+
+immut lengths = [() => seen.length()]
+function viaClosure(mut items: int[]) {
+    items.push(lengths[0]())
+}
+viaClosure(mut seen)
+print(seen)
+"#,
+        "200000 200000 199999\n200000\n[1, 2, 2, 3]\n[1, 2, 2, 3, 4]\n",
+    );
+}

@@ -6,6 +6,7 @@ import { preludeLines } from 'prelude.kj'
 import { borrowedParams, borrowedLocals, constantGlobals } from 'borrow.kj'
 import { lastUses } from 'liveness.kj'
 import { StackRecords, stackRecords } from 'escape.kj'
+import { globalsSeen } from 'globals.kj'
 
 type Generator = {
     program: IrProgram
@@ -37,6 +38,8 @@ type Generator = {
     // `string(c)` not written, since the next instruction appends `c` instead (or -1), and `c`.
     charLocal: int
     charValue: string
+    // For each function, the globals it may see (globals.kj).
+    seen: Set[int][]
 }
 
 function cType(ty: Ty): string {
@@ -216,7 +219,7 @@ immut inode64 = ['opendir', 'readdir', 'closedir', 'rewinddir', 'telldir', 'seek
 
 // The C source of `program`, line by line.
 export function generate(program: IrProgram): string[] {
-    mut generator: Generator = { program: program, out: [], file: '', escapedFile: '', borrowed: borrowedParams(program), constants: constantGlobals(program), smalls: smallFunctions(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [], charLocal: -1, charValue: '' }
+    mut generator: Generator = { program: program, out: [], file: '', escapedFile: '', borrowed: borrowedParams(program), constants: constantGlobals(program), smalls: smallFunctions(program), current: [], live: [], block: 0, position: 0, stacks: stackRecords(program), stack: [:], releases: [], charLocal: -1, charValue: '', seen: globalsSeen(program) }
     generator.generateProgram()
     return generator.out
 }
@@ -1235,6 +1238,22 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                     mut given = false
 
                     match (args[param]) {
+                        // A global that the function does not see: it gives its value the same way.
+                        GlobalOp(global) => {
+                            immut sameRoot = writeback.target.root == GlobalPlace(global) and writeback.target.path.length() == 0
+                            mut alone = not self.seen[callee].has(global)
+
+                            for i in range(args.length()) {
+                                if (i != param and args[i] == GlobalOp(global)) { alone = false }
+                            }
+
+                            if (sameRoot and alone) {
+                                self.line(`    ${cType(ty)} given${param} = koji_g${global};`)
+                                self.line(`    koji_g${global} = NULL;`)
+                                values[param] = `given${param}`
+                                given = true
+                            }
+                        }
                         LocalOp(local) => {
                             immut sameRoot = writeback.target.root == LocalPlace(local) and writeback.target.path.length() == 0
                             mut alone = true
@@ -1251,6 +1270,32 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                             }
                         }
                         _ => {}
+                    }
+
+                    // `f(mut self.code)`: the argument is the field, read for the last time. The field
+                    // gives its reference for the call (it is empty meanwhile, and gets the value
+                    // back after), so that the function changes the list in place instead of a copy.
+                    // Only for a local variable that no other argument reads.
+                    if (not given) {
+                        match (self.fromTarget(routine, args, param, writeback.target, callee)) {
+                            Some(temporary) => {
+                                self.line(`    ${cType(ty)} *taken${param} = (${cType(ty)} *)${self.path(writeback.target, line)};`)
+                                self.line(`    ${cType(ty)} given${param} = *taken${param};`)
+                                self.line(`    *taken${param} = NULL;`)
+
+                                // A temporary that holds a reference of its own gives it back now.
+                                if (not self.current[temporary]) {
+                                    match (release(ty)) {
+                                        Some(name) => self.line(`    ${name}(l${temporary}); l${temporary} = NULL;`)
+                                        None => {}
+                                    }
+                                }
+
+                                values[param] = `given${param}`
+                                given = true
+                            }
+                            None => {}
+                        }
                     }
 
                     if (not given) { values[param] = share(ty, values[param]) }
@@ -1661,6 +1706,37 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
             self.line(`    l${hasValue} = koji_range_next(&l${next}, ${operand(end)}, ${operand(step)}, &l${done}, &l${value});`)
         }
     }
+}
+
+// The temporary of a `mut` argument that is a part of a local variable (`mut self.code`), read for
+// the last time by the call, when no other argument reads the variable: the call can take the
+// reference of the part itself.
+function Generator.fromTarget(self, routine: IrFunction, args: Operand[], param: int, target: Target, callee: int): Option[int] {
+    immut temporary = match (args[param]) {
+        LocalOp(local) => local
+        _ => return None
+    }
+    // The root: a local, or a global the function does not see.
+    immut root = match (target.root) {
+        LocalPlace(local) => LocalOp(local)
+        GlobalPlace(global) => if (self.seen[callee].has(global)) { return None } else { GlobalOp(global) }
+    }
+
+    if (target.path.length() == 0 or root == LocalOp(temporary)) { return None }
+
+    if (not (temporary in self.live[self.block][self.position])) { return None }
+
+    for i in range(args.length()) {
+        if (i != param and (args[i] == root or args[i] == LocalOp(temporary))) { return None }
+
+        // An index or a key of the path that is another argument stays as it is.
+        match (args[i]) {
+            LocalOp(other) if (i != param and targetReads(target, other)) => return None
+            _ => {}
+        }
+    }
+
+    return Some(temporary)
 }
 
 // Releases the values the function owns (before it returns).

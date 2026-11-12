@@ -17,6 +17,8 @@
 
 import { Ty, Operand, Place, Step, Target, Instruction, Terminator, IrFunction, IrProgram, IrField, IrExtern, StdArg, Writeback, itemOf } from 'ir.kj'
 import { lastUses } from 'liveness.kj'
+import { globalsSeen } from 'globals.kj'
+import { borrowedParams, borrowedLocals, constantGlobals } from 'borrow.kj'
 
 foreign 'm' {
     function frexp(value: float, mut exponent: CInt): float
@@ -118,6 +120,15 @@ type Native = {
     trampolineUses: Relocation[]
     block: int
     position: int
+    // For each function, the globals it may see (globals.kj).
+    seen: Set[int][]
+    // For each function, its borrowed parameters, the globals that never change, and the borrowed
+    // locals of the function being generated (borrow.kj): the caller keeps a borrowed parameter
+    // alive, and what a borrowed local was read from keeps it alive, so neither holds a reference
+    // of its own.
+    borrowed: boolean[][]
+    constants: boolean[]
+    current: boolean[]
 }
 
 // The object file of a program, or why the native backend cannot make it yet.
@@ -130,7 +141,8 @@ export function generateNative(program: IrProgram): Result[byte[], string] {
     mut native: Native = {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:],
         strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [],
-        preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: []
+        preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
+        constants: constantGlobals(program), current: []
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -356,7 +368,7 @@ function Native.recordFunctions(mut self): int[] {
                         // mov rdi, [rbx + 24 + 8 * word]
                         self.bytes([0x48, 0x8B, 0xBB])
                         self.int32(24 + 8 * word)
-                        self.callExternal(`koji_${kind}_release`)
+                        self.releaseRdi(kind)
                     }
                     None => {}
                 }
@@ -580,6 +592,7 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
 
     self.offsets = offsets
     self.outs = outs
+    self.current = borrowedLocals(routine, self.borrowed[id], self.constants)
     self.scratchBase = size
     self.scratchMost = 0
     self.starts.push(self.code.length())
@@ -588,12 +601,12 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
     immut frameAt = self.code.length()
     self.int32(0)
 
-    // The locals, zero; then the parameters, from where they come.
-    for local in range(routine.locals.length()) {
-        for word in range(words(routine.locals[local].ty)) {
-            self.bytes([0x31, 0xC0])
-            self.storeWord(rax, offsets[local] + 8 * word)
-        }
+    // The managed locals, empty (each is written before it is read otherwise); then the parameters,
+    // from where they come.
+    self.bytes([0x31, 0xC0])
+
+    for local in range(routine.params, routine.locals.length()) {
+        if (managed(routine.locals[local].ty) is Some) { self.storeWord(rax, offsets[local]) }
     }
 
     immut places = placesOf(paramTypes(routine))
@@ -642,12 +655,12 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
 
     // A reference of its own to each managed parameter (but the `mut` ones, given with theirs).
     for param in range(routine.params) {
-        if (isWriteback(routine, param)) { continue }
+        if (isWriteback(routine, param) or self.current[param]) { continue }
 
         match (managed(routine.locals[param].ty)) {
             Some(kind) => {
                 self.loadWord(rdi, offsets[param])
-                self.callExternal(`koji_${kind}_retain`)
+                self.retainRdi()
             }
             None => {}
         }
@@ -721,6 +734,15 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
             immut ty = self.placeType(dest)
             self.loadValue(operand, ty)
 
+            // A borrowed local: the value, without a reference of its own.
+            match (dest) {
+                LocalPlace(local) if (self.current[local] and local >= routine.params) => {
+                    self.storeBorrowed(local, ty)
+                    return Ok()
+                }
+                _ => {}
+            }
+
             // Read for the last time: the reference moves, without retaining and releasing.
             match (self.movable(operand)) {
                 Some(local) if (dest != LocalPlace(local)) => {
@@ -751,6 +773,12 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
             immut ty = routine.locals[dest].ty
             self.callC('koji_list_at', [value(list, self.operandType(list)), value(index, IntTy), argument('int', words(ty)), self.location(line)], IntTy)
             self.loadThrough(ty)
+
+            if (self.current[dest]) {
+                self.storeBorrowed(dest, ty)
+                return Ok()
+            }
+
             self.retainResult(ty)
             self.storeResult(LocalPlace(dest), ty)
         }
@@ -826,6 +854,12 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
             immut ty = routine.locals[dest].ty
             self.fieldAddress(record, field)
             self.loadThrough(ty)
+
+            if (self.current[dest]) {
+                self.storeBorrowed(dest, ty)
+                return Ok()
+            }
+
             self.retainResult(ty)
             self.storeResult(LocalPlace(dest), ty)
         }
@@ -866,7 +900,7 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
             match (managed(ty)) {
                 Some(kind) => {
                     self.loadWord(rdi, held)
-                    self.callExternal(`koji_${kind}_release`)
+                    self.releaseRdi(kind)
                 }
                 None => {}
             }
@@ -882,7 +916,7 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
                 Some(record) => {
                     immut env = self.copyToSlot(record, RecordTy(0))
                     self.loadWord(rdi, env)
-                    self.callExternal('koji_record_retain')
+                    self.retainRdi()
                     captured = argument('word', env)
                 }
                 None => {}
@@ -999,9 +1033,65 @@ function Native.movable(self, operand: Operand): Option[int] {
 
     if (managed(self.routine.locals[local].ty) is None) { return None }
 
-    if (isWriteback(self.routine, local)) { return None }
+    if (isWriteback(self.routine, local) or self.current[local]) { return None }
 
     if (not (local in self.live[self.block][self.position])) { return None }
+
+    return Some(local)
+}
+
+// The temporary of a `mut` argument that is a part of a local variable (`mut self.code`), read for
+// the last time by the call, when no other argument reads the variable (as in cgen.kj).
+function Native.fromTarget(self, args: Operand[], param: int, target: Target, callee: int): Option[int] {
+    immut temporary = match (args[param]) {
+        LocalOp(local) => local
+        _ => return None
+    }
+    immut root = match (target.root) {
+        LocalPlace(local) => LocalOp(local)
+        GlobalPlace(global) => if (self.seen[callee].has(global)) { return None } else { GlobalOp(global) }
+    }
+
+    if (target.path.length() == 0 or root == LocalOp(temporary)) { return None }
+
+    if (not (temporary in self.live[self.block][self.position])) { return None }
+
+    for i in range(args.length()) {
+        if (i == param) { continue }
+
+        if (args[i] == root or args[i] == LocalOp(temporary)) { return None }
+
+        for step in target.path {
+            immut read = match (step) {
+                IndexStep(index) => index
+                KeyStep(key) => key
+                FieldStep(_) => continue
+            }
+
+            if (read == args[i]) { return None }
+        }
+    }
+
+    return Some(temporary)
+}
+
+function managedName(ty: Ty): string {
+    return match (managed(ty)) {
+        Some(kind) => kind
+        None => ''
+    }
+}
+
+// The local of an operand that owns its managed value (not borrowed, not a `mut` parameter).
+function Native.owner(self, operand: Operand): Option[int] {
+    immut local = match (operand) {
+        LocalOp(id) => id
+        _ => return None
+    }
+
+    if (managed(self.routine.locals[local].ty) is None) { return None }
+
+    if (isWriteback(self.routine, local) or self.current[local]) { return None }
 
     return Some(local)
 }
@@ -1010,12 +1100,12 @@ function Native.movable(self, operand: Operand): Option[int] {
 // map no one else sees can then change in place.
 function Native.dropDead(mut self) {
     for local in self.live[self.block][self.position] {
-        if (isWriteback(self.routine, local)) { continue }
+        if (isWriteback(self.routine, local) or self.current[local]) { continue }
 
         match (managed(self.routine.locals[local].ty)) {
             Some(kind) => {
                 self.loadWord(rdi, self.offsets[local])
-                self.callExternal(`koji_${kind}_release`)
+                self.releaseRdi(kind)
                 self.zeroPlace(LocalPlace(local))
             }
             None => {}
@@ -1050,7 +1140,7 @@ function Native.optionFrom(mut self, dest: int, option: int, slot: int, copied: 
         match (managed(itemType)) {
             Some(kind) => {
                 self.loadWord(rdi, slot)
-                self.callExternal(`koji_${kind}_release`)
+                self.releaseRdi(kind)
             }
             None => {}
         }
@@ -1162,7 +1252,7 @@ function Native.storeTarget(mut self, target: Target, ty: Ty, line: int) {
     match (managed(ty)) {
         Some(kind) => {
             self.loadWord(rdi, held)
-            self.callExternal(`koji_${kind}_release`)
+            self.releaseRdi(kind)
         }
         None => {}
     }
@@ -1174,6 +1264,8 @@ function Native.call(mut self, dest: Option[int], callee: int, args: Operand[], 
     immut called = self.program.functions[callee]
     mut values: Argument[] = []
     mut backs: int[] = []
+    mut keptGlobals: int[] = []
+    mut keptKinds: string[] = []
 
     for i in range(args.length()) {
         immut ty = called.locals[i].ty
@@ -1184,33 +1276,79 @@ function Native.call(mut self, dest: Option[int], callee: int, args: Operand[], 
             // the function changes the value in place: it comes back through the address.
             mut moved = false
 
-            match (args[i]) {
-                LocalOp(local) => {
+            // So does a global that the function does not see.
+            immut variable = match (args[i]) {
+                LocalOp(local) => Some(LocalPlace(local))
+                GlobalOp(global) => if (self.seen[callee].has(global)) { None } else { Some(GlobalPlace(global)) }
+                _ => None
+            }
+
+            match (variable) {
+                Some(where) => {
                     mut alone = true
 
                     for j in range(args.length()) {
-                        if (j != i and args[j] == LocalOp(local)) { alone = false }
+                        if (j != i and args[j] == args[i]) { alone = false }
                     }
 
                     for writeback in writebacks {
-                        if (writeback.param == i and writeback.target.root == LocalPlace(local) and writeback.target.path.length() == 0 and alone) { moved = true }
+                        if (writeback.param == i and writeback.target.root == where and writeback.target.path.length() == 0 and alone) { moved = true }
                     }
 
-                    if (moved and managed(ty) is Some) { self.zeroPlace(LocalPlace(local)) }
+                    if (moved and managed(ty) is Some) { self.zeroPlace(where) }
                 }
-                _ => {}
+                None => {}
+            }
+
+            // `f(mut self.code)`: the field, read for the last time, gives its reference for the call
+            // (it is empty meanwhile); the temporary gives its own back, so that the function
+            // changes the value in place.
+            if (not moved and managed(ty) is Some) {
+                for writeback in writebacks {
+                    if (writeback.param != i) { continue }
+
+                    match (self.fromTarget(args, i, writeback.target, callee)) {
+                        Some(temporary) => {
+                            immut variable = self.path(writeback.target, line)
+                            self.loadWord(rcx, variable)
+                            // mov rax, [rcx]; mov qword [rcx], 0
+                            self.bytes([0x48, 0x8B, 0x01, 0x48, 0xC7, 0x01, 0, 0, 0, 0])
+                            self.storeWord(rax, given)
+                            self.loadWord(rdi, self.offsets[temporary])
+                            self.releaseRdi(managedName(ty))
+                            self.zeroPlace(LocalPlace(temporary))
+                            moved = true
+                        }
+                        None => {}
+                    }
+                }
             }
 
             match (managed(ty)) {
                 Some(kind) if (not moved) => {
                     self.loadWord(rdi, given)
-                    self.callExternal(`koji_${kind}_retain`)
+                    self.retainRdi()
                 }
                 _ => {}
             }
 
             values.push({ kind: 'word2', operand: IntOp(0), ty: ty, number: given, name: '' })
             continue
+        }
+
+        // A global given to a borrowed parameter: the function may change the global, so the
+        // caller keeps the value alive with a reference of its own during the call.
+        match (args[i]) {
+            GlobalOp(global) if (not self.constants[global] and i < self.borrowed[callee].length() and self.borrowed[callee][i] and managed(ty) is Some) => {
+                immut kept = self.copyToSlot(args[i], ty)
+                self.loadWord(rdi, kept)
+                self.retainRdi()
+                keptGlobals.push(kept)
+                keptKinds.push(managedName(ty))
+                values.push(argument('word', kept))
+                continue
+            }
+            _ => {}
         }
 
         values.push(value(args[i], ty))
@@ -1242,6 +1380,11 @@ function Native.call(mut self, dest: Option[int], callee: int, args: Operand[], 
         self.loadWord(rax, backs[writeback.param])
         self.loadWord(rdx, backs[writeback.param] + 8)
         self.storeTarget(writeback.target, ty, line)
+    }
+
+    for i in range(keptGlobals.length()) {
+        self.loadWord(rdi, keptGlobals[i])
+        self.releaseRdi(keptKinds[i])
     }
 
     return Ok()
@@ -1341,7 +1484,7 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
         match (managed(ty)) {
             Some(kind) => {
                 self.loadWord(rdi, old)
-                self.callExternal(`koji_${kind}_release`)
+                self.releaseRdi(kind)
             }
             None => {}
         }
@@ -1728,6 +1871,19 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
             self.callC('koji_list_contains', [value(right, rightType), argument('slot', item)], BoolTy)
         }
         'StrContains' => self.callC('koji_string_contains', [value(right, rightType), value(left, leftType)], BoolTy)
+        // `text + more` where `text` is read for the last time: the runtime adds to it in place when
+        // no one else sees it (it takes the reference of `text`).
+        'StrConcat' if (self.appendable(dest, left, right)) => {
+            immut local = match (left) {
+                LocalOp(id) => id
+                _ => 0
+            }
+            self.callC('koji_string_append', both, StrTy)
+            immut appended = self.slot(8)
+            self.storeWord(rax, appended)
+            self.zeroPlace(LocalPlace(local))
+            self.loadWord(rax, appended)
+        }
         'StrContainsChar' => self.callC('koji_string_contains_char', [value(right, rightType), value(left, leftType)], BoolTy)
         other => {
             immut placed = ['IntPow', 'ShiftLeft', 'ShiftRight', 'FloatDiv', 'FloatRem', 'FloatPow', 'DecimalAdd', 'DecimalSub', 'DecimalMul', 'DecimalDiv', 'DecimalRem', 'DecimalPow', 'DecimalPower', 'ByteAdd', 'ByteSub', 'ByteMul', 'ByteDiv', 'ByteRem', 'BytePow', 'ByteShiftLeft', 'ByteShiftRight', 'U128Div', 'U128Rem', 'U128ShiftLeft', 'U128ShiftRight']
@@ -1772,6 +1928,14 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
 
     self.storeResult(LocalPlace(dest), ty)
     return Ok()
+}
+
+// Whether `left + right` can add to `left` in place: `left` is a local read for the last time.
+function Native.appendable(self, dest: int, left: Operand, right: Operand): boolean {
+    return match (self.movable(left)) {
+        Some(local) => left != right and dest != local
+        None => false
+    }
 }
 
 // The code of setcc for a signed comparison (`Less`: setl).
@@ -1870,10 +2034,21 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
             match (returned) {
                 Some(given) if (routine.returns != VoidTy) => {
                     self.loadValue(given, routine.returns)
-                    self.retainResult(routine.returns)
+
+                    // A local that owns its value moves out (the function ends); any other value
+                    // gets a reference.
+                    immut owned = self.owner(given)
+
+                    if (owned is None) { self.retainResult(routine.returns) }
+
                     result = self.slot(16)
                     self.storeWord(rax, result)
                     self.storeWord(rdx, result + 8)
+
+                    match (owned) {
+                        Some(local) => self.zeroPlace(LocalPlace(local))
+                        None => {}
+                    }
                 }
                 _ => {}
             }
@@ -1905,12 +2080,12 @@ function Native.releaseLocals(mut self) {
     immut routine = self.routine
 
     for local in range(routine.locals.length()) {
-        if (isWriteback(routine, local)) { continue }
+        if (isWriteback(routine, local) or self.current[local]) { continue }
 
         match (managed(routine.locals[local].ty)) {
             Some(kind) => {
                 self.loadWord(rdi, self.offsets[local])
-                self.callExternal(`koji_${kind}_release`)
+                self.releaseRdi(kind)
             }
             None => {}
         }
@@ -1968,7 +2143,7 @@ function Native.retainResult(mut self, ty: Ty) {
             immut held = self.slot(8)
             self.storeWord(rax, held)
             self.bytes([0x48, 0x89, 0xC7])
-            self.callExternal(`koji_${kind}_retain`)
+            self.retainRdi()
             self.loadWord(rax, held)
         }
         None => {}
@@ -1982,7 +2157,7 @@ function Native.storeResult(mut self, where: Place, ty: Ty) {
             immut held = self.slot(8)
             self.storeWord(rax, held)
             self.loadPlaceWord(rdi, where, 0)
-            self.callExternal(`koji_${kind}_release`)
+            self.releaseRdi(kind)
             self.loadWord(rax, held)
         }
         None => {}
@@ -2000,6 +2175,13 @@ function Native.storeResult(mut self, where: Place, ty: Ty) {
             if (words(ty) == 2) { self.storeGlobal(rdx, id, 8) }
         }
     }
+}
+
+// A borrowed local: the value in rax (and rdx), with no reference to take or give.
+function Native.storeBorrowed(mut self, local: int, ty: Ty) {
+    self.storeWord(rax, self.offsets[local])
+
+    if (words(ty) == 2) { self.storeWord(rdx, self.offsets[local] + 8) }
 }
 
 function Native.zeroPlace(mut self, where: Place) {
@@ -2177,6 +2359,47 @@ function Native.storeGlobal(mut self, register: int, global: int, offset: int) {
 function Native.leaRodata(mut self, register: int, offset: int) {
     self.bytes([rex(register, 0), 0x8D, 0x05 | (register & 7) << 3])
     self.relocate('.rodata', offset, pc32)
+}
+
+// References, inline (as KOJI_INLINE of the prelude): the count is the first word of every managed
+// value; at the last reference, the runtime frees it.
+
+// A reference more to the value in rdi (none for an empty place).
+function Native.retainRdi(mut self) {
+    // test rdi, rdi; jz; inc qword [rdi]
+    self.bytes([0x48, 0x85, 0xFF])
+    immut empty = self.jumpShort(0x74)
+    self.bytes([0x48, 0xFF, 0x07])
+    self.patchShort(empty)
+}
+
+// A reference less to the value in rdi, of the kind of value `kind`, freed at the last.
+function Native.releaseRdi(mut self, kind: string) {
+    // test rdi, rdi; jz done; dec qword [rdi]; jnz done; free
+    self.bytes([0x48, 0x85, 0xFF])
+    immut empty = self.jumpIf(equal)
+    self.bytes([0x48, 0xFF, 0x0F])
+    immut alive = self.jumpIf(notEqual)
+
+    if (kind == 'record') {
+        // The type of the record frees it: call [[rdi + 8] + 24]
+        self.bytes([0x48, 0x8B, 0x47, 0x08, 0xFF, 0x50, 0x18])
+    } else {
+        self.callExternal(`koji_${kind}_free`)
+    }
+
+    self.patchHere(empty)
+    self.patchHere(alive)
+}
+
+// A short jump forward (jcc rel8), to be patched: where its offset is.
+function Native.jumpShort(mut self, code: int): int {
+    self.bytes([code, 0])
+    return self.code.length() - 1
+}
+
+function Native.patchShort(mut self, at: int) {
+    self.code[at] = byte(self.code.length() - (at + 1))
 }
 
 // Calls
