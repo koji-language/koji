@@ -11,7 +11,15 @@
 /* The small functions below are inlined where they are called. Left to its heuristics, gcc spends
    most of its time (20 minutes for the compiler) weighing them in the large functions kojic
    generates. */
+#if defined(KOJI_LIBRARY)
+/* In the library they are functions of their own too, which the machine code of the native
+   backend (compiler/native.kj) calls: the operations of both backends are the same. */
+#define KOJI_INLINE extern inline __attribute__((always_inline))
+#define KOJI_SHARED
+#else
 #define KOJI_INLINE static inline __attribute__((always_inline))
+#define KOJI_SHARED static
+#endif
 
 typedef struct KojiString KojiString;
 
@@ -1640,7 +1648,7 @@ static int32_t koji_compare_int(const void *a, const void *b) {
     return koji_order(x < y, x > y);
 }
 static uint64_t koji_hash_int(const void *slot) { return (uint64_t)*(const int64_t *)slot; }
-static const KojiElementType koji_element_int = {
+KOJI_SHARED const KojiElementType koji_element_int = {
     sizeof(int64_t), NULL, NULL, koji_repr_int, koji_equal_int, koji_compare_int, koji_hash_int, NULL};
 
 static KojiString *koji_repr_float(const void *slot) { return koji_string_from_float(*(const double *)slot); }
@@ -1655,7 +1663,7 @@ static uint64_t koji_hash_float(const void *slot) {
     if (value != 0.0) __builtin_memcpy(&bits, &value, sizeof bits); /* 0.0 and -0.0 are equal */
     return bits;
 }
-static const KojiElementType koji_element_float = {
+KOJI_SHARED const KojiElementType koji_element_float = {
     sizeof(double), NULL, NULL, koji_repr_float, koji_equal_float, koji_compare_float, koji_hash_float, NULL};
 
 static KojiString *koji_repr_decimal(const void *slot) { return koji_string_from_decimal(*(const KojiDecimal *)slot); }
@@ -1666,10 +1674,10 @@ static int32_t koji_compare_decimal(const void *a, const void *b) {
     return koji_decimal_compare(*(const KojiDecimal *)a, *(const KojiDecimal *)b);
 }
 static uint64_t koji_hash_decimal(const void *slot) { return (uint64_t)koji_decimal_hash(*(const KojiDecimal *)slot); }
-static const KojiElementType koji_element_decimal = {
+KOJI_SHARED const KojiElementType koji_element_decimal = {
     sizeof(KojiDecimal), NULL, NULL, koji_repr_decimal, koji_equal_decimal, koji_compare_decimal, koji_hash_decimal, NULL};
 
-static KojiString *koji_u128_to_string(KojiU128 value) {
+KOJI_SHARED KojiString *koji_u128_to_string(KojiU128 value) {
     char digits[40];
     int at = 40;
     do {
@@ -1691,7 +1699,7 @@ static uint64_t koji_hash_u128(const void *slot) {
     __builtin_memcpy(words, slot, 16);
     return words[0] * 0x9E3779B97F4A7C15u ^ words[1];
 }
-static const KojiElementType koji_element_u128 = {
+KOJI_SHARED const KojiElementType koji_element_u128 = {
     sizeof(KojiU128), NULL, NULL, koji_repr_u128, koji_equal_u128, koji_compare_u128, koji_hash_u128, NULL};
 
 static KojiString *koji_repr_bool(const void *slot) { return koji_string_from_bool(*(const bool *)slot); }
@@ -1699,7 +1707,7 @@ static bool koji_equal_bool(const void *a, const void *b) { return *(const bool 
 /* Booleans compare as equal: a sort keeps their order. */
 static int32_t koji_compare_bool(const void *a, const void *b) { (void)a; (void)b; return 0; }
 static uint64_t koji_hash_bool(const void *slot) { return *(const bool *)slot; }
-static const KojiElementType koji_element_bool = {
+KOJI_SHARED const KojiElementType koji_element_bool = {
     sizeof(bool), NULL, NULL, koji_repr_bool, koji_equal_bool, koji_compare_bool, koji_hash_bool, NULL};
 
 static KojiString *koji_repr_char(const void *slot) { return koji_char_repr(*(const uint32_t *)slot); }
@@ -1710,7 +1718,7 @@ static int32_t koji_compare_char(const void *a, const void *b) {
 }
 static uint64_t koji_hash_char(const void *slot) { return *(const uint32_t *)slot; }
 static KojiString *koji_display_char(const void *slot) { return koji_string_from_char(*(const uint32_t *)slot); }
-static const KojiElementType koji_element_char = {
+KOJI_SHARED const KojiElementType koji_element_char = {
     sizeof(uint32_t), NULL, NULL, koji_repr_char, koji_equal_char, koji_compare_char, koji_hash_char,
     koji_display_char};
 
@@ -1721,7 +1729,7 @@ static int32_t koji_compare_byte(const void *a, const void *b) {
     return koji_order(x < y, x > y);
 }
 static uint64_t koji_hash_byte(const void *slot) { return *(const uint8_t *)slot; }
-static const KojiElementType koji_element_byte = {
+KOJI_SHARED const KojiElementType koji_element_byte = {
     sizeof(uint8_t), NULL, NULL, koji_repr_byte, koji_equal_byte, koji_compare_byte, koji_hash_byte, NULL};
 
 static void koji_retain_string(const void *slot) { koji_string_retain(*(KojiString *const *)slot); }
@@ -1735,7 +1743,7 @@ static int32_t koji_compare_string(const void *a, const void *b) {
 }
 static uint64_t koji_hash_string(const void *slot) { return koji_string_hash(*(KojiString *const *)slot); }
 static KojiString *koji_display_string(const void *slot) { return koji_string_share(*(KojiString *const *)slot); }
-static const KojiElementType koji_element_string = {
+KOJI_SHARED const KojiElementType koji_element_string = {
     sizeof(KojiString *), koji_retain_string, koji_release_string, koji_repr_string,
     koji_equal_string, koji_compare_string, koji_hash_string, koji_display_string};
 
@@ -1746,7 +1754,7 @@ static bool koji_equal_list(const void *a, const void *b) {
     return koji_list_equal(*(KojiList *const *)a, *(KojiList *const *)b);
 }
 static uint64_t koji_hash_list(const void *slot) { return koji_list_hash(*(KojiList *const *)slot); }
-static const KojiElementType koji_element_list = {
+KOJI_SHARED const KojiElementType koji_element_list = {
     sizeof(KojiList *), koji_retain_list, koji_release_list, koji_repr_list, koji_equal_list, NULL,
     koji_hash_list, NULL};
 
@@ -1757,7 +1765,7 @@ static bool koji_equal_record(const void *a, const void *b) {
     return koji_record_equal(*(KojiRecord *const *)a, *(KojiRecord *const *)b);
 }
 static uint64_t koji_hash_record(const void *slot) { return koji_record_hash(*(KojiRecord *const *)slot); }
-static const KojiElementType koji_element_record = {
+KOJI_SHARED const KojiElementType koji_element_record = {
     sizeof(KojiRecord *), koji_retain_record, koji_release_record, koji_repr_record, koji_equal_record, NULL,
     koji_hash_record, NULL};
 
@@ -1768,7 +1776,7 @@ static bool koji_equal_map(const void *a, const void *b) {
     return koji_map_equal(*(KojiMap *const *)a, *(KojiMap *const *)b);
 }
 static uint64_t koji_hash_map(const void *slot) { return koji_map_hash(*(KojiMap *const *)slot); }
-static const KojiElementType koji_element_map = {
+KOJI_SHARED const KojiElementType koji_element_map = {
     sizeof(KojiMap *), koji_retain_map, koji_release_map, koji_repr_map, koji_equal_map, NULL, koji_hash_map, NULL};
 
 static void koji_retain_closure(const void *slot) { koji_closure_retain(*(KojiClosure *const *)slot); }
@@ -1778,7 +1786,7 @@ static bool koji_equal_closure(const void *a, const void *b) {
     return koji_closure_equal(*(KojiClosure *const *)a, *(KojiClosure *const *)b);
 }
 static uint64_t koji_hash_closure(const void *slot) { return (uint64_t)(uintptr_t)*(KojiClosure *const *)slot; }
-static const KojiElementType koji_element_closure = {
+KOJI_SHARED const KojiElementType koji_element_closure = {
     sizeof(KojiClosure *), koji_retain_closure, koji_release_closure, koji_repr_closure, koji_equal_closure,
     NULL, koji_hash_closure, NULL};
 
@@ -1786,12 +1794,12 @@ static const KojiElementType koji_element_closure = {
 static KojiString *koji_repr_void(const void *slot) { (void)slot; return koji_string_new("void", 4); }
 static bool koji_equal_void(const void *a, const void *b) { (void)a; (void)b; return true; }
 static uint64_t koji_hash_void(const void *slot) { (void)slot; return 0; }
-static const KojiElementType koji_element_void = {
+KOJI_SHARED const KojiElementType koji_element_void = {
     0, NULL, NULL, koji_repr_void, koji_equal_void, NULL, koji_hash_void, NULL};
 
 /* `items.sortBy(comparison)`: calls the comparison with two items of each C type. */
 #define KOJI_BEFORE(name, type)                                                                    \
-    static bool koji_before_##name(const KojiClosure *c, const void *a, const void *b) {           \
+    KOJI_SHARED bool koji_before_##name(const KojiClosure *c, const void *a, const void *b) {           \
         return ((bool (*)(KojiRecord *, type, type))koji_closure_code(c))(                        \
             koji_closure_environment(c), *(type const *)a, *(type const *)b);                      \
     }

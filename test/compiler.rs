@@ -33,8 +33,14 @@ fn has_valgrind() -> bool {
 }
 
 /// Builds `path` to `executable` with the compiler written in Koji.
+/// With KOJI_TEST_NATIVE set, by the native backend (`--native`): the tests then check it.
 fn build(path: &Path, executable: &Path) {
-    let built = koji::finish(koji::kojic().arg("build").arg(path).arg("-o").arg(executable), "");
+    let mut command = koji::kojic();
+    command.arg("build");
+    if std::env::var("KOJI_TEST_NATIVE").is_ok() {
+        command.arg("--native");
+    }
+    let built = koji::finish(command.arg(path).arg("-o").arg(executable), "");
     assert_eq!(built.code, Some(0), "{} does not compile: {}", path.display(), built.stderr);
 }
 
@@ -3014,8 +3020,15 @@ fn the_native_backend_agrees_with_the_c_backend() {
         assert_eq!(String::from_utf8_lossy(&found.stderr), String::from_utf8_lossy(&expected.stderr), "{}", name);
         assert_eq!(found.status.code(), expected.status.code(), "{}", name);
     }
-    // What it does not support yet is an error, not a wrong program.
-    let path = source_file("native_unsupported", "print([1, 2, 3])\n");
-    let built = koji::finish(koji::kojic().arg("build").arg("--native").arg(&path).arg("-o").arg(path.with_extension("native")), "");
-    assert!(built.stderr.contains("the native backend does not support"), "{}", built.stderr);
+    // The compiler itself, in machine code: it generates the same C as the compiler built by C.
+    let native = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler").join("kojic-native");
+    let built = koji::finish(koji::kojic().arg("build").arg("--native").arg("compiler/main.kj").arg("-o").arg(&native), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let program = source_file("native_compiled", "type Shape = {\n    Circle(radius: float)\n    Dot\n}\n\nimmut shapes: Shape[] = [Circle(float(2)), Dot]\nprint(shapes)\n");
+    let expected = koji::finish(koji::kojic().arg("dump").arg("c").arg(&program), "");
+    let mut by_native = Command::new(&native);
+    by_native.env("KOJI_RUNTIME", koji::RUNTIME).arg("dump").arg("c").arg(&program);
+    let found = koji::finish(&mut by_native, "");
+    assert_eq!(found.code, Some(0), "{}", found.stderr);
+    assert!(found.stdout == expected.stdout, "the compiler in machine code generates other C");
 }

@@ -27,7 +27,7 @@ immut usage = [
     '        -o <output>                   the executable (default: the file name without .kj)',
     '        --emit c                      write the generated C instead',
     '        --emit ir                     write the intermediate representation instead',
-    '        --native                      generate the machine code itself (x86-64 Linux, for part of the language yet)',
+    '        --native                      generate the machine code itself (x86-64 Linux; slower code yet)',
     '    kojic dump tokens <file.kj>       show the tokens of a file (for comparing compilers)',
     '    kojic dump ast <file.kj>          show the syntax tree of a file',
     '    kojic dump types <file.kj>        show what the checker finds (types, moves...)',
