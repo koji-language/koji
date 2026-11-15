@@ -11,6 +11,7 @@
 import { Ty, Operand, Place, Step, Target, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrProgram } from 'ir.kj'
 import { smallFunctions } from 'cgen.kj'
 import { changes, constantGlobals } from 'borrow.kj'
+import { uses, terminatorUses, successors } from 'liveness.kj'
 
 // The locals of the callee in the caller: from `base`, but the parameters given as operands.
 type Names = {
@@ -52,9 +53,130 @@ export function inlineSmall(program: IrProgram): IrProgram {
         prepare(program, inlinable, constants, id, mut done, mut ready)
     }
 
+    mut simplified: IrFunction[] = []
+
+    for routine in done {
+        simplified.push(simplify(routine))
+    }
+
     mut result = program
-    result.functions = done
+    result.functions = simplified
     return result
+}
+
+// The blocks of the function merged where one only goes to the next, which nothing else goes to (the
+// return of an inlined function); then a value read only by the copy right after it is written to
+// the copy's destination (`t = a < b; d = t` is `d = a < b`, the result of an inlined function).
+export function simplify(given: IrFunction): IrFunction {
+    mut routine = given
+    immut count = routine.blocks.length()
+    mut predecessors: int[] = []
+
+    for block in range(count) {
+        predecessors.push(0)
+    }
+
+    for block in routine.blocks {
+        for next in successors(block.terminator) {
+            predecessors[next] += 1
+        }
+    }
+
+    for block in range(count) {
+        while (true) {
+            immut next = match (routine.blocks[block].terminator) {
+                GotoT(target) => target
+                _ => -1
+            }
+
+            // A jump back to a block before `next` stays a jump back from a later block (as native.kj
+            // checks for preemption on them).
+            if (next <= block or predecessors[next] != 1) { break }
+
+            mut back = false
+
+            for target in successors(routine.blocks[next].terminator) {
+                if (target <= next and target > block) { back = true }
+            }
+
+            if (back) { break }
+
+            immut merged: IrBlock = { instructions: routine.blocks[block].instructions + routine.blocks[next].instructions, terminator: routine.blocks[next].terminator }
+            routine.blocks[block] = merged
+            routine.blocks[next] = { instructions: [], terminator: UnreachableT }
+            predecessors[next] = 0
+        }
+    }
+
+    // How many times each local is written and read.
+    mut writes: int[] = []
+    mut reads: int[] = []
+
+    for local in routine.locals {
+        writes.push(0)
+        reads.push(0)
+    }
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            for local in changes(instruction) {
+                writes[local] += 1
+            }
+
+            for local in uses(instruction) {
+                reads[local] += 1
+            }
+        }
+
+        for local in terminatorUses(block.terminator) {
+            reads[local] += 1
+        }
+    }
+
+    for block in range(count) {
+        mut instructions = routine.blocks[block].instructions
+        mut kept: Instruction[] = []
+        mut position = 0
+
+        while (position < instructions.length()) {
+            if (position + 1 < instructions.length()) {
+                match (instructions[position + 1]) {
+                    CopyIns(LocalPlace(dest), LocalOp(temporary)) if (temporary >= routine.params and temporary != dest and writes[temporary] == 1 and reads[temporary] == 1 and routine.locals[temporary].ty == routine.locals[dest].ty and not (dest in uses(instructions[position]))) => {
+                        match (writing(instructions[position], temporary, dest)) {
+                            Some(rewritten) => {
+                                kept.push(rewritten)
+                                position += 2
+                                continue
+                            }
+                            None => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            kept.push(instructions[position])
+            position += 1
+        }
+
+        routine.blocks[block] = { instructions: kept, terminator: routine.blocks[block].terminator }
+    }
+
+    return routine
+}
+
+// The instruction writing `dest` instead of `temporary` (when it writes that one only).
+function writing(instruction: Instruction, temporary: int, dest: int): Option[Instruction] {
+    return match (instruction) {
+        UnaryIns(written, op, value, line) if (written == temporary) => Some(UnaryIns(dest, op, value, line))
+        BinaryIns(written, op, left, right, line) if (written == temporary) => Some(BinaryIns(dest, op, left, right, line))
+        CallIns(Some(written), callee, args, writebacks, line) if (written == temporary) => Some(CallIns(Some(dest), callee, args, writebacks, line))
+        ListGetIns(written, list, index, line) if (written == temporary) => Some(ListGetIns(dest, list, index, line))
+        FieldGetIns(written, record, field) if (written == temporary) => Some(FieldGetIns(dest, record, field))
+        StdCallIns(Some(written), name, args) if (written == temporary) => Some(StdCallIns(Some(dest), name, args))
+        CallClosureIns(Some(written), closure, args, line) if (written == temporary) => Some(CallClosureIns(Some(dest), closure, args, line))
+        _ => None
+    }
 }
 
 function prepare(program: IrProgram, inlinable: boolean[], constants: boolean[], id: int, mut done: IrFunction[], mut ready: boolean[]) {

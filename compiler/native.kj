@@ -16,9 +16,9 @@
 // other parameters (as in the C backend).
 
 import { Ty, Operand, Place, Step, Target, Instruction, Terminator, IrFunction, IrProgram, IrField, IrExtern, StdArg, Writeback, itemOf } from 'ir.kj'
-import { lastUses, targetReads, defs, successors } from 'liveness.kj'
+import { lastUses, targetReads, defs, uses, terminatorUses, successors } from 'liveness.kj'
 import { globalsSeen } from 'globals.kj'
-import { borrowedParams, borrowedLocals, constantGlobals } from 'borrow.kj'
+import { borrowedParams, borrowedLocals, constantGlobals, changes } from 'borrow.kj'
 import { registerLocals } from 'registers.kj'
 import { inlineSmall } from 'inline.kj'
 
@@ -35,6 +35,10 @@ immut rdi = 7
 immut argumentRegisters = [7, 6, 2, 1, 8, 9]
 // The registers that calls keep (System V), for the most used locals: rbx, r12 to r15.
 immut keptRegisters = [3, 12, 13, 14, 15]
+
+// The functions of the prelude that read a word of a value: its offset (an address in the value
+// for a negative one: `-24` is `value + 24`).
+immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16, 'koji_unsafe_string_size': 8, 'koji_unsafe_string_bytes': -24, 'koji_unsafe_list_items': 24]
 
 // Conditions of jcc and setcc.
 immut overflow = 0
@@ -113,6 +117,8 @@ type Native = {
     blocks: int[]
     jumps: Jump[]
     panics: Panic[]
+    // The checks of indexes of lists (koji_list_index_panic): list in rdi, index in rsi.
+    indexPanics: Panic[]
     preemptible: boolean
     scratchBase: int
     scratch: int
@@ -145,6 +151,13 @@ type Native = {
     // The managed locals that may hold a reference before the current instruction (the others are
     // empty): a value stored in an empty one releases nothing, and a return releases only these.
     held: boolean[]
+    // For each local, the variant of the record without fields it holds when it is only compared
+    // (`kind != ValueSymbol`), or -1: it is never made, and a comparison reads the variant.
+    tagOnly: int[]
+    // How many times each local is read; and the condition of the comparison that ends the current
+    // block, left in the flags for its branch (the second byte of jcc; 0 for none).
+    reads: int[]
+    fused: int
 }
 
 // The object file of a program, or why the native backend cannot make it yet.
@@ -159,9 +172,9 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     immut nothing: IrFunction = { name: '', file: '', params: 0, writeback: [], returns: VoidTy, locals: [], blocks: [] }
     mut native: Native = {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:],
-        strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [],
+        strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
-        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: []
+        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], fused: 0
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -586,6 +599,7 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
     self.blocks = []
     self.jumps = []
     self.panics = []
+    self.indexPanics = []
     self.preemptible = routine.file != 'task'
 
     // The frame: the locals, the addresses of the `mut` parameters, then the words of the
@@ -723,6 +737,26 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
     if (self.preemptible and makesCalls(routine)) { self.preempt() }
 
     self.live = lastUses(routine)
+    self.tagOnly = self.tagOnlyLocals()
+    mut reads: int[] = []
+
+    for local in routine.locals {
+        reads.push(0)
+    }
+
+    for each in routine.blocks {
+        for instruction in each.instructions {
+            for local in uses(instruction) {
+                reads[local] += 1
+            }
+        }
+
+        for local in terminatorUses(each.terminator) {
+            reads[local] += 1
+        }
+    }
+
+    self.reads = reads
     immut heldIn = self.heldAtBlocks()
 
     for block in range(routine.blocks.length()) {
@@ -731,9 +765,13 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         self.block = block
         self.held = heldIn[block]
 
-        for position in range(routine.blocks[block].instructions.length()) {
+        immut count = routine.blocks[block].instructions.length()
+        self.fused = 0
+
+        for position in range(count) {
             self.position = position
             self.scratch = 0
+            self.fused = if (position == count - 1) { self.fusable(block) } else { 0 }
             self.instruction(routine.blocks[block].instructions[position])?
             self.dropDead()
             self.afterHeld(mut self.held, block, position)
@@ -753,6 +791,14 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         self.leaRodata(rdi, check.location)
         self.leaRodata(rsi, check.message)
         self.callExternal('koji_panic')
+    }
+
+    // mov rax, rdi; mov rdi, rsi; mov rsi, [rax + 32] (the length); lea rdx, location
+    for check in self.indexPanics {
+        self.patch32(check.at, self.code.length() - (check.at + 4))
+        self.bytes([0x48, 0x89, 0xF8, 0x48, 0x89, 0xF7, 0x48, 0x8B, 0x70, 0x20])
+        self.leaRodata(rdx, check.location)
+        self.callExternal('koji_list_index_panic')
     }
 
     self.patch32(frameAt, (self.scratchBase + self.scratchMost + 15) / 16 * 16)
@@ -843,6 +889,95 @@ function Native.afterHeld(self, mut held: boolean[], block: int, position: int) 
     }
 }
 
+// The locals given once a record of a variant without fields and only compared (see `tagOnly`).
+function Native.tagOnlyLocals(self): int[] {
+    immut routine = self.routine
+    immut count = routine.locals.length()
+    mut variants: int[] = []
+    mut writes: int[] = []
+    mut compared: boolean[] = []
+
+    for local in range(count) {
+        variants.push(-1)
+        writes.push(0)
+        compared.push(true)
+    }
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            for local in changes(instruction) {
+                writes[local] += 1
+            }
+
+            match (instruction) {
+                RecordNewIns(dest, variant, _) => {
+                    mut empty = true
+
+                    for field in self.program.records[recordId(routine.locals[dest].ty)].variants[variant].fields {
+                        if (field.ty != VoidTy) { empty = false }
+                    }
+
+                    if (empty) { variants[dest] = variant }
+                }
+                _ => {}
+            }
+
+            immut comparison = match (instruction) {
+                BinaryIns(_, op, _, _, _) => op == 'RecordCompare(Equal)' or op == 'RecordCompare(NotEqual)'
+                _ => false
+            }
+
+            if (not comparison) {
+                for local in uses(instruction) {
+                    compared[local] = false
+                }
+            }
+        }
+
+        for local in terminatorUses(block.terminator) {
+            compared[local] = false
+        }
+    }
+
+    mut result: int[] = []
+
+    for local in range(count) {
+        result.push(if (local >= routine.params and writes[local] == 1 and compared[local]) { variants[local] } else { -1 })
+    }
+
+    return result
+}
+
+// The variant of the record of an operand that is only compared (see `tagOnly`), or -1.
+function Native.tagOf(self, operand: Operand): int {
+    return match (operand) {
+        LocalOp(local) => self.tagOnly[local]
+        _ => -1
+    }
+}
+
+// The condition (second byte of jcc) of an integer comparison that ends a block whose branch alone
+// reads it, going forward (a check for preemption would change the flags), or 0.
+function Native.fusable(self, block: int): int {
+    immut instructions = self.routine.blocks[block].instructions
+
+    match (self.routine.blocks[block].terminator) {
+        BranchT(LocalOp(condition), thenBlock, elseBlock) if (thenBlock > block and elseBlock > block) => {
+            match (instructions[instructions.length() - 1]) {
+                BinaryIns(dest, op, _, _, _) if (dest == condition and self.reads[dest] == 1) => {
+                    for name in ['IntCompare(', 'BoolCompare(', 'CharCompare(', 'ByteCompare('] {
+                        if (op.startsWith(name)) { return setcc(op[name.length()..op.length() - 1]) - 0x10 }
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    return 0
+}
+
 function makesCalls(routine: IrFunction): boolean {
     for block in routine.blocks {
         for instruction in block.instructions {
@@ -855,6 +990,27 @@ function makesCalls(routine: IrFunction): boolean {
     }
 
     return false
+}
+
+// The address of an item of a list in rax (koji_list_at of the prelude, inline): the index checked
+// against the length (unsigned, so a negative one fails too), the panic after the function.
+function Native.listItem(mut self, list: Operand, index: Operand, size: int, line: int) {
+    self.loadOperand(rsi, index)
+    self.loadOperand(rdi, list)
+    // cmp rsi, [rdi + 32]; jae panic
+    self.bytes([0x48, 0x3B, 0x77, 0x20, 0x0F, 0x83])
+    self.indexPanics.push({ at: self.code.length(), location: self.text(self.lineText(line)), message: 0 })
+    self.int32(0)
+    // mov rax, [rdi + 24] (the items); lea rax, [rax + rsi * 8] (or imul by the words first)
+    self.bytes([0x48, 0x8B, 0x47, 0x18])
+
+    if (size == 1) {
+        self.bytes([0x48, 0x8D, 0x04, 0xF0])
+        return
+    }
+
+    // shl rsi, 4; add rax, rsi
+    self.bytes([0x48, 0xC1, 0xE6, 4, 0x48, 0x01, 0xF0])
 }
 
 // A word (or two) of the frame for the current instruction: its offset from rbp.
@@ -913,7 +1069,7 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
         }
         ListGetIns(dest, list, index, line) => {
             immut ty = routine.locals[dest].ty
-            self.callC('koji_list_at', [value(list, self.operandType(list)), value(index, IntTy), argument('int', words(ty)), self.location(line)], IntTy)
+            self.listItem(list, index, words(ty), line)
             self.loadThrough(ty)
 
             if (self.current[dest]) {
@@ -959,6 +1115,8 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
             self.callC('koji_list_slice', [value(list, ty)] + first + last + [self.location(line)], ty)
             self.storeResult(LocalPlace(dest), ty)
         }
+        // Only compared: never made.
+        RecordNewIns(dest, _, _) if (self.tagOnly[dest] >= 0) => {}
         RecordNewIns(dest, variant, fields) => {
             immut ty = routine.locals[dest].ty
             immut record = recordId(ty)
@@ -1034,8 +1192,8 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
         }
         FieldGetIns(dest, record, field) => {
             immut ty = routine.locals[dest].ty
-            self.fieldAddress(record, field)
-            self.loadThrough(ty)
+            immut offset = self.fieldAddress(record, field)
+            self.loadAt(ty, offset)
 
             if (self.current[dest]) {
                 self.storeBorrowed(dest, ty)
@@ -1482,7 +1640,8 @@ function Native.knownField(self, root: Place, steps: int, field: int): Option[in
     return Some(word)
 }
 
-function Native.fieldAddress(mut self, record: Operand, field: int) {
+// The address of a field: the record in rax and the offset of the field returned (`[rax + offset]`).
+function Native.fieldAddress(mut self, record: Operand, field: int): int {
     immut ty = self.operandType(record)
     immut variants = self.program.records[recordId(ty)].variants
     mut wide = false
@@ -1495,7 +1654,7 @@ function Native.fieldAddress(mut self, record: Operand, field: int) {
 
     if (wide and variants.length() > 1) {
         self.callC('koji_record_get', [value(record, ty), argument('int', field)], IntTy)
-        return
+        return 0
     }
 
     mut word = field
@@ -1509,9 +1668,7 @@ function Native.fieldAddress(mut self, record: Operand, field: int) {
     }
 
     self.loadValue(record, ty)
-    // lea rax, [rax + 24 + 8 * word]
-    self.bytes([0x48, 0x8D, 0x80])
-    self.int32(24 + 8 * word)
+    return 24 + 8 * word
 }
 
 // The variable of a target, as an address (`void **`) in a word of the frame: its offset. Each step
@@ -1807,6 +1964,36 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
     }
 
     immut found = self.externOf(name)
+    immut symbol = match (found) {
+        Some(declared) => declared.symbol
+        None => name
+    }
+
+    // A function of the prelude that reads a word of a value (koji_list_length...): inline.
+    match (dest) {
+        Some(local) if (args.length() == 1 and accessors.has(symbol)) => {
+            match (args[0]) {
+                ValueArg(given) => {
+                    self.loadOperand(rax, given)
+                    immut offset = accessors[symbol]
+
+                    if (offset < 0) {
+                        // lea rax, [rax - offset]: an address in the value
+                        self.bytes([0x48, 0x8D, 0x40, -offset])
+                    } else {
+                        // mov rax, [rax + offset]
+                        self.bytes([0x48, 0x8B, 0x40, offset])
+                    }
+
+                    self.storeResult(LocalPlace(local), routine.locals[local].ty)
+                    return Ok()
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
     mut values: Argument[] = []
 
     for i in range(args.length()) {
@@ -2018,7 +2205,13 @@ function Native.unary(mut self, dest: int, op: string, operand: Operand, line: i
 
             if (chosen == '') { return Err(`the native backend does not support the operation ${other} yet`) }
 
-            self.callC(chosen, [value(operand, source)], ty)
+            if (accessors.has(chosen) and accessors[chosen] > 0) {
+                // mov rax, [rax + offset]
+                self.loadOperand(rax, operand)
+                self.bytes([0x48, 0x8B, 0x40, accessors[chosen]])
+            } else {
+                self.callC(chosen, [value(operand, source)], ty)
+            }
         }
     }
 
@@ -2040,6 +2233,15 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
     immut withPlace = both + [self.location(line)]
 
     match (name) {
+        // With a constant of 32 bits: add rax, imm32 (nothing for 0).
+        'IntAdd' if (smallConstant(right)) => {
+            self.loadOperand(rax, left)
+            self.addConstant(0x05, constantOf(right), line)
+        }
+        'IntSub' if (smallConstant(right)) => {
+            self.loadOperand(rax, left)
+            self.addConstant(0x2D, constantOf(right), line)
+        }
         'IntAdd' => {
             self.loadBoth(left, right)
             self.bytes([0x48, 0x01, 0xC8])
@@ -2097,6 +2299,13 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
         }
         other if (other in ['IntCompare', 'BoolCompare', 'CharCompare', 'ByteCompare']) => {
             self.loadBoth(left, right)
+
+            // The branch after reads the flags.
+            if (self.fused != 0) {
+                self.bytes([0x48, 0x39, 0xC8])
+                return Ok()
+            }
+
             self.bytes([0x48, 0x39, 0xC8, 0x0F, setcc(comparison), 0xC0, 0x0F, 0xB6, 0xC0])
         }
         'FloatCompare' => {
@@ -2161,6 +2370,23 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
         'DecimalCompare' => {
             self.callC('koji_decimal_compare', both, IntTy)
             self.compareResult(comparison)
+        }
+        // Against a record of a variant without fields: its variant.
+        'RecordCompare' if (self.tagOf(left) >= 0 or self.tagOf(right) >= 0) => {
+            immut known = if (self.tagOf(left) >= 0) { self.tagOf(left) } else { self.tagOf(right) }
+            immut other = if (self.tagOf(left) >= 0) { right } else { left }
+
+            if (self.tagOf(other) >= 0) {
+                self.moveConstant(rax, if (self.tagOf(other) == known) { 1 } else { 0 })
+            } else {
+                // cmp qword [rax + 16], variant
+                self.loadOperand(rax, other)
+                self.bytes([0x48, 0x81, 0x78, 0x10])
+                self.int32(known)
+                self.bytes([0x0F, 0x94, 0xC0, 0x0F, 0xB6, 0xC0])
+            }
+
+            if (comparison == 'NotEqual') { self.bytes([0x48, 0x83, 0xF0, 0x01]) }
         }
         other if (other in ['ListCompare', 'MapCompare', 'RecordCompare']) => {
             immut helper = match (other) {
@@ -2244,6 +2470,29 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
     return Ok()
 }
 
+function smallConstant(operand: Operand): boolean {
+    return match (operand) {
+        IntOp(number) => number >= -2147483648 and number <= 2147483647
+        _ => false
+    }
+}
+
+function constantOf(operand: Operand): int {
+    return match (operand) {
+        IntOp(number) => number
+        _ => 0
+    }
+}
+
+// add (0x05) or sub (0x2D) rax, imm32, and the check of overflow.
+function Native.addConstant(mut self, code: int, number: int, line: int) {
+    if (number == 0) { return }
+
+    self.bytes([0x48, code])
+    self.int32(number)
+    self.check(overflow, line, 'integer overflow')
+}
+
 // Whether `left + right` can add to `left` in place: `left` is a local read for the last time.
 function Native.appendable(self, dest: int, left: Operand, right: Operand): boolean {
     return match (self.movable(left)) {
@@ -2311,6 +2560,9 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
         GotoT(target) => {
             if (target <= block and self.preemptible) { self.preempt() }
 
+            // The next block follows.
+            if (target == block + 1) { return Ok() }
+
             self.bytes([0xE9])
             self.jumps.push({ at: self.code.length(), block: target })
             self.int32(0)
@@ -2318,10 +2570,48 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
         BranchT(condition, thenBlock, elseBlock) => {
             if ((thenBlock <= block or elseBlock <= block) and self.preemptible) { self.preempt() }
 
+            // The comparison before left its result in the flags: jcc (inverted when the then block
+            // follows).
+            if (self.fused != 0) {
+                immut code = self.fused
+                self.fused = 0
+
+                if (thenBlock == block + 1) {
+                    self.bytes([0x0F, code ^ 1])
+                    self.jumps.push({ at: self.code.length(), block: elseBlock })
+                    self.int32(0)
+                    return Ok()
+                }
+
+                self.bytes([0x0F, code])
+                self.jumps.push({ at: self.code.length(), block: thenBlock })
+                self.int32(0)
+
+                if (elseBlock != block + 1) {
+                    self.bytes([0xE9])
+                    self.jumps.push({ at: self.code.length(), block: elseBlock })
+                    self.int32(0)
+                }
+
+                return Ok()
+            }
+
             self.loadValue(condition, BoolTy)
+
+            // test rax, rax; jz else when the then block follows, jnz then (and jmp else) otherwise.
+            if (thenBlock == block + 1) {
+                self.bytes([0x48, 0x85, 0xC0, 0x0F, 0x84])
+                self.jumps.push({ at: self.code.length(), block: elseBlock })
+                self.int32(0)
+                return Ok()
+            }
+
             self.bytes([0x48, 0x85, 0xC0, 0x0F, 0x85])
             self.jumps.push({ at: self.code.length(), block: thenBlock })
             self.int32(0)
+
+            if (elseBlock == block + 1) { return Ok() }
+
             self.bytes([0xE9])
             self.jumps.push({ at: self.code.length(), block: elseBlock })
             self.int32(0)
@@ -2614,6 +2904,32 @@ function Native.copyToSlot(mut self, operand: Operand, ty: Ty): int {
     if (words(ty) == 2) { self.storeWord(rdx, slot + 8) }
 
     return slot
+}
+
+// Loads the value at `offset` from the address in rax (one or two words) into rax (and rdx).
+function Native.loadAt(mut self, ty: Ty, offset: int) {
+    if (offset == 0) {
+        self.loadThrough(ty)
+        return
+    }
+
+    if (words(ty) == 2) {
+        // mov rdx, [rax + offset + 8]; mov rax, [rax + offset]
+        self.bytes([0x48, 0x8B, 0x90])
+        self.int32(offset + 8)
+        self.bytes([0x48, 0x8B, 0x80])
+        self.int32(offset)
+        return
+    }
+
+    match (ty) {
+        BoolTy => self.bytes([0x0F, 0xB6, 0x80])
+        ByteTy => self.bytes([0x0F, 0xB6, 0x80])
+        CharTy => self.bytes([0x8B, 0x80])
+        _ => self.bytes([0x48, 0x8B, 0x80])
+    }
+
+    self.int32(offset)
 }
 
 // Loads the value at the address in rax (one or two words) into rax (and rdx).
@@ -3336,7 +3652,9 @@ function elfObject(native: Native, mainStart: int, extras: int[]): byte[] {
 
     for id in range(native.starts.length()) {
         immut end = if (id + 1 < native.starts.length()) { native.starts[id + 1] } else { if (extras.length() > 0) { extras[0] } else { mainStart } }
-        symbols.push({ name: `koji_f${id}`, info: 2, section: 1, value: native.starts[id], size: end - native.starts[id] })
+        // Named as in Koji (`Lexer.advance`), for profilers and debuggers.
+        immut name = native.program.functions[id].name
+        symbols.push({ name: if (name == '') { `koji_f${id}` } else { name }, info: 2, section: 1, value: native.starts[id], size: end - native.starts[id] })
     }
 
     immut firstGlobal = symbols.length()
