@@ -7,8 +7,14 @@
 // as it is during the call (a borrowed parameter, such a local, or a global that never changes):
 // a field, an item of a list, or the value itself. What it was read from keeps the value alive
 // (see `FieldGetIns`, `ListGetIns` and `CopyIns` in cgen.kj).
+//
+// A local read from another local for a short while is borrowed too: given one value, read from
+// a local (of its own, or a `mut` parameter), and read only in the same block, before that local
+// changes or is released (`self.chars.length()` in `Lexer.advance(mut self)`, once `Lexer.has` is
+// inlined there).
 
 import { Ty, Operand, Place, Target, Instruction, IrFunction, IrProgram, isManaged } from 'ir.kj'
+import { lastUses, uses, terminatorUses } from 'liveness.kj'
 
 // For each function, which of its parameters are borrowed.
 export function borrowedParams(program: IrProgram): boolean[][] {
@@ -202,7 +208,104 @@ export function borrowedLocals(routine: IrFunction, params: boolean[], constants
         }
     }
 
+    shortBorrows(routine, writes, mut flags)
     return flags
+}
+
+// The locals borrowed for a short while (see above), added to `flags`.
+function shortBorrows(routine: IrFunction, writes: int[], mut flags: boolean[]) {
+    immut locals = routine.locals.length()
+    // For each local, the block it is read in (-1: none, -2: several), and the first and last
+    // positions there (the terminator is after the instructions).
+    mut readBlock: int[] = []
+    mut firstRead: int[] = []
+    mut lastRead: int[] = []
+
+    for local in range(locals) {
+        readBlock.push(-1)
+        firstRead.push(-1)
+        lastRead.push(-1)
+    }
+
+    for block in range(routine.blocks.length()) {
+        immut instructions = routine.blocks[block].instructions
+
+        for position in range(instructions.length() + 1) {
+            immut read = if (position < instructions.length()) { uses(instructions[position]) } else { terminatorUses(routine.blocks[block].terminator) }
+
+            for local in read {
+                if (readBlock[local] == -1) {
+                    readBlock[local] = block
+                    firstRead[local] = position
+                }
+
+                if (readBlock[local] != block) { readBlock[local] = -2 }
+
+                lastRead[local] = position
+            }
+        }
+    }
+
+    immut last = lastUses(routine)
+    mut candidates: boolean[] = []
+    mut sources: int[] = []
+
+    for local in range(locals) {
+        candidates.push(false)
+        sources.push(-1)
+    }
+
+    for block in range(routine.blocks.length()) {
+        immut instructions = routine.blocks[block].instructions
+
+        for position in range(instructions.length()) {
+            immut read: Option[Read] = match (instructions[position]) {
+                FieldGetIns(dest, origin, _) => Some({ dest: dest, origin: origin })
+                ListGetIns(dest, origin, _, _) => Some({ dest: dest, origin: origin })
+                CopyIns(LocalPlace(dest), origin) => Some({ dest: dest, origin: origin })
+                _ => None
+            }
+
+            immut found = match (read) {
+                Some(found) => found
+                None => continue
+            }
+            immut source = match (found.origin) {
+                LocalOp(id) => id
+                _ => continue
+            }
+            immut dest = found.dest
+
+            if (flags[dest] or dest < routine.params or source == dest or writes[dest] != 1 or not isManaged(routine.locals[dest].ty)) { continue }
+
+            if (readBlock[dest] != block or firstRead[dest] <= position) { continue }
+
+            // The source stays as it is, and alive, until the last read.
+            mut kept = true
+
+            for between in range(position, lastRead[dest]) {
+                if (between >= instructions.length()) { break }
+
+                if (between > position) {
+                    for local in changes(instructions[between]) {
+                        if (local == source) { kept = false }
+                    }
+                }
+
+                if (source in last[block][between]) { kept = false }
+            }
+
+            if (kept) {
+                candidates[dest] = true
+                sources[dest] = source
+            }
+        }
+    }
+
+    // Not from another one borrowed for a short while (whose source could change sooner).
+    for local in range(locals) {
+        if (candidates[local] and not candidates[sources[local]]) { flags[local] = true }
+    }
 }
 
 // A value read for a local, and what it is read from.
@@ -236,7 +339,7 @@ function changedLocals(routine: IrFunction): Set[int] {
     return changed
 }
 
-function changes(instruction: Instruction): int[] {
+export function changes(instruction: Instruction): int[] {
     return match (instruction) {
         CopyIns(dest, _) => placeLocal(dest)
         UnaryIns(dest, _, _, _) => [dest]

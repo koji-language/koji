@@ -4,7 +4,7 @@
 import { IrExtern, Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, Instruction, Terminator, IrFunction, IrProgram, isManaged, itemOf, stringDebug, floatDebug } from 'ir.kj'
 import { preludeLines } from 'prelude.kj'
 import { borrowedParams, borrowedLocals, constantGlobals } from 'borrow.kj'
-import { lastUses } from 'liveness.kj'
+import { lastUses, targetReads } from 'liveness.kj'
 import { StackRecords, stackRecords } from 'escape.kj'
 import { globalsSeen } from 'globals.kj'
 
@@ -560,7 +560,7 @@ function signature(id: int, routine: IrFunction, inlined: boolean): string {
 // in the large functions of a program. A function's size counts the instructions of the small
 // ones it calls, so inlining stays bounded. Until nothing changes, so a recursive function is
 // never one of them.
-function smallFunctions(program: IrProgram): boolean[] {
+export function smallFunctions(program: IrProgram): boolean[] {
     mut sizes: int[] = []
 
     for routine in program.functions {
@@ -1743,24 +1743,6 @@ function Generator.fromTarget(self, routine: IrFunction, args: Operand[], param:
 // The local of `value` when this instruction reads it for the last time and owns it (not a
 // borrowed or a `mut` parameter, of a managed type): its reference can move.
 // The target is reached through the local (its root, or a key or index of its path).
-function targetReads(target: Target, local: int): boolean {
-    match (target.root) {
-        LocalPlace(id) => if (id == local) { return true }
-        GlobalPlace(_) => {}
-    }
-
-    for part in target.path {
-        immut step = match (part) {
-            IndexStep(index) => index
-            KeyStep(key) => key
-            FieldStep(_) => continue
-        }
-
-        if (step == LocalOp(local)) { return true }
-    }
-
-    return false
-}
 
 // Releases the values the current instruction read for the last time, instead of at the end of
 // the function: a list or a map no one else sees can then change in place (`self.ids[key] = id`

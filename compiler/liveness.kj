@@ -175,7 +175,7 @@ export function lastUses(routine: IrFunction): int[][][] {
     return result
 }
 
-function successors(terminator: Terminator): int[] {
+export function successors(terminator: Terminator): int[] {
     return match (terminator) {
         GotoT(block) => [block]
         BranchT(_, thenBlock, elseBlock) => [thenBlock, elseBlock]
@@ -185,7 +185,7 @@ function successors(terminator: Terminator): int[] {
 }
 
 // The locals a terminator reads.
-function terminatorUses(terminator: Terminator): int[] {
+export function terminatorUses(terminator: Terminator): int[] {
     mut found: int[] = []
 
     match (terminator) {
@@ -198,7 +198,7 @@ function terminatorUses(terminator: Terminator): int[] {
 }
 
 // The locals an instruction gives a whole new value (without reading the old one).
-function defs(instruction: Instruction): int[] {
+export function defs(instruction: Instruction): int[] {
     return match (instruction) {
         CopyIns(dest, _) => placeLocal(dest)
         UnaryIns(dest, _, _, _) => [dest]
@@ -224,7 +224,7 @@ function defs(instruction: Instruction): int[] {
 }
 
 // The locals an instruction reads (a value changed in place is read too).
-function uses(instruction: Instruction): int[] {
+export function uses(instruction: Instruction): int[] {
     mut found: int[] = []
 
     match (instruction) {
@@ -393,4 +393,24 @@ function optional(dest: Option[int]): int[] {
         Some(local) => [local]
         None => []
     }
+}
+
+// Whether a target reads a local: as its variable, or as an index or a key of its path.
+export function targetReads(target: Target, local: int): boolean {
+    match (target.root) {
+        LocalPlace(id) => if (id == local) { return true }
+        GlobalPlace(_) => {}
+    }
+
+    for part in target.path {
+        immut step = match (part) {
+            IndexStep(index) => index
+            KeyStep(key) => key
+            FieldStep(_) => continue
+        }
+
+        if (step == LocalOp(local)) { return true }
+    }
+
+    return false
 }

@@ -1,0 +1,329 @@
+// Inlining for the native backend (native.kj): a call of a small function (as cgen.kj finds them,
+// those that C inlines: `Lexer.at`, `Parser.current`) is replaced by the blocks of the function, its
+// locals new locals of the caller. A parameter the function never changes is its argument itself
+// (a local, a constant, or a global that never changes), with no reference of its own: the caller
+// reads it where the function did, so it stays alive until then (liveness.kj), and a value changed
+// in place after (`self.advance()` after `self.at(0)`) is not shared. Another parameter is a copy of
+// its argument, and the result a copy into the destination, so the references are those of any
+// copy. Only a function of the same file is inlined (the messages of its panics name the file of
+// the function generated), and none with `mut` parameters.
+
+import { Ty, Operand, Place, Step, Target, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrProgram } from 'ir.kj'
+import { smallFunctions } from 'cgen.kj'
+import { changes, constantGlobals } from 'borrow.kj'
+
+// The locals of the callee in the caller: from `base`, but the parameters given as operands.
+type Names = {
+    base: int
+    given: Option[Operand][]
+}
+
+// The program with the calls of small functions inlined.
+export function inlineSmall(program: IrProgram): IrProgram {
+    immut smalls = smallFunctions(program)
+    mut inlinable: boolean[] = []
+
+    for id in range(program.functions.length()) {
+        immut routine = program.functions[id]
+        mut fits = smalls[id] and id != program.main
+
+        for param in range(routine.params) {
+            if (param < routine.writeback.length() and routine.writeback[param]) { fits = false }
+
+            if (routine.locals[param].ty == VoidTy) { fits = false }
+        }
+
+        inlinable.push(fits)
+    }
+
+    // The small functions first (with their own calls inlined), then the others: the small ones
+    // call only small ones, never themselves.
+    mut done: IrFunction[] = []
+    mut ready: boolean[] = []
+
+    for routine in program.functions {
+        done.push(routine)
+        ready.push(false)
+    }
+
+    immut constants = constantGlobals(program)
+
+    for id in range(program.functions.length()) {
+        prepare(program, inlinable, constants, id, mut done, mut ready)
+    }
+
+    mut result = program
+    result.functions = done
+    return result
+}
+
+function prepare(program: IrProgram, inlinable: boolean[], constants: boolean[], id: int, mut done: IrFunction[], mut ready: boolean[]) {
+    if (ready[id]) { return }
+
+    ready[id] = true
+
+    // The callees first (a small function calls only small ones, so this ends).
+    for block in program.functions[id].blocks {
+        for instruction in block.instructions {
+            match (instruction) {
+                CallIns(_, callee, _, _, _) if (inlinable[callee] and not ready[callee]) => prepare(program, inlinable, constants, callee, mut done, mut ready)
+                _ => {}
+            }
+        }
+    }
+
+    done[id] = inlineCalls(done[id], inlinable, constants, done)
+}
+
+// A function with the calls of the inlinable functions of its file replaced by their blocks.
+function inlineCalls(routine: IrFunction, inlinable: boolean[], constants: boolean[], bodies: IrFunction[]): IrFunction {
+    mut result = routine
+    mut block = 0
+
+    // The blocks of a callee come after the call, so this reaches them and the rest too.
+    while (block < result.blocks.length()) {
+        mut position = 0
+
+        while (position < result.blocks[block].instructions.length()) {
+            match (result.blocks[block].instructions[position]) {
+                CallIns(dest, callee, args, writebacks, _) if (inlinable[callee] and bodies[callee].file == routine.file and writebacks.length() == 0) => {
+                    splice(mut result, block, position, dest, bodies[callee], args, constants)
+                    // The rest of the block moved to a new one.
+                    break
+                }
+                _ => {}
+            }
+
+            position += 1
+        }
+
+        block += 1
+    }
+
+    return result
+}
+
+// Replaces the call at `position` of `block`: the block ends there and goes to the blocks of the
+// callee, whose returns go to a new block with the rest of the instructions; these come right
+// after it, before the blocks that followed it (so a jump back is still a loop, as native.kj
+// counts them).
+function splice(mut routine: IrFunction, block: int, position: int, dest: Option[int], callee: IrFunction, args: Operand[], constants: boolean[]) {
+    immut first = block + 1
+    immut rest = first + callee.blocks.length()
+    immut shift = callee.blocks.length() + 1
+    immut instructions = routine.blocks[block].instructions
+    mut changed: Set[int] = Set.from([])
+
+    for each in callee.blocks {
+        for instruction in each.instructions {
+            for local in changes(instruction) {
+                changed.add(local)
+            }
+        }
+    }
+
+    mut names: Names = { base: routine.locals.length(), given: [] }
+
+    for param in range(callee.params) {
+        immut fixed = match (args[param]) {
+            GlobalOp(id) => constants[id]
+            _ => true
+        }
+
+        names.given.push(if (fixed and not changed.has(param)) { Some(args[param]) } else { None })
+    }
+
+    for local in callee.locals {
+        routine.locals.push(local)
+    }
+
+    mut before = instructions[..position]
+
+    for param in range(callee.params) {
+        if (names.given[param] is None) { before.push(CopyIns(place(LocalPlace(param), names), args[param])) }
+    }
+
+    immut after: IrBlock = { instructions: instructions[position + 1..], terminator: shifted(routine.blocks[block].terminator, block, shift) }
+    mut blocks: IrBlock[] = []
+
+    for each in routine.blocks[..block] {
+        blocks.push({ instructions: each.instructions, terminator: shifted(each.terminator, block, shift) })
+    }
+
+    blocks.push({ instructions: before, terminator: GotoT(first) })
+
+    for each in callee.blocks {
+        mut moved: Instruction[] = []
+
+        for instruction in each.instructions {
+            moved.push(renamed(instruction, names))
+        }
+
+        immut ending = match (each.terminator) {
+            GotoT(target) => GotoT(first + target)
+            BranchT(condition, thenBlock, elseBlock) => BranchT(operand(condition, names), first + thenBlock, first + elseBlock)
+            ReturnT(value) => {
+                match (value) {
+                    Some(given) => {
+                        match (dest) {
+                            Some(local) => moved.push(CopyIns(LocalPlace(local), operand(given, names)))
+                            None => {}
+                        }
+                    }
+                    None => {}
+                }
+
+                GotoT(rest)
+            }
+            UnreachableT => UnreachableT
+        }
+
+        blocks.push({ instructions: moved, terminator: ending })
+    }
+
+    blocks.push(after)
+
+    for each in routine.blocks[block + 1..] {
+        blocks.push({ instructions: each.instructions, terminator: shifted(each.terminator, block, shift) })
+    }
+
+    routine.blocks = blocks
+}
+
+// A terminator of the caller once `shift` blocks come after `block`.
+function shifted(terminator: Terminator, block: int, shift: int): Terminator {
+    return match (terminator) {
+        GotoT(target) => GotoT(moved(target, block, shift))
+        BranchT(condition, thenBlock, elseBlock) => BranchT(condition, moved(thenBlock, block, shift), moved(elseBlock, block, shift))
+        _ => terminator
+    }
+}
+
+function moved(target: int, block: int, shift: int): int {
+    return if (target > block) { target + shift } else { target }
+}
+
+// The locals of an instruction of the callee as locals of the caller (from `base`).
+function renamed(instruction: Instruction, names: Names): Instruction {
+    return match (instruction) {
+        CopyIns(dest, value) => CopyIns(place(dest, names), operand(value, names))
+        UnaryIns(dest, op, value, line) => UnaryIns(names.base + dest, op, operand(value, names), line)
+        BinaryIns(dest, op, left, right, line) => BinaryIns(names.base + dest, op, operand(left, names), operand(right, names), line)
+        CallIns(dest, callee, args, writebacks, line) => {
+            mut backs: Writeback[] = []
+
+            for writeback in writebacks {
+                backs.push({ param: writeback.param, target: target(writeback.target, names) })
+            }
+
+            CallIns(local(dest, names), callee, operands(args, names), backs, line)
+        }
+        ListNewIns(dest, items) => ListNewIns(names.base + dest, operands(items, names))
+        ListGetIns(dest, list, index, line) => ListGetIns(names.base + dest, operand(list, names), operand(index, names), line)
+        ListSetIns(list, index, value, line) => ListSetIns(target(list, names), operand(index, names), operand(value, names), line)
+        ListPushIns(list, value, line) => ListPushIns(target(list, names), operand(value, names), line)
+        ListInsertIns(list, index, value, line) => ListInsertIns(target(list, names), operand(index, names), operand(value, names), line)
+        ListSortIns(list, line) => ListSortIns(target(list, names), line)
+        ListSliceIns(dest, list, start, end, line) => ListSliceIns(names.base + dest, operand(list, names), optional(start, names), optional(end, names), line)
+        RecordNewIns(dest, variant, fields) => RecordNewIns(names.base + dest, variant, operands(fields, names))
+        FieldGetIns(dest, record, field) => FieldGetIns(names.base + dest, operand(record, names), field)
+        FieldSetIns(record, field, value, line) => FieldSetIns(target(record, names), field, operand(value, names), line)
+        ListRemoveIns(dest, list, index, line) => ListRemoveIns(names.base + dest, target(list, names), optional(index, names), line)
+        StdCallIns(dest, name, args) => {
+            mut given: StdArg[] = []
+
+            for arg in args {
+                given.push(match (arg) {
+                    ValueArg(value) => ValueArg(operand(value, names))
+                    PlaceArg(value) => PlaceArg(operand(value, names))
+                    _ => arg
+                })
+            }
+
+            StdCallIns(local(dest, names), name, given)
+        }
+        TakeIns(dest, source) => TakeIns(names.base + dest, place(source, names))
+        DropIns(value, dropper) => DropIns(place(value, names), dropper)
+        MakeClosureIns(dest, code, environment) => MakeClosureIns(names.base + dest, code, optional(environment, names))
+        CallClosureIns(dest, closure, args, line) => CallClosureIns(local(dest, names), operand(closure, names), operands(args, names), line)
+        ListSortByIns(list, comparison, line) => ListSortByIns(target(list, names), operand(comparison, names), line)
+        MapNewIns(dest, entries) => {
+            mut moved: MapEntry[] = []
+
+            for entry in entries {
+                moved.push({ key: operand(entry.key, names), value: operand(entry.value, names) })
+            }
+
+            MapNewIns(names.base + dest, moved)
+        }
+        MapGetIns(dest, map, key, line) => MapGetIns(names.base + dest, operand(map, names), operand(key, names), line)
+        MapLookupIns(dest, map, key) => MapLookupIns(names.base + dest, operand(map, names), operand(key, names))
+        MapSetIns(map, key, value, line) => MapSetIns(target(map, names), operand(key, names), optional(value, names), line)
+        MapRemoveIns(dest, map, key, line) => MapRemoveIns(names.base + dest, target(map, names), operand(key, names), line)
+        FailIns(message, line) => FailIns(operand(message, names), line)
+        PrintIns(value, line) => PrintIns(operand(value, names), line)
+        RangeNextIns(hasValue, value, next, end, step, done) => RangeNextIns(names.base + hasValue, names.base + value, names.base + next, operand(end, names), operand(step, names), names.base + done)
+        RangeCheckIns(step, line) => RangeCheckIns(operand(step, names), line)
+    }
+}
+
+function operand(value: Operand, names: Names): Operand {
+    return match (value) {
+        LocalOp(id) => {
+            if (id < names.given.length()) {
+                match (names.given[id]) {
+                    Some(given) => return given
+                    None => {}
+                }
+            }
+
+            LocalOp(names.base + id)
+        }
+        _ => value
+    }
+}
+
+function operands(values: Operand[], names: Names): Operand[] {
+    mut moved: Operand[] = []
+
+    for value in values {
+        moved.push(operand(value, names))
+    }
+
+    return moved
+}
+
+function optional(value: Option[Operand], names: Names): Option[Operand] {
+    return match (value) {
+        Some(given) => Some(operand(given, names))
+        None => None
+    }
+}
+
+function local(dest: Option[int], names: Names): Option[int] {
+    return match (dest) {
+        Some(id) => Some(names.base + id)
+        None => None
+    }
+}
+
+function place(where: Place, names: Names): Place {
+    return match (where) {
+        LocalPlace(id) => LocalPlace(names.base + id)
+        GlobalPlace(_) => where
+    }
+}
+
+function target(where: Target, names: Names): Target {
+    mut steps: Step[] = []
+
+    for step in where.path {
+        steps.push(match (step) {
+            IndexStep(index) => IndexStep(operand(index, names))
+            KeyStep(key) => KeyStep(operand(key, names))
+            FieldStep(_) => step
+        })
+    }
+
+    return { root: place(where.root, names), path: steps }
+}
