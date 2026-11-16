@@ -20,7 +20,7 @@ import { lastUses, targetReads, defs, uses, terminatorUses, successors } from 'l
 import { globalsSeen } from 'globals.kj'
 import { borrowedParams, borrowedLocals, constantGlobals, changes } from 'borrow.kj'
 import { Ranges, registerWeights, liveRanges, liveAtBlocks, assignRegisters, extend, has } from 'registers.kj'
-import { inlineSmall, targetSystem } from 'inline.kj'
+import { inlineSmall, targetPlatform } from 'inline.kj'
 import { reachableFunctions } from 'target.kj'
 
 foreign 'm' {
@@ -241,7 +241,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     native.recordDescriptions()
 
     // The functions the program may call on its system (target.kj); the others have no code.
-    immut reachable = reachableFunctions(program, targetSystem)
+    immut reachable = reachableFunctions(program, targetPlatform)
 
     for id in range(program.functions.length()) {
         if (reachable[id]) {

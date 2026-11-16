@@ -686,97 +686,11 @@ KOJI_INLINE bool koji_task_supported(void) {
 struct koji_timespec {
     int64_t seconds, nanoseconds;
 };
-/* By other names, which do not clash with the `extern` declarations of std/time.kj. */
-int koji_clock_gettime(int clock, struct koji_timespec *time) __asm__(KOJI_SYMBOL(clock_gettime));
+/* By another name, which does not clash with the `extern` declarations of std/time.kj (for the thread
+   of the ticks, which runs no Koji). */
 int koji_nanosleep(const struct koji_timespec *request, struct koji_timespec *remaining) __asm__(KOJI_SYMBOL(nanosleep));
-/* The nanoseconds of a clock that only grows (CLOCK_MONOTONIC). */
-KOJI_INLINE int64_t koji_monotonic_nanoseconds(void) {
-    struct koji_timespec now;
-#if defined(__APPLE__)
-    koji_clock_gettime(6, &now);
-#else
-    koji_clock_gettime(1, &now);
-#endif
-    return now.seconds * 1000000000 + now.nanoseconds;
-}
-/* Sleeps until the monotonic clock is at `deadline` (in nanoseconds). */
-KOJI_INLINE void koji_sleep_until(int64_t deadline) {
-    for (;;) {
-        int64_t left = deadline - koji_monotonic_nanoseconds();
-        if (left <= 0) return;
-        struct koji_timespec request = { left / 1000000000, left % 1000000000 };
-        koji_nanosleep(&request, NULL);
-    }
-}
-/* The poller: a handle of the system that says which sockets are ready, each watched once (a
-   socket that becomes ready is watched no more), with the number of the socket as its token. */
-#if defined(__linux__)
-struct koji_epoll_event {
-    uint32_t events;
-    uint64_t data;
-}
-#if defined(__x86_64__)
-__attribute__((packed))
-#endif
-;
-int epoll_create1(int flags);
-int epoll_ctl(int poller, int operation, int fd, struct koji_epoll_event *event);
-int epoll_wait(int poller, struct koji_epoll_event *events, int capacity, int milliseconds);
-KOJI_INLINE int64_t koji_poller_new(void) { return epoll_create1(0x80000 /* EPOLL_CLOEXEC */); }
-/* Watches `fd` until it is ready to read (or to write): 0, or -1 (errno says why). */
-KOJI_INLINE int64_t koji_poller_watch(int64_t poller, int64_t fd, bool write) {
-    /* EPOLLIN or EPOLLOUT, EPOLLONESHOT. */
-    struct koji_epoll_event event = { (write ? 4u : 1u) | 1u << 30, (uint64_t)fd };
-    if (epoll_ctl((int)poller, 3 /* EPOLL_CTL_MOD */, (int)fd, &event) == 0) return 0;
-    if (errno != ENOENT) return -1;
-    return epoll_ctl((int)poller, 1 /* EPOLL_CTL_ADD */, (int)fd, &event);
-}
-/* Waits for the sockets watched, at most `milliseconds` (-1: as long as it takes): how many are
-   ready (0 when the time ran out or a signal came), their numbers at `ready`, or -1. */
-KOJI_INLINE int64_t koji_poller_wait(int64_t poller, int64_t milliseconds, const void *ready, int64_t capacity) {
-    struct koji_epoll_event events[64];
-    int count = epoll_wait((int)poller, events, capacity < 64 ? (int)capacity : 64, (int)milliseconds);
-    if (count < 0) return errno == EINTR ? 0 : -1;
-    for (int i = 0; i < count; i++) ((int64_t *)ready)[i] = (int64_t)events[i].data;
-    return count;
-}
-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
-struct koji_kevent {
-    uintptr_t ident;
-    int16_t filter;
-    uint16_t flags;
-    uint32_t fflags;
-    intptr_t data;
-    void *udata;
-#if defined(__FreeBSD__)
-    uint64_t ext[4];
-#endif
-};
-int kqueue(void);
-int kevent(int poller, const struct koji_kevent *changes, int changeCount, struct koji_kevent *events, int capacity, const struct koji_timespec *timeout);
-KOJI_INLINE int64_t koji_poller_new(void) { return kqueue(); }
-KOJI_INLINE int64_t koji_poller_watch(int64_t poller, int64_t fd, bool write) {
-    /* EVFILT_READ or EVFILT_WRITE, EV_ADD | EV_ONESHOT. */
-    struct koji_kevent change = { 0 };
-    change.ident = (uintptr_t)fd;
-    change.filter = write ? -2 : -1;
-    change.flags = 0x1 | 0x10;
-    return kevent((int)poller, &change, 1, NULL, 0, NULL) == 0 ? 0 : -1;
-}
-KOJI_INLINE int64_t koji_poller_wait(int64_t poller, int64_t milliseconds, const void *ready, int64_t capacity) {
-    struct koji_kevent events[64];
-    struct koji_timespec limit = { milliseconds / 1000, milliseconds % 1000 * 1000000 };
-    int count = kevent((int)poller, NULL, 0, events, capacity < 64 ? (int)capacity : 64, milliseconds < 0 ? NULL : &limit);
-    if (count < 0) return errno == EINTR ? 0 : -1;
-    for (int i = 0; i < count; i++) ((int64_t *)ready)[i] = (int64_t)events[i].ident;
-    return count;
-}
-#else
-/* No poller here: tasks cannot wait for sockets while others run (std/koji/task.kj says so). */
-KOJI_INLINE int64_t koji_poller_new(void) { return -1; }
-KOJI_INLINE int64_t koji_poller_watch(int64_t poller, int64_t fd, bool write) { (void)poller; (void)fd; (void)write; return -1; }
-KOJI_INLINE int64_t koji_poller_wait(int64_t poller, int64_t milliseconds, const void *ready, int64_t capacity) { (void)poller; (void)milliseconds; (void)ready; (void)capacity; return -1; }
-#endif
+/* The nanoseconds of a clock that only grows, and the poller of the sockets: std/koji/task.kj. */
+int64_t koji_monotonic_nanoseconds(void);
 
 /* Calls that block (reading a file, waiting for a program, finding the addresses of a host): while
    other tasks are alive, a thread that helps runs the call, and the task waits for it as for a

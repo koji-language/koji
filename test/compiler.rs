@@ -2762,14 +2762,17 @@ fn code_for_one_system() {
     // A condition on `system.os` is decided when the program is compiled: the branch of another
     // system is not compiled, so a function of C it calls need not exist here (kqueue is not on
     // Linux), nor the function of Koji that only it calls.
-    let source = "import system\n\nforeign 'c' {\n    function kqueue(): CInt\n    function epoll_create1(flags: CInt): CInt\n}\n\nfunction poller(): int {\n    return match (system.os) {\n        Linux => epoll_create1(0)\n        MacOS => kqueue()\n        _ => -1\n    }\n}\n\nmatch (system.os) {\n    Linux => print('linux')\n    MacOS => print('macos')\n    Other(name) => print(name)\n    _ => print('another')\n}\n\nif (system.os != system.Windows) { print(poller() >= 0) }\n";
-    let expected = if cfg!(target_os = "linux") {
-        "linux\ntrue\n"
+    let source = "import system\n\nforeign 'c' {\n    function kqueue(): CInt\n    function epoll_create1(flags: CInt): CInt\n}\n\nfunction poller(): int {\n    return match (system.os) {\n        Linux => epoll_create1(0)\n        MacOS => kqueue()\n        _ => -1\n    }\n}\n\nmatch (system.os) {\n    Linux => print('linux')\n    MacOS => print('macos')\n    Other(name) => print(name)\n    _ => print('another')\n}\n\nif (system.os != system.Windows) { print(poller() >= 0) }\n\nprint(match (system.architecture) {\n    X64 => 'x64'\n    Arm64 => 'arm64'\n    OtherArchitecture(name) => name\n})\n";
+    let system = if cfg!(target_os = "linux") {
+        "linux"
     } else if cfg!(target_os = "macos") {
-        "macos\ntrue\n"
+        "macos"
     } else {
         return;
     };
+    let architecture = if cfg!(target_arch = "x86_64") { "x64" } else if cfg!(target_arch = "aarch64") { "arm64" } else { return };
+    let expected = format!("{}\ntrue\n{}\n", system, architecture);
+    let expected = expected.as_str();
     assert_same("one_system", source, expected);
 }
 

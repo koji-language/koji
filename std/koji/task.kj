@@ -12,24 +12,178 @@
 // the timers and the sockets; when none can wake a task, the tasks wait for each other forever,
 // and the program stops with a panic.
 
-import { Address, allocate, isNull, nullAddress, read, write } from 'koji:unsafe'
+import system
+import { Address, CInt, allocate, isNull, nullAddress, offset, read, write } from 'koji:unsafe'
 
 extern function koji_task_switch(save: Address, to: Address)
 extern function koji_task_stack_new(size: int): Address
 extern function koji_task_stack_free(stack: Address, size: int)
 extern function koji_task_stack_start(stack: Address, size: int, task: int): Address
 extern function koji_task_supported(): boolean
-extern function koji_monotonic_nanoseconds(): int
-extern function koji_sleep_until(deadline: int)
-extern function koji_poller_new(): int
-extern function koji_poller_watch(poller: int, fd: int, write: boolean): int
-extern function koji_poller_wait(poller: int, milliseconds: int, ready: Address, capacity: int): int
+extern function koji_system_errno(): CInt
+extern function clock_gettime(clock: CInt, time: Address): CInt
+extern function nanosleep(request: Address, remaining: Address): CInt
+extern function epoll_create1(flags: CInt): CInt
+extern function epoll_ctl(poller: CInt, operation: CInt, fd: CInt, event: Address): CInt
+extern function epoll_wait(poller: CInt, events: Address, capacity: CInt, milliseconds: CInt): CInt
+extern function kqueue(): CInt
+extern function kevent(poller: CInt, changes: Address, changeCount: CInt, events: Address, capacity: CInt, timeout: Address): CInt
 extern function koji_helpers_start(): int
 extern function koji_helpers_add(): boolean
 extern function koji_helpers_submit(job: Address)
 extern function koji_helpers_finished(out: Address, capacity: int): int
 extern function koji_ticks(on: boolean): boolean
 extern function koji_preempt_clear()
+
+// The clock and the poller of the system (`match (system.os)`: each system compiles its own, see
+// "Code for one system" in doc/design.md). The records of C they fill are in `systemWords` (one
+// thread runs Koji, so one block serves every call).
+immut systemWords = allocate(4096)
+
+// The nanoseconds of a clock that only grows (CLOCK_MONOTONIC: 1 on Linux, 6 on macOS, 4 on the
+// BSDs), from a `struct timespec` (seconds, nanoseconds).
+extern function koji_monotonic_nanoseconds(): int {
+    immut clock = match (system.os) {
+        Linux => 1
+        MacOS => 6
+        _ => 4
+    }
+    clock_gettime(clock, systemWords)
+    immut seconds: int = read(systemWords, 0)
+    immut nanoseconds: int = read(systemWords, 8)
+    return seconds * 1000000000 + nanoseconds
+}
+
+// Sleeps until the monotonic clock is at `deadline` (in nanoseconds).
+extern function koji_sleep_until(deadline: int) {
+    while (true) {
+        immut left = deadline - koji_monotonic_nanoseconds()
+
+        if (left <= 0) { return }
+
+        write(systemWords, 0, left / 1000000000)
+        write(systemWords, 8, left % 1000000000)
+        nanosleep(systemWords, nullAddress())
+    }
+}
+
+// The poller: a handle of the system that says which sockets are ready, each watched once (a socket
+// that becomes ready is watched no more), with the number of the socket as its token: epoll on
+// Linux, kqueue on macOS, FreeBSD and OpenBSD, none elsewhere (tasks cannot wait for sockets while
+// others run there).
+extern function koji_poller_new(): int {
+    return match (system.os) {
+        // EPOLL_CLOEXEC
+        Linux => epoll_create1(0x80000)
+        MacOS => kqueue()
+        Windows => -1
+        Other(name) => if (keventSize(name) > 0) { kqueue() } else { -1 }
+    }
+}
+
+// The size of a `struct kevent` of a BSD (FreeBSD has 4 more words), 0 for a system without kqueue.
+function keventSize(name: string): int {
+    return match (name) {
+        'freebsd' => 64
+        'openbsd' => 32
+        _ => 0
+    }
+}
+
+// The place of `data` in a `struct epoll_event` (after `events`, of 4 bytes): packed on x86-64.
+function epollData(): int {
+    return match (system.architecture) {
+        X64 => 4
+        _ => 8
+    }
+}
+
+// Watches `fd` until it is ready to read (or to write): 0, or -1 (errno says why).
+extern function koji_poller_watch(poller: int, fd: int, writing: boolean): int {
+    match (system.os) {
+        Linux => {
+            // EPOLLIN or EPOLLOUT, with EPOLLONESHOT; EPOLL_CTL_MOD, or EPOLL_CTL_ADD for a socket
+            // not watched yet (ENOENT).
+            write(systemWords, 0, (if (writing) { 4 } else { 1 }) | 1 << 30)
+            write(systemWords, epollData(), fd)
+
+            if (epoll_ctl(poller, 3, fd, systemWords) == 0) { return 0 }
+
+            if (koji_system_errno() != 2) { return -1 }
+
+            return epoll_ctl(poller, 1, fd, systemWords)
+        }
+        Windows => return -1
+        _ => {
+            if (keventSize(systemName()) == 0 and system.os != system.MacOS) { return -1 }
+
+            // A `struct kevent`: ident, filter (EVFILT_READ -1, EVFILT_WRITE -2) and flags (EV_ADD |
+            // EV_ONESHOT) of 16 bits each, fflags, data, udata.
+            write(systemWords, 0, fd)
+            write(systemWords, 8, ((if (writing) { -2 } else { -1 }) & 0xFFFF) | 0x11 << 16)
+            write(systemWords, 16, 0)
+            write(systemWords, 24, 0)
+
+            for word in range(4, 8) {
+                write(systemWords, 8 * word, 0)
+            }
+
+            return if (kevent(poller, systemWords, 1, nullAddress(), 0, nullAddress()) == 0) { 0 } else { -1 }
+        }
+    }
+}
+
+// Waits for the sockets watched, at most `milliseconds` (-1: as long as it takes): how many are ready
+// (0 when the time ran out or a signal came), their numbers at `ready`, or -1.
+extern function koji_poller_wait(poller: int, milliseconds: int, ready: Address, capacity: int): int {
+    immut most = if (capacity < 64) { capacity } else { 64 }
+    immut events = offset(systemWords, 64)
+
+    match (system.os) {
+        Linux => {
+            immut size = epollData() + 8
+            immut count = epoll_wait(poller, events, most, milliseconds)
+
+            if (count < 0) { return if (koji_system_errno() == 4) { 0 } else { -1 } }
+
+            for i in range(count) {
+                immut fd: int = read(events, i * size + epollData())
+                write(ready, 8 * i, fd)
+            }
+
+            return count
+        }
+        Windows => return -1
+        _ => {
+            immut size = if (system.os == system.MacOS) { 32 } else { keventSize(systemName()) }
+
+            if (size == 0) { return -1 }
+
+            // A `struct timespec` for the limit, none for no limit.
+            write(systemWords, 0, milliseconds / 1000)
+            write(systemWords, 8, milliseconds % 1000 * 1000000)
+            immut limit = if (milliseconds < 0) { nullAddress() } else { systemWords }
+            immut count = kevent(poller, nullAddress(), 0, events, most, limit)
+
+            if (count < 0) { return if (koji_system_errno() == 4) { 0 } else { -1 } }
+
+            for i in range(count) {
+                immut fd: int = read(events, i * size)
+                write(ready, 8 * i, fd)
+            }
+
+            return count
+        }
+    }
+}
+
+// The name of another system ('freebsd'), '' for those that have a variant.
+function systemName(): string {
+    return match (system.os) {
+        Other(name) => name
+        _ => ''
+    }
+}
 
 // The stack of a task: 1 MB, of which the system only gives the memory a task uses (a few pages,
 // for most of them).

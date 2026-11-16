@@ -13,7 +13,7 @@
 import { Ty, Operand, Place, Step, Target, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrProgram, isManaged } from 'ir.kj'
 import { changes, constantGlobals } from 'borrow.kj'
 import { uses, terminatorUses, successors } from 'liveness.kj'
-import { foldFor, readsSystem } from 'target.kj'
+import { Platformed, foldFor, platformGlobals, readsSystem } from 'target.kj'
 
 // The locals of the callee in the caller: from `base`, but the parameters given as operands.
 type Names = {
@@ -84,15 +84,15 @@ function inlinable(program: IrProgram, blocks: int, most: int): boolean[] {
     return result
 }
 
-// The system the native backend compiles for (an index of `systemConditions` of target.kj): Linux.
-export immut targetSystem = 0
+// The platform the native backend compiles for (see target.kj): Linux on x86-64.
+export immut targetPlatform = 0
 
 // The function on one system (target.kj): its branches on `system.os` go one way, and the blocks no
 // longer reached are empty (their code, and the functions of C it calls, are not generated).
-function forSystem(routine: IrFunction, global: int, system: int): IrFunction {
-    if (not readsSystem(routine, global)) { return routine }
+function forSystem(routine: IrFunction, globals: Platformed, platform: int): IrFunction {
+    if (not readsSystem(routine, globals)) { return routine }
 
-    immut folded = foldFor(routine, global, system)
+    immut folded = foldFor(routine, globals, platform)
     mut result = routine
 
     for block in range(routine.blocks.length()) {
@@ -142,7 +142,7 @@ export function inlineSmall(program: IrProgram): IrProgram {
     mut simplified: IrFunction[] = []
 
     for routine in done {
-        simplified.push(simplify(forSystem(routine, program.systemGlobal, targetSystem)))
+        simplified.push(simplify(forSystem(routine, platformGlobals(program), targetPlatform)))
     }
 
     mut result = program

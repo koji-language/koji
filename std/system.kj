@@ -43,6 +43,13 @@ export type OperatingSystem = {
     Other(name: string)
 }
 
+export type Architecture = {
+    X64
+    Arm64
+    // Another processor, by the name the system gives it: 'riscv64'.
+    OtherArchitecture(name: string)
+}
+
 export type SystemError = {
     // There is no such program.
     NotFound(command: string)
@@ -69,6 +76,9 @@ export type Output = {
 
 // The operating system the program runs on.
 export immut os = systemNamed()
+
+// The processor the program runs on.
+export immut architecture = architectureNamed()
 
 // The command-line arguments of the program, after the program itself.
 export function args(): string[] {
@@ -357,6 +367,27 @@ function systemNamed(): OperatingSystem {
         'Linux' => Linux
         'Darwin' => MacOS
         _ => Other(name.lower())
+    }
+}
+
+// The processor, from the name `uname` gives (the fifth field of its record, whose fields have 65
+// bytes on Linux, 256 on macOS).
+function architectureNamed(): Architecture {
+    immut buffer = allocate(4096)
+    uname(buffer)
+    immut field = match (os) {
+        MacOS => 256
+        _ => 65
+    }
+    immut name = cText(offset(buffer, 4 * field))
+    free(buffer)
+
+    return match (name) {
+        'x86_64' => X64
+        'amd64' => X64
+        'aarch64' => Arm64
+        'arm64' => Arm64
+        _ => OtherArchitecture(name)
     }
 }
 

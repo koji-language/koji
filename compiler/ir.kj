@@ -222,6 +222,8 @@ export type IrProgram = {
     // The global `system.os` (std/system.kj), or -1: a condition on it is a constant once the
     // system is known (target.kj).
     systemGlobal: int
+    // The global `system.architecture`, or -1 (likewise).
+    architectureGlobal: int
 }
 
 // A test (`test 'name' { ... }`): its function, named `test 'name'`.

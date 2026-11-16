@@ -207,8 +207,9 @@ type Instance = {
 type Lowerer = {
     // `kojic test`: the tests of the main file are lowered, and its top-level function runs the one
     // asked for; otherwise tests are left out.
-    // The global `system.os`, or -1 (see `IrProgram`).
+    // The globals `system.os` and `system.architecture`, or -1 (see `IrProgram`).
     systemGlobal: int
+    architectureGlobal: int
     testing: boolean
     tests: IrTest[]
     // The condition of the `assert` being lowered, as written (`Asserted`).
@@ -1374,6 +1375,8 @@ function Lowerer.declareGlobals(mut self): Result[void, string] {
                 immut id = self.globals.length() - 1
 
                 if (name == 'os' and self.modules[self.module].path == 'std:system') { self.systemGlobal = id }
+
+                if (name == 'architecture' and self.modules[self.module].path == 'std:system') { self.architectureGlobal = id }
 
                 if (isImmut and ty == IntTy) {
                     match (self.constantValue(value)) {
@@ -5077,7 +5080,7 @@ function lowerProgram(program: Program, testing: boolean): Result[IrProgram, str
 
     immut entry = program.modules[0]
     mut lowerer: Lowerer = {
-        testing: testing, tests: [], assertText: '', systemGlobal: -1,
+        testing: testing, tests: [], assertText: '', systemGlobal: -1, architectureGlobal: -1,
         table: program.table, tables: program.tables, records: [], recordIds: [:], file: entry.display, line: 0,
         functions: [], signatures: [:], globals: [], strings: [], stringIds: [:], emptyEnvironment: None, wrappers: [:],
         genericFunctions: [:], instances: [:], pending: [], substitution: [], typeNames: [], recordTypes: [:],
@@ -5133,6 +5136,6 @@ function lowerProgram(program: Program, testing: boolean): Result[IrProgram, str
     return Ok({
         file: entry.display, functions: functions, main: 0, globals: lowerer.globals, strings: lowerer.strings,
         records: lowerer.records, externs: lowerer.externs, libraries: lowerer.libraries, forC: lowerer.forC, library: entry.path == 'std:library',
-        testing: testing, tests: lowerer.tests, systemGlobal: lowerer.systemGlobal
+        testing: testing, tests: lowerer.tests, systemGlobal: lowerer.systemGlobal, architectureGlobal: lowerer.architectureGlobal
     })
 }

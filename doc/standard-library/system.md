@@ -57,6 +57,19 @@ The `system` module gives access to the command line, the environment, the exit 
 
     The compiler knows the system it compiles for, so a condition on `system.os` (the value of a `match`, or `system.os == Linux` in an `if`) is decided when the program is compiled: the branches of the other systems are not compiled, nor the functions only they call. A branch can call a [foreign function](../ffi.md) of its system that the others do not have: `epoll_create1` on Linux, `kqueue` on macOS. The condition must be in the function that makes the call (a function that calls `kqueue` with no condition is compiled on every system).
 
+-   `architecture: Architecture`  
+    The processor the program runs on:
+
+    ```koji
+    type Architecture = {
+        X64
+        Arm64
+        OtherArchitecture(name: string) // another processor, by its name: 'riscv64'
+    }
+    ```
+
+    Like `os`, a condition on it is decided when the program is compiled (the size of a record of C may depend on the processor).
+
 ## The `Output` Type
 
 -   `status: int`: the exit code of the program (`-1` if it was stopped by a signal).
