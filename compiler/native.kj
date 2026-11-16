@@ -3119,12 +3119,34 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
             _ => {}
         }
 
+        // The address in a register of its own: the base of the instruction, the offset its index.
+        immut base = self.operandRegister(operands[0])
+
         if (symbol.startsWith('koji_unsafe_write_')) {
-            // mov [rcx + rdx], rax (al, eax)
+            // mov [rcx + rdx], rax (al, eax), or [base + rdx]
             self.loadOperand(rax, operands[2])
             self.loadOperand(rdx, operands[1])
+
+            if (base >= 0) {
+                self.indexed(code[0..code.length() - 2], base, rdx)
+                return Ok()
+            }
+
             self.loadOperand(rcx, operands[0])
             self.bytes(code)
+            return Ok()
+        }
+
+        if (base >= 0 and symbol.startsWith('koji_unsafe_read_')) {
+            // mov rax, [base + rcx]
+            self.loadOperand(rcx, operands[1])
+            self.indexed(code[0..code.length() - 2], base, rcx)
+
+            match (dest) {
+                Some(local) => self.storeResult(LocalPlace(local), routine.locals[local].ty)
+                None => {}
+            }
+
             return Ok()
         }
 
@@ -5162,6 +5184,29 @@ function Native.based(mut self, prefix: int[], base: int, offset: int) {
 
     self.bytes(code)
     self.int32(offset)
+}
+
+// An instruction on rax and [base + index] (registers): its opcode `prefix` (with REX.W first for a
+// whole word), then the prefix REX.B for a base among r8 to r15, ModRM and SIB (with a displacement
+// of 0 for rbp or r13, which have none without one).
+function Native.indexed(mut self, prefix: int[], base: int, index: int) {
+    mut code = prefix
+
+    if (base >= 8) {
+        if (code[0] == 0x48) {
+            code[0] = 0x49
+        } else {
+            code = [0x41] + code
+        }
+    }
+
+    immut sib = (index & 7) << 3 | (base & 7)
+
+    if (base & 7 == 5) {
+        self.bytes(code + [0x44, sib, 0])
+    } else {
+        self.bytes(code + [0x04, sib])
+    }
 }
 
 function Native.spareSlot(self, register: int): int {
