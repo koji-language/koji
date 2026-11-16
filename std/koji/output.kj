@@ -5,6 +5,7 @@
 
 import { Address, CInt, CSize, Location, Never, allocate, free, isNull, locationAddress, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
 import { cString, cText, isUtf8 } from 'koji:core'
+import system
 
 extern function writev(fd: CInt, buffers: Address, count: CInt): int
 extern function strerror(code: CInt): Address
@@ -14,7 +15,9 @@ extern function koji_blocking_getline(line: Address, capacity: Address, stream: 
 extern function ferror(stream: Address): CInt
 extern function koji_blocking_fread(target: Address, size: CSize, count: CSize, file: Address): CSize
 extern function clearerr(stream: Address)
-extern function koji_system_errno(): CInt
+// The place of errno (under names of their own: <errno.h> declares them otherwise).
+extern function errnoPlace(): Address from '__errno_location'
+extern function errnoPlaceBsd(): Address from '__error'
 // With other tasks alive (koji:task), a write that could wait is made by a thread that helps.
 extern function koji_task_alone(): boolean
 extern function koji_task_current(): int
@@ -270,4 +273,21 @@ extern function koji_write(text: string, here: Location) {
 function isLineEnd(bytes: Address, at: int): boolean {
     immut b: byte = read(bytes, at)
     return b == 10 or b == 13
+}
+
+// errno, the error of the last call of the system that failed (for every module: C calls it by its
+// name): the int of C at the place each system gives.
+extern function koji_system_errno(): CInt {
+    immut place = match (system.os) {
+        Linux => errnoPlace()
+        _ => errnoPlaceBsd()
+    }
+    mut value = 0
+
+    for i in range(4) {
+        immut part: byte = read(place, 3 - i)
+        value = value << 8 | int(part)
+    }
+
+    return if (value >= 0x80000000) { value - 0x100000000 } else { value }
 }

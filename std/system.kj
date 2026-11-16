@@ -30,7 +30,8 @@ extern function koji_system_argument_count(): int
 extern function koji_system_argument(index: int): Address
 extern function koji_system_errno(): CInt
 extern function koji_system_environment(): Address
-extern function koji_system_executable_into(buffer: Address, size: int): int
+extern function readlink(path: Address, buffer: Address, size: CSize): int
+extern function executablePathInto(buffer: Address, size: Address): CInt from '_NSGetExecutablePath'
 // The standard input and output, of the library (std/koji/output.kj): the buffer of `input`.
 extern function koji_read_bytes(count: int, here: Location, status: Address): string
 extern function koji_write(text: string, here: Location)
@@ -140,7 +141,7 @@ function executablePath(): Option[string] {
 
     while (true) {
         immut buffer = allocate(size)
-        immut length = koji_system_executable_into(buffer, size)
+        immut length = executableInto(buffer, size)
 
         if (length >= 0) {
             immut path = textOf(buffer, length)
@@ -367,6 +368,30 @@ function systemNamed(): OperatingSystem {
         'Linux' => Linux
         'Darwin' => MacOS
         _ => Other(name.lower())
+    }
+}
+
+// The path of the executable in `buffer` (`size` bytes): its length, or -2 when the buffer is too
+// small, or -1 where the system cannot tell it.
+function executableInto(buffer: Address, size: int): int {
+    match (os) {
+        Linux => {
+            immut path = cString('/proc/self/exe')
+            immut length = readlink(path, buffer, size)
+            free(path)
+
+            if (length < 0) { return -1 }
+
+            return if (length == size) { -2 } else { length }
+        }
+        MacOS => {
+            immut room = allocate(8)
+            write(room, 0, size)
+            immut failed = executablePathInto(buffer, room)
+            free(room)
+            return if (failed != 0) { -2 } else { strlen(buffer) }
+        }
+        _ => return -1
     }
 }
 

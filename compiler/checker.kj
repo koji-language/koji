@@ -1983,7 +1983,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize', 'charOfCode', 'truncate', 'reserve', 'listItems', 'setListLength', 'locationAddress', 'sharedGet', 'sharedSet'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize', 'charOfCode', 'truncate', 'reserve', 'listItems', 'setListLength', 'locationAddress', 'sharedGet', 'sharedSet', 'switchStacks', 'taskEntry', 'floatControl', 'valgrind'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -5352,6 +5352,25 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         'unsafe.decimalOf' => {
             self.checkExactly(name, types, [IntType, IntType])?
             return Ok(DecimalType)
+        }
+        // Instructions of the processor (see "Instructions of the processor" in doc/design.md): the
+        // switch between the stacks of two tasks (koji:task), where a new task starts, the control
+        // words of floating point (which a new task takes), a request to valgrind.
+        'unsafe.switchStacks' => {
+            self.checkExactly(name, types, [named(b.address), named(b.address)])?
+            return Ok(VoidType)
+        }
+        'unsafe.taskEntry' => {
+            self.checkExactly(name, types, [])?
+            return Ok(named(b.address))
+        }
+        'unsafe.floatControl' => {
+            self.checkExactly(name, types, [])?
+            return Ok(IntType)
+        }
+        'unsafe.valgrind' => {
+            self.checkExactly(name, types, [IntType, IntType, IntType, IntType])?
+            return Ok(IntType)
         }
         // The address 0, which C calls NULL.
         'unsafe.nullAddress' => {

@@ -13,13 +13,11 @@
 // and the program stops with a panic.
 
 import system
-import { Address, CInt, allocate, isNull, nullAddress, offset, read, write } from 'koji:unsafe'
+import { Address, CInt, CSize, allocate, distance, floatControl, isNull, nullAddress, offset, read, switchStacks, taskEntry, valgrind, write } from 'koji:unsafe'
 
-extern function koji_task_switch(save: Address, to: Address)
-extern function koji_task_stack_new(size: int): Address
-extern function koji_task_stack_free(stack: Address, size: int)
-extern function koji_task_stack_start(stack: Address, size: int, task: int): Address
-extern function koji_task_supported(): boolean
+extern function mmap(address: Address, size: CSize, protection: CInt, flags: CInt, fd: CInt, at: int): Address
+extern function munmap(address: Address, size: CSize): CInt
+extern function mprotect(address: Address, size: CSize, protection: CInt): CInt
 extern function koji_system_errno(): CInt
 extern function clock_gettime(clock: CInt, time: Address): CInt
 extern function nanosleep(request: Address, remaining: Address): CInt
@@ -34,6 +32,87 @@ extern function koji_helpers_submit(job: Address)
 extern function koji_helpers_finished(out: Address, capacity: int): int
 extern function koji_ticks(on: boolean): boolean
 extern function koji_preempt_clear()
+
+// The stacks of the tasks. Below each, a guard that nothing may touch (16 KB, a page of any system):
+// a task that overflows its stack stops the program there instead of writing over other memory.
+immut stackGuard = 16384
+
+// Whether the processor has tasks (`switchStacks`).
+function tasksSupported(): boolean {
+    return match (system.architecture) {
+        X64 => true
+        Arm64 => true
+        OtherArchitecture(_) => false
+    }
+}
+
+// A stack of `size` bytes (a multiple of the guard): its lowest address, above the guard, or the
+// address 0. The system gives its memory as it is first used (MAP_PRIVATE, MAP_ANONYMOUS and, on
+// Linux, MAP_NORESERVE). Valgrind is told of it (VG_USERREQ__STACK_REGISTER), which keeps the
+// number it gives in the last word of the stack.
+function stackNew(size: int): Address {
+    immut flags = match (system.os) {
+        Linux => 2 | 0x20 | 0x4000
+        _ => 2 | 0x1000
+    }
+    // PROT_READ | PROT_WRITE
+    immut block = mmap(nullAddress(), size + stackGuard, 3, flags, -1, 0)
+
+    if (distance(nullAddress(), block) == -1) { return nullAddress() }
+
+    if (mprotect(block, stackGuard, 0) != 0) {
+        munmap(block, size + stackGuard)
+        return nullAddress()
+    }
+
+    immut stack = offset(block, stackGuard)
+    immut low = distance(nullAddress(), stack)
+    write(stack, size - 8, valgrind(0x1501, low, low + size, 0))
+    return stack
+}
+
+function stackFree(stack: Address, size: int) {
+    immut registered: int = read(stack, size - 8)
+    valgrind(0x1502, registered, 0, 0)
+    munmap(offset(stack, -stackGuard), size + stackGuard)
+}
+
+// The top of a new stack for `switchStacks`, which then starts `task` where `taskEntry` is: the
+// registers it restores, zero but for the task and where it returns, and the control words of
+// floating point of the current task (below the number of valgrind, aligned to 16 bytes).
+function stackStart(stack: Address, size: int, task: int): Address {
+    immut top = offset(stack, size - 16)
+
+    return match (system.architecture) {
+        X64 => {
+            // The control words, r15 to r12, rbx (the task), rbp, where it returns.
+            immut sp = offset(top, -72)
+
+            for word in range(9) {
+                write(sp, 8 * word, 0)
+            }
+
+            write(sp, 0, floatControl())
+            write(sp, 40, task)
+            write(sp, 56, taskEntry())
+            sp
+        }
+        Arm64 => {
+            // x19 (the task) to x30 (where it returns), d8 to d15, fpcr.
+            immut sp = offset(top, -176)
+
+            for word in range(22) {
+                write(sp, 8 * word, 0)
+            }
+
+            write(sp, 0, task)
+            write(sp, 88, taskEntry())
+            write(sp, 160, floatControl())
+            sp
+        }
+        OtherArchitecture(_) => nullAddress()
+    }
+}
 
 // The clock and the poller of the system (`match (system.os)`: each system compiles its own, see
 // "Code for one system" in doc/design.md). The records of C they fill are in `systemWords` (one
@@ -278,7 +357,7 @@ function start() {
 
 // A new task, which will run `work` when its turn comes: its number.
 extern function koji_task_spawn(work: () => void): int {
-    if (not koji_task_supported()) { panic('tasks need a processor of x86-64 or arm64') }
+    if (not tasksSupported()) { panic('tasks need a processor of x86-64 or arm64') }
 
     start()
     reap()
@@ -287,7 +366,7 @@ extern function koji_task_spawn(work: () => void): int {
     match (stacks.pop()) {
         Some(kept) => stack = kept
         None => {
-            stack = koji_task_stack_new(stackSize)
+            stack = stackNew(stackSize)
 
             if (isNull(stack)) { panic('there is no memory for the stack of a new task') }
         }
@@ -304,7 +383,7 @@ extern function koji_task_spawn(work: () => void): int {
     tasks[id].stack = stack
     tasks[id].state = ready
     tasks[id].woken = false
-    write(tasks[id].top, 0, koji_task_stack_start(stack, stackSize, id))
+    write(tasks[id].top, 0, stackStart(stack, stackSize, id))
     queue.push(id)
     alive += 1
 
@@ -349,7 +428,7 @@ function reap() {
     if (stacks.length() < keptStacks) {
         stacks.push(tasks[id].stack)
     } else {
-        koji_task_stack_free(tasks[id].stack, stackSize)
+        stackFree(tasks[id].stack, stackSize)
     }
 
     tasks[id].stack = nullAddress()
@@ -572,7 +651,7 @@ function schedule() {
             immut previous = current
             current = next
             immut to: Address = read(tasks[next].top, 0)
-            koji_task_switch(tasks[previous].top, to)
+            switchStacks(tasks[previous].top, to)
             // Back on this stack: the task that ran before may have ended.
             reap()
             return

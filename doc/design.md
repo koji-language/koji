@@ -467,7 +467,7 @@ The value of `Shared` is the one reference of Koji, which its copies share: the 
 
 ### Instructions of the processor: functions of `koji:unsafe` that the compiler knows
 
-**Decision**: the few things of the runtime that are instructions of the processor and nothing else (switching between the stacks of tasks, the rounds of AES and the products without carries of GHASH, the requests to valgrind) are functions of `koji:unsafe` that the compiler knows, a small and closed set: each backend writes their instructions (the C backend as it writes them today, the native one as machine code), for each processor.
+**Decision**: the few things of the runtime that are instructions of the processor and nothing else (switching between the stacks of tasks, the rounds of AES and the products without carries of GHASH, the requests to valgrind) are functions of `koji:unsafe` that the compiler knows, a small and closed set (`switchStacks`, `taskEntry`, `floatControl` and `valgrind` so far): each backend writes their instructions (the C backend as it writes them today, the native one as machine code), for each processor.
 
 **Why**: they cannot be written with the operations of the language, and they are few; functions keep their uses checked by types and portable, each instruction written once for each processor in the compiler.
 

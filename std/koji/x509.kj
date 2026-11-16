@@ -15,6 +15,7 @@
 //
 // Everything here is public: nothing needs constant time.
 
+import system
 import { Address, CInt, CSize, allocate, free, isNull, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
 import { digest, digestSize } from 'koji:sha'
 import { verifyPkcs1, verifyPss } from 'koji:rsa'
@@ -31,7 +32,6 @@ extern function fclose(file: Address): CInt
 extern function opendir(path: Address): Address
 extern function readdir(directory: Address): Address
 extern function closedir(directory: Address): CInt
-extern function koji_directory_entry_name(entry: Address): Address
 extern function realloc(block: Address, size: CSize): Address
 extern function time(place: Address): int
 
@@ -1440,7 +1440,7 @@ function addDirectory(mut authorities: Authority[], path: string) {
 
         if (isNull(entry)) { break }
 
-        immut name = textOfC(koji_directory_entry_name(entry))
+        immut name = textOfC(entryName(entry))
 
         if (not name.startsWith('.')) { names.push(name) }
     }
@@ -1751,4 +1751,14 @@ extern function koji_x509_authority_count(builtIn: CInt): int {
     if (builtIn == 1) { return builtInAuthorities().length() }
 
     return trustedAuthorities().length()
+}
+
+// The name of an entry of `readdir`: where `d_name` is in a `struct dirent` of the system.
+function entryName(entry: Address): Address {
+    return offset(entry, match (system.os) {
+        Linux => 19
+        MacOS => 21
+        Windows => 19
+        Other(name) => if (name == 'netbsd') { 13 } else { if (name == 'freebsd' or name == 'openbsd') { 24 } else { 19 } }
+    })
 }
