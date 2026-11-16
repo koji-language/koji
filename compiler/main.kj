@@ -610,9 +610,9 @@ function testCommand(args: string[]) {
                 continue
             }
         }
-        immut executable = temporary('')
+        immut built = temporary('')
 
-        match (compileC(text(generate(lowered)), executable, lowered.libraries)) {
+        match (executable(lowered, built)) {
             Ok(_) => {}
             Err(message) => {
                 print(`FAIL  ${name}\n${indented(message)}`)
@@ -624,7 +624,7 @@ function testCommand(args: string[]) {
         for i in range(lowered.tests.length()) {
             immut title = `${name}: ${testDisplay(lowered.tests[i].name)}`
 
-            match (system.capture(executable, [string(i)])) {
+            match (system.capture(built, [string(i)])) {
                 Ok(run) => {
                     if (run.status == 0) {
                         print(`ok    ${title}`)
@@ -648,7 +648,7 @@ function testCommand(args: string[]) {
             }
         }
 
-        file.remove(executable)
+        file.remove(built)
     }
 
     immut seconds = time.monotonic() - started

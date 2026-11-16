@@ -212,8 +212,6 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     // The small functions inlined where they are called (inline.kj).
     immut program = inlineSmall(given)
 
-    if (program.testing) { return Err('the native backend does not run tests yet') }
-
     immut nothing: IrFunction = { name: '', file: '', params: 0, writeback: [], returns: VoidTy, locals: [], blocks: [] }
     mut native: Native = {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:],
@@ -279,10 +277,25 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         native.bytes([0x5D, 0xC3])
         exported.push({ name: 'koji_library_init', at: init, size: native.code.length() - init })
     } else {
-        native.bytes([0x55, 0x48, 0x89, 0xE5])
+        // push rbp; mov rbp, rsp; sub rsp, 16; argc and argv in the frame
+        native.bytes([0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x10, 0x48, 0x89, 0x7D, 0xF8, 0x48, 0x89, 0x75, 0xF0])
+
+        // `kojic test`: the number of the test to run, the last argument (taken from argc).
+        if (program.testing) {
+            // lea rdi, [rbp - 8]; mov rsi, [rbp - 16]; call koji_test_argument;
+            // mov [koji_test_selected], rax
+            native.bytes([0x48, 0x8D, 0x7D, 0xF8, 0x48, 0x8B, 0x75, 0xF0])
+            native.callExternal('koji_test_argument')
+            native.bytes([0x48, 0x89, 0x05])
+            native.relocation('koji_test_selected', pc32, -4)
+            native.int32(0)
+        }
+
+        // mov edi, [rbp - 8]; mov rsi, [rbp - 16]; call koji_init; call main; xor eax, eax; leave; ret
+        native.bytes([0x8B, 0x7D, 0xF8, 0x48, 0x8B, 0x75, 0xF0])
         native.callExternal('koji_init')
         native.callFunction(program.main)
-        native.bytes([0x31, 0xC0, 0x5D, 0xC3])
+        native.bytes([0x31, 0xC0, 0xC9, 0xC3])
         exported.push({ name: 'main', at: mainStart, size: native.code.length() - mainStart })
     }
 
