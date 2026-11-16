@@ -20,7 +20,8 @@ import { lastUses, targetReads, defs, uses, terminatorUses, successors } from 'l
 import { globalsSeen } from 'globals.kj'
 import { borrowedParams, borrowedLocals, constantGlobals, changes } from 'borrow.kj'
 import { Ranges, registerWeights, liveRanges, liveAtBlocks, assignRegisters, extend, has } from 'registers.kj'
-import { inlineSmall } from 'inline.kj'
+import { inlineSmall, targetSystem } from 'inline.kj'
+import { reachableFunctions } from 'target.kj'
 
 foreign 'm' {
     function frexp(value: float, mut exponent: CInt): float
@@ -239,8 +240,15 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
 
     native.recordDescriptions()
 
+    // The functions the program may call on its system (target.kj); the others have no code.
+    immut reachable = reachableFunctions(program, targetSystem)
+
     for id in range(program.functions.length()) {
-        native.generateFunction(id)?
+        if (reachable[id]) {
+            native.generateFunction(id)?
+        } else {
+            native.starts.push(native.code.length())
+        }
     }
 
     // The code after the functions keeps every word in the frame.

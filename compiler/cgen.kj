@@ -5,6 +5,7 @@ import { IrExtern, Ty, Operand, Place, Step, Target, IrField, IrRecord, StdArg, 
 import { preludeLines } from 'prelude.kj'
 import { borrowedParams, borrowedLocals, constantGlobals } from 'borrow.kj'
 import { lastUses, targetReads } from 'liveness.kj'
+import { Folded, foldFor, readsSystem, reachableFunctions, systemConditions, systemCount } from 'target.kj'
 import { StackRecords, stackRecords } from 'escape.kj'
 import { globalsSeen } from 'globals.kj'
 
@@ -318,8 +319,28 @@ function Generator.generateProgram(mut self) {
     self.line('')
     immut functions = self.program.functions
 
+    // The functions some system may call (target.kj), each under a condition of the preprocessor
+    // for those systems.
+    mut reachable: boolean[][] = []
+
+    for system in range(systemCount) {
+        reachable.push(reachableFunctions(self.program, system))
+    }
+
+    mut systemsOf: int[][] = []
+
     for id in range(functions.length()) {
-        self.line(`${signature(id, functions[id], self.smalls[id])};`)
+        mut systems: int[] = []
+
+        for system in range(systemCount) {
+            if (reachable[system][id]) { systems.push(system) }
+        }
+
+        systemsOf.push(systems)
+    }
+
+    for id in range(functions.length()) {
+        self.guarded(systemsOf[id], `${signature(id, functions[id], self.smalls[id])};`)
     }
 
     // How the runtime shows a value of an opaque type: with its `display` method, or by its name.
@@ -338,8 +359,16 @@ function Generator.generateProgram(mut self) {
     }
 
     for id in range(functions.length()) {
+        if (systemsOf[id].length() == 0) { continue }
+
         self.line('')
+        immut guard = systemsOf[id].length() < systemCount
+
+        if (guard) { self.line(`#if ${preprocessorCondition(systemsOf[id])}`) }
+
         self.emitFunction(id, functions[id])
+
+        if (guard) { self.line('#endif') }
     }
 
     // The functions C calls by their names: they give their values to those of Koji.
@@ -693,7 +722,31 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
     // prelude), as at the end of each turn of a loop (see `terminator`).
     if (self.preemptible() and not self.smalls[id] and makesCalls(routine)) { self.line('    KOJI_PREEMPT();') }
 
+    // Code for one system (target.kj): each block under a condition of the preprocessor for the
+    // systems that reach it, and a branch on `system.os` chosen by the preprocessor.
+    immut dependent = readsSystem(routine, self.program.systemGlobal)
+    mut folds: Folded[] = []
+
+    if (dependent) {
+        for system in range(systemCount) {
+            folds.push(foldFor(routine, self.program.systemGlobal, system))
+        }
+    }
+
     for block in range(routine.blocks.length()) {
+        mut systems: int[] = []
+
+        for system in range(systemCount) {
+            if (not dependent or folds[system].reached[block]) { systems.push(system) }
+        }
+
+        // Reached on no system.
+        if (systems.length() == 0) { continue }
+
+        immut guarded = systems.length() < systemCount
+
+        if (guarded) { self.line(`#if ${preprocessorCondition(systems)}`) }
+
         self.line(`b${block}:;`)
         self.block = block
 
@@ -703,10 +756,73 @@ function Generator.emitFunction(mut self, id: int, routine: IrFunction) {
             self.dropDead(routine)
         }
 
-        self.terminator(routine, routine.blocks[block].terminator)
+        if (dependent and folds[systems[0]].goes[block] >= 0) {
+            self.systemBranch(block, systems, folds)
+        } else {
+            self.terminator(routine, routine.blocks[block].terminator)
+        }
+
+        if (guarded) { self.line('#endif') }
     }
 
     self.line('}')
+}
+
+// A line for some systems: under their condition, none for no system.
+function Generator.guarded(mut self, systems: int[], text: string) {
+    if (systems.length() == 0) { return }
+
+    if (systems.length() == systemCount) {
+        self.line(text)
+        return
+    }
+
+    self.line(`#if ${preprocessorCondition(systems)}`)
+    self.line(text)
+    self.line('#endif')
+}
+
+// The condition of the preprocessor for some systems (indexes of `systemConditions`).
+function preprocessorCondition(systems: int[]): string {
+    if (systems.length() == 1) { return systemConditions[systems[0]] }
+
+    mut parts: string[] = []
+
+    for system in systems {
+        parts.push(`(${systemConditions[system]})`)
+    }
+
+    return parts.join(' || ')
+}
+
+// A branch that the system decides: a jump for each, chosen by the preprocessor.
+function Generator.systemBranch(mut self, block: int, systems: int[], folds: Folded[]) {
+    mut targets: int[] = []
+
+    for system in systems {
+        if (not (folds[system].goes[block] in targets)) { targets.push(folds[system].goes[block]) }
+    }
+
+    for target in targets {
+        if (target <= block and self.preemptible()) {
+            self.line('    KOJI_PREEMPT();')
+            break
+        }
+    }
+
+    for i in range(targets.length()) {
+        mut chosen: int[] = []
+
+        for system in systems {
+            if (folds[system].goes[block] == targets[i]) { chosen.push(system) }
+        }
+
+        immut keyword = if (i == 0) { '#if' } else { '#elif' }
+        self.line(`${keyword} ${preprocessorCondition(chosen)}`)
+        self.line(`    goto b${targets[i]};`)
+    }
+
+    self.line('#endif')
 }
 
 // Whether a task may be preempted in the code generated: in a program, but neither in the library

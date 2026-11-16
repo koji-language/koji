@@ -55,6 +55,8 @@ The `system` module gives access to the command line, the environment, the exit 
     print(separator)
     ```
 
+    The compiler knows the system it compiles for, so a condition on `system.os` (the value of a `match`, or `system.os == Linux` in an `if`) is decided when the program is compiled: the branches of the other systems are not compiled, nor the functions only they call. A branch can call a [foreign function](../ffi.md) of its system that the others do not have: `epoll_create1` on Linux, `kqueue` on macOS. The condition must be in the function that makes the call (a function that calls `kqueue` with no condition is compiled on every system).
+
 ## The `Output` Type
 
 -   `status: int`: the exit code of the program (`-1` if it was stopped by a signal).

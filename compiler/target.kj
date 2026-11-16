@@ -1,0 +1,303 @@
+// Code for one system (see "Code for one system" in doc/design.md): a condition on `system.os`, the
+// global of std/system.kj, is a constant once the system is known. For a system, the values that
+// come from that global (its variant, comparisons of it with a variant, and what they decide) are
+// folded, so each branch on them goes one way, and the blocks the others led to are not reached.
+// The native backend keeps the blocks of the system it compiles for (inline.kj); the C backend, whose
+// output builds on every system, keeps all of them, each under a condition of the preprocessor for
+// the systems that reach it (cgen.kj).
+
+import { Operand, Place, Instruction, Terminator, IrFunction, IrProgram } from 'ir.kj'
+import { changes } from 'borrow.kj'
+import { successors } from 'liveness.kj'
+
+// The systems: the variants of `OperatingSystem`, in order (Linux, MacOS, Windows, Other).
+export immut systemCount = 4
+
+// The condition of the preprocessor of C for each system.
+export immut systemConditions = ['defined(__linux__)', 'defined(__APPLE__)', 'defined(_WIN32)', '!defined(__linux__) && !defined(__APPLE__) && !defined(_WIN32)']
+
+// A function on one system: the blocks it reaches, and where each block goes when the system decides
+// it (-1 when it does not).
+export type Folded = {
+    reached: boolean[]
+    goes: int[]
+}
+
+// What is known of a local on the system (each local given one value only).
+type Known = {
+    // The value of `system.os`.
+    system: boolean[]
+    numbers: Option[int][]
+    flags: Option[boolean][]
+    // A record of a variant without fields, made there.
+    variants: int[]
+}
+
+// `routine` on the system `system` (an index of `systemConditions`), `global` being `system.os`
+// (-1 when the program has none).
+export function foldFor(routine: IrFunction, global: int, system: int): Folded {
+    immut count = routine.blocks.length()
+    mut goes: int[] = []
+
+    for block in range(count) {
+        goes.push(-1)
+    }
+
+    if (global >= 0) {
+        immut known = facts(routine, global, system)
+
+        for block in range(count) {
+            match (routine.blocks[block].terminator) {
+                BranchT(condition, thenBlock, elseBlock) => {
+                    match (flagOf(known, condition)) {
+                        Some(flag) => goes[block] = if (flag) { thenBlock } else { elseBlock }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // The blocks reached from the first.
+    mut reached: boolean[] = []
+
+    for block in range(count) {
+        reached.push(false)
+    }
+
+    mut pending: int[] = if (count > 0) { [0] } else { [] }
+
+    while (pending.length() > 0) {
+        immut block = pending.pop()
+
+        match (block) {
+            Some(current) => {
+                if (reached[current]) { continue }
+
+                reached[current] = true
+                immut next = if (goes[current] >= 0) { [goes[current]] } else { successors(routine.blocks[current].terminator) }
+
+                for target in next {
+                    if (not reached[target]) { pending.push(target) }
+                }
+            }
+            None => {}
+        }
+    }
+
+    return { reached: reached, goes: goes }
+}
+
+// Whether the function reads `system.os` (only then can its blocks depend on the system).
+export function readsSystem(routine: IrFunction, global: int): boolean {
+    if (global < 0) { return false }
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            match (instruction) {
+                CopyIns(_, GlobalOp(id)) => {
+                    if (id == global) { return true }
+                }
+                BinaryIns(_, _, left, right, _) => {
+                    if (left == GlobalOp(global) or right == GlobalOp(global)) { return true }
+                }
+                UnaryIns(_, _, GlobalOp(id), _) => {
+                    if (id == global) { return true }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    return false
+}
+
+function facts(routine: IrFunction, global: int, system: int): Known {
+    immut locals = routine.locals.length()
+    mut writes: int[] = []
+    mut known: Known = { system: [], numbers: [], flags: [], variants: [] }
+
+    for local in range(locals) {
+        writes.push(0)
+        known.system.push(false)
+        known.numbers.push(None)
+        known.flags.push(None)
+        known.variants.push(-1)
+    }
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            for local in changes(instruction) {
+                writes[local] += 1
+            }
+        }
+    }
+
+    // Until nothing changes (a value is known once what it is made from is).
+    mut changed = true
+
+    while (changed) {
+        changed = false
+
+        for block in routine.blocks {
+            for instruction in block.instructions {
+                immut dest = match (instruction) {
+                    CopyIns(LocalPlace(id), _) => id
+                    UnaryIns(id, _, _, _) => id
+                    BinaryIns(id, _, _, _, _) => id
+                    RecordNewIns(id, _, _) => id
+                    _ => continue
+                }
+
+                if (writes[dest] != 1) { continue }
+
+                immut before = describe(known, dest)
+
+                match (instruction) {
+                    CopyIns(_, GlobalOp(id)) => {
+                        if (id == global) { known.system[dest] = true }
+                    }
+                    CopyIns(_, value) => {
+                        if (isSystem(known, value, global)) { known.system[dest] = true }
+
+                        known.numbers[dest] = numberOf(known, value)
+                        known.flags[dest] = flagOf(known, value)
+
+                        match (value) {
+                            LocalOp(source) => known.variants[dest] = known.variants[source]
+                            _ => {}
+                        }
+                    }
+                    RecordNewIns(_, variant, fields) => {
+                        if (fields.length() == 0) { known.variants[dest] = variant }
+                    }
+                    UnaryIns(_, 'RecordTag', value, _) => {
+                        if (isSystem(known, value, global)) { known.numbers[dest] = Some(system) }
+                    }
+                    UnaryIns(_, 'Not', value, _) => {
+                        match (flagOf(known, value)) {
+                            Some(flag) => known.flags[dest] = Some(not flag)
+                            None => {}
+                        }
+                    }
+                    BinaryIns(_, op, left, right, _) => {
+                        immut equal = op.endsWith('(Equal)')
+
+                        if (op.startsWith('IntCompare(') and (equal or op.endsWith('(NotEqual)'))) {
+                            match (numberOf(known, left)) {
+                                Some(a) => {
+                                    match (numberOf(known, right)) {
+                                        Some(b) => known.flags[dest] = Some((a == b) == equal)
+                                        None => {}
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+
+                        if (op.startsWith('RecordCompare(') and (equal or op.endsWith('(NotEqual)'))) {
+                            immut variant = if (isSystem(known, left, global)) { variantOf(known, right) } else { if (isSystem(known, right, global)) { variantOf(known, left) } else { -1 } }
+
+                            if (variant >= 0) { known.flags[dest] = Some((variant == system) == equal) }
+                        }
+                    }
+                    _ => {}
+                }
+
+                if (describe(known, dest) != before) { changed = true }
+            }
+        }
+    }
+
+    return known
+}
+
+// What is known of a local, as text (to see whether it changed).
+function describe(known: Known, local: int): string {
+    return `${known.system[local]} ${known.numbers[local]} ${known.flags[local]} ${known.variants[local]}`
+}
+
+function isSystem(known: Known, value: Operand, global: int): boolean {
+    return match (value) {
+        GlobalOp(id) => id == global
+        LocalOp(id) => known.system[id]
+        _ => false
+    }
+}
+
+function numberOf(known: Known, value: Operand): Option[int] {
+    return match (value) {
+        IntOp(number) => Some(number)
+        LocalOp(id) => known.numbers[id]
+        _ => None
+    }
+}
+
+function flagOf(known: Known, value: Operand): Option[boolean] {
+    return match (value) {
+        BoolOp(flag) => Some(flag)
+        LocalOp(id) => known.flags[id]
+        _ => None
+    }
+}
+
+function variantOf(known: Known, value: Operand): int {
+    return match (value) {
+        LocalOp(id) => known.variants[id]
+        _ => -1
+    }
+}
+
+// The functions a program may call on the system `system` (-1: on any system, every branch kept):
+// from `main`, the functions C calls and the `display` methods C shows values with, through the
+// calls, closures and drops of the blocks reached there.
+export function reachableFunctions(program: IrProgram, system: int): boolean[] {
+    immut count = program.functions.length()
+    mut reached: boolean[] = []
+
+    for id in range(count) {
+        reached.push(false)
+    }
+
+    mut pending: int[] = [program.main]
+
+    for found in program.forC {
+        pending.push(found.function)
+    }
+
+    for record in program.records {
+        match (record.display) {
+            Some(code) => pending.push(code)
+            None => {}
+        }
+    }
+
+    while (pending.length() > 0) {
+        immut id = match (pending.pop()) {
+            Some(next) => next
+            None => break
+        }
+
+        if (reached[id]) { continue }
+
+        reached[id] = true
+        immut routine = program.functions[id]
+        immut blocks = if (system >= 0 and readsSystem(routine, program.systemGlobal)) { foldFor(routine, program.systemGlobal, system).reached } else { [] }
+
+        for block in range(routine.blocks.length()) {
+            if (blocks.length() > 0 and not blocks[block]) { continue }
+
+            for instruction in routine.blocks[block].instructions {
+                match (instruction) {
+                    CallIns(_, callee, _, _, _) => pending.push(callee)
+                    MakeClosureIns(_, code, _) => pending.push(code)
+                    DropIns(_, dropper) => pending.push(dropper)
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    return reached
+}

@@ -219,6 +219,9 @@ export type IrProgram = {
     // `kojic test`: the tests of the main file (the program runs the one its last argument names).
     testing: boolean
     tests: IrTest[]
+    // The global `system.os` (std/system.kj), or -1: a condition on it is a constant once the
+    // system is known (target.kj).
+    systemGlobal: int
 }
 
 // A test (`test 'name' { ... }`): its function, named `test 'name'`.
