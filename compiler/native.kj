@@ -3438,6 +3438,74 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
     immut both = [value(left, leftType), value(right, rightType)]
     immut withPlace = both + [self.location(line)]
 
+    // An int into the register of its local, computed there: mov target, left; op target, right
+    // (an immediate, a register, or rcx).
+    immut target = self.home(self.offsets[dest])
+
+    if (target >= 0 and ty == IntTy and name in ['IntAdd', 'IntSub', 'BitAnd', 'BitOr', 'BitXor', 'IntMul'] and self.operandRegister(right) != target and right != LocalOp(dest)) {
+        immut extension = match (name) {
+            'IntAdd' => 0
+            'IntSub' => 5
+            'BitAnd' => 4
+            'BitOr' => 1
+            _ => 6
+        }
+        mut valid = false
+        immut opcode = match (name) {
+            'IntAdd' => 0x01
+            'IntSub' => 0x29
+            'BitAnd' => 0x21
+            'BitOr' => 0x09
+            _ => 0x31
+        }
+
+        if (smallConstant(right)) {
+            self.loadOperand(target, left)
+            self.flush()
+            valid = self.code.length() == self.knownAt
+
+            if (name == 'IntMul') {
+                // imul target, target, imm32
+                self.bytes([rex(target, target), 0x69, 0xC0 | (target & 7) << 3 | (target & 7)])
+            } else {
+                self.bytes([rex(0, target), 0x81, 0xC0 | extension << 3 | (target & 7)])
+            }
+
+            self.int32(constantOf(right))
+        } else {
+            mut source = self.operandRegister(right)
+
+            if (source < 0) {
+                self.loadOperand(rcx, right)
+                source = rcx
+            }
+
+            self.loadOperand(target, left)
+            self.flush()
+            valid = self.code.length() == self.knownAt
+
+            if (name == 'IntMul') {
+                // imul target, source
+                self.bytes([rex(target, source), 0x0F, 0xAF, 0xC0 | (target & 7) << 3 | (source & 7)])
+            } else {
+                self.bytes([rex(source, target), opcode, 0xC0 | (source & 7) << 3 | (target & 7)])
+            }
+        }
+
+        if (name == 'IntAdd' or name == 'IntSub' or name == 'IntMul') { self.check(overflow, line, 'integer overflow') }
+
+        // Only the target changed: what the other registers hold stays known.
+        if (not valid) { self.forget() }
+
+        for held in range(16) {
+            if (self.known[held] == self.offsets[dest]) { self.known[held] = 0 }
+        }
+
+        self.known[target] = self.offsets[dest]
+        self.knownAt = self.code.length()
+        return Ok()
+    }
+
     match (name) {
         // A local plus a constant into itself (`i += 1`): add reg (or [rbp + offset]), imm32, in place.
         other if ((other == 'IntAdd' or other == 'IntSub') and smallConstant(right) and left == LocalOp(dest)) => {
