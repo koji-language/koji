@@ -891,32 +891,29 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         oneWord.push(words(local.ty) == 1)
     }
 
-    immut weights = registerWeights(routine, oneWord, 3)
     immut ranges = self.registerRanges(heldIn)
-    immut given = assignRegisters(weights, ranges, keptRegisters.length())
-    // The spare registers, for the locals left of no references of their own (see `tracked`) alive
-    // where the function calls nothing.
-    immut calling = callingPositions(routine)
+    // First the spare registers, which cost nothing to save (any use counts), for the locals of no
+    // references of their own (see `tracked`) alive where the function calls nothing; then the
+    // registers that calls keep, which the function saves, for the most used of the others.
+    immut calls = callsBefore(routine)
+    immut anyUse = registerWeights(routine, oneWord, 1)
     mut spareWeights: int[] = []
 
     for local in range(routine.locals.length()) {
-        mut weight = weights[local]
-
-        if (given[local] >= 0 or self.tracked(local) or ranges.first[local] < 0) { weight = -1 }
-
-        if (weight >= 0) {
-            for position in calling {
-                if (ranges.first[local] <= position and position <= ranges.last[local]) {
-                    weight = -1
-                    break
-                }
-            }
-        }
-
-        spareWeights.push(weight)
+        immut first = ranges.first[local]
+        immut crosses = first >= 0 and calls[ranges.last[local] + 1] > calls[first]
+        spareWeights.push(if (first < 0 or crosses or self.tracked(local)) { -1 } else { anyUse[local] })
     }
 
     immut spareGiven = assignRegisters(spareWeights, ranges, spareRegisters.length())
+    mut weights = registerWeights(routine, oneWord, 3)
+
+    for local in range(routine.locals.length()) {
+        if (spareGiven[local] >= 0) { weights[local] = -1 }
+    }
+
+    immut given = assignRegisters(weights, ranges, keptRegisters.length())
+
     self.ranges = ranges
     self.spareLocals = []
     self.spareHomes = []
@@ -1439,11 +1436,11 @@ function Native.registerRanges(mut self, heldIn: boolean[][]): Ranges {
     return ranges
 }
 
-// The positions (see `liveRanges`) of the instructions that call a function, and of the returns
-// (which release the locals): no local is kept in a spare register across them.
-function callingPositions(routine: IrFunction): int[] {
-    mut found: int[] = []
-    mut position = 0
+// For each position (see `liveRanges`), how many before it are of instructions that call a function
+// or of returns (which release the locals): no local is kept in a spare register across them.
+function callsBefore(routine: IrFunction): int[] {
+    mut counts: int[] = [0]
+    mut count = 0
 
     for block in routine.blocks {
         for instruction in block.instructions {
@@ -1456,20 +1453,20 @@ function callingPositions(routine: IrFunction): int[] {
                 _ => false
             }
 
-            if (calls) { found.push(position) }
+            if (calls) { count += 1 }
 
-            position += 1
+            counts.push(count)
         }
 
         match (block.terminator) {
-            ReturnT(_) => found.push(position)
+            ReturnT(_) => count += 1
             _ => {}
         }
 
-        position += 1
+        counts.push(count)
     }
 
-    return found
+    return counts
 }
 
 // Whether some block goes to `block` (or it is the first).
@@ -2611,8 +2608,17 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
         Some(local) if (args.length() == 1 and accessors.has(symbol)) => {
             match (args[0]) {
                 ValueArg(given) => {
-                    self.loadOperand(rax, given)
                     immut offset = accessors[symbol]
+                    immut base = self.operandRegister(given)
+
+                    // mov rax, [base + offset], from the register of the value.
+                    if (base >= 0 and offset >= 0) {
+                        self.based([0x48, 0x8B], base, offset)
+                        self.storeResult(LocalPlace(local), routine.locals[local].ty)
+                        return Ok()
+                    }
+
+                    self.loadOperand(rax, given)
 
                     if (offset < 0) {
                         // lea rax, [rax - offset]: an address in the value
@@ -2802,6 +2808,23 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
         match (operands[1]) {
             IntOp(known) if (known >= -2147483648 and known <= 2147483647 and symbol != 'koji_unsafe_distance') => {
                 immut prefix = code[0..code.length() - 2]
+                // The address in a register of its own: the base of the instruction.
+                immut base = self.operandRegister(operands[0])
+
+                if (base >= 0 and symbol != 'koji_unsafe_offset') {
+                    if (symbol.startsWith('koji_unsafe_write_')) { self.loadOperand(rax, operands[2]) }
+
+                    self.based(prefix, base, known)
+
+                    if (not symbol.startsWith('koji_unsafe_write_')) {
+                        match (dest) {
+                            Some(local) => self.storeResult(LocalPlace(local), routine.locals[local].ty)
+                            None => {}
+                        }
+                    }
+
+                    return Ok()
+                }
 
                 if (symbol.startsWith('koji_unsafe_write_')) {
                     self.loadOperand(rax, operands[2])
@@ -3178,6 +3201,13 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
         'IntSub' => {
             self.loadBoth(left, right)
             self.bytes([0x48, 0x29, 0xC8])
+            self.check(overflow, line, 'integer overflow')
+        }
+        // imul rax, rax, imm32
+        'IntMul' if (smallConstant(right)) => {
+            self.loadOperand(rax, left)
+            self.bytes([0x48, 0x69, 0xC0])
+            self.int32(constantOf(right))
             self.check(overflow, line, 'integer overflow')
         }
         'IntMul' => {
@@ -4257,6 +4287,9 @@ function Native.loadWord(mut self, register: int, offset: int) {
     immut home = self.home(offset)
 
     if (home >= 0) {
+        // Already there: the register was its source or got it from its home (see `storeWord`).
+        if (self.code.length() == self.knownAt and self.known[register] == offset and register != home) { return }
+
         self.moveRegister(register, home)
         return
     }
@@ -4330,7 +4363,19 @@ function Native.storeWord(mut self, register: int, offset: int) {
     immut home = self.home(offset)
 
     if (home >= 0) {
+        if (self.code.length() != self.knownAt) { self.forget() }
+
         self.moveRegister(home, register)
+
+        // The register still holds the value of the local (named by its word of the frame), until
+        // other code changes it.
+        for held in range(16) {
+            if (self.known[held] == offset) { self.known[held] = 0 }
+        }
+
+        self.known[register] = offset
+        self.known[home] = offset
+        self.knownAt = self.code.length()
         return
     }
 
@@ -4641,6 +4686,28 @@ function Native.restoreSpare(mut self, spared: int[]) {
         self.bytes([rex(register, 0), 0x8B, 0x85 | (register & 7) << 3])
         self.int32(self.spareSlot(register))
     }
+}
+
+// An instruction on rax and [base + offset] (base a register): its opcode `prefix` (with REX.W
+// first for a whole word), then the prefix REX.B for a base among r8 to r15, ModRM with a
+// displacement of 32 bits (and SIB for rsp or r12).
+function Native.based(mut self, prefix: int[], base: int, offset: int) {
+    mut code = prefix
+
+    if (base >= 8) {
+        if (code[0] == 0x48) {
+            code[0] = 0x49
+        } else {
+            code = [0x41] + code
+        }
+    }
+
+    code.push(0x80 | (base & 7))
+
+    if (base & 7 == 4) { code.push(0x24) }
+
+    self.bytes(code)
+    self.int32(offset)
 }
 
 function Native.spareSlot(self, register: int): int {
