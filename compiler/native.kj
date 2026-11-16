@@ -43,6 +43,30 @@ immut keptGain = 40
 // of no references alive where the function calls none (a call that happens there saves them).
 immut spareRegisters = [10, 11]
 
+// The divisors whose quotient is a product (signed, 64 bits, as Hacker's Delight computes them): the
+// magic number, the shift of the high word of the product, and whether the dividend is added to it
+// (a magic number above 2^63). Checked against division on the extremes and random dividends.
+immut divisors: Map[int, int[]] = [
+    3: [6148914691236517206, 0, 0],
+    5: [7378697629483820647, 1, 0],
+    6: [3074457345618258603, 0, 0],
+    7: [5270498306774157605, 1, 0],
+    9: [2049638230412172402, 0, 0],
+    10: [7378697629483820647, 2, 0],
+    11: [3353953467947191203, 1, 0],
+    12: [3074457345618258603, 1, 0],
+    13: [5675921253449092805, 2, 0],
+    24: [3074457345618258603, 2, 0],
+    25: [-6640827866535438581, 4, 1],
+    60: [-8608480567731124087, 5, 1],
+    100: [-6640827866535438581, 6, 1],
+    1000: [2361183241434822607, 7, 0],
+    10000: [3777893186295716171, 11, 0],
+    100000: [3022314549036572937, 14, 0],
+    1000000: [4835703278458516699, 18, 0],
+    1000000000: [1237940039285380275, 26, 0]
+]
+
 // The functions of the prelude that read a word of a value: its offset (an address in the value
 // for a negative one: `-24` is `value + 24`).
 immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16, 'koji_unsafe_string_size': 8, 'koji_unsafe_string_bytes': -24, 'koji_unsafe_list_items': 24, 'koji_unsafe_string_references': 0, 'koji_unsafe_string_capacity': 16, 'koji_element_size': 0]
@@ -3472,6 +3496,44 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
             self.loadBoth(left, right)
             self.bytes([0x48, 0x0F, 0xAF, 0xC1])
         }
+        // By a constant of the table of divisors (see `divisors`), or a power of two: a product by a
+        // magic number and shifts, instead of idiv (as compilers of C do).
+        other if ((other == 'IntDiv' or other == 'IntRem') and smallConstant(right) and constantOf(right) > 1 and (divisors.has(constantOf(right)) or powerOfTwo(constantOf(right)) > 0)) => {
+            immut divisor = constantOf(right)
+            self.loadOperand(rax, left)
+            // mov rcx, rax (the dividend)
+            self.bytes([0x48, 0x89, 0xC1])
+            immut power = powerOfTwo(divisor)
+
+            if (power > 0) {
+                // The quotient rounded toward zero: (n + (n >> 63 >>> (64 - k))) >> k, in rdx.
+                // mov rdx, rax; sar rdx, 63; shr rdx, 64 - k; add rdx, rax; sar rdx, k
+                self.bytes([0x48, 0x89, 0xC2, 0x48, 0xC1, 0xFA, 0x3F, 0x48, 0xC1, 0xEA, 64 - power, 0x48, 0x01, 0xC2, 0x48, 0xC1, 0xFA, power])
+            } else {
+                immut magic = divisors[divisor]
+                // movabs rdx, magic; imul rdx (rdx:rax = n * magic); [add rdx, rcx]; sar rdx, shift;
+                // mov rax, rcx; shr rax, 63; add rdx, rax
+                self.bytes([0x48, 0xBA])
+                self.word64(magic[0])
+                self.bytes([0x48, 0xF7, 0xEA])
+
+                if (magic[2] == 1) { self.bytes([0x48, 0x01, 0xCA]) }
+
+                if (magic[1] > 0) { self.bytes([0x48, 0xC1, 0xFA, magic[1]]) }
+
+                self.bytes([0x48, 0x89, 0xC8, 0x48, 0xC1, 0xE8, 0x3F, 0x48, 0x01, 0xC2])
+            }
+
+            if (other == 'IntDiv') {
+                // mov rax, rdx
+                self.bytes([0x48, 0x89, 0xD0])
+            } else {
+                // imul rdx, rdx, divisor; mov rax, rcx; sub rax, rdx
+                self.bytes([0x48, 0x69, 0xD2])
+                self.int32(divisor)
+                self.bytes([0x48, 0x89, 0xC8, 0x48, 0x29, 0xD0])
+            }
+        }
         // By a positive constant: neither a division by zero nor an overflow.
         other if ((other == 'IntDiv' or other == 'IntRem') and smallConstant(right) and constantOf(right) > 0) => {
             self.loadBoth(left, right)
@@ -3808,6 +3870,15 @@ function shiftConstant(operand: Operand): boolean {
         IntOp(number) => number >= 0 and number <= 63
         _ => false
     }
+}
+
+// k when `number` is 2^k (k from 1 to 30), or 0.
+function powerOfTwo(number: int): int {
+    for k in range(1, 31) {
+        if (number == 1 << k) { return k }
+    }
+
+    return 0
 }
 
 function smallConstant(operand: Operand): boolean {

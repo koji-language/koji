@@ -3161,3 +3161,13 @@ fn items_set_and_pushed_in_place() {
     let expected = "[false, true, false, true, false, false]\n[false, false, false, false, false, false]\n[0, 1, -1, 9, 16, 25, 36, 49, 64, 81, 100]\n[0, 1, 4, 9, 16, 25, 36, 49, 64, 81]\n['H', 'é', 'l', 'l', 'o']\n[false, false]\n[true]\n";
     assert_same("items_in_place", source, expected);
 }
+
+#[test]
+fn divisions_by_constants() {
+    // The native backend divides by some constants with a product by a magic number, and by powers
+    // of two with shifts: the quotients round toward zero and the remainders take the sign of the
+    // dividend, on the extremes too.
+    let source = "immut values = [0, 1, -1, 7, -7, 99, -99, 1000001, -1000001, 9223372036854775807, -9223372036854775807 - 1, 123456789012345, -98765432109876]\nfor v in values {\n    immut a = v / 10\n    immut b = v % 10\n    immut c = v / 100\n    immut d = v % 100\n    immut e = v / 16\n    immut f = v % 16\n    immut g = v / 7\n    immut h = v % 7\n    immut k = v / 1000000000\n    immut m = v % 2\n    print(`${v}: ${a} ${b} ${c} ${d} ${e} ${f} ${g} ${h} ${k} ${m}`)\n}\n";
+    let expected = "0: 0 0 0 0 0 0 0 0 0 0\n1: 0 1 0 1 0 1 0 1 0 1\n-1: 0 -1 0 -1 0 -1 0 -1 0 -1\n7: 0 7 0 7 0 7 1 0 0 1\n-7: 0 -7 0 -7 0 -7 -1 0 0 -1\n99: 9 9 0 99 6 3 14 1 0 1\n-99: -9 -9 0 -99 -6 -3 -14 -1 0 -1\n1000001: 100000 1 10000 1 62500 1 142857 2 0 1\n-1000001: -100000 -1 -10000 -1 -62500 -1 -142857 -2 0 -1\n9223372036854775807: 922337203685477580 7 92233720368547758 7 576460752303423487 15 1317624576693539401 0 9223372036 1\n-9223372036854775808: -922337203685477580 -8 -92233720368547758 -8 -576460752303423488 0 -1317624576693539401 -1 -9223372036 0\n123456789012345: 12345678901234 5 1234567890123 45 7716049313271 9 17636684144620 5 123456 1\n-98765432109876: -9876543210987 -6 -987654321098 -76 -6172839506867 -4 -14109347444268 0 -98765 0\n";
+    assert_same("divisions_by_constants", source, expected);
+}
