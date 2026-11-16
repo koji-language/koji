@@ -201,6 +201,24 @@ extern function koji_list_set(variable: Address, index: int, value: Address, her
 
 // `items.push(value)`.
 extern function koji_list_push(variable: Address, value: Address) {
+    // Most often: a list of its own, of items of a word, with room for one more.
+    immut own: Address = read(variable, 0)
+    immut references: int = read(own, 0)
+    immut count = lengthOf(own)
+
+    if (references == 1 and strideOf(own) == 1 and count < capacityOf(own)) {
+        immut kind = elementOf(own)
+
+        if (koji_element_size(kind) == 8) {
+            immut place = offset(itemsOf(own), count * 8)
+            immut word: int = read(value, 0)
+            write(place, 0, word)
+            write(own, 32, count + 1)
+            koji_element_retain(kind, place)
+            return
+        }
+    }
+
     immut list = unshared(variable)
     makeRoom(list, 1)
     immut length = lengthOf(list)

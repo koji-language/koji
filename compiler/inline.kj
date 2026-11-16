@@ -200,6 +200,8 @@ export function simplify(given: IrFunction): IrFunction {
         }
     }
 
+    routine = folded(routine)
+
     for round in range(4) {
         routine = threaded(routine)
     }
@@ -228,6 +230,8 @@ export function simplify(given: IrFunction): IrFunction {
             reads[local] += 1
         }
     }
+
+    routine = products(routine, reads, writes)
 
     // A branch on the negation of a value, which only the branch reads, branches on the value the
     // other way.
@@ -280,6 +284,143 @@ export function simplify(given: IrFunction): IrFunction {
     }
 
     return laidOut(routine)
+}
+
+// The negations of constants folded (`-1` is `IntNeg 1` in the IR).
+function folded(given: IrFunction): IrFunction {
+    mut routine = given
+
+    for block in range(routine.blocks.length()) {
+        mut instructions = routine.blocks[block].instructions
+        mut changed = false
+
+        for position in range(instructions.length()) {
+            match (instructions[position]) {
+                UnaryIns(dest, 'IntNeg', IntOp(number), _) if (number != -9223372036854775807 - 1) => {
+                    instructions[position] = CopyIns(LocalPlace(dest), IntOp(-number))
+                    changed = true
+                }
+                _ => {}
+            }
+        }
+
+        if (changed) { routine.blocks[block] = { instructions: instructions, terminator: routine.blocks[block].terminator } }
+    }
+
+    return routine
+}
+
+// `lowWord(wordProduct(wide(a, x), wide(b, y)))` of `koji:unsafe`, each value read once, in one block:
+// `IntMulWrapping a, b`, the product of two words wrapping around (which the native backend computes
+// without the words of U128 in the frame).
+function products(given: IrFunction, reads: int[], writes: int[]): IrFunction {
+    mut routine = given
+
+    for block in range(routine.blocks.length()) {
+        mut instructions = routine.blocks[block].instructions
+        mut removed: boolean[] = []
+
+        for instruction in instructions {
+            removed.push(false)
+        }
+
+        mut changed = false
+
+        for position in range(instructions.length()) {
+            match (instructions[position]) {
+                StdCallIns(Some(dest), 'koji_unsafe_low_word', args) if (args.length() == 1) => {
+                    immut product = definedBefore(instructions, position, args[0], 'koji_unsafe_word_product', reads, writes)
+
+                    if (product < 0) { continue }
+
+                    immut factors = match (instructions[product]) {
+                        StdCallIns(_, _, given) => given
+                        _ => []
+                    }
+
+                    if (factors.length() != 2) { continue }
+
+                    immut first = definedBefore(instructions, product, factors[0], 'koji_unsafe_wide', reads, writes)
+                    immut second = definedBefore(instructions, product, factors[1], 'koji_unsafe_wide', reads, writes)
+
+                    if (first < 0 or second < 0 or first == second) { continue }
+
+                    immut a = lowOf(instructions[first])
+                    immut b = lowOf(instructions[second])
+
+                    // The low words are not changed before the product is read.
+                    if (changedBetween(instructions, first, position, a) or changedBetween(instructions, second, position, b)) { continue }
+
+                    instructions[position] = BinaryIns(dest, 'IntMulWrapping', a, b, 0)
+                    removed[product] = true
+                    removed[first] = true
+                    removed[second] = true
+                    changed = true
+                }
+                _ => {}
+            }
+        }
+
+        if (changed) {
+            mut kept: Instruction[] = []
+
+            for position in range(instructions.length()) {
+                if (not removed[position]) { kept.push(instructions[position]) }
+            }
+
+            routine.blocks[block] = { instructions: kept, terminator: routine.blocks[block].terminator }
+        }
+    }
+
+    return routine
+}
+
+// The position before `before` of the call of `name` that writes the local of `arg`, written and
+// read once, or -1.
+function definedBefore(instructions: Instruction[], before: int, arg: StdArg, name: string, reads: int[], writes: int[]): int {
+    immut local = match (arg) {
+        ValueArg(LocalOp(id)) => id
+        _ => return -1
+    }
+
+    if (reads[local] != 1 or writes[local] != 1) { return -1 }
+
+    mut position = before - 1
+
+    while (position >= 0) {
+        match (instructions[position]) {
+            StdCallIns(Some(written), called, _) if (written == local) => return if (called == name) { position } else { -1 }
+            _ => {}
+        }
+
+        position -= 1
+    }
+
+    return -1
+}
+
+// The low word given to `wide`.
+function lowOf(instruction: Instruction): Operand {
+    return match (instruction) {
+        StdCallIns(_, _, args) => match (args[0]) {
+            ValueArg(value) => value
+            _ => IntOp(0)
+        }
+        _ => IntOp(0)
+    }
+}
+
+function changedBetween(instructions: Instruction[], start: int, end: int, value: Operand): boolean {
+    immut local = match (value) {
+        LocalOp(id) => id
+        _ => return false
+    }
+
+    for position in range(start + 1, end) {
+        if (local in changes(instructions[position])) { return true }
+    }
+
+    return false
 }
 
 // The branches of a function made shorter, once (`simplify` repeats it, as each change may allow

@@ -42,7 +42,7 @@ immut spareRegisters = [10, 11]
 
 // The functions of the prelude that read a word of a value: its offset (an address in the value
 // for a negative one: `-24` is `value + 24`).
-immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16, 'koji_unsafe_string_size': 8, 'koji_unsafe_string_bytes': -24, 'koji_unsafe_list_items': 24, 'koji_unsafe_string_references': 0, 'koji_unsafe_string_capacity': 16]
+immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16, 'koji_unsafe_string_size': 8, 'koji_unsafe_string_bytes': -24, 'koji_unsafe_list_items': 24, 'koji_unsafe_string_references': 0, 'koji_unsafe_string_capacity': 16, 'koji_element_size': 0]
 
 // The functions of memory of the prelude (`koji:unsafe`), inline: their code, with the address in
 // rax and the offset in rcx (read), the address in rcx, the offset in rdx and the value in rax
@@ -1030,10 +1030,17 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         }
     }
 
-    self.bytes([0x31, 0xC0])
+    mut zeroed = false
 
     for local in range(routine.params, routine.locals.length()) {
-        if (managed(routine.locals[local].ty) is Some and maybeEmpty.has(local)) { self.storeWord(rax, offsets[local]) }
+        if (managed(routine.locals[local].ty) is Some and maybeEmpty.has(local)) {
+            if (not zeroed) {
+                self.bytes([0x31, 0xC0])
+                zeroed = true
+            }
+
+            self.storeWord(rax, offsets[local])
+        }
     }
 
     immut places = placesOf(paramTypes(routine))
@@ -2624,6 +2631,49 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
         _ => {}
     }
 
+    // The description of the items of a list, a map or a record (KojiElementType of the prelude):
+    // whether they hold references (a function to release them), and the function that retains or
+    // releases the one in a slot, called when there is one.
+    if (symbol == 'koji_element_counted' and args.length() == 1) {
+        match (args[0]) {
+            ValueArg(given) => {
+                // mov rax, [rax + 16]; test rax, rax; setne al; movzx eax, al
+                self.loadOperand(rax, given)
+                self.bytes([0x48, 0x8B, 0x40, 0x10, 0x48, 0x85, 0xC0, 0x0F, 0x95, 0xC0, 0x0F, 0xB6, 0xC0])
+
+                match (dest) {
+                    Some(local) => self.storeResult(LocalPlace(local), routine.locals[local].ty)
+                    None => {}
+                }
+
+                return Ok()
+            }
+            _ => {}
+        }
+    }
+
+    if ((symbol == 'koji_element_retain' or symbol == 'koji_element_release') and args.length() == 2 and dest is None) {
+        match (args[0]) {
+            ValueArg(element) => match (args[1]) {
+                ValueArg(slot) => {
+                    // mov rax, [element + 8 or 16]; test rax, rax; jz done; mov rdi, slot; call rax
+                    self.loadOperand(rdi, slot)
+                    self.loadOperand(rax, element)
+                    self.bytes([0x48, 0x8B, 0x40, if (symbol == 'koji_element_retain') { 0x08 } else { 0x10 }, 0x48, 0x85, 0xC0])
+                    immut none = self.jumpIf(equal)
+                    immut spared = self.saveSpare()
+                    self.bytes([0xFF, 0xD0])
+                    self.restoreSpare(spared)
+                    self.patchHere(none)
+                    self.forget()
+                    return Ok()
+                }
+                _ => {}
+            }
+            _ => {}
+        }
+    }
+
     // A new string of `length` bytes to write, with room for `capacity` (koji_unsafe_blank_string of
     // the prelude, inline): a block of the pool of 3 + room / 8 words, the room the larger rounded up
     // to a word.
@@ -3134,6 +3184,20 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
             self.loadBoth(left, right)
             self.bytes([0x48, 0x0F, 0xAF, 0xC1])
             self.check(overflow, line, 'integer overflow')
+        }
+        // The low word of the product of two words, wrapping around (only from inline.kj: the low
+        // word of `wordProduct` of `koji:unsafe`).
+        'IntMulWrapping' => {
+            self.loadBoth(left, right)
+            self.bytes([0x48, 0x0F, 0xAF, 0xC1])
+        }
+        // By a positive constant: neither a division by zero nor an overflow.
+        other if ((other == 'IntDiv' or other == 'IntRem') and smallConstant(right) and constantOf(right) > 0) => {
+            self.loadBoth(left, right)
+            // cqo; idiv rcx
+            self.bytes([0x48, 0x99, 0x48, 0xF7, 0xF9])
+
+            if (other == 'IntRem') { self.bytes([0x48, 0x89, 0xD0]) }
         }
         other if (other == 'IntDiv' or other == 'IntRem') => {
             self.loadBoth(left, right)
