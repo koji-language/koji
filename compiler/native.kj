@@ -1025,10 +1025,33 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
 
     if (self.preemptible and makesCalls(routine)) { self.preempt() }
 
+    // The blocks only the one before reaches, by going on to them: what the registers hold, and the
+    // store not written yet, stay as they were.
+    mut entries: int[] = []
+
+    for each in routine.blocks {
+        entries.push(0)
+    }
+
+    for each in routine.blocks {
+        for target in successors(each.terminator) {
+            entries[target] += 1
+        }
+    }
+
     for block in range(routine.blocks.length()) {
-        self.flush()
+        immut fallsIn = block > 0 and entries[block] == 1 and match (routine.blocks[block - 1].terminator) {
+            GotoT(target) => target == block
+            BranchT(_, thenBlock, elseBlock) => thenBlock == block or elseBlock == block
+            _ => false
+        }
+
+        if (not fallsIn) { self.flush() }
+
         self.blocks.push(self.code.length())
-        self.knownAt = -1
+
+        if (not fallsIn) { self.knownAt = -1 }
+
         self.block = block
         self.held = heldIn[block]
 
@@ -3348,15 +3371,11 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
                 self.fused = 0
 
                 if (thenBlock == block + 1) {
-                    self.bytes([0x0F, code ^ 1])
-                    self.jumps.push({ at: self.code.length(), block: elseBlock })
-                    self.int32(0)
+                    self.branchTo([0x0F, code ^ 1], elseBlock)
                     return Ok()
                 }
 
-                self.bytes([0x0F, code])
-                self.jumps.push({ at: self.code.length(), block: thenBlock })
-                self.int32(0)
+                self.branchTo([0x0F, code], thenBlock)
 
                 if (elseBlock != block + 1) {
                     self.bytes([0xE9])
@@ -3379,15 +3398,11 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
 
             // test; jz else when the then block follows, jnz then (and jmp else) otherwise.
             if (thenBlock == block + 1) {
-                self.bytes(test + [0x0F, 0x84])
-                self.jumps.push({ at: self.code.length(), block: elseBlock })
-                self.int32(0)
+                self.branchTo(test + [0x0F, 0x84], elseBlock)
                 return Ok()
             }
 
-            self.bytes(test + [0x0F, 0x85])
-            self.jumps.push({ at: self.code.length(), block: thenBlock })
-            self.int32(0)
+            self.branchTo(test + [0x0F, 0x85], thenBlock)
 
             if (elseBlock == block + 1) { return Ok() }
 
@@ -3461,6 +3476,23 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
     }
 
     return Ok()
+}
+
+// A conditional jump to a block (with the test before it): the store not written yet is written
+// first (the block jumped to reads the frame), and what the registers hold stays known for the code
+// after it (neither changes a register).
+function Native.branchTo(mut self, code: int[], block: int) {
+    self.flush()
+    immut valid = self.code.length() == self.knownAt
+
+    for each in code {
+        self.code.push(byte(each))
+    }
+
+    self.jumps.push({ at: self.code.length(), block: block })
+    self.int32(0)
+
+    if (valid) { self.knownAt = self.code.length() }
 }
 
 function Native.releaseLocals(mut self) {
