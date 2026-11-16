@@ -213,6 +213,9 @@ type Native = {
     // the position of the current instruction among them.
     spareLocals: int[]
     spareHomes: int[]
+    // The local of `text += string(c)` whose string is never made, and its char (see `appendsChar`).
+    charLocal: int
+    charValue: Operand
     spareSlots: int[]
     ranges: Ranges
     at: int
@@ -229,7 +232,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [], shiftPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
         constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: [], spillHomes: [], spillSlots: [], tagLocal: -1, tagRecord: IntOp(0), trampolineStart: 0, variadic: false,
-        spareLocals: [], spareHomes: [], spareSlots: [], ranges: { first: [], last: [], starts: [], ends: [] }, at: 0
+        spareLocals: [], spareHomes: [], spareSlots: [], ranges: { first: [], last: [], starts: [], ends: [] }, at: 0, charLocal: -1, charValue: IntOp(0)
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -1547,6 +1550,11 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
                     self.storeResult(dest, ty)
                 }
             }
+        }
+        // `text += string(c)`: the next instruction appends the char, without a string for it.
+        UnaryIns(dest, 'CharToStr', operand, _) if (self.appendsChar(dest)) => {
+            self.charLocal = dest
+            self.charValue = operand
         }
         UnaryIns(dest, op, operand, line) => self.unary(dest, op, operand, line)?
         BinaryIns(dest, op, left, right, line) => self.binary(dest, op, left, right, line)?
@@ -3381,7 +3389,16 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
                 LocalOp(id) => id
                 _ => 0
             }
-            self.callC('koji_string_append', both, StrTy)
+
+            if (right == LocalOp(self.charLocal) and self.charLocal >= 0) {
+                // The char of the instruction before (see `appendsChar`), whose string was never made.
+                self.emptied.push(self.charLocal)
+                self.charLocal = -1
+                self.pushChar(left, self.charValue)
+            } else {
+                self.callC('koji_string_append', both, StrTy)
+            }
+
             self.zeroPlace(LocalPlace(local))
         }
         'StrContainsChar' => self.callC('koji_string_contains_char', [value(right, rightType), value(left, leftType)], BoolTy)
@@ -3461,6 +3478,52 @@ function Native.addConstant(mut self, code: int, number: int, line: int) {
 }
 
 // Whether `left + right` can add to `left` in place: `left` is a local read for the last time.
+// Whether the string of a char that `local` gets is only appended by the next instruction to a
+// string read there for the last time (`text += string(c)`): see `pushChar`.
+function Native.appendsChar(mut self, local: int): boolean {
+    immut instructions = self.routine.blocks[self.block].instructions
+
+    if (self.position + 1 >= instructions.length()) { return false }
+
+    match (instructions[self.position + 1]) {
+        BinaryIns(dest, 'StrConcat', left, LocalOp(right), _) if (right == local and left != LocalOp(local)) => {
+            if (not (local in self.live[self.block][self.position + 1])) { return false }
+
+            self.position += 1
+            immut fits = self.appendable(dest, left, LocalOp(right))
+            self.position -= 1
+            return fits
+        }
+        _ => return false
+    }
+}
+
+// `text + string(c)`, taking `text` (koji_string_push_char of the prelude): an ASCII char goes in
+// place when no one else sees `text` and its block has room; koji_string_append_char does the rest.
+// The result in rax.
+function Native.pushChar(mut self, text: Operand, char: Operand) {
+    self.loadOperand(rsi, char)
+    self.loadOperand(rdi, text)
+    // cmp esi, 0x80; jae slow; cmp qword [rdi], 1; jne slow; mov rax, [rdi + 8];
+    // cmp rax, [rdi + 16]; jge slow
+    self.bytes([0x81, 0xFE])
+    self.int32(0x80)
+    immut wide = self.jumpIf(0x3)
+    self.bytes([0x48, 0x83, 0x3F, 0x01])
+    immut shared = self.jumpIf(notEqual)
+    self.bytes([0x48, 0x8B, 0x47, 0x08, 0x48, 0x3B, 0x47, 0x10])
+    immut full = self.jumpIf(0xD)
+    // mov [rdi + rax + 24], sil; inc rax; mov [rdi + 8], rax; mov rax, rdi; jmp done
+    self.bytes([0x40, 0x88, 0x74, 0x07, 0x18, 0x48, 0xFF, 0xC0, 0x48, 0x89, 0x47, 0x08, 0x48, 0x89, 0xF8])
+    immut done = self.jump()
+    self.patchHere(wide)
+    self.patchHere(shared)
+    self.patchHere(full)
+    self.callExternal('koji_string_append_char')
+    self.patchHere(done)
+    self.forget()
+}
+
 function Native.appendable(self, dest: int, left: Operand, right: Operand): boolean {
     return match (self.movable(left)) {
         Some(local) => left != right and dest != local
@@ -4861,11 +4924,15 @@ function elfObject(native: Native, mainStart: int, extras: int[], exported: Expo
     immut sectionIndex: Map[string, int] = ['.text': 1, '.rodata': 2, '.data': 3, '.bss': 4]
     mut symbols: Symbol[] = [{ name: '', info: 0, section: 0, value: 0, size: 0 }]
 
-    // The sections as local symbols (STT_SECTION), then the functions (local, STT_FUNC), then the
-    // global ones.
+    // The sections as local symbols (STT_SECTION: symbol i is section i), the file of the local
+    // symbols (STT_FILE, absolute: named the same for every program, so that the linker does not
+    // name it after the object, a temporary file, and builds the same program the same), then the
+    // functions (local, STT_FUNC), then the global ones.
     for i in range(1, 5) {
         symbols.push({ name: '', info: 3, section: i, value: 0, size: 0 })
     }
+
+    symbols.push({ name: 'koji', info: 4, section: 0xFFF1, value: 0, size: 0 })
 
     for id in range(native.starts.length()) {
         immut end = if (id + 1 < native.starts.length()) { native.starts[id + 1] } else { if (extras.length() > 0) { extras[0] } else { mainStart } }
