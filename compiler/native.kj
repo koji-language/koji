@@ -1503,8 +1503,11 @@ function Native.listItem(mut self, list: Operand, index: Operand, size: int, lin
     self.bytes([0x48, 0x3B, 0x77, 0x20, 0x0F, 0x83])
     self.indexPanics.push({ at: self.code.length(), location: self.text(self.lineText(line)), message: 0 })
     self.int32(0)
-    // mov rax, [rdi + 24] (the items); lea rax, [rax + rsi * 8] (or imul by the words first)
+    // mov rax, [rdi + 24] (the items); lea rax, [rax + rsi * 8] (or imul by the words first; for
+    // a size of 0, the items in rax and the index in rsi)
     self.bytes([0x48, 0x8B, 0x47, 0x18])
+
+    if (size == 0) { return }
 
     if (size == 1) {
         self.bytes([0x48, 0x8D, 0x04, 0xF0])
@@ -1576,8 +1579,26 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
         }
         ListGetIns(dest, list, index, line) => {
             immut ty = routine.locals[dest].ty
-            self.listItem(list, index, words(ty), line)
-            self.loadThrough(ty)
+
+            // An item of a word: read from [items + index * 8] (rax and rsi), into the register of
+            // its local when it has one and no references.
+            if (words(ty) == 1 and ty != FloatTy) {
+                self.listItem(list, index, 0, line)
+                immut home = self.home(self.offsets[dest])
+
+                if (home >= 0 and managed(ty) is None) {
+                    self.loadIndexed(home, ty)
+                    self.forget()
+                    self.known[home] = self.offsets[dest]
+                    self.knownAt = self.code.length()
+                    return Ok()
+                }
+
+                self.loadIndexed(rax, ty)
+            } else {
+                self.listItem(list, index, words(ty), line)
+                self.loadThrough(ty)
+            }
 
             if (self.current[dest]) {
                 self.storeBorrowed(dest, ty)
@@ -1701,6 +1722,17 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
             immut ty = routine.locals[dest].ty
             immut base = self.fieldBase(record, field)
             immut offset = self.fieldAddress(record, field, base)
+            immut home = self.home(self.offsets[dest])
+
+            // A word of no references into the register of its local, straight from the record.
+            if (home >= 0 and words(ty) == 1 and managed(ty) is None and ty != FloatTy) {
+                self.loadInto(home, ty, offset, base)
+                self.forget()
+                self.known[home] = self.offsets[dest]
+                self.knownAt = self.code.length()
+                return Ok()
+            }
+
             self.loadAt(ty, offset, base)
 
             if (self.current[dest]) {
@@ -2610,6 +2642,23 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
                 ValueArg(given) => {
                     immut offset = accessors[symbol]
                     immut base = self.operandRegister(given)
+                    immut home = self.home(self.offsets[local])
+
+                    // Into the register of the local.
+                    if (offset >= 0 and home >= 0 and managed(routine.locals[local].ty) is None) {
+                        mut source = base
+
+                        if (source < 0) {
+                            self.loadOperand(rax, given)
+                            source = rax
+                        }
+
+                        self.loadInto(home, IntTy, offset, source)
+                        self.forget()
+                        self.known[home] = self.offsets[local]
+                        self.knownAt = self.code.length()
+                        return Ok()
+                    }
 
                     // mov rax, [base + offset], from the register of the value.
                     if (base >= 0 and offset >= 0) {
@@ -2810,6 +2859,33 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
                 immut prefix = code[0..code.length() - 2]
                 // The address in a register of its own: the base of the instruction.
                 immut base = self.operandRegister(operands[0])
+                immut readType = match (symbol) {
+                    'koji_unsafe_read_int' => IntTy
+                    'koji_unsafe_read_bool' => BoolTy
+                    'koji_unsafe_read_byte' => ByteTy
+                    'koji_unsafe_read_char' => CharTy
+                    _ => VoidTy
+                }
+
+                // A read into the register of its local.
+                match (dest) {
+                    Some(local) if (readType != VoidTy and self.home(self.offsets[local]) >= 0 and managed(routine.locals[local].ty) is None) => {
+                        mut source = base
+
+                        if (source < 0) {
+                            self.loadOperand(rax, operands[0])
+                            source = rax
+                        }
+
+                        immut home = self.home(self.offsets[local])
+                        self.loadInto(home, readType, known, source)
+                        self.forget()
+                        self.known[home] = self.offsets[local]
+                        self.knownAt = self.code.length()
+                        return Ok()
+                    }
+                    _ => {}
+                }
 
                 if (base >= 0 and symbol != 'koji_unsafe_offset') {
                     if (symbol.startsWith('koji_unsafe_write_')) { self.loadOperand(rax, operands[2]) }
@@ -3317,9 +3393,10 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
                         first = rax
                     }
 
+                    // In rax when the first is elsewhere (a value just computed is there already).
                     if (second < 0) {
-                        self.loadOperand(rcx, right)
-                        second = rcx
+                        second = if (first == rax) { rcx } else { rax }
+                        self.loadOperand(second, right)
                     }
 
                     // cmp first, second
@@ -4193,6 +4270,21 @@ function Native.loadAt(mut self, ty: Ty, offset: int, base: int) {
 }
 
 // The ModRM (and SIB) of `[base + offset]` with the register `reg`, and the offset (32 bits).
+// A word, a char, a byte or a boolean at [base + offset] into `register` (zero-extended).
+function Native.loadInto(mut self, register: int, ty: Ty, offset: int, base: int) {
+    immut extension = (register >> 3) << 2 | (base >> 3)
+    immut short = if (extension != 0) { [0x40 | extension] } else { [] }
+
+    match (ty) {
+        BoolTy => self.bytes(short + [0x0F, 0xB6])
+        ByteTy => self.bytes(short + [0x0F, 0xB6])
+        CharTy => self.bytes(short + [0x8B])
+        _ => self.bytes([rex(register, base), 0x8B])
+    }
+
+    self.addressed(register, base, offset)
+}
+
 function Native.addressed(mut self, reg: int, base: int, offset: int) {
     self.bytes([0x80 | (reg & 7) << 3 | (base & 7)])
 
@@ -4203,6 +4295,20 @@ function Native.addressed(mut self, reg: int, base: int, offset: int) {
 }
 
 // Loads the value at the address in rax (one or two words) into rax (and rdx).
+// The item of a word at [rax + rsi * 8] into `register` (zero-extended).
+function Native.loadIndexed(mut self, register: int, ty: Ty) {
+    immut short = if (register >= 8) { [0x44] } else { [] }
+
+    match (ty) {
+        BoolTy => self.bytes(short + [0x0F, 0xB6])
+        ByteTy => self.bytes(short + [0x0F, 0xB6])
+        CharTy => self.bytes(short + [0x8B])
+        _ => self.bytes([0x48 | (register >> 3) << 2, 0x8B])
+    }
+
+    self.bytes([0x04 | (register & 7) << 3, 0xF0])
+}
+
 function Native.loadThrough(mut self, ty: Ty) {
     if (words(ty) == 2) {
         // mov rdx, [rax + 8]; mov rax, [rax]

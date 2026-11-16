@@ -206,6 +206,8 @@ export function simplify(given: IrFunction): IrFunction {
         routine = threaded(routine)
     }
 
+    routine = propagated(propagated(routine))
+
     // How many times each local is written and read.
     mut writes: int[] = []
     mut reads: int[] = []
@@ -286,6 +288,133 @@ export function simplify(given: IrFunction): IrFunction {
     return laidOut(routine)
 }
 
+// The copies into a local written only by them, of no references, replaced by what they copy where
+// the local is read: a constant; a local never changed; or a local written once earlier in the same
+// block, when every read of the copy follows in that block.
+function propagated(given: IrFunction): IrFunction {
+    mut routine = given
+    immut count = routine.locals.length()
+    mut writes: int[] = []
+    mut reads: int[] = []
+    mut definedIn: int[] = []
+    mut definedAt: int[] = []
+
+    for local in range(count) {
+        writes.push(0)
+        reads.push(0)
+        definedIn.push(-1)
+        definedAt.push(-1)
+    }
+
+    for block in range(routine.blocks.length()) {
+        immut instructions = routine.blocks[block].instructions
+
+        for position in range(instructions.length()) {
+            for local in changes(instructions[position]) {
+                writes[local] += 1
+                definedIn[local] = block
+                definedAt[local] = position
+            }
+
+            for local in uses(instructions[position]) {
+                reads[local] += 1
+            }
+        }
+
+        for local in terminatorUses(routine.blocks[block].terminator) {
+            reads[local] += 1
+        }
+    }
+
+    mut replaced: Option[Operand][] = []
+
+    for local in range(count) {
+        replaced.push(None)
+    }
+
+    mut any = false
+
+    for block in range(routine.blocks.length()) {
+        immut instructions = routine.blocks[block].instructions
+
+        for position in range(instructions.length()) {
+            match (instructions[position]) {
+                CopyIns(LocalPlace(dest), value) if (dest >= routine.params and writes[dest] == 1 and not isManaged(routine.locals[dest].ty)) => {
+                    immut fits = match (value) {
+                        IntOp(_) => routine.locals[dest].ty == IntTy
+                        BoolOp(_) => routine.locals[dest].ty == BoolTy
+                        CharOp(_) => routine.locals[dest].ty == CharTy
+                        LocalOp(source) => source != dest and routine.locals[source].ty == routine.locals[dest].ty and (writes[source] == 0 or (writes[source] == 1 and definedIn[source] == block and definedAt[source] < position and readsAfter(routine.blocks[block], position, dest) == reads[dest]))
+                        _ => false
+                    }
+
+                    if (fits) {
+                        replaced[dest] = Some(value)
+                        any = true
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if (not any) { return given }
+
+    immut names: Names = { base: 0, given: replaced, aliases: [] }
+    mut blocks: IrBlock[] = []
+
+    for each in routine.blocks {
+        mut kept: Instruction[] = []
+
+        for instruction in each.instructions {
+            match (instruction) {
+                CopyIns(LocalPlace(dest), _) if (replaced[dest] is Some) => continue
+                _ => kept.push(renamed(instruction, names))
+            }
+        }
+
+        immut ending = match (each.terminator) {
+            BranchT(condition, thenBlock, elseBlock) => BranchT(operand(condition, names), thenBlock, elseBlock)
+            ReturnT(Some(value)) => ReturnT(Some(operand(value, names)))
+            _ => each.terminator
+        }
+        blocks.push({ instructions: kept, terminator: ending })
+    }
+
+    // A local replaced but still read (not as a value of an instruction): the function as it was.
+    for each in blocks {
+        for instruction in each.instructions {
+            for local in uses(instruction) {
+                if (replaced[local] is Some) { return given }
+            }
+        }
+
+        for local in terminatorUses(each.terminator) {
+            if (replaced[local] is Some) { return given }
+        }
+    }
+
+    routine.blocks = blocks
+    return routine
+}
+
+// How many times the instructions of a block after `position`, and its terminator, read `local`.
+function readsAfter(block: IrBlock, position: int, local: int): int {
+    mut found = 0
+
+    for at in range(position + 1, block.instructions.length()) {
+        for each in uses(block.instructions[at]) {
+            if (each == local) { found += 1 }
+        }
+    }
+
+    for each in terminatorUses(block.terminator) {
+        if (each == local) { found += 1 }
+    }
+
+    return found
+}
+
 // The negations of constants folded (`-1` is `IntNeg 1` in the IR).
 function folded(given: IrFunction): IrFunction {
     mut routine = given
@@ -298,6 +427,11 @@ function folded(given: IrFunction): IrFunction {
             match (instructions[position]) {
                 UnaryIns(dest, 'IntNeg', IntOp(number), _) if (number != -9223372036854775807 - 1) => {
                     instructions[position] = CopyIns(LocalPlace(dest), IntOp(-number))
+                    changed = true
+                }
+                // `x + 0` and `x - 0` (an offset of 0 from an inlined `self.at(0)`).
+                BinaryIns(dest, op, left, IntOp(0), _) if (op == 'IntAdd' or op == 'IntSub') => {
+                    instructions[position] = CopyIns(LocalPlace(dest), left)
                     changed = true
                 }
                 _ => {}
