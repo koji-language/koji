@@ -184,6 +184,9 @@ type Native = {
     pendingOffset: int
     // For each word of the frame, the temporary whose store can go so (-1 for none).
     droppable: boolean[]
+    // For each block, the managed locals that may hold a reference after it, in a block it goes to,
+    // but hold none at its end: emptied there (their register may hold another local's value).
+    zeroAtEnd: int[][]
     // The locals the current instruction emptied (moved out), which hold nothing to release until
     // written again.
     emptied: int[]
@@ -203,7 +206,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:],
         strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
-        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: []
+        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: []
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -673,7 +676,7 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         oneWord.push(words(local.ty) == 1)
     }
 
-    immut given = assignRegisters(registerWeights(routine, oneWord, 3), self.registerRanges(), keptRegisters.length())
+    immut given = assignRegisters(registerWeights(routine, oneWord, 3), self.registerRanges(heldIn), keptRegisters.length())
     mut saved: int[] = []
 
     for register in range(keptRegisters.length()) {
@@ -755,12 +758,25 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
 
     self.homes = homes
 
-    // The managed locals, empty (each is written before it is read otherwise); then the parameters,
-    // from where they come.
+    // The managed locals that are dropped or taken, empty (they may be read before they are written:
+    // see `DropIns`); the others are released only where they may hold a reference (`held`), and
+    // emptied where paths meet (`zeroAtEnd`). Then the parameters, from where they come.
+    mut maybeEmpty: Set[int] = Set.from([])
+
+    for each in routine.blocks {
+        for instruction in each.instructions {
+            match (instruction) {
+                TakeIns(_, LocalPlace(source)) => maybeEmpty.add(source)
+                DropIns(LocalPlace(source), _) => maybeEmpty.add(source)
+                _ => {}
+            }
+        }
+    }
+
     self.bytes([0x31, 0xC0])
 
     for local in range(routine.params, routine.locals.length()) {
-        if (managed(routine.locals[local].ty) is Some) { self.storeWord(rax, offsets[local]) }
+        if (managed(routine.locals[local].ty) is Some and maybeEmpty.has(local)) { self.storeWord(rax, offsets[local]) }
     }
 
     immut places = placesOf(paramTypes(routine))
@@ -844,6 +860,24 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         }
 
         self.scratch = 0
+
+        // mov r32, 0, or mov qword [rbp + offset], 0 (the flags stay, for a fused branch): see
+        // `zeroAtEnd`.
+        for local in self.zeroAtEnd[block] {
+            immut home = self.home(self.offsets[local])
+
+            if (home >= 0) {
+                if (home >= 8) { self.bytes([0x41]) }
+
+                self.bytes([0xB8 + (home & 7)])
+                self.int32(0)
+            } else {
+                self.bytes([0x48, 0xC7, 0x85])
+                self.int32(self.offsets[local])
+                self.int32(0)
+            }
+        }
+
         self.terminator(block, routine.blocks[block].terminator)?
     }
 
@@ -876,6 +910,9 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
 // Whether the reference of a local is counted by `held`: a managed local of the function's own (not a
 // `mut` parameter, which the caller gives, nor a borrowed one).
 function Native.tracked(self, local: int): boolean {
+    // A record only compared is never made (see `tagOnly`).
+    if (local < self.tagOnly.length() and self.tagOnly[local] >= 0) { return false }
+
     return managed(self.routine.locals[local].ty) is Some and not isWriteback(self.routine, local) and not self.current[local]
 }
 
@@ -1048,21 +1085,68 @@ function Native.fusable(self, block: int): int {
 
 // The ranges of the locals for registers (registers.kj): where they are alive; a parameter from the
 // start, a `mut` one to the end (each return gives it back). A local that holds a reference of its
-// own has its register for the whole function: it may be released where it is not alive (at a
-// return, or when written again), also on a path where it was never written, which must find it
-// empty rather than the value of another local.
-function Native.registerRanges(self): Ranges {
+// own also where it may hold one (it is released there: at a return, or when written again); and
+// where several paths meet, one on which it holds none must find it empty, not the value of
+// another local: it is emptied at the end of that block (see `zeroAtEnd`), which its range covers.
+function Native.registerRanges(mut self, heldIn: boolean[][]): Ranges {
     immut routine = self.routine
     mut ranges = liveRanges(routine)
     immut end = if (ranges.ends.length() > 0) { ranges.ends[ranges.ends.length() - 1] } else { 0 }
+    mut heldOut: boolean[][] = []
+
+    for block in range(routine.blocks.length()) {
+        mut held = heldIn[block]
+
+        for position in range(routine.blocks[block].instructions.length()) {
+            self.afterHeld(mut held, block, position)
+        }
+
+        heldOut.push(held)
+    }
+
+    mut zeroAtEnd: int[][] = []
+
+    for block in range(routine.blocks.length()) {
+        mut emptied: int[] = []
+
+        for local in range(routine.locals.length()) {
+            if (heldIn[block][local]) { extend(mut ranges, local, ranges.starts[block]) }
+
+            if (heldOut[block][local]) { extend(mut ranges, local, ranges.ends[block]) }
+        }
+
+        for next in successors(routine.blocks[block].terminator) {
+            for local in range(routine.locals.length()) {
+                if (heldIn[next][local] and not heldOut[block][local] and not (local in emptied)) {
+                    emptied.push(local)
+                    extend(mut ranges, local, ranges.ends[block])
+                }
+            }
+        }
+
+        zeroAtEnd.push(emptied)
+    }
+
+    self.zeroAtEnd = zeroAtEnd
 
     for local in range(routine.locals.length()) {
-        if (local < routine.params or (ranges.first[local] >= 0 and self.tracked(local))) { extend(mut ranges, local, 0) }
+        if (local < routine.params) { extend(mut ranges, local, 0) }
 
-        if (isWriteback(routine, local) or (ranges.first[local] >= 0 and self.tracked(local))) { extend(mut ranges, local, end) }
+        if (isWriteback(routine, local)) { extend(mut ranges, local, end) }
     }
 
     return ranges
+}
+
+// Whether some block goes to `block` (or it is the first).
+function Native.reached(self, block: int): boolean {
+    if (block == 0) { return true }
+
+    for each in self.routine.blocks {
+        if (block in successors(each.terminator)) { return true }
+    }
+
+    return false
 }
 
 function makesCalls(routine: IrFunction): boolean {
@@ -1279,8 +1363,9 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
         }
         FieldGetIns(dest, record, field) => {
             immut ty = routine.locals[dest].ty
-            immut offset = self.fieldAddress(record, field)
-            self.loadAt(ty, offset)
+            immut base = self.fieldBase(record, field)
+            immut offset = self.fieldAddress(record, field, base)
+            self.loadAt(ty, offset, base)
 
             if (self.current[dest]) {
                 self.storeBorrowed(dest, ty)
@@ -1304,23 +1389,36 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
             if (moved is None) { self.retainResult(ty) }
 
             self.storeWord(rax, fresh)
-            self.storeWord(rdx, fresh + 8)
+
+            if (words(ty) == 2) { self.storeWord(rdx, fresh + 8) }
 
             match (moved) {
                 Some(local) => self.zeroPlace(LocalPlace(local))
                 None => {}
             }
 
-            immut variable = self.path(record, line)
-            // mov rdi, variable; mov rax, [rdi]; cmp qword [rax], 1; jbe; call koji_record_unshare
-            self.loadWord(rdi, variable)
-            self.bytes([0x48, 0x8B, 0x07, 0x48, 0x83, 0x38, 0x01])
-            immut alone = self.jumpIf(0x6)
-            self.callExternal('koji_record_unshare')
-            self.patchHere(alone)
-            self.loadWord(rax, variable)
-            // mov rax, [rax]: the record
-            self.bytes([0x48, 0x8B, 0x00])
+            // mov rax, record; cmp qword [rax], 1; jbe; (rdi: the address of the variable) call
+            // koji_record_unshare; then the record in rax.
+            if (record.path.length() == 0) {
+                // A variable itself (in the frame or a global: its place is taken).
+                self.loadPlaceWord(rax, record.root, 0)
+                self.bytes([0x48, 0x83, 0x38, 0x01])
+                immut alone = self.jumpIf(0x6)
+                self.placeAddress(rdi, record.root)
+                self.callExternal('koji_record_unshare')
+                self.patchHere(alone)
+                self.loadPlaceWord(rax, record.root, 0)
+            } else {
+                immut variable = self.path(record, line)
+                self.loadWord(rdi, variable)
+                self.bytes([0x48, 0x8B, 0x07, 0x48, 0x83, 0x38, 0x01])
+                immut alone = self.jumpIf(0x6)
+                self.callExternal('koji_record_unshare')
+                self.patchHere(alone)
+                self.loadWord(rax, variable)
+                // mov rax, [rax]: the record
+                self.bytes([0x48, 0x8B, 0x00])
+            }
 
             match (self.knownField(record.root, record.path.length(), field)) {
                 Some(word) => {
@@ -1729,8 +1827,40 @@ function Native.knownField(self, root: Place, steps: int, field: int): Option[in
     return Some(word)
 }
 
-// The address of a field: the record in rax and the offset of the field returned (`[rax + offset]`).
-function Native.fieldAddress(mut self, record: Operand, field: int): int {
+// The register a field is read from: the one that keeps the record (a local kept in a register),
+// or rax.
+function Native.fieldBase(self, record: Operand, field: int): int {
+    match (record) {
+        LocalOp(local) => {
+            immut home = self.home(self.offsets[local])
+
+            if (home >= 0 and self.layoutKnown(self.operandType(record))) { return home }
+        }
+        _ => {}
+    }
+
+    return rax
+}
+
+// Whether the place of every field of the records of a type is known (all but the records of
+// several variants with wide fields).
+function Native.layoutKnown(self, ty: Ty): boolean {
+    immut variants = self.program.records[recordId(ty)].variants
+
+    if (variants.length() < 2) { return true }
+
+    for variant in variants {
+        for each in variant.fields {
+            if (words(each.ty) > 1) { return false }
+        }
+    }
+
+    return true
+}
+
+// The address of a field: the record in `base` (loaded into rax unless it is kept there) and the
+// offset of the field returned (`[base + offset]`).
+function Native.fieldAddress(mut self, record: Operand, field: int, base: int): int {
     immut ty = self.operandType(record)
     immut variants = self.program.records[recordId(ty)].variants
     mut wide = false
@@ -1756,7 +1886,8 @@ function Native.fieldAddress(mut self, record: Operand, field: int): int {
         }
     }
 
-    self.loadValue(record, ty)
+    if (base == rax) { self.loadValue(record, ty) }
+
     return 24 + 8 * word
 }
 
@@ -2758,8 +2889,6 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
                     self.loadWord(rax, self.offsets[param] + 8 * word)
                     // mov [rcx + 8 * word], rax
                     self.bytes([0x48, 0x89, 0x41, 8 * word])
-                    self.bytes([0x31, 0xC0])
-                    self.storeWord(rax, self.offsets[param] + 8 * word)
                 }
             }
 
@@ -2803,6 +2932,8 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
 
             self.bytes([0xC9, 0xC3])
         }
+        // A block left empty by simplify (inline.kj), which nothing goes to: no code.
+        UnreachableT if (routine.blocks[block].instructions.length() == 0 and not self.reached(block)) => {}
         UnreachableT => {
             immut location = self.text(self.file)
             immut message = self.text('the function ended without returning a value')
@@ -3057,28 +3188,41 @@ function Native.copyToSlot(mut self, operand: Operand, ty: Ty): int {
     return slot
 }
 
-// Loads the value at `offset` from the address in rax (one or two words) into rax (and rdx).
-function Native.loadAt(mut self, ty: Ty, offset: int) {
-    if (offset == 0) {
+// Loads the value at `offset` from the address in `base` (one or two words) into rax (and rdx).
+function Native.loadAt(mut self, ty: Ty, offset: int, base: int) {
+    if (offset == 0 and base == rax) {
         self.loadThrough(ty)
         return
     }
 
     if (words(ty) == 2) {
-        // mov rdx, [rax + offset + 8]; mov rax, [rax + offset]
-        self.bytes([0x48, 0x8B, 0x90])
-        self.int32(offset + 8)
-        self.bytes([0x48, 0x8B, 0x80])
-        self.int32(offset)
+        // mov rdx, [base + offset + 8]; mov rax, [base + offset]
+        self.bytes([rex(rdx, base), 0x8B])
+        self.addressed(rdx, base, offset + 8)
+        self.bytes([rex(rax, base), 0x8B])
+        self.addressed(rax, base, offset)
         return
     }
 
+    // A REX prefix for a base among r8 to r15 (REX.W for a whole word).
+    immut extended = if (base >= 8) { [0x41] } else { [] }
+
     match (ty) {
-        BoolTy => self.bytes([0x0F, 0xB6, 0x80])
-        ByteTy => self.bytes([0x0F, 0xB6, 0x80])
-        CharTy => self.bytes([0x8B, 0x80])
-        _ => self.bytes([0x48, 0x8B, 0x80])
+        BoolTy => self.bytes(extended + [0x0F, 0xB6])
+        ByteTy => self.bytes(extended + [0x0F, 0xB6])
+        CharTy => self.bytes(extended + [0x8B])
+        _ => self.bytes([rex(rax, base), 0x8B])
     }
+
+    self.addressed(rax, base, offset)
+}
+
+// The ModRM (and SIB) of `[base + offset]` with the register `reg`, and the offset (32 bits).
+function Native.addressed(mut self, reg: int, base: int, offset: int) {
+    self.bytes([0x80 | (reg & 7) << 3 | (base & 7)])
+
+    // rsp and r12 as a base need a SIB.
+    if (base & 7 == 4) { self.bytes([0x24]) }
 
     self.int32(offset)
 }
