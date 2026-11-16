@@ -705,6 +705,8 @@ function cTypeOf(written: Option[TypeExpr]): string {
     return match (written) {
         Some(Named('CInt')) => 'int'
         Some(Named('CSize')) => 'size_t'
+        // The `...` of a variadic function (see `CVariadic` in checker.kj).
+        Some(Named('CVariadic')) => '...'
         Some(Named('float')) => 'double'
         Some(Named('boolean')) => 'bool'
         Some(Named('Address')) => 'void *'

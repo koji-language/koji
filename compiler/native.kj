@@ -198,6 +198,8 @@ type Native = {
     tagRecord: Operand
     // Where the code of the jobs of `blocking` functions starts (after the functions of records).
     trampolineStart: int
+    // Whether the next call is of a variadic function of C (see `emitCall`).
+    variadic: boolean
     // The locals the current instruction emptied (moved out), which hold nothing to release until
     // written again.
     emptied: int[]
@@ -217,7 +219,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:],
         strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
-        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: [], spillHomes: [], spillSlots: [], tagLocal: -1, tagRecord: IntOp(0), trampolineStart: 0
+        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: [], spillHomes: [], spillSlots: [], tagLocal: -1, tagRecord: IntOp(0), trampolineStart: 0, variadic: false
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -2446,7 +2448,10 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
 
             self.callC('koji_task_blocking', [argument('slot', job)], IntTy)
         }
-        Some(declared) => self.callC(declared.symbol, values, returns)
+        Some(declared) => {
+            self.variadic = '...' in declared.params
+            self.callC(declared.symbol, values, returns)
+        }
         None => self.callC(name, values, returns)
     }
 
@@ -3823,6 +3828,12 @@ function Native.emitCall(mut self, name: string, target: int, indirect: int, arg
         self.loadWord(rax, indirect)
         self.bytes([0xFF, 0xD0])
     } else {
+        // A variadic function of C reads in al how many vector registers have arguments: none.
+        if (self.variadic) {
+            self.bytes([0x31, 0xC0])
+            self.variadic = false
+        }
+
         if (target >= 0) { self.callFunction(target) } else { self.callExternal(name) }
     }
 
