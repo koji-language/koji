@@ -4290,6 +4290,19 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
         }
         'koji:unsafe.taskEntry' => runner = 'koji_unsafe_task_entry'
+        other if (other == 'koji:unsafe.aesRound' or other == 'koji:unsafe.aesLastRound') => {
+            runner = if (name == 'aesRound') { 'koji_unsafe_aes_round' } else { 'koji_unsafe_aes_last_round' }
+            arguments = [self.stdValue(mut builder, args, 0, U128Ty)?, self.stdValue(mut builder, args, 1, U128Ty)?]
+        }
+        'koji:unsafe.carrylessProduct' => {
+            runner = 'koji_unsafe_carryless_product'
+            arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]
+        }
+        'koji:unsafe.reverseBytes' => {
+            runner = 'koji_unsafe_reverse_bytes'
+            arguments = [self.stdValue(mut builder, args, 0, IntTy)?]
+        }
+        'koji:unsafe.aesAvailable' => runner = 'koji_aes_available'
         'koji:unsafe.floatControl' => runner = 'koji_unsafe_float_control'
         'koji:unsafe.valgrind' => {
             runner = 'koji_unsafe_valgrind'

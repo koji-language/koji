@@ -1,24 +1,194 @@
 // `koji:aes`: the AEAD AES-GCM (FIPS 197, SP 800-38D) of TLS 1.3, with keys of 128 and 256 bits, in
 // the library of the runtime written in Koji. Only by the instructions of the processor (AES-NI and
-// PCLMULQDQ on x86-64, those of ARMv8 on arm64: small functions of the prelude, in C), which take
-// the same time whatever the key and the data are; without them `available()` is false and TLS
+// PCLMULQDQ on x86-64, those of ARMv8 on arm64: `aesRound`, `aesLastRound` and `carrylessProduct`
+// of koji:unsafe), which take the same time whatever the key and the data are; without them `available()` is false and TLS
 // offers ChaCha20-Poly1305 alone (an AES by tables would let its times tell the key). Here the
 // counter blocks, the hash of the additional data, the ciphertext and their sizes, and the tag
 // (compared with no early exit).
 
-import { Address, CInt, CSize, allocate, free, nullAddress, offset, read, write } from 'koji:unsafe'
+import { Address, CInt, CSize, U128, aesAvailable, aesLastRound, aesRound, allocate, carrylessProduct, free, highWord, lowWord, nullAddress, offset, read, reverseBytes, wide, write } from 'koji:unsafe'
 
 extern function memcpy(target: Address, source: Address, size: CSize): Address
 extern function memset(target: Address, value: CInt, size: CSize): Address
-extern function koji_aes_available(): boolean
-extern function koji_aes_expand(key: Address, size: int, schedule: Address)
-extern function koji_aes_ctr(schedule: Address, rounds: int, counter: Address, data: Address, out: Address, size: int)
-extern function koji_ghash_key(h: Address, table: Address)
-extern function koji_ghash(table: Address, state: Address, data: Address, size: int)
-
 // Whether this processor has the instructions.
 export function available(): boolean {
-    return koji_aes_available()
+    return aesAvailable()
+}
+
+// 16 bytes at `address + at`, as a U128 (little-endian, as the registers of the processor take them).
+function block(address: Address, at: int): U128 {
+    immut low: int = read(address, at)
+    immut high: int = read(address, at + 8)
+    return wide(low, high)
+}
+
+function store(address: Address, at: int, value: U128) {
+    write(address, at, lowWord(value))
+    write(address, at + 8, highWord(value))
+}
+
+// The 32 bits of a word of the key schedule, as an int.
+function word32(value: int): int {
+    return value & 0xFFFFFFFF
+}
+
+// SubWord of FIPS 197: the last round (SubBytes, ShiftRows) of a block of four copies of the word,
+// whose ShiftRows changes nothing, with a round key of zeros.
+function subWord(value: int): int {
+    immut copies = value | value << 32
+    return word32(lowWord(aesLastRound(wide(copies, copies), wide(0, 0))))
+}
+
+// The 11 or 15 round keys of a key of 16 or 32 bytes, at `schedule` (240 bytes).
+function expand(key: Address, size: int, schedule: Address) {
+    immut n = size / 4
+    immut total = if (size == 16) { 44 } else { 60 }
+    mut words: int[] = []
+    mut rcon = 1
+
+    for i in range(n) {
+        immut pair: int = read(key, 4 * i)
+        words.push(word32(pair))
+    }
+
+    for i in range(n, total) {
+        mut t = words[i - 1]
+
+        if (i % n == 0) {
+            t = subWord(word32(t >> 8 | t << 24)) ^ rcon
+            rcon = word32(rcon << 1 ^ (if (rcon >> 7 == 1) { 0x11B } else { 0 }))
+        } else {
+            if (n == 8 and i % n == 4) { t = subWord(t) }
+        }
+
+        words.push(words[i - n] ^ t)
+    }
+
+    for i in range(0, total, 2) {
+        write(schedule, 4 * i, words[i] | words[i + 1] << 32)
+    }
+}
+
+// A block encrypted by the round keys at `schedule`.
+function encrypt(schedule: Address, rounds: int, value: U128): U128 {
+    mut state = value ^ block(schedule, 0)
+
+    for round in range(1, rounds) {
+        state = aesRound(state, block(schedule, 16 * round))
+    }
+
+    return aesLastRound(state, block(schedule, 16 * rounds))
+}
+
+// CTR: `size` bytes of `data` xored with the blocks of the counter (16 bytes at `counter`, its last
+// 4 a big-endian number, one more for each block, as GCM counts), at `out`.
+function ctr(schedule: Address, rounds: int, counter: Address, data: Address, out: Address, size: int) {
+    immut base = block(counter, 0)
+    immut high = highWord(base)
+    // The number: the last 4 bytes, big-endian.
+    mut count = reverseBytes(high) & 0xFFFFFFFF
+    mut at = 0
+
+    while (at < size) {
+        // The number back in the last 4 bytes (reversed: big-endian).
+        immut current = wide(lowWord(base), word32(high) | reverseBytes(count) & -4294967296)
+        immut stream = encrypt(schedule, rounds, current)
+        count = word32(count + 1)
+
+        if (size - at >= 16) {
+            store(out, at, block(data, at) ^ stream)
+        } else {
+            for i in range(size - at) {
+                immut source: byte = read(data, at + i)
+                immut key: byte = byte((if (i < 8) { lowWord(stream) >> (8 * i) } else { highWord(stream) >> (8 * (i - 8)) }) & 0xFF)
+                write(out, at + i, source ^ key)
+            }
+        }
+
+        at += 16
+    }
+}
+
+// GHASH, its numbers as Intel's white paper takes them ("Carry-Less Multiplication and Its Usage for
+// Computing the GCM Mode", 2014): the bytes reversed, a product of 256 bits shifted left by one and
+// reduced modulo x^128 + x^7 + x^2 + x + 1.
+
+// The 16 bytes of a block in the other order.
+function reversed(value: U128): U128 {
+    return wide(reverseBytes(highWord(value)), reverseBytes(lowWord(value)))
+}
+
+// The words of 32 bits of a U128 each shifted (left, or right) without crossing into the next one.
+function lanesLeft(value: U128, count: int): U128 {
+    immut low = (1 << count) - 1
+    immut kept = ~(low | low << 32)
+    return (value << wide(count, 0)) & wide(kept, kept)
+}
+
+function lanesRight(value: U128, count: int): U128 {
+    immut high = word32(((1 << count) - 1) << (32 - count))
+    immut kept = ~(high | high << 32)
+    return (value >> wide(count, 0)) & wide(kept, kept)
+}
+
+// a times b in GF(2^128) (both in the reversed order).
+function multiply(a: U128, b: U128): U128 {
+    // The 256 bits as three products (Karatsuba): the middle one still has the other two in it.
+    immut lowProduct = carrylessProduct(lowWord(a), lowWord(b))
+    immut highProduct = carrylessProduct(highWord(a), highWord(b))
+    immut middle = carrylessProduct(lowWord(a) ^ highWord(a), lowWord(b) ^ highWord(b)) ^ lowProduct ^ highProduct
+    immut low0 = lowProduct ^ wide(0, lowWord(middle))
+    immut high0 = highProduct ^ wide(highWord(middle), 0)
+    // Shifted left by one.
+    immut low = low0 << 1
+    immut high = high0 << 1 | low0 >> 127
+    // The reduction by the low half (x^128 = x^7 + x^2 + x + 1, the bits reflected).
+    immut first = lanesLeft(low, 31) ^ lanesLeft(low, 30) ^ lanesLeft(low, 25)
+    immut x = low ^ (first & wide(0xFFFFFFFF, 0)) << 96
+    immut rest = first >> 32
+    immut second = lanesRight(x, 1) ^ lanesRight(x, 2) ^ lanesRight(x, 7) ^ rest
+    return high ^ x ^ second
+}
+
+// H (16 bytes at `h`: the block of zeros encrypted), in the order of the products, at `table`.
+function ghashKey(h: Address, table: Address) {
+    store(table, 0, reversed(block(h, 0)))
+}
+
+// The 16 bytes of the GHASH at `state` updated by `size` bytes of `data`, the last block filled with
+// zeros.
+function ghash(table: Address, state: Address, data: Address, size: int) {
+    immut h = block(table, 0)
+    mut y = reversed(block(state, 0))
+    mut at = 0
+
+    while (at < size) {
+        mut value = wide(0, 0)
+
+        if (size - at >= 16) {
+            value = block(data, at)
+        } else {
+            mut low = 0
+            mut high = 0
+
+            for i in range(size - at) {
+                immut part: byte = read(data, at + i)
+
+                if (i < 8) {
+                    low = low | int(part) << (8 * i)
+                } else {
+                    high = high | int(part) << (8 * (i - 8))
+                }
+            }
+
+            value = wide(low, high)
+        }
+
+        y = multiply(y ^ reversed(value), h)
+        at += 16
+    }
+
+    store(state, 0, reversed(y))
 }
 
 // A key made ready: its round keys and the powers of H (the block of zeros encrypted) for GHASH.
@@ -32,12 +202,12 @@ export type AesKey = {
 export function keyOf(key: Address, size: int): AesKey {
     immut schedule = allocate(240)
     immut rounds = if (size == 16) { 10 } else { 14 }
-    koji_aes_expand(key, size, schedule)
+    expand(key, size, schedule)
     immut h = allocate(16)
     memset(h, 0, 16)
-    koji_aes_ctr(schedule, rounds, h, h, h, 16)
+    ctr(schedule, rounds, h, h, h, 16)
     immut table = allocate(128)
-    koji_ghash_key(h, table)
+    ghashKey(h, table)
     memset(h, 0, 16)
     free(h)
     return { schedule: schedule, rounds: rounds, table: table }
@@ -71,8 +241,8 @@ function counterBlock(nonce: Address, step: int, block: Address) {
 function tag(key: AesKey, nonce: Address, aad: Address, aadSize: int, data: Address, size: int, out: Address) {
     immut state = allocate(16)
     memset(state, 0, 16)
-    koji_ghash(key.table, state, aad, aadSize)
-    koji_ghash(key.table, state, data, size)
+    ghash(key.table, state, aad, aadSize)
+    ghash(key.table, state, data, size)
     immut sizes = allocate(16)
 
     for i in range(8) {
@@ -80,10 +250,10 @@ function tag(key: AesKey, nonce: Address, aad: Address, aadSize: int, data: Addr
         write(sizes, 8 + i, byte(((size * 8) >> (56 - 8 * i)) & 0xFF))
     }
 
-    koji_ghash(key.table, state, sizes, 16)
+    ghash(key.table, state, sizes, 16)
     immut block = allocate(16)
     counterBlock(nonce, 0, block)
-    koji_aes_ctr(key.schedule, key.rounds, block, state, out, 16)
+    ctr(key.schedule, key.rounds, block, state, out, 16)
     free(block)
     free(sizes)
     free(state)
@@ -94,7 +264,7 @@ function tag(key: AesKey, nonce: Address, aad: Address, aadSize: int, data: Addr
 export function seal(key: AesKey, nonce: Address, aad: Address, aadSize: int, data: Address, size: int, out: Address) {
     immut block = allocate(16)
     counterBlock(nonce, 1, block)
-    koji_aes_ctr(key.schedule, key.rounds, block, data, out, size)
+    ctr(key.schedule, key.rounds, block, data, out, size)
     free(block)
     tag(key, nonce, aad, aadSize, out, size, offset(out, size))
 }
@@ -121,7 +291,7 @@ export function open(key: AesKey, nonce: Address, aad: Address, aadSize: int, da
 
     immut block = allocate(16)
     counterBlock(nonce, 1, block)
-    koji_aes_ctr(key.schedule, key.rounds, block, data, out, length)
+    ctr(key.schedule, key.rounds, block, data, out, length)
     free(block)
     return true
 }

@@ -1983,7 +1983,7 @@ function Checker.unsafeModule(mut self): int {
 
     mut module: ModuleInfo = { display: 'koji:unsafe', members: [:], types: [:], private: Set.from([]) }
 
-    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize', 'charOfCode', 'truncate', 'reserve', 'listItems', 'setListLength', 'locationAddress', 'sharedGet', 'sharedSet', 'switchStacks', 'taskEntry', 'floatControl', 'valgrind'] {
+    for member in ['allocate', 'free', 'read', 'write', 'panicAt', 'offset', 'distance', 'stringBytes', 'stringSize', 'newString', 'nullAddress', 'isNull', 'wide', 'lowWord', 'highWord', 'leadingZeros', 'wordProduct', 'wideToFloat', 'decimalLow', 'decimalHigh', 'decimalOf', 'blankString', 'stringReferences', 'stringCapacity', 'setStringSize', 'charOfCode', 'truncate', 'reserve', 'listItems', 'setListLength', 'locationAddress', 'sharedGet', 'sharedSet', 'switchStacks', 'taskEntry', 'floatControl', 'valgrind', 'aesRound', 'aesLastRound', 'carrylessProduct', 'reverseBytes', 'aesAvailable'] {
         module.members[member] = builtinSymbol(`unsafe.${member}`)
     }
 
@@ -5371,6 +5371,25 @@ function Checker.checkBuiltinCall(mut self, name: string, args: Node[], expected
         'unsafe.valgrind' => {
             self.checkExactly(name, types, [IntType, IntType, IntType, IntType])?
             return Ok(IntType)
+        }
+        // A round of AES (aesenc: ShiftRows, SubBytes, MixColumns, then the round key), its last round
+        // (aesenclast, without MixColumns), the product without carries of two words (pclmulqdq), the
+        // bytes of a word in the other order (bswap), and whether the processor has them.
+        other if (other == 'unsafe.aesRound' or other == 'unsafe.aesLastRound') => {
+            self.checkExactly(name, types, [U128Type, U128Type])?
+            return Ok(U128Type)
+        }
+        'unsafe.carrylessProduct' => {
+            self.checkExactly(name, types, [IntType, IntType])?
+            return Ok(U128Type)
+        }
+        'unsafe.reverseBytes' => {
+            self.checkExactly(name, types, [IntType])?
+            return Ok(IntType)
+        }
+        'unsafe.aesAvailable' => {
+            self.checkExactly(name, types, [])?
+            return Ok(BooleanType)
         }
         // The address 0, which C calls NULL.
         'unsafe.nullAddress' => {
