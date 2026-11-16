@@ -108,6 +108,25 @@ export function simplify(given: IrFunction): IrFunction {
         }
     }
 
+    // A branch to an empty block that branches on the same condition goes where that one would
+    // (the `and` and `or` of a condition: `branch l2, b4, b5` where b5 is `branch l2, b2, b3`).
+    for block in range(count) {
+        match (routine.blocks[block].terminator) {
+            BranchT(LocalOp(condition), thenBlock, elseBlock) => {
+                immut thenTarget = match (routine.blocks[thenBlock].terminator) {
+                    BranchT(LocalOp(again), target, _) if (again == condition and routine.blocks[thenBlock].instructions.length() == 0 and thenBlock != block) => target
+                    _ => thenBlock
+                }
+                immut elseTarget = match (routine.blocks[elseBlock].terminator) {
+                    BranchT(LocalOp(again), _, target) if (again == condition and routine.blocks[elseBlock].instructions.length() == 0 and elseBlock != block) => target
+                    _ => elseBlock
+                }
+                routine.blocks[block] = { instructions: routine.blocks[block].instructions, terminator: BranchT(LocalOp(condition), thenTarget, elseTarget) }
+            }
+            _ => {}
+        }
+    }
+
     // How many times each local is written and read.
     mut writes: int[] = []
     mut reads: int[] = []

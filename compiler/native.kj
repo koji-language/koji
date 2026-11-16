@@ -19,7 +19,7 @@ import { Ty, Operand, Place, Step, Target, Instruction, Terminator, IrFunction, 
 import { lastUses, targetReads, defs, uses, terminatorUses, successors } from 'liveness.kj'
 import { globalsSeen } from 'globals.kj'
 import { borrowedParams, borrowedLocals, constantGlobals, changes } from 'borrow.kj'
-import { registerLocals } from 'registers.kj'
+import { Ranges, registerWeights, liveRanges, liveAtBlocks, assignRegisters, extend, has } from 'registers.kj'
 import { inlineSmall } from 'inline.kj'
 
 foreign 'm' {
@@ -39,6 +39,24 @@ immut keptRegisters = [3, 12, 13, 14, 15]
 // The functions of the prelude that read a word of a value: its offset (an address in the value
 // for a negative one: `-24` is `value + 24`).
 immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16, 'koji_unsafe_string_size': 8, 'koji_unsafe_string_bytes': -24, 'koji_unsafe_list_items': 24]
+
+// The functions of memory of the prelude (`koji:unsafe`), inline: their code, with the address in
+// rax and the offset in rcx (read), the address in rcx, the offset in rdx and the value in rax
+// (write), or the two addresses in rax and rcx.
+immut memoryFunctions: Map[string, int[]] = [
+    'koji_unsafe_offset': [0x48, 0x01, 0xC8],
+    'koji_unsafe_distance': [0x48, 0x29, 0xC8],
+    'koji_unsafe_read_int': [0x48, 0x8B, 0x04, 0x08],
+    'koji_unsafe_read_float': [0x48, 0x8B, 0x04, 0x08],
+    'koji_unsafe_read_bool': [0x0F, 0xB6, 0x04, 0x08],
+    'koji_unsafe_read_byte': [0x0F, 0xB6, 0x04, 0x08],
+    'koji_unsafe_read_char': [0x8B, 0x04, 0x08],
+    'koji_unsafe_write_int': [0x48, 0x89, 0x04, 0x11],
+    'koji_unsafe_write_float': [0x48, 0x89, 0x04, 0x11],
+    'koji_unsafe_write_bool': [0x88, 0x04, 0x11],
+    'koji_unsafe_write_byte': [0x88, 0x04, 0x11],
+    'koji_unsafe_write_char': [0x89, 0x04, 0x11]
+]
 
 // Conditions of jcc and setcc.
 immut overflow = 0
@@ -157,7 +175,18 @@ type Native = {
     // How many times each local is read; and the condition of the comparison that ends the current
     // block, left in the flags for its branch (the second byte of jcc; 0 for none).
     reads: int[]
+    liveIn: int[][]
     fused: int
+    // The store to the frame not written yet (its register and offset; -1 for none): the next code
+    // writes it first, but a load of the same word by the only read of a temporary takes the
+    // register instead, and the store is never written.
+    pendingRegister: int
+    pendingOffset: int
+    // For each word of the frame, the temporary whose store can go so (-1 for none).
+    droppable: boolean[]
+    // The locals the current instruction emptied (moved out), which hold nothing to release until
+    // written again.
+    emptied: int[]
 }
 
 // The object file of a program, or why the native backend cannot make it yet.
@@ -174,7 +203,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:],
         strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
-        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], fused: 0
+        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: []
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -200,6 +229,11 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     for id in range(program.functions.length()) {
         native.generateFunction(id)?
     }
+
+    // The code after the functions keeps every word in the frame.
+    native.flush()
+    native.homes = []
+    native.droppable = []
 
     immut extras = native.recordFunctions()
     native.trampolineCode()
@@ -602,21 +636,48 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
     self.indexPanics = []
     self.preemptible = routine.file != 'task'
 
+    // What the instructions need to know of the locals: the borrowed ones, the last reads, those
+    // only compared, how many times each is read, and those that may hold a reference.
+    self.current = borrowedLocals(routine, self.borrowed[id], self.constants)
+    self.live = lastUses(routine)
+    self.tagOnly = self.tagOnlyLocals()
+    mut reads: int[] = []
+
+    for local in routine.locals {
+        reads.push(0)
+    }
+
+    for each in routine.blocks {
+        for instruction in each.instructions {
+            for local in uses(instruction) {
+                reads[local] += 1
+            }
+        }
+
+        for local in terminatorUses(each.terminator) {
+            reads[local] += 1
+        }
+    }
+
+    self.reads = reads
+    self.liveIn = liveAtBlocks(routine)
+    immut heldIn = self.heldAtBlocks()
+
     // The frame: the locals, the addresses of the `mut` parameters, then the words of the
-    // instructions.
-    // The most used locals of one word are kept in registers that calls keep, which the function
-    // saves first (in the words of the frame above the locals) and restores when it returns.
+    // instructions. The most used locals of one word are kept in registers that calls keep
+    // (registers.kj), which the function saves first (in the words of the frame above the locals)
+    // and restores when it returns.
     mut oneWord: boolean[] = []
 
     for local in routine.locals {
         oneWord.push(words(local.ty) == 1)
     }
 
-    immut inRegisters = registerLocals(routine, oneWord, keptRegisters.length(), 3)
+    immut given = assignRegisters(registerWeights(routine, oneWord, 3), self.registerRanges(), keptRegisters.length())
     mut saved: int[] = []
 
-    for i in range(inRegisters.length()) {
-        saved.push(keptRegisters[i])
+    for register in range(keptRegisters.length()) {
+        if (register in given) { saved.push(keptRegisters[register]) }
     }
 
     mut offsets: int[] = []
@@ -633,8 +694,8 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         homes.push(-1)
     }
 
-    for i in range(inRegisters.length()) {
-        homes[-offsets[inRegisters[i]] / 8] = saved[i]
+    for local in range(routine.locals.length()) {
+        if (given[local] >= 0) { homes[-offsets[local] / 8] = keptRegisters[given[local]] }
     }
 
     // Saved before the locals are given their homes.
@@ -654,7 +715,32 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
 
     self.offsets = offsets
     self.outs = outs
-    self.current = borrowedLocals(routine, self.borrowed[id], self.constants)
+    mut writes: int[] = []
+
+    for local in routine.locals {
+        writes.push(0)
+    }
+
+    for each in routine.blocks {
+        for instruction in each.instructions {
+            for local in changes(instruction) {
+                writes[local] += 1
+            }
+        }
+    }
+
+    mut droppable: boolean[] = []
+
+    for word in range(size / 8 + 1) {
+        droppable.push(false)
+    }
+
+    for local in range(routine.params, routine.locals.length()) {
+        if (words(routine.locals[local].ty) == 1 and managed(routine.locals[local].ty) is None and writes[local] == 1 and reads[local] == 1) { droppable[-offsets[local] / 8] = true }
+    }
+
+    self.droppable = droppable
+    self.pendingRegister = -1
     self.scratchBase = size
     self.scratchMost = 0
     self.starts.push(self.code.length())
@@ -736,30 +822,8 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
 
     if (self.preemptible and makesCalls(routine)) { self.preempt() }
 
-    self.live = lastUses(routine)
-    self.tagOnly = self.tagOnlyLocals()
-    mut reads: int[] = []
-
-    for local in routine.locals {
-        reads.push(0)
-    }
-
-    for each in routine.blocks {
-        for instruction in each.instructions {
-            for local in uses(instruction) {
-                reads[local] += 1
-            }
-        }
-
-        for local in terminatorUses(each.terminator) {
-            reads[local] += 1
-        }
-    }
-
-    self.reads = reads
-    immut heldIn = self.heldAtBlocks()
-
     for block in range(routine.blocks.length()) {
+        self.flush()
         self.blocks.push(self.code.length())
         self.knownAt = -1
         self.block = block
@@ -772,14 +836,18 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
             self.position = position
             self.scratch = 0
             self.fused = if (position == count - 1) { self.fusable(block) } else { 0 }
+            self.emptied = []
             self.instruction(routine.blocks[block].instructions[position])?
             self.dropDead()
+            self.emptied = []
             self.afterHeld(mut self.held, block, position)
         }
 
         self.scratch = 0
         self.terminator(block, routine.blocks[block].terminator)?
     }
+
+    self.flush()
 
     for jump in self.jumps {
         self.patch32(jump.at, self.blocks[jump.block] - (jump.at + 4))
@@ -964,7 +1032,7 @@ function Native.fusable(self, block: int): int {
     match (self.routine.blocks[block].terminator) {
         BranchT(LocalOp(condition), thenBlock, elseBlock) if (thenBlock > block and elseBlock > block) => {
             match (instructions[instructions.length() - 1]) {
-                BinaryIns(dest, op, _, _, _) if (dest == condition and self.reads[dest] == 1) => {
+                BinaryIns(dest, op, _, _, _) if (dest == condition and not has(self.liveIn[thenBlock], dest) and not has(self.liveIn[elseBlock], dest)) => {
                     for name in ['IntCompare(', 'BoolCompare(', 'CharCompare(', 'ByteCompare('] {
                         if (op.startsWith(name)) { return setcc(op[name.length()..op.length() - 1]) - 0x10 }
                     }
@@ -976,6 +1044,25 @@ function Native.fusable(self, block: int): int {
     }
 
     return 0
+}
+
+// The ranges of the locals for registers (registers.kj): where they are alive; a parameter from the
+// start, a `mut` one to the end (each return gives it back). A local that holds a reference of its
+// own has its register for the whole function: it may be released where it is not alive (at a
+// return, or when written again), also on a path where it was never written, which must find it
+// empty rather than the value of another local.
+function Native.registerRanges(self): Ranges {
+    immut routine = self.routine
+    mut ranges = liveRanges(routine)
+    immut end = if (ranges.ends.length() > 0) { ranges.ends[ranges.ends.length() - 1] } else { 0 }
+
+    for local in range(routine.locals.length()) {
+        if (local < routine.params or (ranges.first[local] >= 0 and self.tracked(local))) { extend(mut ranges, local, 0) }
+
+        if (isWriteback(routine, local) or (ranges.first[local] >= 0 and self.tracked(local))) { extend(mut ranges, local, end) }
+    }
+
+    return ranges
 }
 
 function makesCalls(routine: IrFunction): boolean {
@@ -1498,8 +1585,10 @@ function Native.dropDead(mut self) {
     for local in self.live[self.block][self.position] {
         if (isWriteback(self.routine, local) or self.current[local]) { continue }
 
-        // Empty before the instruction, and not written by it.
+        // Empty before the instruction, and not written by it; or emptied by it.
         if (not self.held[local] and not (local in defs(self.routine.blocks[self.block].instructions[self.position]))) { continue }
+
+        if (local in self.emptied) { continue }
 
         match (managed(self.routine.locals[local].ty)) {
             Some(kind) => {
@@ -1834,7 +1923,8 @@ function Native.call(mut self, dest: Option[int], callee: int, args: Operand[], 
         immut back = self.slot(16)
         self.bytes([0x31, 0xC0])
         self.storeWord(rax, back)
-        self.storeWord(rax, back + 8)
+
+        if (words(called.locals[i].ty) == 2) { self.storeWord(rax, back + 8) }
         backs.push(back)
         values.push(argument('slot', back))
     }
@@ -1992,6 +2082,47 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
             }
         }
         _ => {}
+    }
+
+    // The memory of `koji:unsafe` (the prelude's inline functions): read and write at `address +
+    // offset`, and the arithmetic of addresses.
+    if (memoryFunctions.has(symbol)) {
+        mut operands: Operand[] = []
+
+        for arg in args {
+            match (arg) {
+                ValueArg(given) => operands.push(given)
+                _ => return Err(`the native backend expects values for ${symbol}`)
+            }
+        }
+
+        immut code = memoryFunctions[symbol]
+
+        if (symbol.startsWith('koji_unsafe_write_')) {
+            // mov [rcx + rdx], rax (al, eax)
+            self.loadOperand(rax, operands[2])
+            self.loadOperand(rdx, operands[1])
+            self.loadOperand(rcx, operands[0])
+            self.bytes(code)
+            return Ok()
+        }
+
+        if (symbol == 'koji_unsafe_distance') {
+            self.loadOperand(rax, operands[1])
+            self.loadOperand(rcx, operands[0])
+        } else {
+            self.loadOperand(rcx, operands[1])
+            self.loadOperand(rax, operands[0])
+        }
+
+        self.bytes(code)
+
+        match (dest) {
+            Some(local) => self.storeResult(LocalPlace(local), routine.locals[local].ty)
+            None => {}
+        }
+
+        return Ok()
     }
 
     mut values: Argument[] = []
@@ -2763,10 +2894,25 @@ function Native.retainResult(mut self, ty: Ty) {
 
 // Stores the owned value in rax (and rdx) in a place, releasing the managed value it held.
 function Native.storeResult(mut self, where: Place, ty: Ty) {
-    // An empty local has nothing to release.
+    // An empty local has nothing to release (and holds a value once written).
     immut empty = match (where) {
-        LocalPlace(id) => self.tracked(id) and id < self.held.length() and not self.held[id]
+        LocalPlace(id) => (self.tracked(id) and id < self.held.length() and not self.held[id]) or id in self.emptied
         GlobalPlace(_) => false
+    }
+
+    match (where) {
+        LocalPlace(id) => {
+            if (id in self.emptied) {
+                mut others: int[] = []
+
+                for each in self.emptied {
+                    if (each != id) { others.push(each) }
+                }
+
+                self.emptied = others
+            }
+        }
+        GlobalPlace(_) => {}
     }
 
     match (managed(ty)) {
@@ -2802,6 +2948,11 @@ function Native.storeBorrowed(mut self, local: int, ty: Ty) {
 }
 
 function Native.zeroPlace(mut self, where: Place) {
+    match (where) {
+        LocalPlace(id) => self.emptied.push(id)
+        GlobalPlace(_) => {}
+    }
+
     self.bytes([0x31, 0xC0])
 
     match (where) {
@@ -2963,9 +3114,9 @@ function Native.storeThrough(mut self, register: int, offset: int, ty: Ty) {
 function Native.moveConstant(mut self, register: int, number: int) {
     // mov r32, imm32 (zero extended) when it fits, mov r64, imm64 otherwise.
     if (number >= 0 and number <= 4294967295) {
-        if (register >= 8) { self.code.push(0x41) }
+        if (register >= 8) { self.bytes([0x41]) }
 
-        self.code.push(byte(0xB8 + (register & 7)))
+        self.bytes([0xB8 + (register & 7)])
         self.int32(number)
         return
     }
@@ -3008,6 +3159,26 @@ function Native.loadWord(mut self, register: int, offset: int) {
         return
     }
 
+    // The word stored last, not written yet: from its register (and never written, when this is the
+    // only read of a temporary).
+    if (self.pendingRegister >= 0 and self.pendingOffset == offset) {
+        immut source = self.pendingRegister
+
+        if (offset < 0 and -offset / 8 < self.droppable.length() and self.droppable[-offset / 8]) {
+            self.pendingRegister = -1
+        } else {
+            self.flush()
+        }
+
+        if (source != register) {
+            self.moveRegister(register, source)
+            self.known[register] = offset
+        }
+
+        self.knownAt = self.code.length()
+        return
+    }
+
     if (self.code.length() == self.knownAt) {
         for held in range(16) {
             if (self.known[held] != offset) { continue }
@@ -3031,6 +3202,22 @@ function Native.loadWord(mut self, register: int, offset: int) {
     self.knownAt = self.code.length()
 }
 
+// Writes the store not written yet (see `pendingRegister`); the registers still hold what they held.
+function Native.flush(mut self) {
+    if (self.pendingRegister < 0) { return }
+
+    immut register = self.pendingRegister
+    immut valid = self.code.length() == self.knownAt
+    self.pendingRegister = -1
+    // mov [rbp + offset], reg
+    self.code.push(byte(rex(register, 0)))
+    self.code.push(0x89)
+    self.code.push(byte(0x85 | (register & 7) << 3))
+    self.int32(self.pendingOffset)
+
+    if (valid) { self.knownAt = self.code.length() }
+}
+
 function Native.forget(mut self) {
     for held in range(16) {
         self.known[held] = 0
@@ -3045,11 +3232,13 @@ function Native.storeWord(mut self, register: int, offset: int) {
         return
     }
 
+    self.flush()
+
     if (self.code.length() != self.knownAt) { self.forget() }
 
-    // mov [rbp + offset], reg
-    self.bytes([rex(register, 0), 0x89, 0x85 | (register & 7) << 3])
-    self.int32(offset)
+    // Written by the next code, unless a load takes it first (see `pendingRegister`).
+    self.pendingRegister = register
+    self.pendingOffset = offset
 
     for held in range(16) {
         if (self.known[held] == offset) { self.known[held] = 0 }
@@ -3112,6 +3301,7 @@ function Native.jumpShort(mut self, code: int): int {
 }
 
 function Native.patchShort(mut self, at: int) {
+    self.flush()
     self.knownAt = -1
     self.code[at] = byte(self.code.length() - (at + 1))
 }
@@ -3160,11 +3350,11 @@ function Native.emitCall(mut self, name: string, target: int, indirect: int, arg
         if (place.startsWith('stack')) {
             if (place.startsWith('stack2:')) {
                 self.loadArgument(rax, args[i], 1)
-                self.code.push(0x50)
+                self.bytes([0x50])
             }
 
             self.loadArgument(rax, args[i], 0)
-            self.code.push(0x50)
+            self.bytes([0x50])
         }
 
         i -= 1
@@ -3299,13 +3489,13 @@ function Native.copyPair(mut self, operand: Operand): int {
 }
 
 function Native.callFunction(mut self, target: int) {
-    self.code.push(0xE8)
+    self.bytes([0xE8])
     self.uses.push({ at: self.code.length(), target: target, inData: false })
     self.int32(0)
 }
 
 function Native.callExternal(mut self, name: string) {
-    self.code.push(0xE8)
+    self.bytes([0xE8])
     self.relocation(name, plt32, -4)
     self.int32(0)
 }
@@ -3339,13 +3529,14 @@ function Native.jumpIf(mut self, condition: int): int {
 }
 
 function Native.jump(mut self): int {
-    self.code.push(0xE9)
+    self.bytes([0xE9])
     immut at = self.code.length()
     self.int32(0)
     return at
 }
 
 function Native.patchHere(mut self, at: int) {
+    self.flush()
     self.knownAt = -1
     self.patch32(at, self.code.length() - (at + 4))
 }
@@ -3360,6 +3551,8 @@ function Native.relocation(mut self, symbol: string, kind: int, addend: int) {
 }
 
 function Native.bytes(mut self, values: int[]) {
+    self.flush()
+
     for each in values {
         self.code.push(byte(each))
     }
