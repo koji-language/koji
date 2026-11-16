@@ -39,7 +39,7 @@ immut keptRegisters = [3, 12, 13, 14, 15]
 
 // The functions of the prelude that read a word of a value: its offset (an address in the value
 // for a negative one: `-24` is `value + 24`).
-immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16, 'koji_unsafe_string_size': 8, 'koji_unsafe_string_bytes': -24, 'koji_unsafe_list_items': 24]
+immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16, 'koji_unsafe_string_size': 8, 'koji_unsafe_string_bytes': -24, 'koji_unsafe_list_items': 24, 'koji_unsafe_string_references': 0, 'koji_unsafe_string_capacity': 16]
 
 // The functions of memory of the prelude (`koji:unsafe`), inline: their code, with the address in
 // rax and the offset in rcx (read), the address in rcx, the offset in rdx and the value in rax
@@ -138,6 +138,8 @@ type Native = {
     panics: Panic[]
     // The checks of indexes of lists (koji_list_index_panic): list in rdi, index in rsi.
     indexPanics: Panic[]
+    // The checks of the counts of shifts (koji_panic_shift): the count in rcx.
+    shiftPanics: Panic[]
     preemptible: boolean
     scratchBase: int
     scratch: int
@@ -215,7 +217,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     immut nothing: IrFunction = { name: '', file: '', params: 0, writeback: [], returns: VoidTy, locals: [], blocks: [] }
     mut native: Native = {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:],
-        strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [],
+        strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [], shiftPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
         constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: [], spillHomes: [], spillSlots: [], tagLocal: -1, tagRecord: IntOp(0), trampolineStart: 0, variadic: false
     }
@@ -821,6 +823,7 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
     self.jumps = []
     self.panics = []
     self.indexPanics = []
+    self.shiftPanics = []
     self.preemptible = routine.file != 'task' and not self.program.library
 
     // What the instructions need to know of the locals: the borrowed ones, the last reads, those
@@ -1086,6 +1089,14 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         self.bytes([0x48, 0x89, 0xF8, 0x48, 0x89, 0xF7, 0x48, 0x8B, 0x70, 0x20])
         self.leaRodata(rdx, check.location)
         self.callExternal('koji_list_index_panic')
+    }
+
+    // mov rsi, rcx (the count); lea rdi, location
+    for check in self.shiftPanics {
+        self.patch32(check.at, self.code.length() - (check.at + 4))
+        self.bytes([0x48, 0x89, 0xCE])
+        self.leaRodata(rdi, check.location)
+        self.callExternal('koji_panic_shift')
     }
 
     self.patch32(frameAt, (self.scratchBase + self.scratchMost + 15) / 16 * 16)
@@ -2477,6 +2488,78 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
         _ => {}
     }
 
+    // A new string of `length` bytes to write, with room for `capacity` (koji_unsafe_blank_string of
+    // the prelude, inline): a block of the pool of 3 + room / 8 words, the room the larger rounded up
+    // to a word.
+    if (symbol == 'koji_unsafe_blank_string' and args.length() == 2) {
+        immut length = match (args[0]) {
+            ValueArg(given) => given
+            _ => IntOp(0)
+        }
+        immut capacity = match (args[1]) {
+            ValueArg(given) => given
+            _ => IntOp(0)
+        }
+        immut lengthSlot = self.slot(8)
+        immut roomSlot = self.slot(8)
+        self.loadOperand(rcx, capacity)
+        self.loadOperand(rax, length)
+        // cmp rcx, rax; cmovl rcx, rax; add rcx, 7; and rcx, -8; mov rdx, rcx; shr rdx, 3; add rdx, 3
+        self.bytes([0x48, 0x39, 0xC1, 0x48, 0x0F, 0x4C, 0xC8, 0x48, 0x83, 0xC1, 0x07, 0x48, 0x83, 0xE1, 0xF8])
+        self.bytes([0x48, 0x89, 0xCA, 0x48, 0xC1, 0xEA, 0x03, 0x48, 0x83, 0xC2, 0x03])
+        self.storeWord(rax, lengthSlot)
+        self.storeWord(rcx, roomSlot)
+        self.flush()
+        // cmp rdx, 16; ja slow; lea rsi, [koji_pool]; mov rax, [rsi + rdx * 8]; test rax, rax; jz slow;
+        // mov rdi, [rax]; mov [rsi + rdx * 8], rdi; jmp done
+        self.bytes([0x48, 0x83, 0xFA, 0x10])
+        immut large = self.jumpIf(7)
+        self.bytes([0x48, 0x8D, 0x35])
+        self.relocation('koji_pool', pc32, -4)
+        self.int32(0)
+        self.bytes([0x48, 0x8B, 0x04, 0xD6, 0x48, 0x85, 0xC0])
+        immut empty = self.jumpIf(equal)
+        self.bytes([0x48, 0x8B, 0x38, 0x48, 0x89, 0x3C, 0xD6])
+        immut taken = self.jump()
+        self.patchHere(large)
+        self.patchHere(empty)
+        // mov rdi, rdx; call koji_pool_refill
+        self.bytes([0x48, 0x89, 0xD7])
+        self.callExternal('koji_pool_refill')
+        self.patchHere(taken)
+        // mov qword [rax], 1; length, room
+        self.bytes([0x48, 0xC7, 0x00, 1, 0, 0, 0])
+        self.loadWord(rcx, lengthSlot)
+        self.bytes([0x48, 0x89, 0x48, 0x08])
+        self.loadWord(rcx, roomSlot)
+        self.bytes([0x48, 0x89, 0x48, 0x10])
+
+        match (dest) {
+            Some(local) => self.storeResult(LocalPlace(local), routine.locals[local].ty)
+            None => {}
+        }
+
+        return Ok()
+    }
+
+    // The size of a string that grew in its block: mov [string + 8], size.
+    if (symbol == 'koji_unsafe_set_string_size' and args.length() == 2) {
+        match (args[0]) {
+            ValueArg(given) => {
+                match (args[1]) {
+                    ValueArg(size) => {
+                        self.loadOperand(rcx, size)
+                        self.loadOperand(rax, given)
+                        self.bytes([0x48, 0x89, 0x48, 0x08])
+                        return Ok()
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
     // The words of a U128 (`koji:unsafe`), inline: wide(low, high), lowWord, highWord, and the product
     // of two low words (mul: rdx:rax).
     if (symbol in ['koji_unsafe_wide', 'koji_unsafe_low_word', 'koji_unsafe_high_word', 'koji_unsafe_word_product']) {
@@ -2996,6 +3079,17 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
         other if ((other == 'ShiftLeft' or other == 'ShiftRight') and shiftConstant(right)) => {
             self.loadOperand(rax, left)
             self.bytes([0x48, 0xC1, if (other == 'ShiftLeft') { 0xE0 } else { 0xF8 }, constantOf(right)])
+        }
+        // A shift of an int by a count: checked (0 to 63, unsigned so a negative one fails too), then
+        // shl or sar by cl.
+        other if (other == 'ShiftLeft' or other == 'ShiftRight') => {
+            self.loadOperand(rcx, right)
+            self.loadOperand(rax, left)
+            // cmp rcx, 63; ja panic
+            self.bytes([0x48, 0x83, 0xF9, 0x3F, 0x0F, 0x87])
+            self.shiftPanics.push({ at: self.code.length(), location: self.text(self.lineText(line)), message: 0 })
+            self.int32(0)
+            self.bytes([0x48, 0xD3, if (other == 'ShiftLeft') { 0xE0 } else { 0xF8 }])
         }
         // A shift of a U128 by a count of 0 to 127 (another panics, as the runtime does): shld and shl
         // (shrd and shr), the words moved when the count is 64 or more.
@@ -3772,7 +3866,20 @@ function Native.home(self, offset: int): int {
 function Native.moveRegister(mut self, to: int, source: int) {
     if (to == source) { return }
 
-    self.bytes([rex(source, to), 0x89, 0xC0 | (source & 7) << 3 | (to & 7)])
+    // A move changes its destination only: the store not written yet stays so (unless it is of that
+    // register), and what the registers hold stays known, the destination holding what the source
+    // does.
+    if (self.pendingRegister == to) { self.flush() }
+
+    immut valid = self.code.length() == self.knownAt
+    self.code.push(byte(rex(source, to)))
+    self.code.push(0x89)
+    self.code.push(byte(0xC0 | (source & 7) << 3 | (to & 7)))
+
+    if (valid) {
+        self.known[to] = self.known[source]
+        self.knownAt = self.code.length()
+    }
 }
 
 // Restores the `index`th saved register from its word of the frame.
