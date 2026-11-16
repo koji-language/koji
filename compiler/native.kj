@@ -15,7 +15,7 @@
 // with its own reference, and the address where the function writes its last value, after the
 // other parameters (as in the C backend).
 
-import { Ty, Operand, Place, Step, Target, Instruction, Terminator, IrFunction, IrProgram, IrField, IrExtern, StdArg, Writeback, itemOf } from 'ir.kj'
+import { Ty, Operand, Place, Step, Target, Instruction, Terminator, IrFunction, IrProgram, IrField, IrExtern, IrForC, StdArg, Writeback, itemOf } from 'ir.kj'
 import { lastUses, targetReads, defs, uses, terminatorUses, successors } from 'liveness.kj'
 import { globalsSeen } from 'globals.kj'
 import { borrowedParams, borrowedLocals, constantGlobals, changes } from 'borrow.kj'
@@ -210,8 +210,6 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     // The small functions inlined where they are called (inline.kj).
     immut program = inlineSmall(given)
 
-    if (program.library) { return Err('the native backend does not compile the library of the runtime yet') }
-
     if (program.testing) { return Err('the native backend does not run tests yet') }
 
     immut nothing: IrFunction = { name: '', file: '', params: 0, writeback: [], returns: VoidTy, locals: [], blocks: [] }
@@ -262,12 +260,29 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     native.trampolineStart = native.code.length()
     native.trampolineCode()
 
-    // `main`: the runtime starts (with argc and argv, already in rdi and rsi), then the program.
+    // The symbols others link to: `main` for a program, where the runtime starts (with argc and argv,
+    // already in rdi and rsi) then the program; for the library, `koji_library_init`, which runs its
+    // modules, and the functions C calls by their names (`extern function name(...) { ... }`).
     immut mainStart = native.code.length()
-    native.bytes([0x55, 0x48, 0x89, 0xE5])
-    native.callExternal('koji_init')
-    native.callFunction(program.main)
-    native.bytes([0x31, 0xC0, 0x5D, 0xC3])
+    mut exported: Export[] = []
+
+    if (program.library) {
+        for found in program.forC {
+            exported.push(native.forC(found))
+        }
+
+        immut init = native.code.length()
+        native.bytes([0x55, 0x48, 0x89, 0xE5])
+        native.callFunction(program.main)
+        native.bytes([0x5D, 0xC3])
+        exported.push({ name: 'koji_library_init', at: init, size: native.code.length() - init })
+    } else {
+        native.bytes([0x55, 0x48, 0x89, 0xE5])
+        native.callExternal('koji_init')
+        native.callFunction(program.main)
+        native.bytes([0x31, 0xC0, 0x5D, 0xC3])
+        exported.push({ name: 'main', at: mainStart, size: native.code.length() - mainStart })
+    }
 
     // The places of the functions, in the code and in the data.
     for use in native.uses {
@@ -280,7 +295,107 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         }
     }
 
-    return Ok(elfObject(native, mainStart, extras))
+    return Ok(elfObject(native, mainStart, extras, exported))
+}
+
+// A symbol of the object that others link to: its name, place and size in the code.
+type Export = {
+    name: string
+    at: int
+    size: int
+}
+
+// A function C calls by its name, under that name: C gives an `int`, a `bool`, a char or a byte in
+// the low bits of its word (the others undefined), which are made a whole word in place (in its
+// register, or in its word of the stack), then the function goes on in the function of Koji. A string
+// C gives (`take`) is released after the call.
+function Native.forC(mut self, found: IrForC): Export {
+    immut start = self.code.length()
+    immut routine = self.program.functions[found.function]
+    immut places = placesOf(paramTypes(routine))
+    mut taken = false
+
+    for flag in found.taken {
+        if (flag) { taken = true }
+    }
+
+    // A frame for the call when strings are released after it (rsp moves: the words of the stack are
+    // 16 bytes further).
+    if (taken) { self.bytes([0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x20]) }
+
+    for i in range(found.params.length()) {
+        if (i >= places.length()) { break }
+
+        immut c = found.params[i]
+        immut place = places[i]
+        immut number = placeNumber(place)
+
+        if (place.startsWith('reg:')) {
+            immut register = argumentRegisters[number]
+            immut extension = rex(register, register) & 0x47
+
+            if (c == 'int') { self.bytes([rex(register, register), 0x63, 0xC0 | (register & 7) << 3 | (register & 7)]) }
+
+            if (c == 'bool' or c == 'uint8_t') { self.bytes([0x40 | extension, 0x0F, 0xB6, 0xC0 | (register & 7) << 3 | (register & 7)]) }
+
+            if (c == 'uint32_t') { self.bytes([0x40 | extension, 0x89, 0xC0 | (register & 7) << 3 | (register & 7)]) }
+        }
+
+        if (place.startsWith('stack:')) {
+            // [rsp + 8 + 8 * number] at the entry (rbp + 16 + 8 * number with the frame).
+            immut load = match (c) {
+                'int' => [0x48, 0x63]
+                'bool' => [0x0F, 0xB6]
+                'uint8_t' => [0x0F, 0xB6]
+                'uint32_t' => [0x8B]
+                _ => []
+            }
+
+            if (load.length() > 0) {
+                if (taken) {
+                    self.bytes(load + [0x85])
+                    self.int32(16 + 8 * number)
+                    self.bytes([0x48, 0x89, 0x85])
+                    self.int32(16 + 8 * number)
+                } else {
+                    self.bytes(load + [0x84, 0x24])
+                    self.int32(8 + 8 * number)
+                    self.bytes([0x48, 0x89, 0x84, 0x24])
+                    self.int32(8 + 8 * number)
+                }
+            }
+        }
+    }
+
+    if (not taken) {
+        // jmp function
+        self.bytes([0xE9])
+        self.uses.push({ at: self.code.length(), target: found.function, inData: false })
+        self.int32(0)
+        return { name: found.name, at: start, size: self.code.length() - start }
+    }
+
+    // The strings given, kept in the frame for after the call (they are in registers: the functions
+    // that take them have few parameters).
+    for i in range(found.taken.length()) {
+        if (found.taken[i] and i < places.length() and places[i].startsWith('reg:')) { self.storeWord(argumentRegisters[placeNumber(places[i])], -8 - 8 * i) }
+    }
+
+    self.flush()
+    self.callFunction(found.function)
+    // The result, kept while the strings are released.
+    self.bytes([0x48, 0x89, 0x45, 0xE0, 0x48, 0x89, 0x55, 0xE8])
+
+    for i in range(found.taken.length()) {
+        if (found.taken[i] and i < places.length() and places[i].startsWith('reg:')) {
+            self.bytes([0x48, 0x8B, 0xBD])
+            self.int32(-8 - 8 * i)
+            self.releaseRdi('string')
+        }
+    }
+
+    self.bytes([0x48, 0x8B, 0x45, 0xE0, 0x48, 0x8B, 0x55, 0xE8, 0xC9, 0xC3])
+    return { name: found.name, at: start, size: self.code.length() - start }
 }
 
 function words(ty: Ty): int {
@@ -706,7 +821,7 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
     self.jumps = []
     self.panics = []
     self.indexPanics = []
-    self.preemptible = routine.file != 'task'
+    self.preemptible = routine.file != 'task' and not self.program.library
 
     // What the instructions need to know of the locals: the borrowed ones, the last reads, those
     // only compared, how many times each is read, and those that may hold a reference.
@@ -2362,6 +2477,44 @@ function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[
         _ => {}
     }
 
+    // The words of a U128 (`koji:unsafe`), inline: wide(low, high), lowWord, highWord, and the product
+    // of two low words (mul: rdx:rax).
+    if (symbol in ['koji_unsafe_wide', 'koji_unsafe_low_word', 'koji_unsafe_high_word', 'koji_unsafe_word_product']) {
+        mut operands: Operand[] = []
+
+        for arg in args {
+            match (arg) {
+                ValueArg(given) => operands.push(given)
+                _ => {}
+            }
+        }
+
+        match (symbol) {
+            'koji_unsafe_wide' => {
+                self.loadOperand(rdx, operands[1])
+                self.loadOperand(rax, operands[0])
+            }
+            'koji_unsafe_low_word' => self.loadPair(rax, rdx, operands[0])
+            'koji_unsafe_high_word' => {
+                self.loadPair(rax, rdx, operands[0])
+                self.bytes([0x48, 0x89, 0xD0])
+            }
+            _ => {
+                // mov rcx, b.low; mov rax, a.low; mul rcx
+                self.loadPair(rcx, rdx, operands[1])
+                self.loadPair(rax, rdx, operands[0])
+                self.bytes([0x48, 0xF7, 0xE1])
+            }
+        }
+
+        match (dest) {
+            Some(local) => self.storeResult(LocalPlace(local), routine.locals[local].ty)
+            None => {}
+        }
+
+        return Ok()
+    }
+
     // The memory of `koji:unsafe` (the prelude's inline functions): read and write at `address +
     // offset`, and the arithmetic of addresses.
     if (memoryFunctions.has(symbol)) {
@@ -2839,6 +2992,36 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
             self.loadU128Both(left, right)
             self.bytes([0x4C, 0x31, 0xC0, 0x4C, 0x31, 0xCA])
         }
+        // A shift of an int by a constant of 0 to 63 (no check needed): shl, sar.
+        other if ((other == 'ShiftLeft' or other == 'ShiftRight') and shiftConstant(right)) => {
+            self.loadOperand(rax, left)
+            self.bytes([0x48, 0xC1, if (other == 'ShiftLeft') { 0xE0 } else { 0xF8 }, constantOf(right)])
+        }
+        // A shift of a U128 by a count of 0 to 127 (another panics, as the runtime does): shld and shl
+        // (shrd and shr), the words moved when the count is 64 or more.
+        other if (other == 'U128ShiftLeft' or other == 'U128ShiftRight') => {
+            self.loadPair(rcx, 8, right)
+            // test r8, r8; jnz panic; cmp rcx, 127; ja panic
+            self.bytes([0x4D, 0x85, 0xC0])
+            self.check(notEqual, line, 'shift of a U128 out of range (0 to 127)')
+            self.bytes([0x48, 0x83, 0xF9, 0x7F])
+            self.check(7, line, 'shift of a U128 out of range (0 to 127)')
+            self.loadPair(rax, rdx, left)
+
+            if (other == 'U128ShiftLeft') {
+                // shld rdx, rax, cl; shl rax, cl; test cl, 64; jz; mov rdx, rax; xor eax, eax
+                self.bytes([0x48, 0x0F, 0xA5, 0xC2, 0x48, 0xD3, 0xE0, 0xF6, 0xC1, 0x40])
+                immut small = self.jumpShort(0x74)
+                self.bytes([0x48, 0x89, 0xC2, 0x31, 0xC0])
+                self.patchShort(small)
+            } else {
+                // shrd rax, rdx, cl; shr rdx, cl; test cl, 64; jz; mov rax, rdx; xor edx, edx
+                self.bytes([0x48, 0x0F, 0xAD, 0xD0, 0x48, 0xD3, 0xEA, 0xF6, 0xC1, 0x40])
+                immut small = self.jumpShort(0x74)
+                self.bytes([0x48, 0x89, 0xD0, 0x31, 0xD2])
+                self.patchShort(small)
+            }
+        }
         'U128Mul' => {
             // (a1:a0)(b1:b0) mod 2^128 = a0*b0 + ((a0*b1 + a1*b0) << 64).
             self.loadU128Both(left, right)
@@ -2955,6 +3138,13 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
 
     self.storeResult(LocalPlace(dest), ty)
     return Ok()
+}
+
+function shiftConstant(operand: Operand): boolean {
+    return match (operand) {
+        IntOp(number) => number >= 0 and number <= 63
+        _ => false
+    }
 }
 
 function smallConstant(operand: Operand): boolean {
@@ -4279,7 +4469,7 @@ type Symbol = {
 }
 
 // The relocatable object of ELF64 (x86-64) of the code and data.
-function elfObject(native: Native, mainStart: int, extras: int[]): byte[] {
+function elfObject(native: Native, mainStart: int, extras: int[], exported: Export[]): byte[] {
     // The sections: 1 .text, 2 .rodata, 3 .data, 4 .bss, then the relocations and the tables.
     immut sectionIndex: Map[string, int] = ['.text': 1, '.rodata': 2, '.data': 3, '.bss': 4]
     mut symbols: Symbol[] = [{ name: '', info: 0, section: 0, value: 0, size: 0 }]
@@ -4304,8 +4494,13 @@ function elfObject(native: Native, mainStart: int, extras: int[]): byte[] {
     }
 
     immut firstGlobal = symbols.length()
-    symbols.push({ name: 'main', info: 0x12, section: 1, value: mainStart, size: native.code.length() - mainStart })
     mut external: Map[string, int] = [:]
+
+    // The symbols it defines for others (a relocation to one of them uses it, not another undefined).
+    for each in exported {
+        external[each.name] = symbols.length()
+        symbols.push({ name: each.name, info: 0x12, section: 1, value: each.at, size: each.size })
+    }
 
     for relocation in native.relocations + native.dataRelocations {
         if (sectionIndex.has(relocation.symbol) or external.has(relocation.symbol)) { continue }

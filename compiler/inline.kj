@@ -63,6 +63,12 @@ function inlinable(program: IrProgram, blocks: int, most: int): boolean[] {
                             count += sizes[callee]
                         }
                         CallClosureIns(_, _, _, _) => fits = false
+                        // The address of the bytes of a string or the items of a list does not keep it
+                        // alive: a parameter must live until the function returns, which inlined it
+                        // would not (it would be released at its last read).
+                        StdCallIns(_, name, _) => {
+                            if (name == 'koji_unsafe_string_bytes' or name == 'koji_unsafe_list_items') { fits = false }
+                        }
                         _ => {}
                     }
                 }

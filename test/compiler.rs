@@ -2758,6 +2758,39 @@ printError(`${late < 0.1}`)
 }
 
 #[test]
+fn the_native_library_runs_programs() {
+    // The runtime library built natively (`kojic library`, see "The library of the runtime built by
+    // the compiler" in doc/design.md): programs of both backends linked with it do what they do with
+    // the library built from C.
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler");
+    std::fs::create_dir_all(&directory).unwrap();
+    let library = directory.join("libkoji_native.a");
+    let built = koji::finish(koji::kojic().arg("library").arg("-o").arg(&library), "");
+    assert_eq!(built.code, Some(0), "kojic library: {}", built.stderr);
+    let source = "import task\nimport time\n\ntype Shape = {\n    Circle(radius: decimal)\n    Square(side: decimal)\n}\n\nfunction area(shape: Shape): decimal {\n    return match (shape) {\n        Circle(radius) => 3.14 * radius * radius\n        Square(side) => side * side\n    }\n}\n\nmut counts: Map[string, int] = [:]\n\nfor word in 'a b a c b a'.split(' ') {\n    counts[word] = match (counts.get(word)) {\n        Some(count) => count + 1\n        None => 1\n    }\n}\n\nprint(counts)\nprint(area(Circle(1.5)) + area(Square(2.0)))\nprint('Héllo'.upper().chars())\nmut results: int[] = []\n\ntask.group((group) => {\n    for i in range(3) {\n        group.spawn(() => {\n            time.sleep(0.01 * (3 - i))\n            results.push(i)\n        })\n    }\n})\n\nprint(results.length())\nprint(`${1 / 3} ${7 % 3} ${'x'.length()}`)\n";
+    let path = source_file("native_library", source);
+    let expected = compile_and_run(&path);
+    assert!(expected.success, "{}", expected.error);
+    for native in [false, true] {
+        let executable = path.with_extension(if native { "native-library-native" } else { "native-library-c" });
+        let mut command = koji::kojic();
+        command.env("KOJI_RUNTIME", &library).arg("build");
+        if native {
+            command.arg("--native");
+        }
+        let built = koji::finish(command.arg(&path).arg("-o").arg(&executable), "");
+        assert_eq!(built.code, Some(0), "{}", built.stderr);
+        let run = if has_valgrind() {
+            Command::new("valgrind").env("KOJI_POOL", "0").args(["-q", "--error-exitcode=99"]).arg(&executable).output().unwrap()
+        } else {
+            Command::new(&executable).output().unwrap()
+        };
+        assert_eq!(String::from_utf8_lossy(&run.stdout), expected.output, "native backend: {}", native);
+        assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    }
+}
+
+#[test]
 fn code_for_one_system() {
     // A condition on `system.os` is decided when the program is compiled: the branch of another
     // system is not compiled, so a function of C it calls need not exist here (kqueue is not on

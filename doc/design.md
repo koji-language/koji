@@ -472,3 +472,19 @@ The value of `Shared` is the one reference of Koji, which its copies share: the 
 **Why**: they cannot be written with the operations of the language, and they are few; functions keep their uses checked by types and portable, each instruction written once for each processor in the compiler.
 
 **Alternatives**: blocks of assembly in Koji (`asm`), which can do anything but are checked by nothing and written in the syntax of each processor; leaving them in C or in files of assembly, which keeps a language other than Koji in the runtime.
+
+### The threads of the runtime stay in C for now
+
+**Decision**: the threads that help with the calls that block, and the one that ticks for preemption, stay in C (runtime/prelude.h) until the C backend goes: all the Koji of a program runs on its one thread.
+
+**Why**: in Koji they would need code of Koji that runs on another thread, where it must neither allocate nor count references, with nothing to check it, and the address of a function of Koji given to C. They are about 150 lines; the guarantee that Koji runs on one thread is worth more than them.
+
+**Alternatives**: functions of `koji:unsafe` for the address of a function and a call through an address, with the rule, unchecked, that the code of other threads allocates nothing.
+
+### The library of the runtime built by the compiler
+
+**Decision**: the native backend compiles the library of the runtime (`kojic library`): its object, with the part of the prelude still in C compiled by the C compiler, in the archive that programs link. The seed of the bootstrap stays C, the compiler and its library (`bootstrap/kojic.c.gz`, `bootstrap/libkoji.c.gz`), so that a system without a compiler of Koji can build one; the compiler it builds then builds the library natively.
+
+**Why**: the library is Koji: building it with the compiler takes the C compiler away from all of it but the small part of the prelude, as the backend did for programs.
+
+**Alternatives**: committing the object of the library (a binary in the repository, one for each platform); keeping the library compiled through C.
