@@ -216,6 +216,8 @@ type Native = {
     // the position of the current instruction among them.
     spareLocals: int[]
     spareHomes: int[]
+    // The spare registers of the function being generated.
+    spares: int[]
     // The local of `text += string(c)` whose string is never made, and its char (see `appendsChar`).
     charLocal: int
     charValue: Operand
@@ -237,7 +239,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [], shiftPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
         constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: [], spillHomes: [], spillSlots: [], tagLocal: -1, tagRecord: IntOp(0), trampolineStart: 0, variadic: false,
-        spareLocals: [], spareHomes: [], spareSlots: [], ranges: { first: [], last: [], starts: [], ends: [] }, at: 0, charLocal: -1, charValue: IntOp(0), rangeFused: false
+        spareLocals: [], spareHomes: [], spares: [], spareSlots: [], ranges: { first: [], last: [], starts: [], ends: [] }, at: 0, charLocal: -1, charValue: IntOp(0), rangeFused: false
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -910,7 +912,10 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         spareWeights.push(if (first < 0 or crosses or self.tracked(local)) { -1 } else { anyUse[local] })
     }
 
-    immut spareGiven = assignRegisters(spareWeights, ranges, spareRegisters.length())
+    // A function that calls nothing, nor computes with words in pairs, leaves r8 and r9 (arguments
+    // of calls and words of U128) to its locals too.
+    self.spares = if (leaf(routine)) { spareRegisters + [8, 9] } else { spareRegisters }
+    immut spareGiven = assignRegisters(spareWeights, ranges, self.spares.length())
     mut weights = registerWeights(routine, oneWord, 3)
 
     for local in range(routine.locals.length()) {
@@ -962,14 +967,14 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         if (given[local] >= 0) { homes[-offsets[local] / 8] = keptRegisters[given[local]] }
 
         if (spareGiven[local] >= 0) {
-            homes[-offsets[local] / 8] = spareRegisters[spareGiven[local]]
+            homes[-offsets[local] / 8] = self.spares[spareGiven[local]]
             self.spareLocals.push(local)
-            self.spareHomes.push(spareRegisters[spareGiven[local]])
+            self.spareHomes.push(self.spares[spareGiven[local]])
         }
     }
 
     if (self.spareLocals.length() > 0) {
-        for register in spareRegisters {
+        for register in self.spares {
             size += 8
             self.spareSlots.push(-size)
         }
@@ -1456,6 +1461,45 @@ function Native.registerRanges(mut self, heldIn: boolean[][]): Ranges {
     return ranges
 }
 
+// Whether a function calls nothing (but the panics and the check for preemption, which save the
+// spare registers or never return), takes at most four arguments and has no value of two words: only instructions that the native
+// backend writes inline, none with arguments in r8 or r9 nor U128 or decimals in pairs of registers.
+function leaf(routine: IrFunction): boolean {
+    // The fifth and sixth arguments come in r8 and r9.
+    if (paramTypes(routine).length() > 4) { return false }
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            // The locals it reads and writes (others may be left from inlining).
+            for local in uses(instruction) + changes(instruction) {
+                immut ty = routine.locals[local].ty
+
+                if (words(ty) != 1 or ty == FloatTy) { return false }
+            }
+
+            immut inline = match (instruction) {
+                CopyIns(_, _) => true
+                UnaryIns(dest, op, _, _) => not isManaged(routine.locals[dest].ty) and not (op in ['IntToByte', 'DecimalToFloat', 'DecimalToInt', 'IntToFloat', 'FloatTruncate'])
+                BinaryIns(dest, op, _, _, _) => not isManaged(routine.locals[dest].ty) and (op.startsWith('Int') or op.startsWith('Bit') or op.startsWith('BoolCompare') or op.startsWith('CharCompare') or op.startsWith('ByteCompare') or op in ['ByteAnd', 'ByteOr', 'ByteXor', 'ShiftLeft', 'ShiftRight']) and not (op in ['IntPow', 'IntListContains'])
+                FieldGetIns(dest, _, _) => not isManaged(routine.locals[dest].ty)
+                ListGetIns(dest, _, _, _) => not isManaged(routine.locals[dest].ty)
+                RangeNextIns(_, _, _, _, _, _) => true
+                StdCallIns(_, name, _) => inlineStd(name)
+                _ => false
+            }
+
+            if (not inline) { return false }
+        }
+    }
+
+    return true
+}
+
+// Whether a function of the standard library is written inline, calling nothing.
+function inlineStd(name: string): boolean {
+    return memoryFunctions.has(name) or accessors.has(name) or name in ['koji_element_counted', 'koji_unsafe_wide', 'koji_unsafe_low_word', 'koji_unsafe_high_word', 'koji_unsafe_word_product']
+}
+
 // For each position (see `liveRanges`), how many before it are of instructions that call a function
 // or of returns (which release the locals): no local is kept in a spare register across them.
 function callsBefore(routine: IrFunction): int[] {
@@ -1467,7 +1511,7 @@ function callsBefore(routine: IrFunction): int[] {
             immut calls = match (instruction) {
                 CallIns(_, _, _, _, _) => true
                 CallClosureIns(_, _, _, _) => true
-                StdCallIns(_, _, _) => true
+                StdCallIns(_, name, _) => not inlineStd(name)
                 UnaryIns(dest, _, _, _) => isManaged(routine.locals[dest].ty)
                 BinaryIns(dest, _, _, _, _) => isManaged(routine.locals[dest].ty)
                 _ => false
@@ -3452,6 +3496,16 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
 
             if (other == 'IntRem') { self.bytes([0x48, 0x89, 0xD0]) }
         }
+        // With a constant of 32 bits: and (or, xor) rax, imm32.
+        other if ((other == 'BitAnd' or other == 'BitOr' or other == 'BitXor') and smallConstant(right)) => {
+            self.loadOperand(rax, left)
+            self.bytes([0x48, match (other) {
+                'BitAnd' => 0x25
+                'BitOr' => 0x0D
+                _ => 0x35
+            }])
+            self.int32(constantOf(right))
+        }
         'BitAnd' => {
             self.loadBoth(left, right)
             self.bytes([0x48, 0x21, 0xC8])
@@ -4958,8 +5012,8 @@ function Native.based(mut self, prefix: int[], base: int, offset: int) {
 }
 
 function Native.spareSlot(self, register: int): int {
-    for i in range(spareRegisters.length()) {
-        if (spareRegisters[i] == register) { return self.spareSlots[i] }
+    for i in range(self.spares.length()) {
+        if (self.spares[i] == register) { return self.spareSlots[i] }
     }
 
     return 0

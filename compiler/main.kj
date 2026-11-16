@@ -38,6 +38,7 @@ immut usage = [
     '    kojic dump inlined <file.kj>      the same, as the native backend gets it (inlined)',
     '    kojic dump c <file.kj>            show the generated C',
     '    kojic dump library                show the C of the library of the runtime written in Koji',
+    '    kojic dump inlined library        its IR, as the native backend gets it',
     '    kojic init <module>               make a koji.mod for the module (github.com/ana/agenda)',
     '    kojic add <module>[@version]      require a module, at its latest version or the one given',
     '    kojic update [module]             require the latest versions of the modules (or of one)',
@@ -714,6 +715,19 @@ if (command == 'library' and args.length() == 3 and args[1] == '-o') {
             printError(message)
             system.exit(1)
         }
+    }
+
+    system.exit(0)
+}
+
+// The IR of std/koji/ as the native backend gets it (`kojic library`).
+if (command == 'dump' and args.length() == 3 and args[1] == 'inlined' and args[2] == 'library') {
+    match (checkLibrary()) {
+        Ok(program) => match (lower(program)) {
+            Ok(lowered) => print(programText(inlineSmall(lowered)).join('\n'))
+            Err(message) => printError(message)
+        }
+        Err(message) => printError(message)
     }
 
     system.exit(0)
