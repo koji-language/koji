@@ -456,3 +456,19 @@ The value of `Shared` is the one reference of Koji, which its copies share: the 
 **Why**: Koji aims to depend on no other language, C included: the compiler is written in Koji, and with its own code generation it needs nothing of C to build a program but, for a while, the linker. Writing the object file (rather than assembly for an assembler) keeps the whole path in Koji. Growing it under the C backend keeps Koji usable and correct at each step, with the C backend as the reference of every behavior.
 
 **Alternatives**: LLVM (excellent code, but a large dependency in C++); a backend of assembly text for the system's assembler, one tool more; replacing the C backend at once, which would leave Koji broken for months.
+
+### Code for one system: a condition on `system.os()` that the compiler decides
+
+**Decision**: code that exists only on some systems (the poller is `epoll` on Linux and `kqueue` on macOS, a `struct` of C has other fields on each) is written with `system.os()` as the condition of an `if` or the value of a `match`: `match (system.os()) { Linux => ..., MacOS => ..., _ => ... }`. The compiler knows the system it compiles for, so the condition is a constant: the native backend compiles the branch of that system only, and the functions of C that the other branches call are not even linked. The C backend, whose output must build on every system (the seed and the library are C files), keeps every branch, each under a condition of the preprocessor (`#if defined(__linux__)`), and the code that only one branch reaches with it. Anywhere else, `system.os()` is a value, as before.
+
+**Why**: the runtime written in Koji calls the system, whose functions and records differ from one system to another; a test at run time would still link the functions of every system, which do not all exist on any of them. Using the function that already says which system it is keeps the language as it is: no new syntax for a decision of the build.
+
+**Alternatives**: files for each system (`poller_linux.kj`, as Go), which duplicates whole modules for small differences; tests at run time with every function of C linked weakly (a missing one is null), which moves the failure from the link to the call; attributes or a preprocessor of Koji's own.
+
+### Instructions of the processor: functions of `koji:unsafe` that the compiler knows
+
+**Decision**: the few things of the runtime that are instructions of the processor and nothing else (switching between the stacks of tasks, the rounds of AES and the products without carries of GHASH, the requests to valgrind) are functions of `koji:unsafe` that the compiler knows, a small and closed set: each backend writes their instructions (the C backend as it writes them today, the native one as machine code), for each processor.
+
+**Why**: they cannot be written with the operations of the language, and they are few; functions keep their uses checked by types and portable, each instruction written once for each processor in the compiler.
+
+**Alternatives**: blocks of assembly in Koji (`asm`), which can do anything but are checked by nothing and written in the syntax of each processor; leaving them in C or in files of assembly, which keeps a language other than Koji in the runtime.
