@@ -5,11 +5,12 @@
 // reads it where the function did, so it stays alive until then (liveness.kj), and a value changed
 // in place after (`self.advance()` after `self.at(0)`) is not shared. Another parameter is a copy of
 // its argument, and the result a copy into the destination, so the references are those of any
-// copy. Only a function of the same file is inlined (the messages of its panics name the file of
-// the function generated), and none with `mut` parameters.
+// copy. A `mut` parameter given a local that gets its value back (`self.advance()`, with `mut
+// self`) is that local itself: the function changes it in place, as the call would. Only a
+// function of the same file is inlined (the messages of its panics name the file of the function
+// generated).
 
-import { Ty, Operand, Place, Step, Target, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrProgram } from 'ir.kj'
-import { smallFunctions } from 'cgen.kj'
+import { Ty, Operand, Place, Step, Target, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrProgram, isManaged } from 'ir.kj'
 import { changes, constantGlobals } from 'borrow.kj'
 import { uses, terminatorUses, successors } from 'liveness.kj'
 
@@ -17,11 +18,74 @@ import { uses, terminatorUses, successors } from 'liveness.kj'
 type Names = {
     base: int
     given: Option[Operand][]
+    // For each parameter, the local of the caller it is (a `mut` one), or -1.
+    aliases: int[]
+}
+
+// The limits of a function inlined: its blocks, and its instructions with those of the functions
+// it calls (inlined in it first).
+immut inlinedBlocks = 8
+immut inlinedSize = 40
+
+// The functions small enough to inline (as `smallFunctions` of cgen.kj, with other limits): they
+// call no others but small ones, so a recursive function is never one of them.
+function inlinable(program: IrProgram, blocks: int, most: int): boolean[] {
+    mut sizes: int[] = []
+
+    for routine in program.functions {
+        sizes.push(-1)
+    }
+
+    mut changed = true
+
+    while (changed) {
+        changed = false
+
+        for id in range(program.functions.length()) {
+            if (sizes[id] >= 0) { continue }
+
+            immut routine = program.functions[id]
+
+            if (routine.blocks.length() > blocks) { continue }
+
+            mut count = 0
+            mut fits = true
+
+            for block in routine.blocks {
+                for instruction in block.instructions {
+                    count += 1
+
+                    match (instruction) {
+                        CallIns(_, callee, _, _, _) => {
+                            if (sizes[callee] < 0) { fits = false }
+
+                            count += sizes[callee]
+                        }
+                        CallClosureIns(_, _, _, _) => fits = false
+                        _ => {}
+                    }
+                }
+            }
+
+            if (fits and count <= most) {
+                sizes[id] = count
+                changed = true
+            }
+        }
+    }
+
+    mut result: boolean[] = []
+
+    for size in sizes {
+        result.push(size >= 0)
+    }
+
+    return result
 }
 
 // The program with the calls of small functions inlined.
 export function inlineSmall(program: IrProgram): IrProgram {
-    immut smalls = smallFunctions(program)
+    immut smalls = inlinable(program, inlinedBlocks, inlinedSize)
     mut inlinable: boolean[] = []
 
     for id in range(program.functions.length()) {
@@ -29,8 +93,6 @@ export function inlineSmall(program: IrProgram): IrProgram {
         mut fits = smalls[id] and id != program.main
 
         for param in range(routine.params) {
-            if (param < routine.writeback.length() and routine.writeback[param]) { fits = false }
-
             if (routine.locals[param].ty == VoidTy) { fits = false }
         }
 
@@ -160,7 +222,7 @@ export function simplify(given: IrFunction): IrFunction {
         while (position < instructions.length()) {
             if (position + 1 < instructions.length()) {
                 match (instructions[position + 1]) {
-                    CopyIns(LocalPlace(dest), LocalOp(temporary)) if (temporary >= routine.params and temporary != dest and writes[temporary] == 1 and reads[temporary] == 1 and routine.locals[temporary].ty == routine.locals[dest].ty and not (dest in uses(instructions[position]))) => {
+                    CopyIns(LocalPlace(dest), LocalOp(temporary)) if (temporary >= routine.params and temporary != dest and writes[temporary] == 1 and reads[temporary] == 1 and routine.locals[temporary].ty == routine.locals[dest].ty and (not (dest in uses(instructions[position])) or arithmetic(instructions[position], routine))) => {
                         match (writing(instructions[position], temporary, dest)) {
                             Some(rewritten) => {
                                 kept.push(rewritten)
@@ -182,6 +244,16 @@ export function simplify(given: IrFunction): IrFunction {
     }
 
     return routine
+}
+
+// Whether an instruction computes a value of no references from its operands (which it reads
+// before writing its result, so it may write one of them: `i = i + 1`).
+function arithmetic(instruction: Instruction, routine: IrFunction): boolean {
+    return match (instruction) {
+        UnaryIns(dest, _, _, _) => not isManaged(routine.locals[dest].ty)
+        BinaryIns(dest, _, _, _, _) => not isManaged(routine.locals[dest].ty)
+        _ => false
+    }
 }
 
 // The instruction writing `dest` instead of `temporary` (when it writes that one only).
@@ -227,7 +299,7 @@ function inlineCalls(routine: IrFunction, inlinable: boolean[], constants: boole
 
         while (position < result.blocks[block].instructions.length()) {
             match (result.blocks[block].instructions[position]) {
-                CallIns(dest, callee, args, writebacks, _) if (inlinable[callee] and bodies[callee].file == routine.file and writebacks.length() == 0) => {
+                CallIns(dest, callee, args, writebacks, _) if (inlinable[callee] and bodies[callee].file == routine.file and aliasable(bodies[callee], args, writebacks, dest)) => {
                     splice(mut result, block, position, dest, bodies[callee], args, constants)
                     // The rest of the block moved to a new one.
                     break
@@ -242,6 +314,47 @@ function inlineCalls(routine: IrFunction, inlinable: boolean[], constants: boole
     }
 
     return result
+}
+
+// Whether each `mut` parameter of the call is given a local that gets the value back, and nothing
+// else reads that local in the call (so the function can change it in place).
+function aliasable(callee: IrFunction, args: Operand[], writebacks: Writeback[], dest: Option[int]): boolean {
+    for writeback in writebacks {
+        if (writeback.target.path.length() > 0) { return false }
+
+        immut local = match (writeback.target.root) {
+            LocalPlace(id) => id
+            GlobalPlace(_) => return false
+        }
+
+        if (args[writeback.param] != LocalOp(local) or dest == Some(local)) { return false }
+
+        for i in range(args.length()) {
+            if (i != writeback.param and args[i] == LocalOp(local)) { return false }
+        }
+    }
+
+    // Every `mut` parameter gets its value back.
+    for param in range(callee.params) {
+        if (param < callee.writeback.length() and callee.writeback[param]) {
+            mut found = false
+
+            for writeback in writebacks {
+                if (writeback.param == param) { found = true }
+            }
+
+            if (not found) { return false }
+        }
+    }
+
+    return true
+}
+
+// The local of the caller that a local of the callee is.
+function mapped(names: Names, id: int): int {
+    if (id < names.aliases.length() and names.aliases[id] >= 0) { return names.aliases[id] }
+
+    return names.base + id
 }
 
 // Replaces the call at `position` of `block`: the block ends there and goes to the blocks of the
@@ -263,15 +376,22 @@ function splice(mut routine: IrFunction, block: int, position: int, dest: Option
         }
     }
 
-    mut names: Names = { base: routine.locals.length(), given: [] }
+    mut names: Names = { base: routine.locals.length(), given: [], aliases: [] }
 
     for param in range(callee.params) {
         immut fixed = match (args[param]) {
             GlobalOp(id) => constants[id]
             _ => true
         }
+        immut written = param < callee.writeback.length() and callee.writeback[param]
 
-        names.given.push(if (fixed and not changed.has(param)) { Some(args[param]) } else { None })
+        names.given.push(if (fixed and not written and not changed.has(param)) { Some(args[param]) } else { None })
+        names.aliases.push(if (written) {
+            match (args[param]) {
+                LocalOp(local) => local
+                _ => -1
+            }
+        } else { -1 })
     }
 
     for local in callee.locals {
@@ -281,7 +401,7 @@ function splice(mut routine: IrFunction, block: int, position: int, dest: Option
     mut before = instructions[..position]
 
     for param in range(callee.params) {
-        if (names.given[param] is None) { before.push(CopyIns(place(LocalPlace(param), names), args[param])) }
+        if (names.given[param] is None and names.aliases[param] < 0) { before.push(CopyIns(place(LocalPlace(param), names), args[param])) }
     }
 
     immut after: IrBlock = { instructions: instructions[position + 1..], terminator: shifted(routine.blocks[block].terminator, block, shift) }
@@ -348,8 +468,8 @@ function moved(target: int, block: int, shift: int): int {
 function renamed(instruction: Instruction, names: Names): Instruction {
     return match (instruction) {
         CopyIns(dest, value) => CopyIns(place(dest, names), operand(value, names))
-        UnaryIns(dest, op, value, line) => UnaryIns(names.base + dest, op, operand(value, names), line)
-        BinaryIns(dest, op, left, right, line) => BinaryIns(names.base + dest, op, operand(left, names), operand(right, names), line)
+        UnaryIns(dest, op, value, line) => UnaryIns(mapped(names, dest), op, operand(value, names), line)
+        BinaryIns(dest, op, left, right, line) => BinaryIns(mapped(names, dest), op, operand(left, names), operand(right, names), line)
         CallIns(dest, callee, args, writebacks, line) => {
             mut backs: Writeback[] = []
 
@@ -359,17 +479,17 @@ function renamed(instruction: Instruction, names: Names): Instruction {
 
             CallIns(local(dest, names), callee, operands(args, names), backs, line)
         }
-        ListNewIns(dest, items) => ListNewIns(names.base + dest, operands(items, names))
-        ListGetIns(dest, list, index, line) => ListGetIns(names.base + dest, operand(list, names), operand(index, names), line)
+        ListNewIns(dest, items) => ListNewIns(mapped(names, dest), operands(items, names))
+        ListGetIns(dest, list, index, line) => ListGetIns(mapped(names, dest), operand(list, names), operand(index, names), line)
         ListSetIns(list, index, value, line) => ListSetIns(target(list, names), operand(index, names), operand(value, names), line)
         ListPushIns(list, value, line) => ListPushIns(target(list, names), operand(value, names), line)
         ListInsertIns(list, index, value, line) => ListInsertIns(target(list, names), operand(index, names), operand(value, names), line)
         ListSortIns(list, line) => ListSortIns(target(list, names), line)
-        ListSliceIns(dest, list, start, end, line) => ListSliceIns(names.base + dest, operand(list, names), optional(start, names), optional(end, names), line)
-        RecordNewIns(dest, variant, fields) => RecordNewIns(names.base + dest, variant, operands(fields, names))
-        FieldGetIns(dest, record, field) => FieldGetIns(names.base + dest, operand(record, names), field)
+        ListSliceIns(dest, list, start, end, line) => ListSliceIns(mapped(names, dest), operand(list, names), optional(start, names), optional(end, names), line)
+        RecordNewIns(dest, variant, fields) => RecordNewIns(mapped(names, dest), variant, operands(fields, names))
+        FieldGetIns(dest, record, field) => FieldGetIns(mapped(names, dest), operand(record, names), field)
         FieldSetIns(record, field, value, line) => FieldSetIns(target(record, names), field, operand(value, names), line)
-        ListRemoveIns(dest, list, index, line) => ListRemoveIns(names.base + dest, target(list, names), optional(index, names), line)
+        ListRemoveIns(dest, list, index, line) => ListRemoveIns(mapped(names, dest), target(list, names), optional(index, names), line)
         StdCallIns(dest, name, args) => {
             mut given: StdArg[] = []
 
@@ -383,9 +503,9 @@ function renamed(instruction: Instruction, names: Names): Instruction {
 
             StdCallIns(local(dest, names), name, given)
         }
-        TakeIns(dest, source) => TakeIns(names.base + dest, place(source, names))
+        TakeIns(dest, source) => TakeIns(mapped(names, dest), place(source, names))
         DropIns(value, dropper) => DropIns(place(value, names), dropper)
-        MakeClosureIns(dest, code, environment) => MakeClosureIns(names.base + dest, code, optional(environment, names))
+        MakeClosureIns(dest, code, environment) => MakeClosureIns(mapped(names, dest), code, optional(environment, names))
         CallClosureIns(dest, closure, args, line) => CallClosureIns(local(dest, names), operand(closure, names), operands(args, names), line)
         ListSortByIns(list, comparison, line) => ListSortByIns(target(list, names), operand(comparison, names), line)
         MapNewIns(dest, entries) => {
@@ -395,15 +515,15 @@ function renamed(instruction: Instruction, names: Names): Instruction {
                 moved.push({ key: operand(entry.key, names), value: operand(entry.value, names) })
             }
 
-            MapNewIns(names.base + dest, moved)
+            MapNewIns(mapped(names, dest), moved)
         }
-        MapGetIns(dest, map, key, line) => MapGetIns(names.base + dest, operand(map, names), operand(key, names), line)
-        MapLookupIns(dest, map, key) => MapLookupIns(names.base + dest, operand(map, names), operand(key, names))
+        MapGetIns(dest, map, key, line) => MapGetIns(mapped(names, dest), operand(map, names), operand(key, names), line)
+        MapLookupIns(dest, map, key) => MapLookupIns(mapped(names, dest), operand(map, names), operand(key, names))
         MapSetIns(map, key, value, line) => MapSetIns(target(map, names), operand(key, names), optional(value, names), line)
-        MapRemoveIns(dest, map, key, line) => MapRemoveIns(names.base + dest, target(map, names), operand(key, names), line)
+        MapRemoveIns(dest, map, key, line) => MapRemoveIns(mapped(names, dest), target(map, names), operand(key, names), line)
         FailIns(message, line) => FailIns(operand(message, names), line)
         PrintIns(value, line) => PrintIns(operand(value, names), line)
-        RangeNextIns(hasValue, value, next, end, step, done) => RangeNextIns(names.base + hasValue, names.base + value, names.base + next, operand(end, names), operand(step, names), names.base + done)
+        RangeNextIns(hasValue, value, next, end, step, done) => RangeNextIns(mapped(names, hasValue), mapped(names, value), mapped(names, next), operand(end, names), operand(step, names), mapped(names, done))
         RangeCheckIns(step, line) => RangeCheckIns(operand(step, names), line)
     }
 }
@@ -418,7 +538,7 @@ function operand(value: Operand, names: Names): Operand {
                 }
             }
 
-            LocalOp(names.base + id)
+            LocalOp(mapped(names, id))
         }
         _ => value
     }
@@ -443,14 +563,14 @@ function optional(value: Option[Operand], names: Names): Option[Operand] {
 
 function local(dest: Option[int], names: Names): Option[int] {
     return match (dest) {
-        Some(id) => Some(names.base + id)
+        Some(id) => Some(mapped(names, id))
         None => None
     }
 }
 
 function place(where: Place, names: Names): Place {
     return match (where) {
-        LocalPlace(id) => LocalPlace(names.base + id)
+        LocalPlace(id) => LocalPlace(mapped(names, id))
         GlobalPlace(_) => where
     }
 }

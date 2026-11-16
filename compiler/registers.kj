@@ -1,8 +1,7 @@
 // Which locals of a function the native backend keeps in registers (native.kj): those of one word
 // read and written most, a use in a loop counting ten times as much (a loop of loops, a hundred),
-// whose address is never taken (a list or a map changed in place, a part of a value changed through
-// a `mut` parameter: the runtime is given the place of the variable), nor dropped or taken (which
-// read a local that may be empty). Locals alive at different times share a register: each has a
+// whose address is never taken (the list or map of a literal, which the runtime fills in place),
+// nor dropped or taken (which read a local that may be empty). Locals alive at different times share a register: each has a
 // range of positions of the function (its instructions in order, each block's terminator after
 // them) from the first to the last where it is alive, by the usual analysis of liveness over the
 // blocks; the most used are given a register first, one that no range given it overlaps.
@@ -344,21 +343,6 @@ function addressedBy(instruction: Instruction): int[] {
         // A local that may be empty is read.
         TakeIns(_, LocalPlace(source)) => found.push(source)
         DropIns(LocalPlace(source), _) => found.push(source)
-        ListSetIns(list, _, _, _) => root(list, mut found)
-        ListPushIns(list, _, _) => root(list, mut found)
-        ListInsertIns(list, _, _, _) => root(list, mut found)
-        ListSortIns(list, _) => root(list, mut found)
-        FieldSetIns(record, _, _, _) => root(record, mut found)
-        ListRemoveIns(_, list, _, _) => root(list, mut found)
-        ListSortByIns(list, _, _) => root(list, mut found)
-        MapSetIns(map, _, _, _) => root(map, mut found)
-        MapRemoveIns(_, map, _, _) => root(map, mut found)
-        // A part of a variable given to a `mut` parameter (a variable alone comes back as a value).
-        CallIns(_, _, _, writebacks, _) => {
-            for writeback in writebacks {
-                if (writeback.target.path.length() > 0) { root(writeback.target, mut found) }
-            }
-        }
         _ => {}
     }
 

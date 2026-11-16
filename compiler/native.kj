@@ -187,6 +187,10 @@ type Native = {
     // For each block, the managed locals that may hold a reference after it, in a block it goes to,
     // but hold none at its end: emptied there (their register may hold another local's value).
     zeroAtEnd: int[][]
+    // The locals kept in registers whose place the current instruction gives the runtime: their
+    // value in a word of the frame (`spillSlots`), back in the register after the instruction.
+    spillHomes: int[]
+    spillSlots: int[]
     // The locals the current instruction emptied (moved out), which hold nothing to release until
     // written again.
     emptied: int[]
@@ -206,7 +210,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:],
         strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
-        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: []
+        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: [], spillHomes: [], spillSlots: []
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -854,6 +858,7 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
             self.fused = if (position == count - 1) { self.fusable(block) } else { 0 }
             self.emptied = []
             self.instruction(routine.blocks[block].instructions[position])?
+            self.reloadSpilled()
             self.dropDead()
             self.emptied = []
             self.afterHeld(mut self.held, block, position)
@@ -1406,6 +1411,7 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
                 immut alone = self.jumpIf(0x6)
                 self.placeAddress(rdi, record.root)
                 self.callExternal('koji_record_unshare')
+                self.reloadSpilled()
                 self.patchHere(alone)
                 self.loadPlaceWord(rax, record.root, 0)
             } else {
@@ -1889,6 +1895,14 @@ function Native.fieldAddress(mut self, record: Operand, field: int, base: int): 
     if (base == rax) { self.loadValue(record, ty) }
 
     return 24 + 8 * word
+}
+
+// The register that keeps an operand (a local kept in one), or -1.
+function Native.operandRegister(self, operand: Operand): int {
+    return match (operand) {
+        LocalOp(local) => self.home(self.offsets[local])
+        _ => -1
+    }
 }
 
 // The variable of a target, as an address (`void **`) in a word of the frame: its offset. Each step
@@ -2495,6 +2509,26 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
     immut withPlace = both + [self.location(line)]
 
     match (name) {
+        // A local plus a constant into itself (`i += 1`): add reg (or [rbp + offset]), imm32, in place.
+        other if ((other == 'IntAdd' or other == 'IntSub') and smallConstant(right) and left == LocalOp(dest)) => {
+            immut number = constantOf(right)
+
+            if (number == 0) { return Ok() }
+
+            immut held = self.operandRegister(left)
+            immut extension = if (other == 'IntAdd') { 0 } else { 5 }
+
+            if (held >= 0) {
+                self.bytes([rex(0, held), 0x81, 0xC0 | extension << 3 | (held & 7)])
+            } else {
+                self.bytes([0x48, 0x81, 0x85 | extension << 3])
+                self.int32(self.offsets[dest])
+            }
+
+            self.int32(number)
+            self.check(overflow, line, 'integer overflow')
+            return Ok()
+        }
         // With a constant of 32 bits: add rax, imm32 (nothing for 0).
         'IntAdd' if (smallConstant(right)) => {
             self.loadOperand(rax, left)
@@ -2560,15 +2594,53 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
             self.bytes([0x48, 0x31, 0xC8])
         }
         other if (other in ['IntCompare', 'BoolCompare', 'CharCompare', 'ByteCompare']) => {
-            self.loadBoth(left, right)
-
-            // The branch after reads the flags.
-            if (self.fused != 0) {
-                self.bytes([0x48, 0x39, 0xC8])
-                return Ok()
+            // cmp rax, imm32 against a small constant (a char or a boolean is one too), cmp rax, rcx
+            // otherwise.
+            immut constant = match (right) {
+                IntOp(number) if (number >= -2147483648 and number <= 2147483647) => Some(number)
+                CharOp(c) => Some(c.code())
+                BoolOp(flag) => Some(if (flag) { 1 } else { 0 })
+                _ => None
             }
 
-            self.bytes([0x48, 0x39, 0xC8, 0x0F, setcc(comparison), 0xC0, 0x0F, 0xB6, 0xC0])
+            // An operand kept in a register is compared there.
+            match (constant) {
+                Some(number) => {
+                    immut held = self.operandRegister(left)
+
+                    if (held >= 0) {
+                        // cmp reg, imm32
+                        self.bytes([rex(0, held), 0x81, 0xF8 | (held & 7)])
+                    } else {
+                        self.loadOperand(rax, left)
+                        self.bytes([0x48, 0x3D])
+                    }
+
+                    self.int32(number)
+                }
+                None => {
+                    mut first = self.operandRegister(left)
+                    mut second = self.operandRegister(right)
+
+                    if (first < 0) {
+                        self.loadOperand(rax, left)
+                        first = rax
+                    }
+
+                    if (second < 0) {
+                        self.loadOperand(rcx, right)
+                        second = rcx
+                    }
+
+                    // cmp first, second
+                    self.bytes([rex(second, first), 0x39, 0xC0 | (second & 7) << 3 | (first & 7)])
+                }
+            }
+
+            // The branch after reads the flags.
+            if (self.fused != 0) { return Ok() }
+
+            self.bytes([0x0F, setcc(comparison), 0xC0, 0x0F, 0xB6, 0xC0])
         }
         'FloatCompare' => {
             // movq xmm0, rax; movq xmm1, rcx; ucomisd xmm0, xmm1; set (above/below: unsigned).
@@ -2681,10 +2753,7 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
                 _ => 0
             }
             self.callC('koji_string_append', both, StrTy)
-            immut appended = self.slot(8)
-            self.storeWord(rax, appended)
             self.zeroPlace(LocalPlace(local))
-            self.loadWord(rax, appended)
         }
         'StrContainsChar' => self.callC('koji_string_contains_char', [value(right, rightType), value(left, leftType)], BoolTy)
         other => {
@@ -2858,17 +2927,25 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
                 return Ok()
             }
 
-            self.loadValue(condition, BoolTy)
+            // test reg, reg (a condition kept in a register), or test rax, rax.
+            mut tested = self.operandRegister(condition)
 
-            // test rax, rax; jz else when the then block follows, jnz then (and jmp else) otherwise.
+            if (tested < 0) {
+                self.loadValue(condition, BoolTy)
+                tested = rax
+            }
+
+            immut test = [rex(tested, tested), 0x85, 0xC0 | (tested & 7) << 3 | (tested & 7)]
+
+            // test; jz else when the then block follows, jnz then (and jmp else) otherwise.
             if (thenBlock == block + 1) {
-                self.bytes([0x48, 0x85, 0xC0, 0x0F, 0x84])
+                self.bytes(test + [0x0F, 0x84])
                 self.jumps.push({ at: self.code.length(), block: elseBlock })
                 self.int32(0)
                 return Ok()
             }
 
-            self.bytes([0x48, 0x85, 0xC0, 0x0F, 0x85])
+            self.bytes(test + [0x0F, 0x85])
             self.jumps.push({ at: self.code.length(), block: thenBlock })
             self.int32(0)
 
@@ -3013,11 +3090,9 @@ function Native.loadU128Both(mut self, left: Operand, right: Operand) {
 function Native.retainResult(mut self, ty: Ty) {
     match (managed(ty)) {
         Some(kind) => {
-            immut held = self.slot(8)
-            self.storeWord(rax, held)
+            // mov rdi, rax (the count goes up through rdi: rax stays)
             self.bytes([0x48, 0x89, 0xC7])
             self.retainRdi()
-            self.loadWord(rax, held)
         }
         None => {}
     }
@@ -3046,17 +3121,23 @@ function Native.storeResult(mut self, where: Place, ty: Ty) {
         GlobalPlace(_) => {}
     }
 
-    match (managed(ty)) {
+    // The old value in rdi, released once the new one is stored (rax is not kept: the callers do
+    // not read it after).
+    immut released = match (managed(ty)) {
         Some(kind) if (not empty) => {
-            immut held = self.slot(8)
-            self.storeWord(rax, held)
             self.loadPlaceWord(rdi, where, 0)
-            self.releaseRdi(kind)
-            self.loadWord(rax, held)
+            kind
         }
-        _ => {}
+        _ => ''
     }
 
+    self.storePlace(where, ty)
+
+    if (released != '') { self.releaseRdi(released) }
+}
+
+// Stores rax (and rdx) in a place.
+function Native.storePlace(mut self, where: Place, ty: Ty) {
     match (where) {
         LocalPlace(id) => {
             self.storeWord(rax, self.offsets[id])
@@ -3084,19 +3165,66 @@ function Native.zeroPlace(mut self, where: Place) {
         GlobalPlace(_) => {}
     }
 
-    self.bytes([0x31, 0xC0])
-
+    // A constant 0, so that rax keeps its value (and the flags theirs).
     match (where) {
-        LocalPlace(id) => self.storeWord(rax, self.offsets[id])
-        GlobalPlace(id) => self.storeGlobal(rax, id, 0)
+        LocalPlace(id) => {
+            immut home = self.home(self.offsets[id])
+
+            if (home >= 0) {
+                // mov r32, 0
+                if (home >= 8) { self.bytes([0x41]) }
+
+                self.bytes([0xB8 + (home & 7)])
+                self.int32(0)
+            } else {
+                // mov qword [rbp + offset], 0
+                self.bytes([0x48, 0xC7, 0x85])
+                self.int32(self.offsets[id])
+                self.int32(0)
+
+                // The word no register holds any more.
+                for held in range(16) {
+                    if (self.known[held] == self.offsets[id]) { self.known[held] = 0 }
+                }
+            }
+        }
+        GlobalPlace(id) => {
+            // mov qword [rip + global], 0 (the 0 after the offset)
+            self.bytes([0x48, 0xC7, 0x05])
+            self.relocations.push({ at: self.code.length(), symbol: '.bss', kind: pc32, addend: self.globals[id] - 8 })
+            self.int32(0)
+            self.int32(0)
+        }
     }
 }
 
-// The address of a place (a local or a global) in a register.
+// The address of a place (a local or a global) in a register. A local kept in a register is put in a
+// word of the frame for the instruction (the same one each time), back in the register after it
+// (see `spillHomes`).
 function Native.placeAddress(mut self, register: int, where: Place) {
     match (where) {
         LocalPlace(id) => {
-            if (self.home(self.offsets[id]) >= 0) { panic('internal error: the place of a local kept in a register') }
+            immut home = self.home(self.offsets[id])
+
+            if (home >= 0) {
+                mut spill = 0
+
+                for i in range(self.spillHomes.length()) {
+                    if (self.spillHomes[i] == home) { spill = self.spillSlots[i] }
+                }
+
+                if (spill == 0) {
+                    spill = self.slot(8)
+                    self.storeWord(home, spill)
+                    self.spillHomes.push(home)
+                    self.spillSlots.push(spill)
+                }
+
+                // lea reg, [rbp + spill]
+                self.bytes([rex(register, 0), 0x8D, 0x85 | (register & 7) << 3])
+                self.int32(spill)
+                return
+            }
 
             // lea reg, [rbp + offset]
             self.bytes([rex(register, 0), 0x8D, 0x85 | (register & 7) << 3])
@@ -3107,6 +3235,19 @@ function Native.placeAddress(mut self, register: int, where: Place) {
             self.relocate('.bss', self.globals[id], pc32)
         }
     }
+}
+
+// The locals put in the frame by `placeAddress`, back in their registers.
+function Native.reloadSpilled(mut self) {
+    for i in range(self.spillHomes.length()) {
+        // mov home, [rbp + spill]
+        immut home = self.spillHomes[i]
+        self.bytes([rex(home, 0), 0x8B, 0x85 | (home & 7) << 3])
+        self.int32(self.spillSlots[i])
+    }
+
+    self.spillHomes = []
+    self.spillSlots = []
 }
 
 function Native.loadPlaceWord(mut self, register: int, where: Place, word: int) {
