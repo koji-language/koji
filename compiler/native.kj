@@ -36,6 +36,9 @@ immut rdi = 7
 immut argumentRegisters = [7, 6, 2, 1, 8, 9]
 // The registers that calls keep (System V), for the most used locals: rbx, r12 to r15.
 immut keptRegisters = [3, 12, 13, 14, 15]
+// The least weight of the locals of such a register for the function to save it (see
+// `registerWeights`).
+immut keptGain = 40
 // The registers no instruction uses otherwise, which calls do not keep: r10 and r11, for the locals
 // of no references alive where the function calls none (a call that happens there saves them).
 immut spareRegisters = [10, 11]
@@ -216,6 +219,8 @@ type Native = {
     // The local of `text += string(c)` whose string is never made, and its char (see `appendsChar`).
     charLocal: int
     charValue: Operand
+    // Whether the range of the instruction before already branched (see `rangeNext`).
+    rangeFused: boolean
     spareSlots: int[]
     ranges: Ranges
     at: int
@@ -232,7 +237,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [], shiftPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
         constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: [], spillHomes: [], spillSlots: [], tagLocal: -1, tagRecord: IntOp(0), trampolineStart: 0, variadic: false,
-        spareLocals: [], spareHomes: [], spareSlots: [], ranges: { first: [], last: [], starts: [], ends: [] }, at: 0, charLocal: -1, charValue: IntOp(0)
+        spareLocals: [], spareHomes: [], spareSlots: [], ranges: { first: [], last: [], starts: [], ends: [] }, at: 0, charLocal: -1, charValue: IntOp(0), rangeFused: false
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -912,7 +917,22 @@ function Native.generateFunction(mut self, id: int): Result[void, string] {
         if (spareGiven[local] >= 0) { weights[local] = -1 }
     }
 
-    immut given = assignRegisters(weights, ranges, keptRegisters.length())
+    mut given = assignRegisters(weights, ranges, keptRegisters.length())
+    // A register that calls keep costs a save and a restore at each call of the function: kept only
+    // when its locals are used enough (their weights together, a use in a loop ten times as much).
+    mut gains: int[] = []
+
+    for register in keptRegisters {
+        gains.push(0)
+    }
+
+    for local in range(routine.locals.length()) {
+        if (given[local] >= 0) { gains[given[local]] += weights[local] }
+    }
+
+    for local in range(routine.locals.length()) {
+        if (given[local] >= 0 and gains[given[local]] < keptGain) { given[local] = -1 }
+    }
 
     self.ranges = ranges
     self.spareLocals = []
@@ -1608,11 +1628,99 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
             self.retainResult(ty)
             self.storeResult(LocalPlace(dest), ty)
         }
+        // An item of a word of no references: in place when the list is not shared and the index is
+        // in it, as the C backend does; the runtime copies the list, or panics, otherwise.
+        ListSetIns(list, index, item, line) if (words(self.operandType(item)) == 1 and managed(self.operandType(item)) is None) => {
+            // A local itself: the list is its value, and only the runtime needs its place.
+            immut direct = list.path.length() == 0
+            mut variable = 0
+
+            if (direct) {
+                self.loadOperand(rsi, index)
+                self.loadOperand(rax, item)
+                self.loadPlaceWord(rdi, list.root, 0)
+                // cmp qword [rdi], 1
+                self.bytes([0x48, 0x83, 0x3F, 0x01])
+            } else {
+                variable = self.path(list, line)
+                self.loadOperand(rsi, index)
+                self.loadOperand(rax, item)
+                self.loadWord(rcx, variable)
+                // mov rdi, [rcx]; cmp qword [rdi], 1
+                self.bytes([0x48, 0x8B, 0x39, 0x48, 0x83, 0x3F, 0x01])
+            }
+
+            // jne slow; cmp rsi, [rdi + 32]; jae slow
+            immut shared = self.jumpIf(notEqual)
+            self.bytes([0x48, 0x3B, 0x77, 0x20])
+            immut outside = self.jumpIf(0x3)
+            // mov rcx, [rdi + 24]; mov [rcx + rsi * 8], rax; jmp done
+            self.bytes([0x48, 0x8B, 0x4F, 0x18, 0x48, 0x89, 0x04, 0xF1])
+            immut done = self.jump()
+            self.patchHere(shared)
+            self.patchHere(outside)
+            self.forget()
+            // The value and the index from their registers (the index may be a temporary never
+            // stored): mov [rbp + slot], rax; mov [rbp + at], rsi
+            immut slot = self.slot(8)
+            self.bytes([0x48, 0x89, 0x85])
+            self.int32(slot)
+            immut at = self.slot(8)
+            self.bytes([0x48, 0x89, 0xB5])
+            self.int32(at)
+
+            if (direct) { variable = self.path(list, line) }
+
+            self.callC('koji_list_set', [argument('word', variable), argument('word', at), argument('slot', slot), self.location(line)], VoidTy)
+            // The local back in its register on this path only (the other never left it).
+            self.reloadSpilled()
+            self.patchHere(done)
+            self.forget()
+        }
         ListSetIns(list, index, item, line) => {
             immut ty = self.operandType(item)
             immut copy = self.copyToSlot(item, ty)
             immut variable = self.path(list, line)
             self.callC('koji_list_set', [argument('word', variable), value(index, IntTy), argument('slot', copy), self.location(line)], VoidTy)
+        }
+        // An item of a word of no references: in place when the list is not shared and has room.
+        ListPushIns(list, item, line) if (words(self.operandType(item)) == 1 and managed(self.operandType(item)) is None) => {
+            immut direct = list.path.length() == 0
+            mut variable = 0
+
+            if (direct) {
+                self.loadOperand(rax, item)
+                self.loadPlaceWord(rdi, list.root, 0)
+                self.bytes([0x48, 0x83, 0x3F, 0x01])
+            } else {
+                variable = self.path(list, line)
+                self.loadOperand(rax, item)
+                self.loadWord(rcx, variable)
+                // mov rdi, [rcx]; cmp qword [rdi], 1
+                self.bytes([0x48, 0x8B, 0x39, 0x48, 0x83, 0x3F, 0x01])
+            }
+
+            // jne slow; mov rsi, [rdi + 32]; cmp rsi, [rdi + 40]; jge slow
+            immut shared = self.jumpIf(notEqual)
+            self.bytes([0x48, 0x8B, 0x77, 0x20, 0x48, 0x3B, 0x77, 0x28])
+            immut full = self.jumpIf(0xD)
+            // mov rcx, [rdi + 24]; mov [rcx + rsi * 8], rax; inc rsi; mov [rdi + 32], rsi; jmp done
+            self.bytes([0x48, 0x8B, 0x4F, 0x18, 0x48, 0x89, 0x04, 0xF1, 0x48, 0xFF, 0xC6, 0x48, 0x89, 0x77, 0x20])
+            immut done = self.jump()
+            self.patchHere(shared)
+            self.patchHere(full)
+            self.forget()
+            immut slot = self.slot(8)
+            self.bytes([0x48, 0x89, 0x85])
+            self.int32(slot)
+
+            if (direct) { variable = self.path(list, line) }
+
+            self.callC('koji_list_push', [argument('word', variable), argument('slot', slot)], VoidTy)
+            // The local back in its register on this path only (the other never left it).
+            self.reloadSpilled()
+            self.patchHere(done)
+            self.forget()
         }
         ListPushIns(list, item, line) => {
             immut ty = self.operandType(item)
@@ -3060,6 +3168,29 @@ function Native.rangeNext(mut self, hasValue: int, item: int, next: int, end: Op
     // A step of 1 or -1: next never passes the end, so it never overflows (`done` stays false).
     match (step) {
         IntOp(unit) if (unit == 1 or unit == -1) => {
+            // The branch that ends the block on `hasValue`, its only read, going forward (and nothing
+            // emptied at the end of the block): jumps where it would go without the flag (see the
+            // terminator).
+            immut instructions = self.routine.blocks[self.block].instructions
+            immut last = self.position == instructions.length() - 1
+
+            match (self.routine.blocks[self.block].terminator) {
+                BranchT(LocalOp(tested), thenBlock, elseBlock) if (last and tested == hasValue and self.zeroAtEnd[self.block].length() == 0 and thenBlock > self.block and elseBlock > self.block and not has(self.liveIn[thenBlock], hasValue) and not has(self.liveIn[elseBlock], hasValue)) => {
+                    self.loadOperand(rcx, end)
+                    self.loadWord(rax, self.offsets[next])
+                    // cmp rax, rcx; jge (jle) else
+                    self.bytes([0x48, 0x39, 0xC8])
+                    self.branchTo([0x0F, if (unit == 1) { 0x8D } else { 0x8E }], elseBlock)
+                    self.storeWord(rax, self.offsets[item])
+                    // add rax, unit
+                    self.bytes([0x48, 0x83, 0xC0, unit & 0xFF])
+                    self.storeWord(rax, self.offsets[next])
+                    self.rangeFused = true
+                    return
+                }
+                _ => {}
+            }
+
             self.bytes([0x31, 0xC0])
             self.storeWord(rax, self.offsets[hasValue])
             self.loadOperand(rcx, end)
@@ -3767,6 +3898,16 @@ function Native.terminator(mut self, block: int, terminator: Terminator): Result
             self.bytes([0xE9])
             self.jumps.push({ at: self.code.length(), block: target })
             self.int32(0)
+        }
+        // The range before jumped to the else block already (see `rangeNext`).
+        BranchT(_, thenBlock, _) if (self.rangeFused) => {
+            self.rangeFused = false
+
+            if (thenBlock != block + 1) {
+                self.bytes([0xE9])
+                self.jumps.push({ at: self.code.length(), block: thenBlock })
+                self.int32(0)
+            }
         }
         BranchT(condition, thenBlock, elseBlock) => {
             if ((thenBlock <= block or elseBlock <= block) and self.preemptible) { self.preempt() }

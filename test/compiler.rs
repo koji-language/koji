@@ -3151,3 +3151,13 @@ print(seen)
         "200000 200000 199999\n200000\n[1, 2, 2, 3]\n[1, 2, 2, 3, 4]\n",
     );
 }
+
+#[test]
+fn items_set_and_pushed_in_place() {
+    // The native backend sets and pushes items of a word in place when the list is its own (and
+    // calls the runtime otherwise): an index that is a temporary, a list shared with another
+    // variable (copied first), a `mut` parameter, a list in a field, and lists that grow.
+    let source = "type Box = {\n    items: int[]\n}\n\nfunction mark(mut held: boolean[], which: int[]) {\n    for local in which {\n        held[local] = true\n    }\n\n    for local in which {\n        held[local + 1] = false\n    }\n}\n\nmut held = [false, false, false, false, false, false]\nimmut other = held\nmark(mut held, [1, 3])\nprint(held)\nprint(other)\nmut box: Box = { items: [] }\n\nfor i in range(10) {\n    box.items.push(i * i)\n}\n\nimmut kept = box.items\nbox.items[2] = -1\nbox.items.push(100)\nprint(box.items)\nprint(kept)\nmut chars: char[] = []\n\nfor c in 'héllo'.chars() {\n    chars.push(c)\n}\n\nchars[0] = 'H'\nprint(chars)\nmut flags: boolean[] = []\nflags.push(true)\nimmut copy = flags\nflags.push(false)\nflags[0] = false\nprint(flags)\nprint(copy)\n";
+    let expected = "[false, true, false, true, false, false]\n[false, false, false, false, false, false]\n[0, 1, -1, 9, 16, 25, 36, 49, 64, 81, 100]\n[0, 1, 4, 9, 16, 25, 36, 49, 64, 81]\n['H', 'é', 'l', 'l', 'o']\n[false, false]\n[true]\n";
+    assert_same("items_in_place", source, expected);
+}
