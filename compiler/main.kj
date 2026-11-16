@@ -12,6 +12,7 @@ import { lower, lowerTests } from 'lower.kj'
 import { IrProgram, programText } from 'ir.kj'
 import { generate } from 'cgen.kj'
 import { generateNative } from 'native.kj'
+import { inlineSmall } from 'inline.kj'
 import { preludeLines } from 'prelude.kj'
 import { serve } from 'lsp.kj'
 import { initModule, addModule, updateModules } from 'packages.kj'
@@ -34,6 +35,7 @@ immut usage = [
     '    kojic dump ast <file.kj>          show the syntax tree of a file',
     '    kojic dump types <file.kj>        show what the checker finds (types, moves...)',
     '    kojic dump ir <file.kj>           show the intermediate representation',
+    '    kojic dump inlined <file.kj>      the same, as the native backend gets it (inlined)',
     '    kojic dump c <file.kj>            show the generated C',
     '    kojic dump library                show the C of the library of the runtime written in Koji',
     '    kojic init <module>               make a koji.mod for the module (github.com/ana/agenda)',
@@ -96,6 +98,15 @@ function dumpStage(stage: string, name: string) {
         'ir' => {
             match (lowered(name)) {
                 Ok(program) => print(programText(program).join('\n'))
+                Err(message) => print(`error: ${message.split('\n')[0]}`)
+            }
+
+            return
+        }
+        // The IR the native backend generates code from: small functions inlined (inline.kj).
+        'inlined' => {
+            match (lowered(name)) {
+                Ok(program) => print(programText(inlineSmall(program)).join('\n'))
                 Err(message) => print(`error: ${message.split('\n')[0]}`)
             }
 
@@ -730,7 +741,7 @@ if (command == 'dump' and args.length() == 2 and args[1] == 'library') {
     system.exit(0)
 }
 
-if (command == 'dump' and args.length() == 3 and args[1] in ['tokens', 'ast', 'types', 'ir', 'c']) {
+if (command == 'dump' and args.length() == 3 and args[1] in ['tokens', 'ast', 'types', 'ir', 'inlined', 'c']) {
     dumpStage(args[1], args[2])
     system.exit(0)
 }

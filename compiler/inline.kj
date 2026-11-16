@@ -200,23 +200,8 @@ export function simplify(given: IrFunction): IrFunction {
         }
     }
 
-    // A branch to an empty block that branches on the same condition goes where that one would
-    // (the `and` and `or` of a condition: `branch l2, b4, b5` where b5 is `branch l2, b2, b3`).
-    for block in range(count) {
-        match (routine.blocks[block].terminator) {
-            BranchT(LocalOp(condition), thenBlock, elseBlock) => {
-                immut thenTarget = match (routine.blocks[thenBlock].terminator) {
-                    BranchT(LocalOp(again), target, _) if (again == condition and routine.blocks[thenBlock].instructions.length() == 0 and thenBlock != block) => target
-                    _ => thenBlock
-                }
-                immut elseTarget = match (routine.blocks[elseBlock].terminator) {
-                    BranchT(LocalOp(again), _, target) if (again == condition and routine.blocks[elseBlock].instructions.length() == 0 and elseBlock != block) => target
-                    _ => elseBlock
-                }
-                routine.blocks[block] = { instructions: routine.blocks[block].instructions, terminator: BranchT(LocalOp(condition), thenTarget, elseTarget) }
-            }
-            _ => {}
-        }
+    for round in range(4) {
+        routine = threaded(routine)
     }
 
     // How many times each local is written and read.
@@ -241,6 +226,27 @@ export function simplify(given: IrFunction): IrFunction {
 
         for local in terminatorUses(block.terminator) {
             reads[local] += 1
+        }
+    }
+
+    // A branch on the negation of a value, which only the branch reads, branches on the value the
+    // other way.
+    for block in range(count) {
+        immut instructions = routine.blocks[block].instructions
+
+        if (instructions.length() == 0) { continue }
+
+        match (routine.blocks[block].terminator) {
+            BranchT(LocalOp(condition), thenBlock, elseBlock) if (condition >= routine.params and reads[condition] == 1 and writes[condition] == 1) => {
+                match (instructions[instructions.length() - 1]) {
+                    UnaryIns(written, 'Not', value, _) if (written == condition) => {
+                        routine.blocks[block] = { instructions: instructions[0..instructions.length() - 1], terminator: BranchT(value, elseBlock, thenBlock) }
+                        reads[condition] = 0
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
         }
     }
 
@@ -276,50 +282,248 @@ export function simplify(given: IrFunction): IrFunction {
     return laidOut(routine)
 }
 
-// The blocks in the order of a walk from the first one, each followed by where it goes (the target
-// of a jump, the first of a branch) when that block is not placed yet: more jumps go to the next
-// block, which needs no instruction. Every loop keeps a jump back (a cycle cannot only go forward),
-// where the native backend checks for preemption.
+// The branches of a function made shorter, once (`simplify` repeats it, as each change may allow
+// another): a branch on a constant is a jump; a branch on a local just copied branches on what was
+// copied; a jump to an empty block that branches on the local the jumping block wrote last branches
+// itself, on what it wrote (`l1 = l4; goto b8` where b8 is `branch l1, b5, b6`: the `and` of a
+// condition); a branch to an empty block that branches on the same condition goes where that one
+// would; a branch in a block reached only from a branch on the same local, which it does not
+// change, goes the way that one went. Then the blocks nothing reaches are emptied, and the copies
+// into locals nothing reads (of no references) removed.
+function threaded(given: IrFunction): IrFunction {
+    mut routine = given
+    immut count = routine.blocks.length()
+
+    for block in range(count) {
+        immut instructions = routine.blocks[block].instructions
+        immut last = instructions.length() - 1
+
+        match (routine.blocks[block].terminator) {
+            BranchT(BoolOp(value), thenBlock, elseBlock) => {
+                routine.blocks[block] = { instructions: instructions, terminator: GotoT(if (value) { thenBlock } else { elseBlock }) }
+            }
+            BranchT(LocalOp(condition), thenBlock, elseBlock) if (last >= 0) => {
+                match (instructions[last]) {
+                    CopyIns(LocalPlace(written), value) if (written == condition and copiedCondition(value, condition)) => {
+                        routine.blocks[block] = { instructions: instructions, terminator: BranchT(value, thenBlock, elseBlock) }
+                    }
+                    _ => {}
+                }
+            }
+            GotoT(next) if (last >= 0 and routine.blocks[next].instructions.length() == 0) => {
+                match (routine.blocks[next].terminator) {
+                    BranchT(LocalOp(condition), thenBlock, elseBlock) => {
+                        match (instructions[last]) {
+                            CopyIns(LocalPlace(written), value) if (written == condition and copiedCondition(value, condition)) => {
+                                routine.blocks[block] = { instructions: instructions, terminator: BranchT(value, thenBlock, elseBlock) }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for block in range(count) {
+        match (routine.blocks[block].terminator) {
+            BranchT(LocalOp(condition), thenBlock, elseBlock) => {
+                immut instructions = routine.blocks[block].instructions
+                immut thenTarget = match (routine.blocks[thenBlock].terminator) {
+                    BranchT(LocalOp(again), target, _) if (sameCondition(instructions, condition, again) and routine.blocks[thenBlock].instructions.length() == 0 and thenBlock != block) => target
+                    _ => thenBlock
+                }
+                immut elseTarget = match (routine.blocks[elseBlock].terminator) {
+                    BranchT(LocalOp(again), _, target) if (sameCondition(instructions, condition, again) and routine.blocks[elseBlock].instructions.length() == 0 and elseBlock != block) => target
+                    _ => elseBlock
+                }
+                routine.blocks[block] = { instructions: routine.blocks[block].instructions, terminator: BranchT(LocalOp(condition), thenTarget, elseTarget) }
+            }
+            _ => {}
+        }
+    }
+
+    // The blocks reaching each one.
+    mut sources: int[][] = []
+
+    for block in range(count) {
+        sources.push([])
+    }
+
+    for block in range(count) {
+        for next in successors(routine.blocks[block].terminator) {
+            sources[next].push(block)
+        }
+    }
+
+    for block in range(count) {
+        match (routine.blocks[block].terminator) {
+            BranchT(LocalOp(condition), thenBlock, elseBlock) if (sources[block].length() == 1 and sources[block][0] != block and not writesLocal(routine.blocks[block].instructions, condition)) => {
+                match (routine.blocks[sources[block][0]].terminator) {
+                    BranchT(LocalOp(again), before, after) if (again == condition and before != after) => {
+                        if (before == block) { routine.blocks[block] = { instructions: routine.blocks[block].instructions, terminator: GotoT(thenBlock) } }
+
+                        if (after == block) { routine.blocks[block] = { instructions: routine.blocks[block].instructions, terminator: GotoT(elseBlock) } }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    mut reachable: boolean[] = []
+
+    for block in range(count) {
+        reachable.push(false)
+    }
+
+    mut pending: int[] = [0]
+    reachable[0] = true
+
+    while (pending.length() > 0) {
+        immut current = match (pending.pop()) {
+            Some(block) => block
+            None => break
+        }
+
+        for next in successors(routine.blocks[current].terminator) {
+            if (not reachable[next]) {
+                reachable[next] = true
+                pending.push(next)
+            }
+        }
+    }
+
+    mut reads: int[] = []
+
+    for local in routine.locals {
+        reads.push(0)
+    }
+
+    for block in range(count) {
+        if (not reachable[block]) {
+            routine.blocks[block] = { instructions: [], terminator: UnreachableT }
+            continue
+        }
+
+        for instruction in routine.blocks[block].instructions {
+            for local in uses(instruction) {
+                reads[local] += 1
+            }
+        }
+
+        for local in terminatorUses(routine.blocks[block].terminator) {
+            reads[local] += 1
+        }
+    }
+
+    for block in range(count) {
+        mut kept: Instruction[] = []
+        mut removed = false
+
+        for instruction in routine.blocks[block].instructions {
+            match (instruction) {
+                CopyIns(LocalPlace(dest), _) if (dest >= routine.params and reads[dest] == 0 and not isManaged(routine.locals[dest].ty)) => {
+                    removed = true
+                    continue
+                }
+                _ => {}
+            }
+
+            kept.push(instruction)
+        }
+
+        if (removed) { routine.blocks[block] = { instructions: kept, terminator: routine.blocks[block].terminator } }
+    }
+
+    return routine
+}
+
+// Whether a branch on `condition`, just given `value`, may branch on `value` instead.
+function copiedCondition(value: Operand, condition: int): boolean {
+    return match (value) {
+        BoolOp(_) => true
+        LocalOp(other) => other != condition
+        _ => false
+    }
+}
+
+// Whether `again` has the value of `condition` after the instructions of a block: it is the same
+// local, or the last instruction copied one into the other.
+function sameCondition(instructions: Instruction[], condition: int, again: int): boolean {
+    if (again == condition) { return true }
+
+    if (instructions.length() == 0) { return false }
+
+    return match (instructions[instructions.length() - 1]) {
+        CopyIns(LocalPlace(written), LocalOp(value)) => written == again and value == condition
+        _ => false
+    }
+}
+
+function writesLocal(instructions: Instruction[], local: int): boolean {
+    for instruction in instructions {
+        if (local in changes(instruction)) { return true }
+    }
+
+    return false
+}
+
+// The blocks in reverse postorder of a walk from the first one: a block comes after all those that
+// go to it but by a jump back, so only a loop jumps back (where the native backend checks for
+// preemption), and every loop does (a cycle cannot only go forward). The walk takes the first of
+// where a block goes last, so that it comes right after the block when nothing else goes to it:
+// more jumps go to the next block, which needs no instruction.
 function laidOut(routine: IrFunction): IrFunction {
     immut count = routine.blocks.length()
 
     if (count == 0) { return routine }
 
-    mut order: int[] = []
     mut placed: boolean[] = []
 
     for block in range(count) {
         placed.push(false)
     }
 
-    // The blocks still to place after the chain being built.
-    mut pending: int[] = [0]
+    // The walk: the blocks being visited, with how many of the successors of each are visited.
+    mut postorder: int[] = []
+    mut stack: int[] = [0]
+    mut visited: int[] = [0]
+    placed[0] = true
 
-    while (pending.length() > 0) {
-        mut current = match (pending.pop()) {
-            Some(block) => block
-            None => break
-        }
+    while (stack.length() > 0) {
+        immut top = stack.length() - 1
+        immut current = stack[top]
+        immut next = successors(routine.blocks[current].terminator)
 
-        // A chain: each block, then the first of where it goes that is not placed.
-        while (current >= 0 and not placed[current]) {
-            placed[current] = true
-            order.push(current)
-            immut next = successors(routine.blocks[current].terminator)
-            mut following = -1
+        if (visited[top] < next.length()) {
+            // The successors from the last to the first.
+            immut target = next[next.length() - 1 - visited[top]]
+            visited[top] += 1
 
-            for target in next {
-                if (placed[target]) { continue }
-
-                if (following < 0) {
-                    following = target
-                } else {
-                    pending.push(target)
-                }
+            if (not placed[target]) {
+                placed[target] = true
+                stack.push(target)
+                visited.push(0)
             }
 
-            current = following
+            continue
         }
+
+        postorder.push(current)
+        stack.pop()
+        visited.pop()
+    }
+
+    mut order: int[] = []
+    mut back = postorder.length() - 1
+
+    while (back >= 0) {
+        order.push(postorder[back])
+        back -= 1
     }
 
     // The blocks nothing reaches, at the end.
