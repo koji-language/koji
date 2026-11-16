@@ -1504,7 +1504,7 @@ function leaf(routine: IrFunction): boolean {
             immut inline = match (instruction) {
                 CopyIns(_, _) => true
                 UnaryIns(dest, op, _, _) => not isManaged(routine.locals[dest].ty) and not (op in ['IntToByte', 'DecimalToFloat', 'DecimalToInt', 'IntToFloat', 'FloatTruncate'])
-                BinaryIns(dest, op, _, _, _) => not isManaged(routine.locals[dest].ty) and (op.startsWith('Int') or op.startsWith('Bit') or op.startsWith('BoolCompare') or op.startsWith('CharCompare') or op.startsWith('ByteCompare') or op in ['ByteAnd', 'ByteOr', 'ByteXor', 'ShiftLeft', 'ShiftRight']) and not (op in ['IntPow', 'IntListContains'])
+                BinaryIns(dest, op, _, _, _) => not isManaged(routine.locals[dest].ty) and (op.startsWith('Int') or op.startsWith('Bit') or op.startsWith('BoolCompare') or op.startsWith('CharCompare') or op.startsWith('ByteCompare') or op in ['ByteAnd', 'ByteOr', 'ByteXor', 'ByteAdd', 'ByteSub', 'ByteMul', 'ShiftLeft', 'ShiftRight']) and not (op in ['IntPow', 'IntListContains'])
                 FieldGetIns(dest, _, _) => not isManaged(routine.locals[dest].ty)
                 ListGetIns(dest, _, _, _) => not isManaged(routine.locals[dest].ty)
                 RangeNextIns(_, _, _, _, _, _) => true
@@ -3647,6 +3647,20 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
         'BitXor' => {
             self.loadBoth(left, right)
             self.bytes([0x48, 0x31, 0xC8])
+        }
+        // On the bytes as words (zero-extended): a result outside 0 to 255 (below 0 is above as
+        // unsigned) panics, as koji_byte_check of the prelude.
+        other if (other == 'ByteAdd' or other == 'ByteSub' or other == 'ByteMul') => {
+            self.loadBoth(left, right)
+            self.bytes(match (other) {
+                'ByteAdd' => [0x48, 0x01, 0xC8]
+                'ByteSub' => [0x48, 0x29, 0xC8]
+                _ => [0x48, 0x0F, 0xAF, 0xC1]
+            })
+            // cmp rax, 255; ja panic
+            self.bytes([0x48, 0x3D])
+            self.int32(255)
+            self.check(0x7, line, 'byte overflow')
         }
         'ByteAnd' => {
             self.loadBoth(left, right)
