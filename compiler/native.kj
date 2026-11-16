@@ -191,6 +191,12 @@ type Native = {
     // value in a word of the frame (`spillSlots`), back in the register after the instruction.
     spillHomes: int[]
     spillSlots: int[]
+    // The local of a variant read for the comparison right after it, and the record it is read
+    // from: the comparison reads the variant in the record (`cmp qword [record + 16], k`).
+    tagLocal: int
+    tagRecord: Operand
+    // Where the code of the jobs of `blocking` functions starts (after the functions of records).
+    trampolineStart: int
     // The locals the current instruction emptied (moved out), which hold nothing to release until
     // written again.
     emptied: int[]
@@ -210,7 +216,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:],
         strings: [], globals: [], records: [], file: '', routine: nothing, offsets: [], outs: [], blocks: [], jumps: [], panics: [], indexPanics: [],
         preemptible: true, scratchBase: 0, scratch: 0, scratchMost: 0, live: [], block: 0, position: 0, trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program),
-        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: [], spillHomes: [], spillSlots: []
+        constants: constantGlobals(program), current: [], homes: [], saved: [], known: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], knownAt: -1, held: [], tagOnly: [], reads: [], liveIn: [], fused: 0, pendingRegister: -1, pendingOffset: 0, droppable: [], emptied: [], zeroAtEnd: [], spillHomes: [], spillSlots: [], tagLocal: -1, tagRecord: IntOp(0), trampolineStart: 0
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -243,6 +249,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     native.droppable = []
 
     immut extras = native.recordFunctions()
+    native.trampolineStart = native.code.length()
     native.trampolineCode()
 
     // `main`: the runtime starts (with argc and argv, already in rdi and rsi), then the program.
@@ -427,12 +434,37 @@ function Native.recordFunctions(mut self): int[] {
         self.patchDataFunction(self.records[id] + 24, self.code.length())
         // push rbp; mov rbp, rsp; push rbx; push rbx (rbx keeps the record, aligned).
         self.bytes([0x55, 0x48, 0x89, 0xE5, 0x53, 0x53, 0x48, 0x89, 0xFB])
+        // Many variants: a table of the places of their code, by the variant (relative to the table).
+        immut table = record.variants.length() >= 4
+        mut tableAt = 0
+
+        if (table) {
+            // mov rax, [rbx + 16]; lea rcx, [rip + table]; movsxd rax, dword [rcx + rax * 4];
+            // add rax, rcx; jmp rax
+            self.bytes([0x48, 0x8B, 0x43, 0x10, 0x48, 0x8D, 0x0D])
+            immut place = self.code.length()
+            self.int32(0)
+            self.bytes([0x48, 0x63, 0x04, 0x81, 0x48, 0x01, 0xC8, 0xFF, 0xE0])
+            tableAt = self.code.length()
+            self.patch32(place, tableAt - (place + 4))
+
+            for index in range(record.variants.length()) {
+                self.int32(0)
+            }
+        }
 
         for index in range(record.variants.length()) {
             immut fields = record.variants[index].fields
-            // cmp qword [rbx + 16], index; jne next
-            self.bytes([0x48, 0x83, 0x7B, 0x10, index & 0x7F])
-            immut other = self.jumpIf(notEqual)
+            mut other = -1
+
+            if (table) {
+                self.patch32(tableAt + 4 * index, self.code.length() - tableAt)
+            } else {
+                // cmp qword [rbx + 16], index; jne next
+                self.bytes([0x48, 0x83, 0x7B, 0x10, index & 0x7F])
+                other = self.jumpIf(notEqual)
+            }
+
             mut word = 0
 
             for field in fields {
@@ -449,11 +481,34 @@ function Native.recordFunctions(mut self): int[] {
                 word += words(field.ty)
             }
 
+            // The block back to the pool (koji_pool_give of the prelude, inline), unless the pool is
+            // off or the block is large.
+            immut size = 3 + word
+
+            if (size <= 16) {
+                // cmp byte [koji_pool_off], 0; jne slow
+                self.bytes([0x80, 0x3D])
+                self.relocation('koji_pool_off', pc32, -5)
+                self.int32(0)
+                self.bytes([0])
+                immut slow = self.jumpIf(notEqual)
+                // mov rax, [koji_pool + 8 * size]; mov [rbx], rax; mov [koji_pool + 8 * size], rbx
+                self.bytes([0x48, 0x8B, 0x05])
+                self.relocation('koji_pool', pc32, 8 * size - 4)
+                self.int32(0)
+                self.bytes([0x48, 0x89, 0x03, 0x48, 0x89, 0x1D])
+                self.relocation('koji_pool', pc32, 8 * size - 4)
+                self.int32(0)
+                self.bytes([0x5B, 0x5B, 0xC9, 0xC3])
+                self.patchHere(slow)
+            }
+
             self.bytes([0x48, 0x89, 0xDF])
-            self.moveConstant(rsi, 3 + word)
+            self.moveConstant(rsi, size)
             self.callExternal('koji_pool_give')
             self.bytes([0x5B, 0x5B, 0xC9, 0xC3])
-            self.patchHere(other)
+
+            if (other >= 0) { self.patchHere(other) }
         }
 
         self.bytes([0x5B, 0x5B, 0xC9, 0xC3])
@@ -1393,6 +1448,53 @@ function Native.instruction(mut self, instruction: Instruction): Result[void, st
 
             if (moved is None) { self.retainResult(ty) }
 
+            // A variable itself, its field at a known place, a value of one word: the value stays in
+            // rax (saved only around the copy of a shared record), the record where it is kept.
+            match (self.knownField(record.root, record.path.length(), field)) {
+                Some(word) if (record.path.length() == 0 and words(ty) == 1) => {
+                    match (moved) {
+                        Some(local) => self.zeroPlace(LocalPlace(local))
+                        None => {}
+                    }
+
+                    mut base = self.operandRegister(placeOperand(record.root))
+
+                    if (base < 0) {
+                        self.loadPlaceWord(rcx, record.root, 0)
+                        base = rcx
+                    }
+
+                    // cmp qword [base], 1; jbe alone
+                    self.bytes([rex(0, base), 0x83])
+                    self.addressed(7, base, 0)
+                    self.bytes([1])
+                    immut alone = self.jumpIf(0x6)
+                    self.storeWord(rax, fresh)
+                    self.placeAddress(rdi, record.root)
+                    self.callExternal('koji_record_unshare')
+                    self.reloadSpilled()
+                    self.loadWord(rax, fresh)
+
+                    if (base == rcx) { self.loadPlaceWord(rcx, record.root, 0) }
+
+                    self.patchHere(alone)
+                    // mov rdi, [base + offset] (the old value, released after); mov [base + offset], rax
+                    immut offset = 24 + 8 * word
+                    self.bytes([rex(rdi, base), 0x8B])
+                    self.addressed(rdi, base, offset)
+                    self.bytes([rex(rax, base), 0x89])
+                    self.addressed(rax, base, offset)
+
+                    match (managed(ty)) {
+                        Some(kind) => self.releaseRdi(kind)
+                        None => {}
+                    }
+
+                    return Ok()
+                }
+                _ => {}
+            }
+
             self.storeWord(rax, fresh)
 
             if (words(ty) == 2) { self.storeWord(rdx, fresh + 8) }
@@ -1897,6 +1999,27 @@ function Native.fieldAddress(mut self, record: Operand, field: int, base: int): 
     return 24 + 8 * word
 }
 
+// Whether the variant written to `dest` is read only by the next instruction, a comparison with a
+// constant (so that it reads the variant in the record itself).
+function Native.tagForNext(self, dest: int): boolean {
+    immut instructions = self.routine.blocks[self.block].instructions
+
+    if (self.position + 1 >= instructions.length() or self.reads[dest] != 1) { return false }
+
+    // The record stays alive until the comparison (it is not released after this read).
+    match (instructions[self.position]) {
+        UnaryIns(_, _, LocalOp(record), _) => {
+            if (record in self.live[self.block][self.position]) { return false }
+        }
+        _ => {}
+    }
+
+    return match (instructions[self.position + 1]) {
+        BinaryIns(_, op, left, right, _) => op.startsWith('IntCompare(') and left == LocalOp(dest) and smallConstant(right)
+        _ => false
+    }
+}
+
 // The register that keeps an operand (a local kept in one), or -1.
 function Native.operandRegister(self, operand: Operand): int {
     return match (operand) {
@@ -2394,6 +2517,12 @@ function Native.unary(mut self, dest: int, op: string, operand: Operand, line: i
     immut source = self.operandType(operand)
 
     match (op) {
+        // The variant, read by the comparison after it alone: read there (see `tagLocal`).
+        'RecordTag' if (self.tagForNext(dest)) => {
+            self.tagLocal = dest
+            self.tagRecord = operand
+            return Ok()
+        }
         'IntNeg' => {
             self.loadValue(operand, IntTy)
             self.bytes([0x48, 0xF7, 0xD8])
@@ -2605,6 +2734,20 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
 
             // An operand kept in a register is compared there.
             match (constant) {
+                Some(number) if (self.tagLocal >= 0 and left == LocalOp(self.tagLocal)) => {
+                    // cmp qword [record + 16], imm32
+                    mut base = self.operandRegister(self.tagRecord)
+
+                    if (base < 0) {
+                        self.loadOperand(rax, self.tagRecord)
+                        base = rax
+                    }
+
+                    self.bytes([rex(0, base), 0x81])
+                    self.addressed(7, base, 16)
+                    self.int32(number)
+                    self.tagLocal = -1
+                }
                 Some(number) => {
                     immut held = self.operandRegister(left)
 
@@ -4133,6 +4276,12 @@ function elfObject(native: Native, mainStart: int, extras: int[]): byte[] {
         // Named as in Koji (`Lexer.advance`), for profilers and debuggers.
         immut name = native.program.functions[id].name
         symbols.push({ name: if (name == '') { `koji_f${id}` } else { name }, info: 2, section: 1, value: native.starts[id], size: end - native.starts[id] })
+    }
+
+    // The functions that free records (and show opaque ones), by the name of their type.
+    for i in range(extras.length()) {
+        immut end = if (i + 1 < extras.length()) { extras[i + 1] } else { native.trampolineStart }
+        symbols.push({ name: `free ${native.program.records[i].name}`, info: 2, section: 1, value: extras[i], size: end - extras[i] })
     }
 
     immut firstGlobal = symbols.length()
