@@ -78,10 +78,24 @@ pub fn compiler() -> &'static Path {
     })
 }
 
+/// The runtime library built natively by the compiler (`kojic library`), which the programs of the
+/// tests link with (the library built from C, `RUNTIME`, links the compilers of the bootstrap).
+pub fn library() -> &'static Path {
+    static LIBRARY: OnceLock<PathBuf> = OnceLock::new();
+    LIBRARY.get_or_init(|| {
+        let compiler = compiler();
+        let name = format!("libkoji-{}.a", compiler.file_name().unwrap().to_string_lossy());
+        made(&name, |archive| {
+            let built = finish(Command::new(compiler).env("KOJI_RUNTIME", RUNTIME).arg("library").arg("-o").arg(archive), "");
+            assert_eq!(built.code, Some(0), "kojic library: {}", built.stderr);
+        })
+    })
+}
+
 /// A command of the compiler written in Koji, with the runtime library.
 pub fn kojic() -> Command {
     let mut command = Command::new(compiler());
-    command.env("KOJI_RUNTIME", RUNTIME);
+    command.env("KOJI_RUNTIME", library());
     command
 }
 

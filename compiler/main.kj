@@ -28,7 +28,8 @@ immut usage = [
     '        -o <output>                   the executable (default: the file name without .kj)',
     '        --emit c                      write the generated C instead',
     '        --emit ir                     write the intermediate representation instead',
-    '        --native                      generate the machine code itself (x86-64 Linux; slower code yet)',
+    '        --c                           generate C and compile it with the C compiler (the default',
+    '                                      where the native backend is not yet: not Linux on x86-64)',
     '    kojic dump tokens <file.kj>       show the tokens of a file (for comparing compilers)',
     '    kojic dump ast <file.kj>          show the syntax tree of a file',
     '    kojic dump types <file.kj>        show what the checker finds (types, moves...)',
@@ -162,10 +163,14 @@ function buildOptions(args: string[]): Build {
             continue
         }
 
-        // The native backend (compiler/native.kj): machine code without a C compiler, for what it
-        // supports yet.
+        // The native backend (compiler/native.kj, the default where it is) or the C backend.
         if (arg == '--native') {
             emit = 'native'
+            continue
+        }
+
+        if (arg == '--c') {
+            emit = 'executable-c'
             continue
         }
 
@@ -394,6 +399,17 @@ function writeBytesTo(name: string, bytes: byte[]): Result[void, file.FileError]
     return out.writeBytes(bytes)
 }
 
+// Whether the native backend generates the code of this platform (an ELF of x86-64, for Linux): the
+// default there, the C backend elsewhere.
+function nativeHere(): boolean {
+    return system.os == system.Linux and system.architecture == system.X64
+}
+
+// The executable of a program, by the backend of the platform.
+function executable(program: IrProgram, output: string): Result[void, string] {
+    return if (nativeHere()) { linkNative(program, output) } else { compileC(text(generate(program)), output, program.libraries) }
+}
+
 // `kojic build`: the executable, the C or the IR of a program.
 function build(args: string[]) {
     immut options = buildOptions(args)
@@ -408,7 +424,8 @@ function build(args: string[]) {
         'ir' => writeFile(options.output, text(programText(program)))
         'c' => writeFile(options.output, text(generate(program)))
         'native' => linkNative(program, options.output)
-        _ => compileC(text(generate(program)), options.output, program.libraries)
+        'executable-c' => compileC(text(generate(program)), options.output, program.libraries)
+        _ => executable(program, options.output)
     }
 
     match (result) {
@@ -430,9 +447,9 @@ function runProgram(args: string[]) {
             system.exit(1)
         }
     }
-    immut executable = temporary('')
+    immut built = temporary('')
 
-    match (compileC(text(generate(program)), executable, program.libraries)) {
+    match (executable(program, built)) {
         Ok(_) => {}
         Err(message) => {
             printError(message)
@@ -440,14 +457,14 @@ function runProgram(args: string[]) {
         }
     }
 
-    immut code = match (system.run(executable, args[1..])) {
+    immut code = match (system.run(built, args[1..])) {
         Ok(code) => code
         Err(error) => {
             printError(`cannot run the program: ${error}`)
             1
         }
     }
-    file.remove(executable)
+    file.remove(built)
     // A program stopped by a signal has no exit code.
     system.exit(if (code < 0) { 1 } else { code })
 }

@@ -32,13 +32,14 @@ fn has_valgrind() -> bool {
     *FOUND.get_or_init(|| Command::new("valgrind").arg("--version").output().is_ok_and(|o| o.status.success()))
 }
 
-/// Builds `path` to `executable` with the compiler written in Koji.
-/// With KOJI_TEST_NATIVE set, by the native backend (`--native`): the tests then check it.
+/// Builds `path` to `executable` with the compiler written in Koji: by its default backend (native on
+/// Linux and x86-64), or the C backend with KOJI_TEST_C set (the tests then check it).
 fn build(path: &Path, executable: &Path) {
     let mut command = koji::kojic();
     command.arg("build");
-    if std::env::var("KOJI_TEST_NATIVE").is_ok() {
-        command.arg("--native");
+    // The native backend is the default; KOJI_TEST_C runs the tests with the C backend.
+    if std::env::var("KOJI_TEST_C").is_ok() {
+        command.arg("--c");
     }
     let built = koji::finish(command.arg(path).arg("-o").arg(executable), "");
     assert_eq!(built.code, Some(0), "{} does not compile: {}", path.display(), built.stderr);
@@ -2775,9 +2776,7 @@ fn the_native_library_runs_programs() {
         let executable = path.with_extension(if native { "native-library-native" } else { "native-library-c" });
         let mut command = koji::kojic();
         command.env("KOJI_RUNTIME", &library).arg("build");
-        if native {
-            command.arg("--native");
-        }
+        command.arg(if native { "--native" } else { "--c" });
         let built = koji::finish(command.arg(&path).arg("-o").arg(&executable), "");
         assert_eq!(built.code, Some(0), "{}", built.stderr);
         let run = if has_valgrind() {
@@ -3058,7 +3057,8 @@ fn the_native_backend_agrees_with_the_c_backend() {
     for (name, source) in programs {
         let path = source_file(name, source);
         let c = path.with_extension("c-backend");
-        build(&path, &c);
+        let built = koji::finish(koji::kojic().arg("build").arg("--c").arg(&path).arg("-o").arg(&c), "");
+        assert_eq!(built.code, Some(0), "{}: {}", name, built.stderr);
         let native = path.with_extension("native");
         let built = koji::finish(koji::kojic().arg("build").arg("--native").arg(&path).arg("-o").arg(&native), "");
         assert_eq!(built.code, Some(0), "{}: {}", name, built.stderr);

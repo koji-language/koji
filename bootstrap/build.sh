@@ -2,7 +2,8 @@
 # Builds kojic, the Koji compiler, from the seed: the C that the compiler written in Koji
 # (compiler/) generates for itself, in bootstrap/kojic.c.gz. Needs gzip, ar and a C compiler. The
 # runtime, the library written in Koji (std/koji/), is in bootstrap/libkoji.c.gz, the C that the
-# compiler generates for it (`kojic dump library`), archived as build/libkoji_runtime.a.
+# compiler generates for it (`kojic dump library`), which links the compilers of the bootstrap;
+# kojic then builds the library itself (`kojic library`), as build/libkoji_runtime.a.
 #
 #     bootstrap/build.sh          builds build/kojic and build/libkoji_runtime.a
 #     bootstrap/build.sh --seed   then writes the seed again, from the compiler just built
@@ -38,6 +39,11 @@ gzip -dc bootstrap/kojic.c.gz > build/stage1.c
 # Stage 2, the compiler of compiler/.
 echo "building kojic from compiler/"
 build/stage1 build compiler/main.kj -o build/kojic
+
+# The runtime library, built by kojic (natively), next to it.
+echo "building the runtime with kojic"
+build/kojic library -o build/libkoji_native.a
+mv build/libkoji_native.a build/libkoji_runtime.a
 
 if [ "${1:-}" = "--seed" ]; then
     # The seed names the files of the compiler as they are written here: run from the root.
