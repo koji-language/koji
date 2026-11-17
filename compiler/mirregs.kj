@@ -75,6 +75,8 @@ export function readOf(instruction: MInstruction): int[] {
             valueRegister(right, mut found)
         }
         MPreempt => {}
+        MRetain(value) => valueRegister(value, mut found)
+        MRelease(value, _) => valueRegister(value, mut found)
     }
 
     return found

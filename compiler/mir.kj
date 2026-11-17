@@ -45,7 +45,8 @@ export type MInstruction = {
     // the overflow of int.min / -1), or -1. On floats: `fadd`, `fsub`, `fmul`, `fdiv`, `check` the
     // panic of a result that is not finite (a float has no infinity).
     MBinary(dest: int, op: string, left: MValue, right: MValue, check: int)
-    // `neg` (checked like an operation), `not` (of the bits); `fneg`, `itof` (an int to the nearest
+    // `neg` (checked like an operation), `not` (of the bits), `sext32` (the low 32 bits
+    // sign-extended: an `int` of C); `fneg`, `itof` (an int to the nearest
     // float), `ftoi` (a float truncated to an int), `fcheck` (a copy of a float that panics with
     // `check` when it is not finite).
     MUnary(dest: int, op: string, value: MValue, check: int)
@@ -59,6 +60,11 @@ export type MInstruction = {
     // The check of the task that ran long (KOJI_PREEMPT), a call when the flag is set: it keeps
     // every register (the emitter saves those alive).
     MPreempt
+    // A reference more to the value at the address (none for 0): its first word counts them.
+    MRetain(value: MValue)
+    // A reference less, the last one freeing the value (koji_<kind>_free; a record by its type),
+    // which keeps every register like MPreempt.
+    MRelease(value: MValue, kind: string)
 }
 
 export type MTerminator = {
@@ -174,6 +180,8 @@ function instructionText(instruction: MInstruction, code: MFunctionCode): string
         }
         MPanicIf(condition, left, right, panic) => `panic p${panic} if ${condition} ${valueText(left, code)}, ${valueText(right, code)}`
         MPreempt => 'preempt'
+        MRetain(value) => `retain ${valueText(value, code)}`
+        MRelease(value, kind) => `release ${kind} ${valueText(value, code)}`
     }
 }
 

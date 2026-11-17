@@ -3238,3 +3238,25 @@ fn the_machine_ir_compiles_floats() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), "0x1.0d837220475dep0\n-0x1.33p2\n-2\n0x1.88065f96266c9p0\n");
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
 }
+
+#[test]
+fn the_machine_ir_counts_references() {
+    // Strings in the machine IR (KOJI_MIR=1): references moved at their last reads (`text = text +
+    // more` adds in place), released when a variable is given another value and when the function
+    // returns, retained when shared; library calls; `mut` parameters given their references.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let source = "mut log = 'start'\n\nfunction greet(name: string, times: int): string {\n    mut text = ''\n\n    for i in range(times) {\n        text = text + name + string(i)\n    }\n\n    return text\n}\n\nfunction pick(a: string, b: string, first: boolean): string {\n    if (first) { return a }\n\n    return b\n}\n\nfunction longer(a: string, b: string): boolean {\n    return a.length() > b.length()\n}\n\nfunction note(text: string) {\n    log = log + ',' + text\n}\n\nfunction compare(a: string, b: string): string {\n    if (a < b) { return 'less' }\n\n    if (a == b) { return 'equal' }\n\n    return 'greater'\n}\n\nimmut g = greet('ab', 4)\nprint(g)\nprint(pick('x', 'y', false))\nprint(string(longer(g, 'zz')))\nnote('one')\nnote(g)\nprint(log)\nprint(compare('a', 'b') + compare('b', 'b') + compare('c', 'b'))\nprint(string(2.5) + string(true) + string('é'.length()))\nmut s = 'q'\ns = s + s\ns = s + 'w'\nprint(s)\nprint(string('ab' in 'xaby'))\n\nmut total = 0\nmut names = 'g'\n\nfunction bump(mut n: int, by: int): int {\n    n += by\n    return n * 2\n}\n\nfunction grow(mut text: string, more: string) {\n    text = text + more\n}\n\nfunction swap(mut a: string, mut b: string): string {\n    immut t = a\n    a = b\n    b = t\n    return a\n}\n\nfunction same(mut text: string): string {\n    text = text + '!'\n    return text\n}\n\nfunction scale(mut x: float, k: float) {\n    x = x * k\n}\n\nmut n = 1\nimmut r = bump(mut n, 5)\nprint(`${n} ${r}`)\nmut t = 'ab'\ngrow(mut t, 'cd')\ngrow(mut t, t)\nprint(t)\nmut p = 'p'\nmut q = 'q'\nprint(swap(mut p, mut q) + p + q)\nprint(same(mut t) + t)\ngrow(mut names, 'h')\nprint(names)\nbump(mut total, 3)\nprint(string(total))\nmut f = float(1.5)\nscale(mut f, float(4))\nprint(string(f))\n";
+    let path = source_file("machine_ir_references", source);
+    let executable = path.with_extension("");
+    let built = koji::finish(koji::kojic().env("KOJI_MIR", "1").arg("build").arg(&path).arg("-o").arg(&executable), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let run = if has_valgrind() {
+        Command::new("valgrind").args(["-q", "--error-exitcode=99", "--leak-check=full", "--errors-for-leak-kinds=definite"]).arg(&executable).output().unwrap()
+    } else {
+        Command::new(&executable).output().unwrap()
+    };
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "ab0ab1ab2ab3\ny\ntrue\nstart,one,ab0ab1ab2ab3\nlessequalgreater\n2.5true1\nqqw\ntrue\n6 12\nabcdabcd\nqqp\nabcdabcd!abcdabcd!\ngh\n3\n0x1.8p2\n");
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+}

@@ -1,38 +1,82 @@
 // The lowering of the IR to the machine IR (mir.kj): the semantics of Koji decided once for every
 // processor. It grows by the kinds of values and instructions: a function it does not lower yet
 // goes through the first native backend (native.kj), in the same object, by the same convention
-// (`mirLowers`). So far: functions of ints, booleans, chars and bytes (their operations, checked
-// as the language says), control flow, calls of such functions, globals of such types, and ranges
-// by 1 or -1.
+// (`mirLowers`). So far: functions of values of one word (ints, booleans, chars, bytes, floats,
+// and the references of strings, lists, records, maps and closures), control flow, calls of such
+// functions and of the standard library, globals, the operations of scalars (checked as the
+// language says) and of strings, and ranges by 1 or -1.
+//
+// The references are counted as in the other backends (see "Reference counting" in
+// doc/design.md): a function owns a reference to each managed local but the borrowed ones
+// (borrow.kj), retains a parameter when it starts, releases a local once read for the last time
+// (liveness.kj) or when it is given another value, moves a value read for the last time instead of
+// retaining it, and releases the locals it still holds when it returns. Which locals may hold a
+// reference at each point is known (`held`): only those are released, and a local held where
+// paths meet is set to none at the end of the paths where it is not.
 
-import { Ty, Operand, Place, Instruction, Terminator, IrFunction, IrProgram } from 'ir.kj'
+import { Ty, Operand, Place, Instruction, Terminator, IrFunction, IrProgram, StdArg, isManaged, tyText } from 'ir.kj'
 import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
+import { lastUses, defs, uses, terminatorUses, successors } from 'liveness.kj'
+import { borrowedLocals } from 'borrow.kj'
 import { floatWord } from 'constants.kj'
+
+// What the lowering needs to know of the object: the offsets of the globals (in .bss), of the
+// string literals and of the descriptions of the records (in .data), the borrowed parameters of
+// each function, and the globals that never change.
+export type MirContext = {
+    globals: int[]
+    strings: int[]
+    records: int[]
+    borrowed: boolean[][]
+    constants: boolean[]
+}
 
 // The values of one word of no references: ints, booleans, chars, bytes and floats.
 function scalar(ty: Ty): boolean {
     return ty == IntTy or ty == BoolTy or ty == CharTy or ty == ByteTy or ty == FloatTy
 }
 
+// The values of one word: scalars, and references (strings, lists, records, maps, sets, closures).
+function word(ty: Ty): boolean {
+    return scalar(ty) or isManaged(ty)
+}
+
+// The runtime's name for the values of a managed type (`koji_string_free`), or ''.
+function kindOf(ty: Ty): string {
+    return match (ty) {
+        StrTy => 'string'
+        ListTy(_) => 'list'
+        RecordTy(_) => 'record'
+        MapTy(_, _) => 'map'
+        SetTy(_) => 'map'
+        FunctionTy(_, _) => 'closure'
+        _ => ''
+    }
+}
+
 // Whether the machine IR lowers the function `id` (the others go through native.kj).
 export function mirLowers(program: IrProgram, id: int): boolean {
+    return mirRefusal(program, id) == ''
+}
+
+// Why the machine IR does not lower the function `id` yet ('' when it does): for KOJI_MIR=report.
+export function mirRefusal(program: IrProgram, id: int): string {
     immut routine = program.functions[id]
 
     for local in routine.locals {
-        if (not scalar(local.ty)) { return false }
+        if (not word(local.ty)) { return `a local of ${tyText(local.ty)}` }
     }
 
-    for writeback in routine.writeback {
-        if (writeback) { return false }
-    }
+    if (not word(routine.returns) and routine.returns != VoidTy) { return `a result of ${tyText(routine.returns)}` }
 
-    if (not scalar(routine.returns) and routine.returns != VoidTy) { return false }
-
-    if (routine.params > 6) { return false }
+    if (routine.params + mutCount(routine) > 6) { return 'more than 6 parameters' }
 
     for block in routine.blocks {
+        // The first block starts the function only (its locals set to none there).
+        if (0 in successors(block.terminator)) { return 'a jump to the first block' }
+
         for instruction in block.instructions {
-            if (not lowered(program, instruction)) { return false }
+            if (not lowered(program, instruction)) { return kindText(instruction) }
         }
 
         immut ending = match (block.terminator) {
@@ -41,10 +85,21 @@ export function mirLowers(program: IrProgram, id: int): boolean {
             _ => true
         }
 
-        if (not ending) { return false }
+        if (not ending) { return 'an operand of a terminator' }
     }
 
-    return true
+    return ''
+}
+
+// The `mut` parameters of a function (each given the address where its final value goes).
+function mutCount(routine: IrFunction): int {
+    mut count = 0
+
+    for writeback in routine.writeback {
+        if (writeback) { count += 1 }
+    }
+
+    return count
 }
 
 function simpleOperand(program: IrProgram, operand: Operand): boolean {
@@ -54,7 +109,9 @@ function simpleOperand(program: IrProgram, operand: Operand): boolean {
         BoolOp(_) => true
         CharOp(_) => true
         FloatOp(_) => true
-        GlobalOp(id) => scalar(program.globals[id].ty)
+        StrOp(_) => true
+        LocationOp(_) => true
+        GlobalOp(id) => word(program.globals[id].ty)
         _ => false
     }
 }
@@ -62,45 +119,129 @@ function simpleOperand(program: IrProgram, operand: Operand): boolean {
 immut unaries = ['IntNeg', 'Not', 'BitNot', 'CharCode', 'ByteToInt', 'CodeToChar', 'IntToByte', 'FloatNeg', 'IntToFloat', 'FloatTruncate']
 immut binaries = ['IntAdd', 'IntSub', 'IntMul', 'IntDiv', 'IntRem', 'IntMulWrapping', 'BitAnd', 'BitOr', 'BitXor', 'ByteAnd', 'ByteOr', 'ByteXor', 'ByteAdd', 'ByteSub', 'ByteMul', 'FloatAdd', 'FloatSub', 'FloatMul', 'FloatDiv', 'FloatRem', 'FloatPow']
 
+// The operations of one value done by a function of the library.
+immut unaryHelpers: Map[string, string] = [
+    'ByteToStr': 'koji_string_from_int',
+    'IntToStr': 'koji_string_from_int',
+    'FloatToStr': 'koji_string_from_float',
+    'BoolToStr': 'koji_string_from_bool',
+    'CharToStr': 'koji_string_from_char',
+    'CharRepr': 'koji_char_repr',
+    'ListToStr': 'koji_list_repr',
+    'StrLength': 'koji_string_length',
+    'StrRepr': 'koji_string_repr',
+    'RecordToStr': 'koji_record_display',
+    'RecordRepr': 'koji_record_repr',
+    'MapLength': 'koji_map_length',
+    'MapToStr': 'koji_map_repr',
+    'MapKeys': 'koji_map_keys',
+    'MapValues': 'koji_map_values',
+    'SetFromList': 'koji_set_from_list',
+    'ClosureToStr': 'koji_closure_repr'
+]
+
+// The operations of two values done by a function of the library: those after `placed` are also
+// given the place of the instruction, for their panics.
+immut binaryHelpers: Map[string, string] = [
+    'StrConcat': 'koji_string_concat',
+    'StrRepeat': 'koji_string_repeat',
+    'ListConcat': 'koji_list_concat',
+    'ListJoin': 'koji_list_join',
+    'IntPow': 'koji_int_pow',
+    'BytePow': 'koji_byte_pow'
+]
+immut placed = ['IntPow', 'BytePow']
+// Done inline, checked.
+immut checkedBinaries = ['ShiftLeft', 'ShiftRight', 'ByteDiv', 'ByteRem', 'ByteShiftLeft', 'ByteShiftRight']
+
+// A word of a value read inline (the accessors of the prelude): its offset.
+immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16]
+
 function lowered(program: IrProgram, instruction: Instruction): boolean {
     return match (instruction) {
         CopyIns(dest, value) => simpleOperand(program, value) and match (dest) {
             LocalPlace(_) => true
-            GlobalPlace(id) => scalar(program.globals[id].ty)
+            GlobalPlace(id) => word(program.globals[id].ty)
         }
-        UnaryIns(_, op, value, _) => op in unaries and simpleOperand(program, value)
-        BinaryIns(_, op, left, right, _) => simpleOperand(program, left) and simpleOperand(program, right) and (op in binaries or comparison(op) != '' or shift(op, right))
+        UnaryIns(_, op, value, _) => (op in unaries or unaryHelpers.has(op) or op == 'ListLength' or op == 'RecordTag') and simpleOperand(program, value)
+        BinaryIns(_, op, left, right, _) => simpleOperand(program, left) and simpleOperand(program, right) and (op in binaries or comparison(op) != '' or op in checkedBinaries or binaryHelpers.has(op) or objectComparison(op) != '' or op == 'StrContains' or op == 'StrContainsChar')
         CallIns(_, callee, args, writebacks, _) => {
-            if (writebacks.length() > 0 or args.length() > 6 or not mirLowersSignature(program, callee)) { return false }
+            if (args.length() + writebacks.length() > 6 or not mirLowersSignature(program, callee)) { return false }
 
             for arg in args {
                 if (not simpleOperand(program, arg)) { return false }
             }
 
+            // Into a variable (not a field or an item of one).
+            for writeback in writebacks {
+                if (writeback.target.path.length() > 0) { return false }
+
+                match (writeback.target.root) {
+                    GlobalPlace(id) => {
+                        if (not word(program.globals[id].ty)) { return false }
+                    }
+                    _ => {}
+                }
+            }
+
             true
         }
+        StdCallIns(dest, name, args) => lowersLibraryCall(program, dest, name, args)
+        TakeIns(_, source) => match (source) {
+            LocalPlace(_) => true
+            GlobalPlace(id) => word(program.globals[id].ty)
+        }
+        PrintIns(value, _) => simpleOperand(program, value)
+        FailIns(value, _) => simpleOperand(program, value)
         RangeNextIns(_, _, _, end, step, _) => simpleOperand(program, end) and (step == IntOp(1) or step == IntOp(-1))
         RangeCheckIns(IntOp(step), _) => step != 0
         _ => false
     }
 }
 
-// A function with parameters and a result the machine IR passes (words of scalars).
+// A call of a function of the library that the machine IR makes: of arguments of one word, not
+// one the first backend writes inline (the memory of `koji:unsafe`, the pool, the stacks of the
+// tasks...), nor one of a foreign block that blocks or takes as many arguments as it is given.
+function lowersLibraryCall(program: IrProgram, dest: Option[int], name: string, args: StdArg[]): boolean {
+    if (accessors.has(name)) { return true }
+
+    for prefix in ['koji_unsafe_', 'koji_pool_', 'koji_memory_', 'koji_element_', 'koji_record_field_', 'koji_list_shared_', 'koji_aes_'] {
+        if (name.startsWith(prefix)) { return false }
+    }
+
+    if (name == 'koji_record_get' or args.length() > 6) { return false }
+
+    for each in program.externs {
+        if (each.name == name and (each.blocking or '...' in each.params)) { return false }
+    }
+
+    for arg in args {
+        match (arg) {
+            ValueArg(value) => {
+                if (not simpleOperand(program, value)) { return false }
+            }
+            PlaceArg(value) => {
+                if (not simpleOperand(program, value)) { return false }
+            }
+            _ => {}
+        }
+    }
+
+    return true
+}
+
+// A function with parameters and a result the machine IR passes (words).
 function mirLowersSignature(program: IrProgram, id: int): boolean {
     immut routine = program.functions[id]
 
-    for writeback in routine.writeback {
-        if (writeback) { return false }
-    }
-
     for param in range(routine.params) {
-        if (not scalar(routine.locals[param].ty)) { return false }
+        if (not word(routine.locals[param].ty)) { return false }
     }
 
-    return scalar(routine.returns) or routine.returns == VoidTy
+    return word(routine.returns) or routine.returns == VoidTy
 }
 
-// A shift by a constant from 0 to 63 (others, which panic, wait).
+// A shift by a constant from 0 to 63 (the others go through the library).
 function shift(op: string, right: Operand): boolean {
     if (op != 'ShiftLeft' and op != 'ShiftRight') { return false }
 
@@ -113,16 +254,32 @@ function shift(op: string, right: Operand): boolean {
 // The condition of a comparison of scalars (`IntCompare(Less)`), or ''.
 function comparison(op: string): string {
     for name in ['IntCompare(', 'BoolCompare(', 'CharCompare(', 'ByteCompare(', 'FloatCompare('] {
+        if (op.startsWith(name)) { return conditionOf(op[name.length()..op.length() - 1]) }
+    }
+
+    return ''
+}
+
+function conditionOf(name: string): string {
+    return match (name) {
+        'Equal' => 'eq'
+        'NotEqual' => 'ne'
+        'Less' => 'lt'
+        'LessEqual' => 'le'
+        'Greater' => 'gt'
+        'GreaterEqual' => 'ge'
+        _ => ''
+    }
+}
+
+// The condition of a comparison of strings, lists, maps or records (by the library), or ''.
+function objectComparison(op: string): string {
+    if (op.startsWith('StrCompare(')) { return conditionOf(op['StrCompare('.length()..op.length() - 1]) }
+
+    for name in ['ListCompare(', 'MapCompare(', 'RecordCompare('] {
         if (op.startsWith(name)) {
-            return match (op[name.length()..op.length() - 1]) {
-                'Equal' => 'eq'
-                'NotEqual' => 'ne'
-                'Less' => 'lt'
-                'LessEqual' => 'le'
-                'Greater' => 'gt'
-                'GreaterEqual' => 'ge'
-                _ => ''
-            }
+            immut condition = conditionOf(op[name.length()..op.length() - 1])
+            return if (condition == 'eq' or condition == 'ne') { condition } else { '' }
         }
     }
 
@@ -132,8 +289,7 @@ function comparison(op: string): string {
 type Lowering = {
     program: IrProgram
     routine: IrFunction
-    // The offset in .bss of each global.
-    globals: int[]
+    context: MirContext
     floats: boolean[]
     blocks: MBlock[]
     current: MInstruction[]
@@ -141,47 +297,116 @@ type Lowering = {
     // The panic of each place and message, by `place|message`.
     panicIndex: Map[string, int]
     reads: int[]
+    // For each local, whether the function owns its references (managed, not borrowed), and
+    // whether it may hold one now.
+    owned: boolean[]
+    held: boolean[]
+    // The locals each instruction reads for the last time (liveness.kj), and where the lowering is.
+    live: int[][][]
+    block: int
+    position: int
+    // The locals a `TakeIns` empties, set to none when the function starts (see `step`).
+    emptied: boolean[]
+    // The `mut` parameters: theirs is the reference the caller gives (never released nor moved
+    // out but to the address where their final values go, in `outs`, when the function returns).
+    writeback: boolean[]
+    outs: int[]
+    slots: int[]
+    // The block of the machine IR being written: that of the block of the IR (the same number), or
+    // one after them that goes on with it or that an instruction branches to (`newBlock`).
+    piece: int
 }
 
-// The machine IR of the function `id` (which `mirLowers`): `globals` gives the offset in .bss of each
-// global, `preemptible` whether it checks for preemption (where it starts when it calls, and at the
-// jumps back of its loops).
-export function lowerMir(program: IrProgram, id: int, globals: int[], preemptible: boolean): MFunctionCode {
+// The machine IR of the function `id` (which `mirLowers`); `preemptible` tells whether it checks
+// for preemption (where it starts when it calls, and at the jumps back of its loops).
+export function lowerMir(program: IrProgram, id: int, context: MirContext, preemptible: boolean): MFunctionCode {
     immut routine = program.functions[id]
+    immut borrowed = borrowedLocals(routine, context.borrowed[id], context.constants)
     mut floats: boolean[] = []
     mut reads: int[] = []
+    mut owned: boolean[] = []
+    mut emptied: boolean[] = []
+    mut writeback: boolean[] = []
 
-    for local in routine.locals {
-        floats.push(local.ty == FloatTy)
+    for local in range(routine.locals.length()) {
+        immut ty = routine.locals[local].ty
+        immut given = local < routine.writeback.length() and routine.writeback[local]
+        floats.push(ty == FloatTy)
         reads.push(0)
+        owned.push(isManaged(ty) and (given or not borrowed[local]))
+        emptied.push(false)
+        writeback.push(given)
     }
 
     for block in routine.blocks {
         for instruction in block.instructions {
-            for local in usesOf(instruction) {
+            for local in uses(instruction) {
                 reads[local] += 1
+            }
+
+            match (instruction) {
+                TakeIns(_, LocalPlace(source)) => emptied[source] = true
+                _ => {}
             }
         }
 
-        match (block.terminator) {
-            BranchT(LocalOp(local), _, _) => reads[local] += 1
-            ReturnT(Some(LocalOp(local))) => reads[local] += 1
-            _ => {}
+        for local in terminatorUses(block.terminator) {
+            reads[local] += 1
         }
     }
 
-    mut self: Lowering = { program: program, routine: routine, globals: globals, floats: floats, blocks: [], current: [], panics: [], panicIndex: [:], reads: reads }
+    mut self: Lowering = { program: program, routine: routine, context: context, floats: floats, blocks: [], current: [], panics: [], panicIndex: [:], reads: reads, owned: owned, held: [], live: lastUses(routine), block: 0, position: 0, emptied: emptied, writeback: writeback, outs: [], slots: [], piece: 0 }
+    mut params: int[] = []
+
+    for param in range(routine.params) {
+        params.push(param)
+    }
+
+    for param in range(routine.params) {
+        if (writeback[param]) {
+            immut out = self.temporary()
+            self.outs.push(out)
+            params.push(out)
+        } else {
+            self.outs.push(-1)
+        }
+    }
+
+    for block in routine.blocks {
+        self.blocks.push({ instructions: [], terminator: MUnreachable })
+    }
+
+    immut heldIn = self.heldAtBlocks()
     immut calls = makesCalls(routine)
 
     for block in range(routine.blocks.length()) {
-        self.current = []
+        self.startPiece(block)
+        self.block = block
+        self.held = heldIn[block]
 
-        if (block == 0 and preemptible and calls) { self.current.push(MPreempt) }
+        if (block == 0) {
+            // A reference of its own to each parameter it owns; the locals a `TakeIns` empties,
+            // none (they may be read before they are written).
+            for param in range(routine.params) {
+                if (owned[param] and not writeback[param]) { self.current.push(MRetain(MReg(param))) }
+            }
 
-        for instruction in routine.blocks[block].instructions {
-            self.instruction(instruction)
+            for local in range(routine.params, routine.locals.length()) {
+                if (owned[local] and emptied[local]) { self.current.push(MMove(local, MImm(0))) }
+            }
+
+            if (preemptible and calls) { self.current.push(MPreempt) }
         }
 
+        immut instructions = routine.blocks[block].instructions
+
+        for position in range(instructions.length()) {
+            self.position = position
+            self.instruction(instructions[position])
+            self.step(mut self.held, instructions[position], block, position, true)
+        }
+
+        self.position = instructions.length()
         immut terminator = routine.blocks[block].terminator
         immut back = match (terminator) {
             GotoT(target) => target <= block
@@ -192,16 +417,166 @@ export function lowerMir(program: IrProgram, id: int, globals: int[], preemptibl
         if (back and preemptible) { self.current.push(MPreempt) }
 
         immut ending = self.terminator(terminator)
-        self.blocks.push({ instructions: self.current, terminator: ending })
+
+        // The locals held where the paths from here meet others that hold them: none here.
+        for local in range(routine.locals.length()) {
+            if (not owned[local] or self.held[local]) { continue }
+
+            mut wanted = false
+
+            for next in successors(terminator) {
+                if (heldIn[next][local]) { wanted = true }
+            }
+
+            if (wanted) { self.current.push(MMove(local, MImm(0))) }
+        }
+
+        self.endPiece(ending)
     }
 
-    mut params: int[] = []
+    return { name: routine.name, params: params, floats: self.floats, blocks: self.blocks, slots: self.slots, panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { [routine.returns == FloatTy] } }
+}
 
-    for param in range(routine.params) {
-        params.push(param)
+// A new slot of a word in the frame: its number.
+function Lowering.slot(mut self): int {
+    self.slots.push(8)
+    return self.slots.length() - 1
+}
+
+// A new block of the machine IR (after those of the IR): its number.
+function Lowering.newBlock(mut self): int {
+    self.blocks.push({ instructions: [], terminator: MUnreachable })
+    return self.blocks.length() - 1
+}
+
+function Lowering.startPiece(mut self, block: int) {
+    self.piece = block
+    self.current = []
+}
+
+function Lowering.endPiece(mut self, terminator: MTerminator) {
+    self.blocks[self.piece] = { instructions: self.current, terminator: terminator }
+}
+
+// The locals that may hold a reference at the start of each block (forwards over the blocks: see
+// `step`). The parameters owned hold one from the start, and the locals a `TakeIns` empties.
+function Lowering.heldAtBlocks(mut self): boolean[][] {
+    immut routine = self.routine
+    mut none: boolean[] = []
+
+    for local in range(routine.locals.length()) {
+        none.push(false)
     }
 
-    return { name: routine.name, params: params, floats: self.floats, blocks: self.blocks, slots: [], panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { [routine.returns == FloatTy] } }
+    mut heldIn: boolean[][] = []
+
+    for block in routine.blocks {
+        heldIn.push(none)
+    }
+
+    mut entry = none
+
+    for local in range(routine.locals.length()) {
+        if (self.owned[local] and (local < routine.params or self.emptied[local])) { entry[local] = true }
+    }
+
+    heldIn[0] = entry
+    mut changed = true
+
+    while (changed) {
+        changed = false
+
+        for block in range(routine.blocks.length()) {
+            mut held = heldIn[block]
+            immut instructions = routine.blocks[block].instructions
+
+            for position in range(instructions.length()) {
+                self.step(mut held, instructions[position], block, position, false)
+            }
+
+            for next in successors(routine.blocks[block].terminator) {
+                mut merged = heldIn[next]
+                mut grew = false
+
+                for local in range(held.length()) {
+                    if (held[local] and not merged[local]) {
+                        merged[local] = true
+                        grew = true
+                    }
+                }
+
+                if (grew) {
+                    heldIn[next] = merged
+                    changed = true
+                }
+            }
+        }
+    }
+
+    return heldIn
+}
+
+// What an instruction does to the locals that hold references (`held`): the one it moves out
+// holds none, those it writes hold one, and those it reads for the last time are released (with
+// `emit`, in the code: and set to none when a `TakeIns` may read them again).
+function Lowering.step(mut self, mut held: boolean[], instruction: Instruction, block: int, position: int, emit: boolean) {
+    immut moved = self.movedBy(instruction, block, position)
+
+    if (moved >= 0) { held[moved] = false }
+
+    match (instruction) {
+        TakeIns(_, LocalPlace(source)) => held[source] = false
+        _ => {}
+    }
+
+    immut written = defs(instruction)
+
+    for local in written {
+        if (self.owned[local]) { held[local] = true }
+    }
+
+    // The variables given the final values of `mut` arguments.
+    match (instruction) {
+        CallIns(_, _, _, writebacks, _) => {
+            for each in writebacks {
+                match (each.target.root) {
+                    LocalPlace(local) => {
+                        if (self.owned[local]) { held[local] = true }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+
+    for local in self.live[block][position] {
+        if (not self.owned[local] or not held[local] or local in written or self.writeback[local]) { continue }
+
+        if (emit) {
+            self.current.push(MRelease(MReg(local), kindOf(self.routine.locals[local].ty)))
+
+            if (self.emptied[local]) { self.current.push(MMove(local, MImm(0))) }
+        }
+
+        held[local] = false
+    }
+}
+
+// The local whose reference an instruction moves out (read for the last time: a copy, a string
+// added to in place), or -1.
+function Lowering.movedBy(self, instruction: Instruction, block: int, position: int): int {
+    return match (instruction) {
+        CopyIns(LocalPlace(dest), _) if (not self.owned[dest] and isManaged(self.routine.locals[dest].ty)) => -1
+        CopyIns(dest, LocalOp(source)) if (dest != LocalPlace(source)) => self.movable(source, block, position)
+        BinaryIns(dest, 'StrConcat', LocalOp(left), right, _) if (right != LocalOp(left) and dest != left) => self.movable(left, block, position)
+        _ => -1
+    }
+}
+
+// The local, when its reference can move: owned, and read for the last time here; or -1.
+function Lowering.movable(self, local: int, block: int, position: int): int {
+    return if (self.owned[local] and not self.writeback[local] and local in self.live[block][position]) { local } else { -1 }
 }
 
 function makesCalls(routine: IrFunction): boolean {
@@ -215,39 +590,6 @@ function makesCalls(routine: IrFunction): boolean {
     }
 
     return false
-}
-
-// The locals an instruction of the lowered kinds reads.
-function usesOf(instruction: Instruction): int[] {
-    mut found: int[] = []
-
-    match (instruction) {
-        CopyIns(_, value) => operandLocal(value, mut found)
-        UnaryIns(_, _, value, _) => operandLocal(value, mut found)
-        BinaryIns(_, _, left, right, _) => {
-            operandLocal(left, mut found)
-            operandLocal(right, mut found)
-        }
-        CallIns(_, _, args, _, _) => {
-            for arg in args {
-                operandLocal(arg, mut found)
-            }
-        }
-        RangeNextIns(_, _, next, end, _, _) => {
-            found.push(next)
-            operandLocal(end, mut found)
-        }
-        _ => {}
-    }
-
-    return found
-}
-
-function operandLocal(operand: Operand, mut found: int[]) {
-    match (operand) {
-        LocalOp(id) => found.push(id)
-        _ => {}
-    }
 }
 
 function Lowering.temporary(mut self): int {
@@ -294,22 +636,260 @@ function Lowering.value(mut self, operand: Operand): MValue {
         }
         GlobalOp(id) => {
             immut loaded = if (self.program.globals[id].ty == FloatTy) { self.floatTemporary() } else { self.temporary() }
-            self.current.push(MLoad(loaded, MSymbol('.bss', self.globals[id]), 8))
+            self.current.push(MLoad(loaded, MSymbol('.bss', self.context.globals[id]), 8))
             MReg(loaded)
         }
+        // A literal in .data (its count of references never reaches 0).
+        StrOp(id) => self.addressOf(MSymbol('.data', self.context.strings[id]))
+        LocationOp(where) => self.addressOf(MText(where))
         _ => MImm(0)
+    }
+}
+
+function Lowering.addressOf(mut self, at: MAddress): MValue {
+    immut address = self.temporary()
+    self.current.push(MAddressOf(address, at))
+    return MReg(address)
+}
+
+// A value in a virtual register (a constant moved into one).
+function Lowering.register(mut self, value: MValue): int {
+    return match (value) {
+        MReg(id) => id
+        MImm(number) => {
+            immut id = self.temporary()
+            self.current.push(MMove(id, value))
+            id
+        }
+    }
+}
+
+// Where an instruction writes the value of the local `dest`: itself, or a temporary when the
+// local holds a reference until the new value is in (`setResult`).
+function Lowering.resultOf(mut self, dest: int): int {
+    if (self.owned[dest] and self.held[dest]) { return self.temporary() }
+
+    return dest
+}
+
+// The local `dest` given the value written in `target` (see `resultOf`): its old reference released.
+function Lowering.setResult(mut self, dest: int, target: int) {
+    if (target == dest) { return }
+
+    self.current.push(MRelease(MReg(dest), kindOf(self.routine.locals[dest].ty)))
+    self.current.push(MMove(dest, MReg(target)))
+}
+
+// A call of a function of the library whose result (if any) goes to `dest`, normalized as the type
+// of the local says: a boolean or a byte in the low byte, a char in the low 32 bits; an `int` of C,
+// sign-extended.
+function Lowering.callLibrary(mut self, name: string, args: MValue[], dest: Option[int], cInt: boolean) {
+    match (dest) {
+        Some(local) => {
+            immut target = self.resultOf(local)
+            self.current.push(MCall(MExternal(name), args, [target]))
+
+            if (cInt) { self.current.push(MUnary(target, 'sext32', MReg(target), -1)) }
+
+            match (self.routine.locals[local].ty) {
+                BoolTy => self.current.push(MBinary(target, 'and', MReg(target), MImm(0xFF), -1))
+                ByteTy => self.current.push(MBinary(target, 'and', MReg(target), MImm(0xFF), -1))
+                CharTy => self.current.push(MBinary(target, 'and', MReg(target), MImm(0xFFFFFFFF), -1))
+                _ => {}
+            }
+
+            self.setResult(local, target)
+        }
+        None => self.current.push(MCall(MExternal(name), args, []))
+    }
+}
+
+// The value of an operand with a reference of its own: moved when read for the last time (see
+// `movedBy`), else retained.
+function Lowering.shared(mut self, operand: Operand): MValue {
+    match (operand) {
+        LocalOp(local) if (self.movable(local, self.block, self.position) >= 0) => return MReg(local)
+        _ => {}
+    }
+
+    immut value = self.value(operand)
+    self.current.push(MRetain(value))
+    return value
+}
+
+function Lowering.operandType(self, operand: Operand): Ty {
+    return match (operand) {
+        LocalOp(id) => self.routine.locals[id].ty
+        GlobalOp(id) => self.program.globals[id].ty
+        StrOp(_) => StrTy
+        FloatOp(_) => FloatTy
+        _ => IntTy
     }
 }
 
 function Lowering.instruction(mut self, instruction: Instruction) {
     match (instruction) {
         CopyIns(LocalPlace(dest), value) => {
-            immut source = self.value(value)
+            immut ty = self.routine.locals[dest].ty
+
+            // A borrowed local, or a value of no references: the value itself.
+            if (not self.owned[dest]) {
+                immut source = self.value(value)
+                self.current.push(MMove(dest, source))
+                return
+            }
+
+            if (value == LocalOp(dest)) { return }
+
+            immut source = self.shared(value)
+
+            if (self.held[dest]) { self.current.push(MRelease(MReg(dest), kindOf(ty))) }
+
             self.current.push(MMove(dest, source))
         }
         CopyIns(GlobalPlace(id), value) => {
+            immut at = MSymbol('.bss', self.context.globals[id])
+            immut ty = self.program.globals[id].ty
+
+            if (not isManaged(ty)) {
+                immut source = self.value(value)
+                self.current.push(MStore(at, source, 8))
+                return
+            }
+
+            // The new value in, then the old one released.
+            immut source = self.shared(value)
+            immut old = self.temporary()
+            self.current.push(MLoad(old, at, 8))
+            self.current.push(MStore(at, source, 8))
+            self.current.push(MRelease(MReg(old), kindOf(ty)))
+        }
+        TakeIns(dest, source) => {
+            immut target = self.resultOf(dest)
+
+            match (source) {
+                LocalPlace(local) => {
+                    self.current.push(MMove(target, MReg(local)))
+                    self.current.push(MMove(local, MImm(0)))
+                }
+                GlobalPlace(id) => {
+                    immut at = MSymbol('.bss', self.context.globals[id])
+                    self.current.push(MLoad(target, at, 8))
+                    self.current.push(MStore(at, MImm(0), 8))
+                }
+            }
+
+            self.setResult(dest, target)
+        }
+        PrintIns(value, line) => {
+            immut text = self.value(value)
+            immut place = self.addressOf(MText(self.location(line)))
+            self.current.push(MCall(MExternal('koji_print'), [text, place], []))
+        }
+        FailIns(value, line) => {
+            immut message = self.value(value)
+            immut place = self.addressOf(MText(self.location(line)))
+            self.current.push(MCall(MExternal('koji_fail'), [place, message], []))
+        }
+        StdCallIns(dest, name, args) => self.libraryCall(dest, name, args)
+        UnaryIns(dest, op, value, _) if (unaryHelpers.has(op) or op == 'ListLength' or op == 'RecordTag') => {
             immut source = self.value(value)
-            self.current.push(MStore(MSymbol('.bss', self.globals[id]), source, 8))
+
+            // A word of the value.
+            if (op == 'ListLength' or op == 'RecordTag') {
+                immut base = self.register(source)
+                self.current.push(MLoad(dest, MBase(base, if (op == 'ListLength') { 32 } else { 16 }), 8))
+                return
+            }
+
+            immut helper = match (self.operandType(value)) {
+                FunctionTy(_, _) => 'koji_closure_repr'
+                _ => unaryHelpers[op]
+            }
+            self.callLibrary(helper, [source], Some(dest), false)
+        }
+        BinaryIns(dest, op, left, right, line) if (objectComparison(op) != '') => {
+            immut first = self.value(left)
+            immut second = self.value(right)
+            immut condition = objectComparison(op)
+
+            if (op.startsWith('StrCompare(') and condition != 'eq' and condition != 'ne') {
+                immut order = self.temporary()
+                self.current.push(MCall(MExternal('koji_string_compare'), [first, second], [order]))
+                self.current.push(MUnary(order, 'sext32', MReg(order), -1))
+                self.current.push(MSet(dest, condition, MReg(order), MImm(0)))
+                return
+            }
+
+            immut helper = if (op.startsWith('StrCompare(')) { 'koji_string_equal' } else { if (op.startsWith('ListCompare(')) { 'koji_list_equal' } else { if (op.startsWith('MapCompare(')) { 'koji_map_equal' } else { 'koji_record_equal' } } }
+            immut equal = self.temporary()
+            self.current.push(MCall(MExternal(helper), [first, second], [equal]))
+            self.current.push(MBinary(equal, 'and', MReg(equal), MImm(0xFF), -1))
+
+            if (condition == 'ne') {
+                self.current.push(MBinary(dest, 'xor', MReg(equal), MImm(1), -1))
+            } else {
+                self.current.push(MMove(dest, MReg(equal)))
+            }
+        }
+        // `text in other` (its arguments the other way round).
+        BinaryIns(dest, op, left, right, _) if (op == 'StrContains' or op == 'StrContainsChar') => {
+            immut first = self.value(left)
+            immut second = self.value(right)
+            self.callLibrary(if (op == 'StrContains') { 'koji_string_contains' } else { 'koji_string_contains_char' }, [second, first], Some(dest), false)
+        }
+        // `text + more` where `text` is read for the last time: the library adds to it in place
+        // when no one else sees it (it takes the reference of `text`).
+        BinaryIns(dest, 'StrConcat', left, right, _) if (self.movedBy(instruction, self.block, self.position) >= 0) => {
+            immut first = self.value(left)
+            immut second = self.value(right)
+            self.callLibrary('koji_string_append', [first, second], Some(dest), false)
+        }
+        // A shift of an int by a count: checked (0 to 63, unsigned so that a negative one fails
+        // too), the count in the message of the panic.
+        BinaryIns(dest, op, left, right, line) if ((op == 'ShiftLeft' or op == 'ShiftRight') and not shift(op, right)) => {
+            immut first = self.value(left)
+            immut count = self.register(self.value(right))
+            immut next = self.newBlock()
+            immut wrong = self.newBlock()
+            self.endPiece(MBranch('a', MReg(count), MImm(63), wrong, next))
+            self.startPiece(wrong)
+            immut place = self.addressOf(MText(self.location(line)))
+            self.current.push(MCall(MExternal('koji_panic_shift'), [place, MReg(count)], []))
+            self.endPiece(MUnreachable)
+            self.startPiece(next)
+            self.current.push(MBinary(dest, if (op == 'ShiftLeft') { 'shl' } else { 'sar' }, first, MReg(count), -1))
+        }
+        BinaryIns(dest, op, left, right, line) if (op == 'ByteDiv' or op == 'ByteRem') => {
+            immut first = self.value(left)
+            immut second = self.value(right)
+            immut zero = self.panic(line, 'division by zero')
+            self.current.push(MPanicIf('eq', second, MImm(0), zero))
+            self.current.push(MBinary(dest, if (op == 'ByteDiv') { 'div' } else { 'rem' }, first, second, -1))
+        }
+        // A shift of a byte by 0 to 7, keeping 8 bits.
+        BinaryIns(dest, op, left, right, line) if (op == 'ByteShiftLeft' or op == 'ByteShiftRight') => {
+            immut first = self.value(left)
+            immut second = self.value(right)
+            immut wrong = self.panic(line, 'shift of a byte out of range (0 to 7)')
+            self.current.push(MPanicIf('a', second, MImm(7), wrong))
+
+            if (op == 'ByteShiftLeft') {
+                immut shifted = self.temporary()
+                self.current.push(MBinary(shifted, 'shl', first, second, -1))
+                self.current.push(MBinary(dest, 'and', MReg(shifted), MImm(0xFF), -1))
+            } else {
+                self.current.push(MBinary(dest, 'shr', first, second, -1))
+            }
+        }
+        BinaryIns(dest, op, left, right, line) if (binaryHelpers.has(op)) => {
+            immut first = self.value(left)
+            immut second = self.value(right)
+            mut args = [first, second]
+
+            if (op in placed) { args.push(self.addressOf(MText(self.location(line)))) }
+
+            self.callLibrary(binaryHelpers[op], args, Some(dest), false)
         }
         UnaryIns(dest, op, value, line) => {
             immut source = self.value(value)
@@ -418,18 +998,107 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                 }
             }
         }
-        CallIns(dest, callee, args, _, _) => {
+        CallIns(dest, callee, args, writebacks, _) => {
             mut values: MValue[] = []
+            // A global given to a borrowed parameter: the function may change the global, so the
+            // caller keeps the value alive with a reference of its own during the call.
+            mut kept: MValue[] = []
+            mut kinds: string[] = []
+            immut borrowed = self.context.borrowed[callee]
 
-            for arg in args {
-                values.push(self.value(arg))
+            for i in range(args.length()) {
+                immut value = self.value(args[i])
+
+                match (args[i]) {
+                    GlobalOp(global) if (isManaged(self.program.globals[global].ty) and not self.context.constants[global] and i < borrowed.length() and borrowed[i]) => {
+                        self.current.push(MRetain(value))
+                        kept.push(value)
+                        kinds.push(kindOf(self.program.globals[global].ty))
+                    }
+                    _ => {}
+                }
+
+                values.push(value)
             }
 
-            immut results = match (dest) {
-                Some(local) => [local]
-                None => []
+            // The `mut` arguments: the function owns their values, and writes their final ones
+            // at the addresses it is given (slots of the frame, none at first). A variable that
+            // no other argument reads gives its reference for the call (so that the function
+            // changes the value in place instead of a copy); another value is retained.
+            mut backs: int[] = []
+            mut given: int[] = []
+
+            for writeback in writebacks {
+                immut param = writeback.param
+                immut slot = self.slot()
+                backs.push(slot)
+
+                if (isManaged(self.operandType(args[param]))) {
+                    mut alone = false
+
+                    match (args[param]) {
+                        LocalOp(local) if (self.owned[local] and writeback.target.root == LocalPlace(local)) => {
+                            alone = true
+
+                            for i in range(args.length()) {
+                                if (i != param and args[i] == LocalOp(local)) { alone = false }
+                            }
+
+                            if (alone) { given.push(local) }
+                        }
+                        _ => {}
+                    }
+
+                    if (not alone) { self.current.push(MRetain(values[param])) }
+                }
+
+                self.current.push(MStore(MSlot(slot, 0), MImm(0), 8))
+                values.push(self.addressOf(MSlot(slot, 0)))
             }
-            self.current.push(MCall(MFunction(callee), values, results))
+
+            match (dest) {
+                Some(local) => {
+                    immut target = self.resultOf(local)
+                    self.current.push(MCall(MFunction(callee), values, [target]))
+                    self.setResult(local, target)
+                }
+                None => self.current.push(MCall(MFunction(callee), values, []))
+            }
+
+            // The final values into their variables (the old ones released, but those given).
+            for i in range(writebacks.length()) {
+                immut root = writebacks[i].target.root
+                immut ty = match (root) {
+                    LocalPlace(local) => self.routine.locals[local].ty
+                    GlobalPlace(global) => self.program.globals[global].ty
+                }
+                immut back = if (ty == FloatTy) { self.floatTemporary() } else { self.temporary() }
+                self.current.push(MLoad(back, MSlot(backs[i], 0), 8))
+
+                match (root) {
+                    LocalPlace(local) => {
+                        if (self.owned[local] and self.held[local] and not (local in given)) { self.current.push(MRelease(MReg(local), kindOf(ty))) }
+
+                        self.current.push(MMove(local, MReg(back)))
+                    }
+                    GlobalPlace(global) => {
+                        immut at = MSymbol('.bss', self.context.globals[global])
+
+                        if (isManaged(ty)) {
+                            immut old = self.temporary()
+                            self.current.push(MLoad(old, at, 8))
+                            self.current.push(MStore(at, MReg(back), 8))
+                            self.current.push(MRelease(MReg(old), kindOf(ty)))
+                        } else {
+                            self.current.push(MStore(at, MReg(back), 8))
+                        }
+                    }
+                }
+            }
+
+            for i in range(kept.length()) {
+                self.current.push(MRelease(kept[i], kinds[i]))
+            }
         }
         // One step of a range by 1 or -1: whether there is an item (`next` before the end), the
         // item, and the next one. Once past the end, the item and the next one are read no more.
@@ -452,15 +1121,30 @@ function Lowering.terminator(mut self, terminator: Terminator): MTerminator {
         GotoT(target) => MJump(target)
         BranchT(BoolOp(flag), thenBlock, elseBlock) => MJump(if (flag) { thenBlock } else { elseBlock })
         BranchT(condition, thenBlock, elseBlock) => {
-            // A comparison just made, which only the branch reads: the branch compares.
+            // A comparison just made, which only the branch reads: the branch compares (past the
+            // releases after it, and the locals set to none, which it does not read).
             match (condition) {
-                LocalOp(local) if (self.reads[local] == 1 and self.current.length() > 0) => {
-                    match (self.current[self.current.length() - 1]) {
-                        MSet(dest, kind, left, right) if (dest == local) => {
-                            self.current = self.current[0..self.current.length() - 1]
-                            return MBranch(kind, left, right, thenBlock, elseBlock)
+                LocalOp(local) if (self.reads[local] == 1) => {
+                    mut at = self.current.length() - 1
+                    mut emptied: int[] = []
+
+                    while (at >= 0) {
+                        match (self.current[at]) {
+                            MRelease(_, _) => at -= 1
+                            MMove(id, MImm(0)) => {
+                                emptied.push(id)
+                                at -= 1
+                            }
+                            MSet(dest, kind, left, right) if (dest == local) => {
+                                for id in emptied {
+                                    if (left == MReg(id) or right == MReg(id)) { return MBranch('ne', MReg(local), MImm(0), thenBlock, elseBlock) }
+                                }
+
+                                self.current = self.current[0..at] + self.current[at + 1..self.current.length()]
+                                return MBranch(kind, left, right, thenBlock, elseBlock)
+                            }
+                            _ => break
                         }
-                        _ => {}
                     }
                 }
                 _ => {}
@@ -470,12 +1154,154 @@ function Lowering.terminator(mut self, terminator: Terminator): MTerminator {
             MBranch('ne', tested, MImm(0), thenBlock, elseBlock)
         }
         ReturnT(Some(value)) => {
-            if (self.routine.returns == VoidTy) { return MReturn([]) }
+            if (self.routine.returns == VoidTy) {
+                self.releaseHeld()
+                return MReturn([])
+            }
 
-            immut returned = self.value(value)
+            // The result is taken before the locals are released: it may be one of them, which
+            // then moves out of the function.
+            mut returned = MImm(0)
+
+            if (isManaged(self.routine.returns)) {
+                match (value) {
+                    LocalOp(local) if (self.owned[local] and not self.writeback[local]) => {
+                        returned = MReg(local)
+                        self.held[local] = false
+                    }
+                    _ => {
+                        returned = self.value(value)
+                        self.current.push(MRetain(returned))
+                    }
+                }
+            } else {
+                returned = self.value(value)
+            }
+
+            self.releaseHeld()
             MReturn([returned])
         }
-        ReturnT(None) => MReturn([])
+        ReturnT(None) => {
+            self.releaseHeld()
+            MReturn([])
+        }
         UnreachableT => MUnreachable
+    }
+}
+
+// The final values of the `mut` parameters given back (their references move out: a result that is
+// one of them has a reference of its own), then the references the function still holds, released.
+function Lowering.releaseHeld(mut self) {
+    for param in range(self.routine.params) {
+        if (not self.writeback[param]) { continue }
+
+        self.current.push(MStore(MBase(self.outs[param], 0), MReg(param), 8))
+    }
+
+    for local in range(self.routine.locals.length()) {
+        if (self.owned[local] and self.held[local] and not self.writeback[local]) {
+            self.current.push(MRelease(MReg(local), kindOf(self.routine.locals[local].ty)))
+            self.held[local] = false
+        }
+    }
+}
+
+// A call of a function of the standard library (or of a foreign block): its arguments of one
+// word each, the descriptions of records and of items by their addresses.
+function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: StdArg[]) {
+    mut values: MValue[] = []
+
+    for arg in args {
+        immut value = match (arg) {
+            ValueArg(given) => self.value(given)
+            ModeArg(mode) => MImm(mode)
+            RecordArg(record) => self.addressOf(MSymbol('.data', self.context.records[record]))
+            ElementArg(ty) => self.addressOf(MSymbol(elementSymbol(ty), 0))
+            LocationArg(line) => self.addressOf(MText(self.location(line)))
+            PlaceArg(given) => self.value(given)
+            NullArg => MImm(0)
+        }
+        values.push(value)
+    }
+
+    // A word of the value (an accessor of the prelude).
+    if (accessors.has(name)) {
+        match (dest) {
+            Some(local) => {
+                immut base = self.register(values[0])
+                self.current.push(MLoad(local, MBase(base, accessors[name]), 8))
+            }
+            None => {}
+        }
+
+        return
+    }
+
+    mut symbol = name
+    mut cInt = false
+
+    for each in self.program.externs {
+        if (each.name == name) {
+            symbol = each.symbol
+            cInt = each.returns == 'int'
+        }
+    }
+
+    self.callLibrary(symbol, values, dest, cInt)
+}
+
+// The description of the items of a type (KojiElementType of the prelude).
+function elementSymbol(ty: Ty): string {
+    return match (ty) {
+        IntTy => 'koji_element_int'
+        FloatTy => 'koji_element_float'
+        DecimalTy => 'koji_element_decimal'
+        BoolTy => 'koji_element_bool'
+        CharTy => 'koji_element_char'
+        ByteTy => 'koji_element_byte'
+        U128Ty => 'koji_element_u128'
+        StrTy => 'koji_element_string'
+        ListTy(_) => 'koji_element_list'
+        RecordTy(_) => 'koji_element_record'
+        MapTy(_, _) => 'koji_element_map'
+        SetTy(_) => 'koji_element_map'
+        FunctionTy(_, _) => 'koji_element_closure'
+        VoidTy => 'koji_element_void'
+    }
+}
+
+// The kind of an instruction (and the operation or the function of the library), for the report.
+function kindText(instruction: Instruction): string {
+    return match (instruction) {
+        CopyIns(_, _) => 'CopyIns'
+        UnaryIns(_, op, _, _) => `UnaryIns ${op}`
+        BinaryIns(_, op, _, _, _) => `BinaryIns ${op}`
+        CallIns(_, _, _, writebacks, _) => if (writebacks.length() > 0) { 'CallIns with mut arguments' } else { 'CallIns' }
+        ListNewIns(_, _) => 'ListNewIns'
+        ListGetIns(_, _, _, _) => 'ListGetIns'
+        ListSetIns(_, _, _, _) => 'ListSetIns'
+        ListPushIns(_, _, _) => 'ListPushIns'
+        ListInsertIns(_, _, _, _) => 'ListInsertIns'
+        ListSortIns(_, _) => 'ListSortIns'
+        ListSliceIns(_, _, _, _, _) => 'ListSliceIns'
+        RecordNewIns(_, _, _) => 'RecordNewIns'
+        FieldGetIns(_, _, _) => 'FieldGetIns'
+        FieldSetIns(_, _, _, _) => 'FieldSetIns'
+        ListRemoveIns(_, _, _, _) => 'ListRemoveIns'
+        StdCallIns(_, name, _) => `StdCallIns ${name}`
+        TakeIns(_, _) => 'TakeIns'
+        DropIns(_, _) => 'DropIns'
+        MakeClosureIns(_, _, _) => 'MakeClosureIns'
+        CallClosureIns(_, _, _, _) => 'CallClosureIns'
+        ListSortByIns(_, _, _) => 'ListSortByIns'
+        MapNewIns(_, _) => 'MapNewIns'
+        MapGetIns(_, _, _, _) => 'MapGetIns'
+        MapLookupIns(_, _, _) => 'MapLookupIns'
+        MapSetIns(_, _, _, _) => 'MapSetIns'
+        MapRemoveIns(_, _, _, _) => 'MapRemoveIns'
+        FailIns(_, _) => 'FailIns'
+        PrintIns(_, _) => 'PrintIns'
+        RangeNextIns(_, _, _, _, _, _) => 'RangeNextIns'
+        RangeCheckIns(_, _) => 'RangeCheckIns'
     }
 }

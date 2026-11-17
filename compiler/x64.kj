@@ -260,6 +260,8 @@ function Emitter.instruction(mut self, instruction: MInstruction) {
                 }
                 // not target
                 'not' => self.bytes([rex(0, target), 0xF7, 0xD0 | (target & 7)])
+                // movsxd target, target32
+                'sext32' => self.modrm([0x63], target, ORegister(target), true, 0)
                 _ => {}
             }
 
@@ -277,6 +279,96 @@ function Emitter.instruction(mut self, instruction: MInstruction) {
             self.panicIf(code, panic)
         }
         MPreempt => self.preempt()
+        // test r, r; jz none; inc qword [r]
+        MRetain(value) => {
+            immut held = self.valueRegister(value, rax)
+            self.bytes([rex(held, held), 0x85, 0xC0 | (held & 7) << 3 | (held & 7)])
+            immut none = self.jumpForward(0x4)
+            self.modrm([0xFF], 0, OMemory(held, -1, 1, 0), true, 0)
+            self.patchHere(none)
+        }
+        // test r, r; jz none; dec qword [r]; jnz none; then the registers alive saved around
+        // the call that frees it (mov rdi, r).
+        MRelease(value, kind) => {
+            immut held = self.valueRegister(value, rax)
+            self.bytes([rex(held, held), 0x85, 0xC0 | (held & 7) << 3 | (held & 7)])
+            immut none = self.jumpForward(0x4)
+            self.modrm([0xFF], 1, OMemory(held, -1, 1, 0), true, 0)
+            immut alive = self.jumpForward(0x5)
+            immut saved = self.liveCallerSaved()
+            immut size = self.saveRegisters(saved)
+            self.moveRegister(7, held)
+
+            if (kind == 'record') {
+                // The type of the record frees it: mov rax, [rdi + 8]; call [rax + 24]
+                self.bytes([0x48, 0x8B, 0x47, 0x08, 0xFF, 0x50, 0x18])
+            } else {
+                self.callExternal(`koji_${kind}_free`)
+            }
+
+            self.restoreRegisters(saved, size)
+            self.patchHere(none)
+            self.patchHere(alive)
+        }
+    }
+}
+
+// A value in a register: its own, or `spare` loaded with it.
+function Emitter.valueRegister(mut self, value: MValue, spare: int): int {
+    return match (value) {
+        MReg(id) => match (self.place(id)) {
+            InRegister(register) => register
+            InFrame(offset) => {
+                self.loadFrame(spare, offset)
+                spare
+            }
+        }
+        MImm(number) => {
+            self.moveConstant(spare, number)
+            spare
+        }
+    }
+}
+
+// The registers calls do not keep that hold a value alive at the current position.
+function Emitter.liveCallerSaved(self): int[] {
+    mut saved: int[] = []
+
+    for id in range(self.code.floats.length()) {
+        immut register = self.allocation.registers[id]
+
+        if (register < 0 or register in saved) { continue }
+
+        if (self.allocation.first[id] <= self.position and self.position <= self.allocation.last[id] and (register in x64Registers.free or register >= xmm)) { saved.push(register) }
+    }
+
+    return saved
+}
+
+// The registers saved below the stack (16 bytes at a time, so that it stays aligned): the bytes.
+function Emitter.saveRegisters(mut self, saved: int[]): int {
+    immut size = (8 * saved.length() + 15) / 16 * 16
+
+    if (size > 0) {
+        self.bytes([0x48, 0x81, 0xEC])
+        self.int32(size)
+    }
+
+    for i in range(saved.length()) {
+        self.saveAt(saved[i], 8 * i)
+    }
+
+    return size
+}
+
+function Emitter.restoreRegisters(mut self, saved: int[], size: int) {
+    for i in range(saved.length()) {
+        self.restoreAt(saved[i], 8 * i)
+    }
+
+    if (size > 0) {
+        self.bytes([0x48, 0x81, 0xC4])
+        self.int32(size)
     }
 }
 
@@ -583,39 +675,10 @@ function Emitter.preempt(mut self) {
     self.int32(0)
     self.out.push(0)
     immut calm = self.jumpForward(0x4)
-    mut saved: int[] = []
-
-    for id in range(self.code.floats.length()) {
-        immut register = self.allocation.registers[id]
-
-        if (register < 0 or register in saved) { continue }
-
-        if (self.allocation.first[id] <= self.position and self.position <= self.allocation.last[id] and (register in x64Registers.free or register >= xmm)) { saved.push(register) }
-    }
-
-    // Pushed in pairs, so that the stack stays aligned.
-    immut size = (8 * saved.length() + 15) / 16 * 16
-
-    if (size > 0) {
-        self.bytes([0x48, 0x81, 0xEC])
-        self.int32(size)
-    }
-
-    for i in range(saved.length()) {
-        self.saveAt(saved[i], 8 * i)
-    }
-
+    immut saved = self.liveCallerSaved()
+    immut size = self.saveRegisters(saved)
     self.callExternal('koji_task_preempt')
-
-    for i in range(saved.length()) {
-        self.restoreAt(saved[i], 8 * i)
-    }
-
-    if (size > 0) {
-        self.bytes([0x48, 0x81, 0xC4])
-        self.int32(size)
-    }
-
+    self.restoreRegisters(saved, size)
     self.patchHere(calm)
 }
 

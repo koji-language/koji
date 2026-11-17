@@ -22,7 +22,8 @@ import { borrowedParams, borrowedLocals, constantGlobals, changes } from 'borrow
 import { Ranges, registerWeights, liveRanges, liveAtBlocks, assignRegisters, extend, has } from 'registers.kj'
 import { inlineSmall, targetPlatform } from 'inline.kj'
 import { reachableFunctions } from 'target.kj'
-import { mirLowers, lowerMir } from 'mirlower.kj'
+import { mirLowers, mirRefusal, lowerMir, MirContext } from 'mirlower.kj'
+import { mirText } from 'mir.kj'
 import { allocate } from 'mirregs.kj'
 import { emitX64, x64Registers } from 'x64.kj'
 import { floatBits } from 'constants.kj'
@@ -293,14 +294,46 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     immut reachable = reachableFunctions(program, targetPlatform)
 
     // The machine IR (mir.kj) for the functions it lowers, with KOJI_MIR=1 while it grows.
-    immut machineIr = match (system.env('KOJI_MIR')) {
-        Some(value) => value == '1'
-        None => false
+    // KOJI_MIR=1: the functions the machine IR lowers through it; KOJI_MIR=report also prints
+    // why it does not lower the others.
+    immut mirMode = match (system.env('KOJI_MIR')) {
+        Some(value) => value
+        None => ''
     }
+    immut machineIr = mirMode == '1' or mirMode == 'report'
+
+    mut mirSeen = 0
 
     for id in range(program.functions.length()) {
         if (reachable[id]) {
-            immut chosen = machineIr and mirLowers(program, id)
+            mut chosen = machineIr and mirLowers(program, id)
+
+            // KOJI_MIR_LIMIT=low:high: only the functions it lowers from the low-th to the high-th
+            // through the machine IR (the last one named), to find by bisection one it gets wrong.
+            if (chosen) {
+                mirSeen += 1
+
+                match (system.env('KOJI_MIR_LIMIT')) {
+                    Some(limit) => {
+                        immut parts = limit.split(':')
+                        immut low = match (int(parts[0])) {
+                            Ok(number) => number
+                            Err(_) => 0
+                        }
+                        immut high = match (int(parts[parts.length() - 1])) {
+                            Ok(number) => number
+                            Err(_) => 0
+                        }
+
+                        if (mirSeen < low or mirSeen > high) { chosen = false }
+
+                        if (mirSeen == high) { print(`mir last: ${program.functions[id].name}`) }
+                    }
+                    None => {}
+                }
+            }
+
+            if (mirMode == 'report' and not chosen) { print(`mir: ${program.functions[id].name}: ${mirRefusal(program, id)}`) }
 
             if (chosen) {
                 native.generateMir(id)
@@ -1254,7 +1287,15 @@ function isWriteback(routine: IrFunction, local: int): boolean {
 function Native.generateMir(mut self, id: int) {
     immut routine = self.program.functions[id]
     immut preemptible = routine.file != 'task' and not self.program.library
-    immut code = lowerMir(self.program, id, self.globals, preemptible)
+    immut context: MirContext = { globals: self.globals, strings: self.strings, records: self.records, borrowed: self.borrowed, constants: self.constants }
+    immut code = lowerMir(self.program, id, context, preemptible)
+
+    // KOJI_MIR_DUMP=name: the machine IR of the function `name`, printed.
+    if (system.env('KOJI_MIR_DUMP') == Some(routine.name)) {
+        for line in mirText(code) {
+            print(line)
+        }
+    }
     immut emitted = emitX64(code, allocate(code, x64Registers))
     self.flush()
     self.knownAt = -1
