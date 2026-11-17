@@ -30,6 +30,9 @@ The `file` module provides functionality for working with files. It is written i
     }
     ```
 
+-   `setPermissions(path: string, mode: int) -> Result[void, FileError]`  
+    Sets the permissions of the file at `path`, as the bits of Unix (`0x1ED` is `rwxr-xr-x`, 0755 in octal: an executable).
+
 ## Directories
 
 -   `list(path: string) -> Result[string[], FileError]`  

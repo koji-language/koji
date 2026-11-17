@@ -21,6 +21,7 @@ extern function closedir(directory: Address): CInt
 extern function koji_blocking_access(path: Address, mode: CInt): CInt
 extern function koji_blocking_unlink(path: Address): CInt
 extern function koji_blocking_mkdir(path: Address, mode: CInt): CInt
+extern function chmod(path: Address, mode: CInt): CInt
 extern function strlen(text: Address): CSize
 extern function strerror(code: CInt): Address
 extern function realloc(memory: Address, size: CSize): Address
@@ -263,6 +264,20 @@ export function remove(path: string): Result[void, FileError] {
     free(cPath)
 
     if (not removed) { return Err(failure(path, code)) }
+
+    return Ok()
+}
+
+// Sets the permissions of the file at `path` (the bits of Unix: 0o755 is `0x1ED`).
+export function setPermissions(path: string, mode: int): Result[void, FileError] {
+    if (hasNul(path)) { return Err(invalidPath(path)) }
+
+    immut cPath = cString(path)
+    immut changed = chmod(cPath, mode) == 0
+    immut code = koji_system_errno()
+    free(cPath)
+
+    if (not changed) { return Err(failure(path, code)) }
 
     return Ok()
 }

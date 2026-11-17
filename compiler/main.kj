@@ -13,6 +13,7 @@ import { IrProgram, programText } from 'ir.kj'
 import { generate } from 'cgen.kj'
 import { generateNative } from 'native.kj'
 import { inlineSmall } from 'inline.kj'
+import { archive, archiveObjects, linkExecutable, sharedSymbols } from 'linker.kj'
 import { preludeLines } from 'prelude.kj'
 import { serve } from 'lsp.kj'
 import { initModule, addModule, updateModules } from 'packages.kj'
@@ -329,6 +330,20 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
         Some(runtime) => runtime
         None => return Err('compile error: the runtime library (libkoji_runtime.a) is not next to kojic: set KOJI_RUNTIME to its path')
     }
+
+    // Koji's linker (linker.kj), for a program without libraries of foreign blocks; the system's
+    // when it cannot link the objects (KOJI_LINKER=koji to see why), or with KOJI_LINKER=system.
+    immut chosen = variable('KOJI_LINKER', '')
+
+    if (program.libraries.length() == 0 and chosen != 'system') {
+        match (linkOwn(object, runtime, output)) {
+            Ok(_) => return Ok()
+            Err(message) => {
+                if (chosen == 'koji') { return Err(`compile error: ${message}`) }
+            }
+        }
+    }
+
     immut objectPath = temporary('.o')
 
     match (writeBytes(objectPath, object)) {
@@ -356,6 +371,66 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
     }
 }
 
+// The executable of the object of a program and of the runtime library, by Koji's linker, with the
+// libraries of C of the system: the C library and its mathematics (and its threads, on systems
+// where they are a library of their own).
+function linkOwn(object: byte[], runtime: string, output: string): Result[void, string] {
+    immut library = match (file.open(runtime, file.Read)) {
+        Ok(opened) => match (opened.readBytes()) {
+            Ok(bytes) => bytes
+            Err(error) => return Err(`cannot read '${runtime}': ${ioMessage(error)}`)
+        }
+        Err(error) => return Err(`cannot read '${runtime}': ${ioMessage(error)}`)
+    }
+    mut objects = [object]
+
+    for member in archiveObjects(library)? {
+        objects.push(member)
+    }
+
+    // The libraries, and the symbols they define (found in the directories of libraries of the
+    // system).
+    mut libraries: string[] = []
+    mut provided: Set[string] = Set.from([])
+
+    for name in ['libc.so.6', 'libm.so.6', 'libpthread.so.0'] {
+        mut found = ''
+
+        for directory in ['/lib/x86_64-linux-gnu', '/usr/lib/x86_64-linux-gnu', '/lib64', '/usr/lib64', '/lib', '/usr/lib'] {
+            if (found == '' and file.exists(path.join(directory, name))) { found = path.join(directory, name) }
+        }
+
+        // The threads may be in the C library itself (glibc 2.34 and later).
+        if (found == '') {
+            if (name == 'libpthread.so.0') { continue }
+
+            return Err(`cannot find the library ${name}`)
+        }
+
+        immut bytes = match (file.open(found, file.Read)) {
+            Ok(opened) => match (opened.readBytes()) {
+                Ok(read) => read
+                Err(error) => return Err(`cannot read '${found}': ${ioMessage(error)}`)
+            }
+            Err(error) => return Err(`cannot read '${found}': ${ioMessage(error)}`)
+        }
+
+        for symbol in sharedSymbols(bytes)? {
+            provided.add(symbol)
+        }
+
+        libraries.push(name)
+    }
+
+    immut executable = linkExecutable(objects, libraries, provided)?
+    writeBytes(output, executable)?
+
+    return match (file.setPermissions(output, 0x1ED)) {
+        Ok(_) => Ok()
+        Err(error) => Err(`cannot make '${output}' executable: ${ioMessage(error)}`)
+    }
+}
+
 function buildLibrary(output: string): Result[void, string] {
     immut checked = checkLibrary(true)?
     immut lowered = lower(checked)?
@@ -363,18 +438,8 @@ function buildLibrary(output: string): Result[void, string] {
         Ok(bytes) => bytes
         Err(message) => return Err(`compile error: ${message}`)
     }
-    immut objectPath = temporary('.o')
-    writeBytes(objectPath, object)?
-    // A new archive (`ar` adds to an existing one).
-    if (file.exists(output)) { file.remove(output) }
-
-    immut archived = system.capture('ar', ['rcs', output, objectPath])
-    file.remove(objectPath)
-
-    return match (archived) {
-        Ok(run) => if (run.status == 0) { Ok() } else { Err(`compile error: ar failed:\n${run.stderr.trim()}`) }
-        Err(_) => Err('compile error: cannot run ar')
-    }
+    // An archive of the object, with the table of its symbols (linker.kj).
+    return writeBytes(output, archive([object]))
 }
 
 function writeBytes(name: string, bytes: byte[]): Result[void, string] {

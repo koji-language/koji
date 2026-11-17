@@ -3171,3 +3171,26 @@ fn divisions_by_constants() {
     let expected = "0: 0 0 0 0 0 0 0 0 0 0\n1: 0 1 0 1 0 1 0 1 0 1\n-1: 0 -1 0 -1 0 -1 0 -1 0 -1\n7: 0 7 0 7 0 7 1 0 0 1\n-7: 0 -7 0 -7 0 -7 -1 0 0 -1\n99: 9 9 0 99 6 3 14 1 0 1\n-99: -9 -9 0 -99 -6 -3 -14 -1 0 -1\n1000001: 100000 1 10000 1 62500 1 142857 2 0 1\n-1000001: -100000 -1 -10000 -1 -62500 -1 -142857 -2 0 -1\n9223372036854775807: 922337203685477580 7 92233720368547758 7 576460752303423487 15 1317624576693539401 0 9223372036 1\n-9223372036854775808: -922337203685477580 -8 -92233720368547758 -8 -576460752303423488 0 -1317624576693539401 -1 -9223372036 0\n123456789012345: 12345678901234 5 1234567890123 45 7716049313271 9 17636684144620 5 123456 1\n-98765432109876: -9876543210987 -6 -987654321098 -76 -6172839506867 -4 -14109347444268 0 -98765 0\n";
     assert_same("divisions_by_constants", source, expected);
 }
+
+#[test]
+fn koji_links_executables_itself() {
+    // Koji's linker (compiler/linker.kj), without the linker of the system (KOJI_LINKER=koji makes a
+    // failure an error instead of a fallback): an executable of the program and of the native
+    // library, linked dynamically with the C library, that runs (under valgrind), with tasks, files
+    // and the threads of the runtime.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let source = "import file\nimport task\nimport time\n\nmut results: int[] = []\n\ntask.group((group) => {\n    for i in range(3) {\n        group.spawn(() => {\n            time.sleep(0.01 * (3 - i))\n            results.push(i)\n        })\n    }\n\n    group.spawn(() => {\n        print(file.exists('/'))\n    })\n})\n\nprint(results)\nprint(`${7 / 2} ${'héllo'.upper()}`)\n";
+    let path = source_file("own_linker", source);
+    let executable = path.with_extension("");
+    let built = koji::finish(koji::kojic().env("KOJI_LINKER", "koji").arg("build").arg(&path).arg("-o").arg(&executable), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let run = if has_valgrind() {
+        Command::new("valgrind").env("KOJI_POOL", "0").args(["-q", "--error-exitcode=99"]).arg(&executable).output().unwrap()
+    } else {
+        Command::new(&executable).output().unwrap()
+    };
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "true\n[2, 1, 0]\n3 HÉLLO\n");
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+}

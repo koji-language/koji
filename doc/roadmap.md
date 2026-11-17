@@ -38,7 +38,7 @@ This document outlines the planned features and milestones for the Koji programm
 -   [ ] Tasks over several threads
 -   [x] A parser of the command line (`cli`), with the help made from the declarations
 -   [x] Foreign functions: `foreign` blocks with safe types and handles
--   [ ] Generating machine code without a C compiler
+-   [x] Generating machine code without a C compiler (Linux on x86-64: the code, the runtime library and the linking; other platforms through C)
 -   [ ] WebAssembly (WASM) compilation
 -   [ ] Editor support (syntax highlighting, LSP integration)
 -   [ ] Runtime optimizations

@@ -1,0 +1,949 @@
+// The linker of Koji (see "A linker of Koji's own" in doc/design.md): the executable of the objects
+// of ELF of a program and of its runtime library, for Linux on x86-64, linked dynamically with the
+// C library of the system (its functions resolved by the dynamic loader when the program starts),
+// without the linker of the system. Archives (`kojic library`) are read and written here too.
+//
+// The executable is not position-independent: it is loaded at 0x400000, in four segments (the
+// headers and what the dynamic loader reads; the code; the constants; the data, the table of
+// addresses of the C library and the zeros). Its entry, `_start`, calls `__libc_start_main` with
+// `main`, as the start files of C do. The functions of the shared libraries are called through
+// stubs (`jmp [rip + entry]`) and an entry each in the table of addresses (the GOT), which the
+// dynamic loader fills when the program starts (`BIND_NOW`).
+
+// A section of an object.
+type InputSection = {
+    name: string
+    kind: int
+    flags: int
+    bytes: byte[]
+    size: int
+    alignment: int
+    // The section of the executable it goes in (`text`, `rodata`, `data`, `bss`, or '' for none),
+    // and where in it.
+    output: string
+    at: int
+}
+
+type InputSymbol = {
+    name: string
+    info: int
+    section: int
+    value: int
+    size: int
+}
+
+type InputRelocation = {
+    section: int
+    at: int
+    symbol: int
+    kind: int
+    addend: int
+}
+
+type InputObject = {
+    sections: InputSection[]
+    symbols: InputSymbol[]
+    relocations: InputRelocation[]
+}
+
+// Where a global symbol is defined: its object and its index there.
+type Definition = {
+    object: int
+    symbol: int
+}
+
+immut base = 0x400000
+immut page = 4096
+immut interpreter = '/lib64/ld-linux-x86-64.so.2'
+
+// The objects of an archive of `ar` (but its tables of symbols and of long names).
+export function archiveObjects(bytes: byte[]): Result[byte[][], string] {
+    if (bytes.length() < 8 or text(bytes, 0, 8) != '!<arch>\n') { return Err('not an archive') }
+
+    mut objects: byte[][] = []
+    mut at = 8
+
+    while (at + 60 <= bytes.length()) {
+        immut name = text(bytes, at, 16).trim()
+        immut size = match (int(text(bytes, at + 48, 10).trim())) {
+            Ok(number) => number
+            Err(_) => return Err('an archive with a member of no size')
+        }
+        immut start = at + 60
+
+        if (start + size > bytes.length()) { return Err('an archive cut short') }
+
+        if (name != '/' and name != '//' and not name.startsWith('/SYM64/')) { objects.push(bytes[start..start + size]) }
+
+        at = start + size + size % 2
+    }
+
+    return Ok(objects)
+}
+
+// An archive of objects (`ar` of GNU, with the table of the symbols they define that linkers read).
+export function archive(objects: byte[][]): byte[] {
+    mut names: string[][] = []
+    mut count = 0
+
+    for object in objects {
+        immut defined = match (parseObject(object)) {
+            Ok(parsed) => globalNames(parsed)
+            Err(_) => []
+        }
+        names.push(defined)
+        count += defined.length()
+    }
+
+    // The table: the number of symbols, the offset of the member of each (big-endian words of 4
+    // bytes), then their names, each ended by 0.
+    mut table: byte[] = []
+    mut strings: byte[] = []
+
+    for each in names {
+        for name in each {
+            append(mut strings, bytesOf(name))
+            strings.push(0)
+        }
+    }
+
+    immut tableSize = 4 + 4 * count + strings.length()
+    mut offsets: int[] = []
+    mut at = 8 + 60 + tableSize + tableSize % 2
+
+    for object in objects {
+        offsets.push(at)
+        at += 60 + object.length() + object.length() % 2
+    }
+
+    putBigEndian(mut table, count)
+
+    for i in range(objects.length()) {
+        for name in names[i] {
+            putBigEndian(mut table, offsets[i])
+        }
+    }
+
+    append(mut table, strings)
+    mut out: byte[] = bytesOf('!<arch>\n')
+    member(mut out, '/', table)
+
+    for i in range(objects.length()) {
+        member(mut out, `koji${i}.o/`, objects[i])
+    }
+
+    return out
+}
+
+function member(mut out: byte[], name: string, bytes: byte[]) {
+    append(mut out, bytesOf(padded(name, 16)))
+    append(mut out, bytesOf(padded('0', 12)))
+    append(mut out, bytesOf(padded('0', 6)))
+    append(mut out, bytesOf(padded('0', 6)))
+    append(mut out, bytesOf(padded('644', 8)))
+    append(mut out, bytesOf(padded(string(bytes.length()), 10)))
+    append(mut out, bytesOf('`\n'))
+    append(mut out, bytes)
+
+    if (bytes.length() % 2 == 1) { out.push(10) }
+}
+
+function padded(text: string, width: int): string {
+    mut out = text
+
+    while (out.length() < width) {
+        out += ' '
+    }
+
+    return out
+}
+
+function putBigEndian(mut out: byte[], number: int) {
+    out.push(byte((number >> 24) & 0xFF))
+    out.push(byte((number >> 16) & 0xFF))
+    out.push(byte((number >> 8) & 0xFF))
+    out.push(byte(number & 0xFF))
+}
+
+function globalNames(object: InputObject): string[] {
+    mut found: string[] = []
+
+    for symbol in object.symbols {
+        if (symbol.info >> 4 != 0 and symbol.section != 0 and symbol.name != '') { found.push(symbol.name) }
+    }
+
+    return found
+}
+
+// The symbols a shared library defines (its dynamic symbols that are not undefined).
+export function sharedSymbols(bytes: byte[]): Result[Set[string], string] {
+    if (bytes.length() < 64 or bytes[0] != 0x7F or bytes[1] != 0x45 or bytes[4] != 2 or bytes[5] != 1) { return Err('not a shared library of ELF of 64 bits') }
+
+    immut sectionsAt = readNumber(bytes, 40, 8)
+    immut count = readNumber(bytes, 60, 2)
+    mut found: Set[string] = Set.from([])
+
+    for i in range(count) {
+        immut at = sectionsAt + 64 * i
+
+        // SHT_DYNSYM, its strings in the section `link`.
+        if (readNumber(bytes, at + 4, 4) != 11) { continue }
+
+        immut symbolsAt = readNumber(bytes, at + 24, 8)
+        immut size = readNumber(bytes, at + 32, 8)
+        immut stringsAt = readNumber(bytes, sectionsAt + 64 * readNumber(bytes, at + 40, 4) + 24, 8)
+
+        for entry in range(symbolsAt + 24, symbolsAt + size, 24) {
+            if (readNumber(bytes, entry + 6, 2) != 0) { found.add(cString(bytes, stringsAt + readNumber(bytes, entry, 4))) }
+        }
+    }
+
+    return Ok(found)
+}
+
+// The executable of the objects, linked with the shared libraries `libraries` (their names for the
+// dynamic loader, `libc.so.6`) that define the symbols `provided`, or why this linker cannot make
+// it (a symbol no object nor library defines among them).
+export function linkExecutable(objects: byte[][], libraries: string[], provided: Set[string]): Result[byte[], string] {
+    mut inputs: InputObject[] = []
+
+    for object in objects {
+        inputs.push(parseObject(object)?)
+    }
+
+    // The global symbols each object defines (a strong one before a weak one).
+    mut defined: Map[string, Definition] = [:]
+
+    for object in range(inputs.length()) {
+        immut symbols = inputs[object].symbols
+
+        for index in range(symbols.length()) {
+            immut symbol = symbols[index]
+            immut binding = symbol.info >> 4
+
+            if (binding == 0 or symbol.section == 0 or symbol.name == '') { continue }
+
+            match (defined.get(symbol.name)) {
+                Some(earlier) => {
+                    immut weak = inputs[earlier.object].symbols[earlier.symbol].info >> 4 == 2
+
+                    if (weak and binding == 1) { defined[symbol.name] = { object: object, symbol: index } }
+
+                    if (not weak and binding == 1) { return Err(`the symbol '${symbol.name}' is defined twice`) }
+                }
+                None => defined[symbol.name] = { object: object, symbol: index }
+            }
+        }
+    }
+
+    if (not defined.has('main')) { return Err("no 'main' to start") }
+
+    // The symbols of the shared libraries: those no object defines.
+    mut externals: string[] = ['__libc_start_main']
+    mut externalIndex: Map[string, int] = ['__libc_start_main': 0]
+
+    for input in inputs {
+        for relocation in input.relocations {
+            immut symbol = input.symbols[relocation.symbol]
+
+            if (symbol.section != 0 or symbol.info >> 4 == 0 or defined.has(symbol.name) or externalIndex.has(symbol.name)) { continue }
+
+            // A weak symbol may stay undefined; another must be in a library.
+            if (not provided.has(symbol.name) and symbol.info >> 4 != 2) { return Err(`undefined symbol '${symbol.name}'`) }
+
+            externalIndex[symbol.name] = externals.length()
+            externals.push(symbol.name)
+        }
+    }
+
+    // The sections of the objects in those of the executable, each at its alignment.
+    mut sizes: Map[string, int] = ['text': 0, 'rodata': 0, 'data': 0, 'bss': 0]
+    // The code first has `_start` (48 bytes) and the stubs of the external functions (8 each).
+    sizes['text'] = 48 + 8 * externals.length()
+
+    for object in range(inputs.length()) {
+        for index in range(inputs[object].sections.length()) {
+            immut section = inputs[object].sections[index]
+
+            // SHF_ALLOC, and not of thread-local storage (SHF_TLS), which this linker does not make.
+            if (section.flags & 2 == 0) { continue }
+
+            if (section.flags & 0x400 != 0) { return Err(`the section '${section.name}' is thread-local`) }
+
+            if (section.name.startsWith('.init_array') or section.name.startsWith('.fini_array') or section.name.startsWith('.ctors')) { return Err(`the section '${section.name}' runs code at the start`) }
+
+            immut output = if (section.kind == 8) { 'bss' } else { if (section.flags & 4 != 0) { 'text' } else { if (section.flags & 1 != 0) { 'data' } else { 'rodata' } } }
+            immut alignment = if (section.alignment > 0) { section.alignment } else { 1 }
+            immut at = (sizes[output] + alignment - 1) / alignment * alignment
+            inputs[object].sections[index].output = output
+            inputs[object].sections[index].at = at
+            sizes[output] = at + section.size
+        }
+
+        // The common symbols, in the zeros (their value is their alignment).
+        for index in range(inputs[object].symbols.length()) {
+            immut symbol = inputs[object].symbols[index]
+
+            if (symbol.section == 0xFFF2) {
+                immut alignment = if (symbol.value > 0) { symbol.value } else { 8 }
+                immut at = (sizes['bss'] + alignment - 1) / alignment * alignment
+                // A section of its own for it (after those of the object), in the zeros.
+                inputs[object].sections.push({ name: symbol.name, kind: 8, flags: 3, bytes: [], size: symbol.size, alignment: alignment, output: 'bss', at: at })
+                inputs[object].symbols[index].section = inputs[object].sections.length() - 1
+                inputs[object].symbols[index].value = 0
+                sizes['bss'] = at + symbol.size
+            }
+        }
+    }
+
+    // What the dynamic loader reads: the names (the libraries, then the symbols), the symbols, their
+    // table of hashes, and the relocations of the table of addresses (and of words of data that hold
+    // the address of an external symbol).
+    mut dynstr: byte[] = [0]
+    mut neededAt: int[] = []
+
+    for library in libraries {
+        neededAt.push(dynstr.length())
+        append(mut dynstr, bytesOf(library))
+        dynstr.push(0)
+    }
+
+    mut dynsym: byte[] = []
+    putZeros(mut dynsym, 24)
+
+    for name in externals {
+        putInt32(mut dynsym, dynstr.length())
+        append(mut dynstr, bytesOf(name))
+        dynstr.push(0)
+        // STB_GLOBAL, STT_NOTYPE; undefined.
+        dynsym.push(0x10)
+        dynsym.push(0)
+        putBytes(mut dynsym, 0, 2)
+        putWord(mut dynsym, 0)
+        putWord(mut dynsym, 0)
+    }
+
+    immut symbolCount = externals.length() + 1
+    // One bucket, all the symbols in its chain.
+    mut hash: byte[] = []
+    putInt32(mut hash, 1)
+    putInt32(mut hash, symbolCount)
+    putInt32(mut hash, if (symbolCount > 1) { 1 } else { 0 })
+    putInt32(mut hash, 0)
+
+    for i in range(1, symbolCount) {
+        putInt32(mut hash, if (i + 1 < symbolCount) { i + 1 } else { 0 })
+    }
+
+    // The relocations of data that hold external addresses (R_X86_64_64), counted first.
+    mut dataExternal = 0
+
+    for input in inputs {
+        for relocation in input.relocations {
+            immut symbol = input.symbols[relocation.symbol]
+
+            if (relocation.kind == 1 and symbol.section == 0 and externalIndex.has(symbol.name)) { dataExternal += 1 }
+        }
+    }
+
+    immut relaSize = 24 * (externals.length() + dataExternal)
+    // The headers: the ELF header, then 8 program headers.
+    immut headerCount = 8
+    immut headers = 64 + 56 * headerCount
+    immut interpAt = headers
+    immut hashAt = align(interpAt + interpreter.length() + 1, 8)
+    immut dynsymAt = align(hashAt + hash.length(), 8)
+    immut dynstrAt = dynsymAt + dynsym.length()
+    immut relaAt = align(dynstrAt + dynstr.length(), 8)
+    immut firstEnd = relaAt + relaSize
+    immut textAt = align(firstEnd, page)
+    immut rodataAt = align(textAt + sizes['text'], page)
+    immut dataAt = align(rodataAt + sizes['rodata'] + 1, page)
+    immut gotAt = align(dataAt + sizes['data'], 8)
+    // The table of addresses: an entry for each external symbol, then one for each defined symbol a
+    // GOTPCREL relocation names.
+    mut localGot: Map[string, int] = [:]
+    mut localGotKeys: string[] = []
+
+    for object in range(inputs.length()) {
+        for relocation in inputs[object].relocations {
+            immut symbol = inputs[object].symbols[relocation.symbol]
+
+            if (not isGotRelocation(relocation.kind)) { continue }
+
+            immut key = symbolKey(object, relocation.symbol, symbol, defined)
+
+            if (key == '' or localGot.has(key)) { continue }
+
+            localGot[key] = externals.length() + localGotKeys.length()
+            localGotKeys.push(key)
+        }
+    }
+
+    immut gotSize = 8 * (externals.length() + localGotKeys.length())
+    immut dynamicAt = align(gotAt + gotSize, 8)
+    immut dynamicCount = libraries.length() + 12
+    immut dataEnd = dynamicAt + 16 * dynamicCount
+    immut bssAt = align(dataEnd, 16)
+    immut bssEnd = bssAt + sizes['bss']
+
+    // The address of each section of the executable.
+    immut starts: Map[string, int] = ['text': base + textAt, 'rodata': base + rodataAt, 'data': base + dataAt, 'bss': base + bssAt]
+
+    // The address of each symbol of each object (0 for an external one).
+    mut addresses: int[][] = []
+
+    for object in range(inputs.length()) {
+        mut each: int[] = []
+
+        for symbol in inputs[object].symbols {
+            each.push(symbolAddress(inputs[object], symbol, starts))
+        }
+
+        addresses.push(each)
+    }
+
+    // The bytes of the sections of the executable.
+    mut text: byte[] = []
+    putZeros(mut text, sizes['text'])
+    mut rodata: byte[] = []
+    putZeros(mut rodata, sizes['rodata'])
+    mut data: byte[] = []
+    putZeros(mut data, sizes['data'])
+
+    for object in range(inputs.length()) {
+        for section in inputs[object].sections {
+            if (section.kind == 8 or section.output == '' or section.output == 'bss') { continue }
+
+            for i in range(section.bytes.length()) {
+                match (section.output) {
+                    'text' => text[section.at + i] = section.bytes[i]
+                    'rodata' => rodata[section.at + i] = section.bytes[i]
+                    _ => data[section.at + i] = section.bytes[i]
+                }
+            }
+        }
+    }
+
+    immut gotAddress = base + gotAt
+    immut stubsAt = base + textAt + 48
+    // The relocations of the dynamic loader: the table of addresses (R_X86_64_GLOB_DAT), then the
+    // words of data.
+    mut rela: byte[] = []
+
+    for i in range(externals.length()) {
+        putWord(mut rela, gotAddress + 8 * i)
+        putWord(mut rela, (i + 1) << 32 | 6)
+        putWord(mut rela, 0)
+    }
+
+    // The entries of defined symbols hold their addresses.
+    mut got: byte[] = []
+    putZeros(mut got, gotSize)
+
+    for i in range(localGotKeys.length()) {
+        patchWord(mut got, 8 * (externals.length() + i), keyAddress(localGotKeys[i], inputs, addresses, defined))
+    }
+
+    // The code of the start, and the stubs.
+    mut start: byte[] = [0x31, 0xED, 0x49, 0x89, 0xD1, 0x5E, 0x48, 0x89, 0xE2, 0x48, 0x83, 0xE4, 0xF0, 0x50, 0x54, 0x45, 0x31, 0xC0, 0x31, 0xC9, 0x48, 0x8D, 0x3D]
+    immut mainAddress = definedAddress('main', inputs, addresses, defined)
+    putInt32(mut start, mainAddress - (base + textAt + start.length() + 4))
+    append(mut start, [0xFF, 0x15])
+    putInt32(mut start, gotAddress - (base + textAt + start.length() + 4))
+    start.push(0xF4)
+
+    for i in range(start.length()) {
+        text[i] = start[i]
+    }
+
+    for i in range(externals.length()) {
+        immut at = 48 + 8 * i
+        text[at] = 0xFF
+        text[at + 1] = 0x25
+        patch32(mut text, at + 2, gotAddress + 8 * i - (base + textAt + at + 6))
+        text[at + 6] = 0xCC
+        text[at + 7] = 0xCC
+    }
+
+    // The relocations of the objects.
+    for object in range(inputs.length()) {
+        immut input = inputs[object]
+
+        for relocation in input.relocations {
+            immut section = input.sections[relocation.section]
+
+            if (section.output == '' or section.output == 'bss') { continue }
+
+            immut place = starts[section.output] + section.at + relocation.at
+            immut offsetIn = section.at + relocation.at
+            immut symbol = input.symbols[relocation.symbol]
+            immut external = symbol.section == 0 and symbol.info >> 4 != 0 and externalIndex.has(symbol.name)
+            mut target = 0
+
+            if (external) {
+                target = stubsAt + 8 * externalIndex[symbol.name]
+            } else {
+                target = if (symbol.section == 0 and symbol.info >> 4 != 0) { definedAddress(symbol.name, inputs, addresses, defined) } else { addresses[object][relocation.symbol] }
+            }
+
+            mut value = 0
+            mut width = 4
+
+            match (relocation.kind) {
+                // R_X86_64_64
+                1 => {
+                    width = 8
+
+                    if (external) {
+                        putWord(mut rela, place)
+                        putWord(mut rela, (externalIndex[symbol.name] + 1) << 32 | 1)
+                        putWord(mut rela, relocation.addend)
+                        value = 0
+                    } else {
+                        value = target + relocation.addend
+                    }
+                }
+                // R_X86_64_PC32, R_X86_64_PLT32
+                2 => value = target + relocation.addend - place
+                4 => value = target + relocation.addend - place
+                // R_X86_64_32, R_X86_64_32S
+                10 => value = target + relocation.addend
+                11 => value = target + relocation.addend
+                // R_X86_64_GOTPCREL and its relaxable forms: the entry of the symbol.
+                kind if (isGotRelocation(kind)) => {
+                    immut entry = if (external) { externalIndex[symbol.name] } else { localGot[symbolKey(object, relocation.symbol, symbol, defined)] }
+                    value = gotAddress + 8 * entry + relocation.addend - place
+                }
+                // R_X86_64_PC64
+                24 => {
+                    width = 8
+                    value = target + relocation.addend - place
+                }
+                other => return Err(`a relocation of type ${other} in '${section.name}'`)
+            }
+
+            if (width == 4 and (value < -2147483648 or value > 4294967295)) { return Err(`a relocation out of range in '${section.name}'`) }
+
+            match (section.output) {
+                'text' => if (width == 8) { patchWord(mut text, offsetIn, value) } else { patch32(mut text, offsetIn, value) }
+                'rodata' => if (width == 8) { patchWord(mut rodata, offsetIn, value) } else { patch32(mut rodata, offsetIn, value) }
+                _ => if (width == 8) { patchWord(mut data, offsetIn, value) } else { patch32(mut data, offsetIn, value) }
+            }
+        }
+    }
+
+    // The dynamic section.
+    mut dynamic: byte[] = []
+
+    for at in neededAt {
+        putWord(mut dynamic, 1)
+        putWord(mut dynamic, at)
+    }
+
+    for entry in [[4, base + hashAt], [5, base + dynstrAt], [6, base + dynsymAt], [10, dynstr.length()], [11, 24], [7, base + relaAt], [8, rela.length()], [9, 24], [30, 8], [0x6FFFFFFB, 1], [21, 0], [0, 0]] {
+        putWord(mut dynamic, entry[0])
+        putWord(mut dynamic, entry[1])
+    }
+
+    // The symbols for debuggers and profilers (.symtab): those of the objects that name functions
+    // and data, at their addresses.
+    mut symtab: byte[] = []
+    mut strtab: byte[] = [0]
+    putZeros(mut symtab, 24)
+    mut locals = 1
+    immut sectionNumbers: Map[string, int] = ['text': 6, 'rodata': 7, 'data': 8, 'bss': 11]
+
+    for pass in [0, 1] {
+        for object in range(inputs.length()) {
+            immut input = inputs[object]
+
+            for index in range(input.symbols.length()) {
+                immut symbol = input.symbols[index]
+                immut kind = symbol.info & 0xF
+                immut global = symbol.info >> 4 != 0
+
+                if (symbol.name == '' or symbol.section == 0 or symbol.section >= 0xFF00 or kind > 2) { continue }
+
+                if ((pass == 0) == global) { continue }
+
+                immut section = input.sections[symbol.section]
+
+                if (section.output == '') { continue }
+
+                putInt32(mut symtab, strtab.length())
+                append(mut strtab, bytesOf(symbol.name))
+                strtab.push(0)
+                symtab.push(byte(symbol.info))
+                symtab.push(0)
+                putBytes(mut symtab, sectionNumbers[section.output], 2)
+                putWord(mut symtab, addresses[object][index])
+                putWord(mut symtab, symbol.size)
+
+                if (pass == 0) { locals += 1 }
+            }
+        }
+    }
+
+    // The file: the first segment, the code, the constants, the data, then the tables for tools.
+    mut out: byte[] = []
+    putZeros(mut out, dataAt + (dataEnd - dataAt))
+    // e_ident, then ET_EXEC, EM_X86_64, version, entry, program headers, section headers (patched).
+    immut ident = [0x7F, 0x45, 0x4C, 0x46, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    for i in range(16) {
+        out[i] = byte(ident[i])
+    }
+
+    mut header: byte[] = []
+    putBytes(mut header, 2, 2)
+    putBytes(mut header, 62, 2)
+    putInt32(mut header, 1)
+    putWord(mut header, base + textAt)
+    putWord(mut header, 64)
+    // e_shoff, filled below.
+    putWord(mut header, 0)
+    putInt32(mut header, 0)
+    putBytes(mut header, 64, 2)
+    putBytes(mut header, 56, 2)
+    putBytes(mut header, headerCount, 2)
+    putBytes(mut header, 64, 2)
+    putBytes(mut header, 15, 2)
+    putBytes(mut header, 14, 2)
+    place(mut out, 16, header)
+
+    // The program headers: type, flags, offset, address, physical address, size in the file, in
+    // memory, alignment.
+    mut programs: byte[] = []
+    programHeader(mut programs, 6, 4, 64, 56 * headerCount, 8)
+    programHeader(mut programs, 3, 4, interpAt, interpreter.length() + 1, 1)
+    loadHeader(mut programs, 4, 0, firstEnd, firstEnd)
+    loadHeader(mut programs, 5, textAt, sizes['text'], sizes['text'])
+    loadHeader(mut programs, 4, rodataAt, sizes['rodata'] + 1, sizes['rodata'] + 1)
+    loadHeader(mut programs, 6, dataAt, dataEnd - dataAt, bssEnd - dataAt)
+    programHeader(mut programs, 2, 6, dynamicAt, dynamic.length(), 8)
+    // PT_GNU_STACK: a stack that does not execute.
+    mut stack: byte[] = []
+    putInt32(mut stack, 0x6474E551)
+    putInt32(mut stack, 6)
+    putZeros(mut stack, 48)
+    append(mut programs, stack)
+    place(mut out, 64, programs)
+    place(mut out, interpAt, bytesOf(interpreter))
+    place(mut out, hashAt, hash)
+    place(mut out, dynsymAt, dynsym)
+    place(mut out, dynstrAt, dynstr)
+    place(mut out, relaAt, rela)
+    place(mut out, textAt, text)
+    place(mut out, rodataAt, rodata)
+    place(mut out, dataAt, data)
+    place(mut out, gotAt, got)
+    place(mut out, dynamicAt, dynamic)
+
+    // The tables for tools, then the headers of the sections.
+    immut symtabAt = align(out.length(), 8)
+    putZeros(mut out, symtabAt - out.length())
+    append(mut out, symtab)
+    immut strtabAt = out.length()
+    append(mut out, strtab)
+    mut shstrtab: byte[] = [0]
+    immut sectionNames = ['', '.interp', '.hash', '.dynsym', '.dynstr', '.rela.dyn', '.text', '.rodata', '.data', '.got', '.dynamic', '.bss', '.symtab', '.strtab', '.shstrtab']
+    mut nameAt: int[] = []
+
+    for name in sectionNames {
+        nameAt.push(if (name == '') { 0 } else { shstrtab.length() })
+
+        if (name != '') {
+            append(mut shstrtab, bytesOf(name))
+            shstrtab.push(0)
+        }
+    }
+
+    immut shstrtabAt = out.length()
+    append(mut out, shstrtab)
+    immut sectionsAt = align(out.length(), 8)
+    putZeros(mut out, sectionsAt - out.length())
+    patchWord(mut out, 40, sectionsAt)
+    // name, type, flags, address, offset, size, link, info, alignment, size of an entry.
+    immut table = [
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [1, 2, base + interpAt, interpAt, interpreter.length() + 1, 0, 0, 1, 0],
+        [5, 2, base + hashAt, hashAt, hash.length(), 3, 0, 8, 4],
+        [11, 2, base + dynsymAt, dynsymAt, dynsym.length(), 4, 1, 8, 24],
+        [3, 2, base + dynstrAt, dynstrAt, dynstr.length(), 0, 0, 1, 0],
+        [4, 2, base + relaAt, relaAt, rela.length(), 3, 0, 8, 24],
+        [1, 6, base + textAt, textAt, sizes['text'], 0, 0, 16, 0],
+        [1, 2, base + rodataAt, rodataAt, sizes['rodata'], 0, 0, 16, 0],
+        [1, 3, base + dataAt, dataAt, sizes['data'], 0, 0, 16, 0],
+        [1, 3, base + gotAt, gotAt, gotSize, 0, 0, 8, 8],
+        [6, 3, base + dynamicAt, dynamicAt, dynamic.length(), 4, 0, 8, 16],
+        [8, 3, base + bssAt, bssAt, sizes['bss'], 0, 0, 16, 0],
+        [2, 0, 0, symtabAt, symtab.length(), 13, locals, 8, 24],
+        [3, 0, 0, strtabAt, strtab.length(), 0, 0, 1, 0],
+        [3, 0, 0, shstrtabAt, shstrtab.length(), 0, 0, 1, 0]
+    ]
+
+    for i in range(table.length()) {
+        immut row = table[i]
+        putInt32(mut out, nameAt[i])
+        putInt32(mut out, row[0])
+        putWord(mut out, row[1])
+        putWord(mut out, row[2])
+        putWord(mut out, row[3])
+        putWord(mut out, row[4])
+        putInt32(mut out, row[5])
+        putInt32(mut out, row[6])
+        putWord(mut out, row[7])
+        putWord(mut out, row[8])
+    }
+
+    return Ok(out)
+}
+
+function isGotRelocation(kind: int): boolean {
+    // R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX
+    return kind == 9 or kind == 41 or kind == 42
+}
+
+// A key for the defined symbol a relocation names (its global name, or the object and the index
+// of a local one), or '' for an external one.
+function symbolKey(object: int, index: int, symbol: InputSymbol, defined: Map[string, Definition]): string {
+    if (symbol.section == 0 and symbol.info >> 4 != 0) { return if (defined.has(symbol.name)) { `global ${symbol.name}` } else { '' } }
+
+    return `local ${object} ${index}`
+}
+
+function keyAddress(key: string, inputs: InputObject[], addresses: int[][], defined: Map[string, Definition]): int {
+    if (key.startsWith('global ')) { return definedAddress(key[7..], inputs, addresses, defined) }
+
+    immut parts = key.split(' ')
+    immut object = match (int(parts[1])) {
+        Ok(number) => number
+        Err(_) => 0
+    }
+    immut index = match (int(parts[2])) {
+        Ok(number) => number
+        Err(_) => 0
+    }
+    return addresses[object][index]
+}
+
+function definedAddress(name: string, inputs: InputObject[], addresses: int[][], defined: Map[string, Definition]): int {
+    return match (defined.get(name)) {
+        Some(found) => addresses[found.object][found.symbol]
+        None => 0
+    }
+}
+
+function symbolAddress(input: InputObject, symbol: InputSymbol, starts: Map[string, int]): int {
+    // SHN_UNDEF, then SHN_ABS.
+    if (symbol.section == 0) { return 0 }
+
+    if (symbol.section == 0xFFF1) { return symbol.value }
+
+    if (symbol.section >= input.sections.length()) { return 0 }
+
+    immut section = input.sections[symbol.section]
+
+    if (section.output == '') { return 0 }
+
+    return starts[section.output] + section.at + symbol.value
+}
+
+function programHeader(mut out: byte[], kind: int, flags: int, offset: int, size: int, alignment: int) {
+    putInt32(mut out, kind)
+    putInt32(mut out, flags)
+    putWord(mut out, offset)
+    putWord(mut out, base + offset)
+    putWord(mut out, base + offset)
+    putWord(mut out, size)
+    putWord(mut out, size)
+    putWord(mut out, alignment)
+}
+
+// PT_LOAD, its pages readable (4), writable (2), executable (1).
+function loadHeader(mut out: byte[], flags: int, offset: int, size: int, memory: int) {
+    putInt32(mut out, 1)
+    putInt32(mut out, flags)
+    putWord(mut out, offset)
+    putWord(mut out, base + offset)
+    putWord(mut out, base + offset)
+    putWord(mut out, size)
+    putWord(mut out, memory)
+    putWord(mut out, page)
+}
+
+// An object of ELF (relocatable, 64 bits, little-endian): its sections, symbols and relocations.
+function parseObject(bytes: byte[]): Result[InputObject, string] {
+    if (bytes.length() < 64 or bytes[0] != 0x7F or bytes[1] != 0x45 or bytes[4] != 2 or bytes[5] != 1) { return Err('not an object of ELF of 64 bits') }
+
+    if (readNumber(bytes, 16, 2) != 1) { return Err('not a relocatable object') }
+
+    immut sectionsAt = readNumber(bytes, 40, 8)
+    immut count = readNumber(bytes, 60, 2)
+    immut namesIndex = readNumber(bytes, 62, 2)
+    mut headers: int[][] = []
+
+    for i in range(count) {
+        immut at = sectionsAt + 64 * i
+        headers.push([readNumber(bytes, at, 4), readNumber(bytes, at + 4, 4), readNumber(bytes, at + 8, 8), readNumber(bytes, at + 24, 8), readNumber(bytes, at + 32, 8), readNumber(bytes, at + 40, 4), readNumber(bytes, at + 44, 4), readNumber(bytes, at + 48, 8)])
+    }
+
+    immut namesAt = headers[namesIndex][3]
+    mut sections: InputSection[] = []
+
+    for header in headers {
+        immut kind = header[1]
+        immut content = if (kind == 8 or kind == 0) { [] } else { bytes[header[3]..header[3] + header[4]] }
+        sections.push({ name: cString(bytes, namesAt + header[0]), kind: kind, flags: header[2], bytes: content, size: header[4], alignment: header[7], output: '', at: 0 })
+    }
+
+    mut symbols: InputSymbol[] = []
+    mut relocations: InputRelocation[] = []
+
+    for header in headers {
+        // SHT_SYMTAB, its strings in the section `link`.
+        if (header[1] == 2) {
+            immut stringsAt = headers[header[5]][3]
+
+            for at in range(header[3], header[3] + header[4], 24) {
+                symbols.push({ name: cString(bytes, stringsAt + readNumber(bytes, at, 4)), info: int(bytes[at + 4]), section: readNumber(bytes, at + 6, 2), value: readNumber(bytes, at + 8, 8), size: readNumber(bytes, at + 16, 8) })
+            }
+        }
+    }
+
+    for header in headers {
+        // SHT_RELA, for the section `info`.
+        if (header[1] == 4) {
+            for at in range(header[3], header[3] + header[4], 24) {
+                immut info = readNumber(bytes, at + 8, 8)
+                relocations.push({ section: header[6], at: readNumber(bytes, at, 8), symbol: (info >> 32) & 0xFFFFFFFF, kind: info & 0xFFFFFFFF, addend: readNumber(bytes, at + 16, 8) })
+            }
+        }
+
+        // SHT_REL (no addends) is not of x86-64.
+        if (header[1] == 9) { return Err('relocations without addends') }
+    }
+
+    return Ok({ sections: sections, symbols: symbols, relocations: relocations })
+}
+
+// A number of `size` bytes at `at`, little-endian (8 bytes: a word, signed).
+function readNumber(bytes: byte[], at: int, size: int): int {
+    mut number = 0
+
+    for i in range(size) {
+        number = number | int(bytes[at + i]) << (8 * i)
+    }
+
+    return number
+}
+
+function cString(bytes: byte[], at: int): string {
+    mut end = at
+
+    while (end < bytes.length() and bytes[end] != 0) {
+        end += 1
+    }
+
+    return text(bytes, at, end - at)
+}
+
+function text(bytes: byte[], at: int, size: int): string {
+    mut out = ''
+
+    for i in range(at, at + size) {
+        out += string(charOf(bytes[i]))
+    }
+
+    return out
+}
+
+function charOf(b: byte): char {
+    return match (char(int(b))) {
+        Some(c) => c
+        None => '?'
+    }
+}
+
+// The bytes of a text in UTF-8.
+function bytesOf(text: string): byte[] {
+    mut bytes: byte[] = []
+
+    for c in text {
+        immut code = c.code()
+
+        if (code < 0x80) {
+            bytes.push(byte(code))
+            continue
+        }
+
+        if (code < 0x800) {
+            bytes.push(byte(0xC0 | code >> 6))
+            bytes.push(byte(0x80 | code & 0x3F))
+            continue
+        }
+
+        if (code < 0x10000) {
+            bytes.push(byte(0xE0 | code >> 12))
+            bytes.push(byte(0x80 | (code >> 6) & 0x3F))
+            bytes.push(byte(0x80 | code & 0x3F))
+            continue
+        }
+
+        bytes.push(byte(0xF0 | code >> 18))
+        bytes.push(byte(0x80 | (code >> 12) & 0x3F))
+        bytes.push(byte(0x80 | (code >> 6) & 0x3F))
+        bytes.push(byte(0x80 | code & 0x3F))
+    }
+
+    return bytes
+}
+
+function align(number: int, size: int): int {
+    return (number + size - 1) / size * size
+}
+
+function place(mut out: byte[], at: int, bytes: byte[]) {
+    for i in range(bytes.length()) {
+        out[at + i] = bytes[i]
+    }
+}
+
+function putZeros(mut out: byte[], count: int) {
+    for i in range(count) {
+        out.push(0)
+    }
+}
+
+function putBytes(mut out: byte[], number: int, count: int) {
+    for i in range(count) {
+        out.push(byte((number >> (8 * i)) & 0xFF))
+    }
+}
+
+function putInt32(mut out: byte[], number: int) {
+    putBytes(mut out, number, 4)
+}
+
+function putWord(mut out: byte[], number: int) {
+    putBytes(mut out, number, 8)
+}
+
+function patch32(mut out: byte[], at: int, number: int) {
+    for i in range(4) {
+        out[at + i] = byte((number >> (8 * i)) & 0xFF)
+    }
+}
+
+function patchWord(mut out: byte[], at: int, number: int) {
+    for i in range(8) {
+        out[at + i] = byte((number >> (8 * i)) & 0xFF)
+    }
+}
+
+function append(mut out: byte[], bytes: byte[]) {
+    for b in bytes {
+        out.push(b)
+    }
+}
