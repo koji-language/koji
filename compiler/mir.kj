@@ -1,0 +1,193 @@
+// The machine IR (see "A machine IR between the IR and the processors" in doc/design.md): what the
+// native backend generates for a function, knowing no processor. Values are in virtual registers
+// (words or floats, unbounded in number), which the register allocator (regalloc.kj) gives
+// registers of the processor or slots of the frame; an emitter (x64.kj) encodes the instructions.
+
+// A value an instruction reads: a virtual register, or a constant of a word.
+export type MValue = {
+    MReg(id: int)
+    MImm(value: int)
+}
+
+// Where a load or a store reads or writes memory.
+export type MAddress = {
+    // [register + offset]
+    MBase(base: int, offset: int)
+    // [base + index * scale + offset], scale 1, 2, 4 or 8.
+    MIndexed(base: int, index: int, scale: int, offset: int)
+    // A slot of the frame (its number), plus an offset.
+    MSlot(slot: int, offset: int)
+    // A symbol, or a section of the object (`.rodata`, `.data`, `.bss`), plus an offset.
+    MSymbol(name: string, offset: int)
+}
+
+export type MCallee = {
+    // A function of the program (its number in the IR).
+    MFunction(id: int)
+    // A function of another object (the runtime library, C), by its name.
+    MExternal(name: string)
+    // The code at the address in a register.
+    MIndirect(value: MValue)
+}
+
+// The conditions of comparisons: signed (`lt`, `le`, `gt`, `ge`), unsigned (`b`, `be`, `a`, `ae`),
+// and `eq`, `ne`.
+export type MInstruction = {
+    MMove(dest: int, value: MValue)
+    // A load of 1, 4 or 8 bytes, zero-extended.
+    MLoad(dest: int, at: MAddress, width: int)
+    MStore(at: MAddress, value: MValue, width: int)
+    MAddressOf(dest: int, at: MAddress)
+    // `add`, `sub`, `mul`, `and`, `or`, `xor`, `shl`, `sar`, `shr` (by a constant or a register),
+    // `div`, `rem` (signed); `check` is the panic of an overflow (a signed one; for `div` and `rem`
+    // the division by zero and the overflow), or -1.
+    MBinary(dest: int, op: string, left: MValue, right: MValue, check: int)
+    // `neg` (checked like an operation), `not` (of the bits), `bool` (1 for anything but 0).
+    MUnary(dest: int, op: string, value: MValue, check: int)
+    // 1 when the condition holds between the values, else 0.
+    MSet(dest: int, condition: string, left: MValue, right: MValue)
+    // A call by the convention of the system; the classes of the registers are those of the
+    // function (`MFunction.floats`).
+    MCall(callee: MCallee, args: MValue[], results: int[])
+    // The panic `panic` when the condition holds.
+    MPanicIf(condition: string, left: MValue, right: MValue, panic: int)
+    // The check of the task that ran long (KOJI_PREEMPT), a call when the flag is set: it keeps
+    // every register (the emitter saves those alive).
+    MPreempt
+}
+
+export type MTerminator = {
+    MJump(target: int)
+    MBranch(condition: string, left: MValue, right: MValue, thenBlock: int, elseBlock: int)
+    MReturn(values: MValue[])
+    MUnreachable
+}
+
+export type MBlock = {
+    instructions: MInstruction[]
+    terminator: MTerminator
+}
+
+// A panic of a check: where (the text of its place) and what.
+export type MPanic = {
+    location: string
+    message: string
+}
+
+export type MFunctionCode = {
+    name: string
+    // The virtual registers of the parameters, in order (a value of two words is two).
+    params: int[]
+    // For each virtual register, whether it holds a float.
+    floats: boolean[]
+    blocks: MBlock[]
+    // The bytes of each slot of the frame.
+    slots: int[]
+    panics: MPanic[]
+    // The classes of the results (floats or words), for the return.
+    results: boolean[]
+}
+
+// The text of a function of the machine IR (`kojic dump mir`).
+export function mirText(code: MFunctionCode): string[] {
+    mut lines: string[] = []
+    mut params: string[] = []
+
+    for param in code.params {
+        params.push(registerText(param, code))
+    }
+
+    lines.push(`function ${code.name}(${params.join(', ')})`)
+
+    for i in range(code.slots.length()) {
+        lines.push(`    slot s${i}: ${code.slots[i]} bytes`)
+    }
+
+    for i in range(code.blocks.length()) {
+        lines.push(`  b${i}:`)
+
+        for instruction in code.blocks[i].instructions {
+            lines.push(`    ${instructionText(instruction, code)}`)
+        }
+
+        lines.push(`    ${terminatorText(code.blocks[i].terminator, code)}`)
+    }
+
+    return lines
+}
+
+function registerText(id: int, code: MFunctionCode): string {
+    return if (id < code.floats.length() and code.floats[id]) { `f${id}` } else { `r${id}` }
+}
+
+function valueText(value: MValue, code: MFunctionCode): string {
+    return match (value) {
+        MReg(id) => registerText(id, code)
+        MImm(number) => string(number)
+    }
+}
+
+function addressText(at: MAddress, code: MFunctionCode): string {
+    return match (at) {
+        MBase(base, offset) => `[${registerText(base, code)} + ${offset}]`
+        MIndexed(base, index, scale, offset) => `[${registerText(base, code)} + ${registerText(index, code)} * ${scale} + ${offset}]`
+        MSlot(slot, offset) => `[s${slot} + ${offset}]`
+        MSymbol(name, offset) => `[${name} + ${offset}]`
+    }
+}
+
+function instructionText(instruction: MInstruction, code: MFunctionCode): string {
+    return match (instruction) {
+        MMove(dest, value) => `${registerText(dest, code)} = ${valueText(value, code)}`
+        MLoad(dest, at, width) => `${registerText(dest, code)} = load${width} ${addressText(at, code)}`
+        MStore(at, value, width) => `store${width} ${addressText(at, code)}, ${valueText(value, code)}`
+        MAddressOf(dest, at) => `${registerText(dest, code)} = address ${addressText(at, code)}`
+        MBinary(dest, op, left, right, check) => `${registerText(dest, code)} = ${op} ${valueText(left, code)}, ${valueText(right, code)}${checkText(check)}`
+        MUnary(dest, op, value, check) => `${registerText(dest, code)} = ${op} ${valueText(value, code)}${checkText(check)}`
+        MSet(dest, condition, left, right) => `${registerText(dest, code)} = set ${condition} ${valueText(left, code)}, ${valueText(right, code)}`
+        MCall(callee, args, results) => {
+            mut values: string[] = []
+
+            for arg in args {
+                values.push(valueText(arg, code))
+            }
+
+            mut written: string[] = []
+
+            for result in results {
+                written.push(registerText(result, code))
+            }
+
+            immut target = match (callee) {
+                MFunction(id) => `f${id}`
+                MExternal(name) => name
+                MIndirect(value) => `*${valueText(value, code)}`
+            }
+            immut prefix = if (written.length() > 0) { `${written.join(', ')} = ` } else { '' }
+            `${prefix}call ${target}(${values.join(', ')})`
+        }
+        MPanicIf(condition, left, right, panic) => `panic p${panic} if ${condition} ${valueText(left, code)}, ${valueText(right, code)}`
+        MPreempt => 'preempt'
+    }
+}
+
+function checkText(check: int): string {
+    return if (check >= 0) { ` (panic p${check})` } else { '' }
+}
+
+function terminatorText(terminator: MTerminator, code: MFunctionCode): string {
+    return match (terminator) {
+        MJump(target) => `jump b${target}`
+        MBranch(condition, left, right, thenBlock, elseBlock) => `branch ${condition} ${valueText(left, code)}, ${valueText(right, code)}, b${thenBlock}, b${elseBlock}`
+        MReturn(values) => {
+            mut texts: string[] = []
+
+            for value in values {
+                texts.push(valueText(value, code))
+            }
+
+            `return ${texts.join(', ')}`
+        }
+        MUnreachable => 'unreachable'
+    }
+}

@@ -1,0 +1,404 @@
+// The register allocator of the machine IR (mir.kj): linear scan over the ranges of liveness. Each
+// virtual register is alive over a range of positions (its instructions in order, each block's
+// terminator after them), from the first to the last where it is alive; the ranges are taken by
+// their starts, each given a free register of its class: one that calls keep when a call is
+// inside its range (a register of floats then never: none is kept), else one they do not keep
+// first. When none is free, the range of those it could take that ends last is spilled to a slot
+// of the frame (this one, if it ends after them all).
+
+import { MValue, MAddress, MInstruction, MTerminator, MBlock, MFunctionCode } from 'mir.kj'
+
+// The registers of a processor for the allocator (their numbers for its emitter).
+export type RegisterSet = {
+    // Of words: those calls keep, those they do not.
+    kept: int[]
+    free: int[]
+    // Of floats (calls keep none).
+    floats: int[]
+}
+
+export type Allocation = {
+    // For each virtual register, its register, or -1 when it is in a slot (`spills`).
+    registers: int[]
+    // For each virtual register in a slot, its number among the slots of spills, or -1.
+    spills: int[]
+    spillCount: int
+    // The registers calls keep that the function uses (it saves them).
+    used: int[]
+    // The ranges (positions) of the virtual registers, and where each block starts (see
+    // `positionOf`).
+    first: int[]
+    last: int[]
+    blockStarts: int[]
+}
+
+// The position of the instruction `index` of a block (its terminator after its instructions): odd
+// numbers, the even one before the first being where the values alive into the block start (so
+// that one alive across a call that comes first has the call inside its range).
+export function positionOf(allocation: Allocation, block: int, index: int): int {
+    return allocation.blockStarts[block] + 2 * index
+}
+
+// The virtual registers an instruction reads and writes.
+export function readOf(instruction: MInstruction): int[] {
+    mut found: int[] = []
+
+    match (instruction) {
+        MMove(_, value) => valueRegister(value, mut found)
+        MLoad(_, at, _) => addressRegisters(at, mut found)
+        MStore(at, value, _) => {
+            addressRegisters(at, mut found)
+            valueRegister(value, mut found)
+        }
+        MAddressOf(_, at) => addressRegisters(at, mut found)
+        MBinary(_, _, left, right, _) => {
+            valueRegister(left, mut found)
+            valueRegister(right, mut found)
+        }
+        MUnary(_, _, value, _) => valueRegister(value, mut found)
+        MSet(_, _, left, right) => {
+            valueRegister(left, mut found)
+            valueRegister(right, mut found)
+        }
+        MCall(callee, args, _) => {
+            match (callee) {
+                MIndirect(value) => valueRegister(value, mut found)
+                _ => {}
+            }
+
+            for arg in args {
+                valueRegister(arg, mut found)
+            }
+        }
+        MPanicIf(_, left, right, _) => {
+            valueRegister(left, mut found)
+            valueRegister(right, mut found)
+        }
+        MPreempt => {}
+    }
+
+    return found
+}
+
+export function writtenBy(instruction: MInstruction): int[] {
+    return match (instruction) {
+        MMove(dest, _) => [dest]
+        MLoad(dest, _, _) => [dest]
+        MAddressOf(dest, _) => [dest]
+        MBinary(dest, _, _, _, _) => [dest]
+        MUnary(dest, _, _, _) => [dest]
+        MSet(dest, _, _, _) => [dest]
+        MCall(_, _, results) => results
+        _ => []
+    }
+}
+
+export function terminatorReads(terminator: MTerminator): int[] {
+    mut found: int[] = []
+
+    match (terminator) {
+        MBranch(_, left, right, _, _) => {
+            valueRegister(left, mut found)
+            valueRegister(right, mut found)
+        }
+        MReturn(values) => {
+            for value in values {
+                valueRegister(value, mut found)
+            }
+        }
+        _ => {}
+    }
+
+    return found
+}
+
+export function successorsOf(terminator: MTerminator): int[] {
+    return match (terminator) {
+        MJump(target) => [target]
+        MBranch(_, _, _, thenBlock, elseBlock) => [thenBlock, elseBlock]
+        _ => []
+    }
+}
+
+function valueRegister(value: MValue, mut found: int[]) {
+    match (value) {
+        MReg(id) => found.push(id)
+        MImm(_) => {}
+    }
+}
+
+function addressRegisters(at: MAddress, mut found: int[]) {
+    match (at) {
+        MBase(base, _) => found.push(base)
+        MIndexed(base, index, _, _) => {
+            found.push(base)
+            found.push(index)
+        }
+        _ => {}
+    }
+}
+
+export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
+    immut count = code.floats.length()
+    immut blocks = code.blocks.length()
+    immut words = (count + 63) / 64
+    mut empty: int[] = []
+
+    for word in range(words) {
+        empty.push(0)
+    }
+
+    // The positions: each instruction, then each terminator (odd numbers, from 1).
+    mut blockStarts: int[] = []
+    mut position = 1
+
+    for block in code.blocks {
+        blockStarts.push(position)
+        position += 2 * (block.instructions.length() + 1)
+    }
+
+    // Liveness over the blocks: read before written in a block, and written there.
+    mut reads: int[][] = []
+    mut writes: int[][] = []
+
+    for block in code.blocks {
+        mut read = empty
+        mut written = empty
+
+        for instruction in block.instructions {
+            for id in readOf(instruction) {
+                if (not has(written, id)) { add(mut read, id) }
+            }
+
+            for id in writtenBy(instruction) {
+                add(mut written, id)
+            }
+        }
+
+        for id in terminatorReads(block.terminator) {
+            if (not has(written, id)) { add(mut read, id) }
+        }
+
+        reads.push(read)
+        writes.push(written)
+    }
+
+    mut liveIn: int[][] = []
+    mut liveOut: int[][] = []
+
+    for block in range(blocks) {
+        liveIn.push(empty)
+        liveOut.push(empty)
+    }
+
+    mut changed = true
+
+    while (changed) {
+        changed = false
+        mut block = blocks - 1
+
+        while (block >= 0) {
+            mut out = empty
+
+            for next in successorsOf(code.blocks[block].terminator) {
+                for word in range(words) {
+                    out[word] = out[word] | liveIn[next][word]
+                }
+            }
+
+            mut entering = empty
+
+            for word in range(words) {
+                entering[word] = reads[block][word] | (out[word] & ~writes[block][word])
+            }
+
+            if (entering != liveIn[block] or out != liveOut[block]) {
+                liveIn[block] = entering
+                liveOut[block] = out
+                changed = true
+            }
+
+            block -= 1
+        }
+    }
+
+    // The ranges, and the positions of the calls.
+    mut first: int[] = []
+    mut last: int[] = []
+
+    for id in range(count) {
+        first.push(-1)
+        last.push(-1)
+    }
+
+    mut calls: int[] = []
+
+    for block in range(blocks) {
+        immut start = blockStarts[block]
+        immut end = start + 2 * code.blocks[block].instructions.length()
+
+        for id in members(liveIn[block]) {
+            extend(mut first, mut last, id, start - 1)
+        }
+
+        for id in members(liveOut[block]) {
+            extend(mut first, mut last, id, end)
+        }
+
+        immut instructions = code.blocks[block].instructions
+
+        for index in range(instructions.length()) {
+            immut at = start + 2 * index
+
+            for id in readOf(instructions[index]) {
+                extend(mut first, mut last, id, at)
+            }
+
+            for id in writtenBy(instructions[index]) {
+                extend(mut first, mut last, id, at)
+            }
+
+            match (instructions[index]) {
+                MCall(_, _, _) => calls.push(at)
+                _ => {}
+            }
+        }
+
+        for id in terminatorReads(code.blocks[block].terminator) {
+            extend(mut first, mut last, id, end)
+        }
+    }
+
+    // The parameters are alive from the start.
+    for param in code.params {
+        extend(mut first, mut last, param, 0)
+    }
+
+    // For each position, how many calls are before it (whether a range has one inside).
+    mut callsBefore: int[] = [0]
+    mut seen = 0
+    mut nextCall = 0
+
+    for at in range(position) {
+        if (nextCall < calls.length() and calls[nextCall] == at) {
+            seen += 1
+            nextCall += 1
+        }
+
+        callsBefore.push(seen)
+    }
+
+    // The ranges by their starts.
+    mut order: int[] = []
+
+    for id in range(count) {
+        if (first[id] >= 0) { order.push(id) }
+    }
+
+    order.sortBy((a, b) => first[a] < first[b])
+    mut registers: int[] = []
+    mut spills: int[] = []
+
+    for id in range(count) {
+        registers.push(-1)
+        spills.push(-1)
+    }
+
+    mut spillCount = 0
+    // The ranges alive, by register: their virtual registers.
+    mut active: int[] = []
+    mut used: int[] = []
+
+    for id in order {
+        // Those that ended free their registers.
+        mut still: int[] = []
+
+        for other in active {
+            if (last[other] >= first[id]) { still.push(other) }
+        }
+
+        active = still
+            // A call strictly inside the range (a call reads its arguments before and writes its
+        // results after).
+        immut crossing = callsBefore[last[id]] > callsBefore[first[id] + 1]
+        immut candidates = if (code.floats[id]) { if (crossing) { [] } else { set.floats } } else { if (crossing) { set.kept } else { set.free + set.kept } }
+        mut chosen = -1
+
+        for register in candidates {
+            if (chosen >= 0) { break }
+
+            mut taken = false
+
+            for other in active {
+                if (registers[other] == register) { taken = true }
+            }
+
+            if (not taken) { chosen = register }
+        }
+
+        if (chosen < 0) {
+            // The range alive in one of the candidates that ends last, spilled if it ends after
+            // this one.
+            mut victim = -1
+
+            for other in active {
+                if (registers[other] >= 0 and registers[other] in candidates and code.floats[other] == code.floats[id] and (victim < 0 or last[other] > last[victim])) { victim = other }
+            }
+
+            if (victim >= 0 and last[victim] > last[id]) {
+                chosen = registers[victim]
+                registers[victim] = -1
+                spills[victim] = spillCount
+                spillCount += 1
+                mut kept: int[] = []
+
+                for other in active {
+                    if (other != victim) { kept.push(other) }
+                }
+
+                active = kept
+            }
+        }
+
+        if (chosen < 0) {
+            spills[id] = spillCount
+            spillCount += 1
+            continue
+        }
+
+        registers[id] = chosen
+        active.push(id)
+
+        if (chosen in set.kept and not (chosen in used)) { used.push(chosen) }
+    }
+
+    return { registers: registers, spills: spills, spillCount: spillCount, used: used, first: first, last: last, blockStarts: blockStarts }
+}
+
+function extend(mut first: int[], mut last: int[], id: int, at: int) {
+    if (first[id] < 0 or at < first[id]) { first[id] = at }
+
+    if (at > last[id]) { last[id] = at }
+}
+
+function has(set: int[], member: int): boolean {
+    return (set[member / 64] >> (member % 64)) & 1 == 1
+}
+
+function add(mut set: int[], member: int) {
+    set[member / 64] = set[member / 64] | (1 << (member % 64))
+}
+
+function members(set: int[]): int[] {
+    mut found: int[] = []
+
+    for word in range(set.length()) {
+        if (set[word] == 0) { continue }
+
+        for bit in range(64) {
+            if ((set[word] >> bit) & 1 == 1) { found.push(64 * word + bit) }
+        }
+    }
+
+    return found
+}

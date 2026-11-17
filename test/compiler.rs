@@ -3194,3 +3194,25 @@ fn koji_links_executables_itself() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), "true\n[2, 1, 0]\n3 HÉLLO\n");
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
 }
+
+#[test]
+fn the_machine_ir_compiles_functions() {
+    // The machine IR (compiler/mir.kj, KOJI_MIR=1 while it grows): the functions it lowers (here those
+    // of ints, booleans and chars: recursion, loops, ranges, six arguments, checked arithmetic),
+    // their registers allocated by linear scan, beside those of the first native backend.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let source = "function fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\nfunction collatz(start: int): int {\n    mut n = start\n    mut steps = 0\n    while (n != 1) {\n        if (n % 2 == 0) { n = n / 2 } else { n = 3 * n + 1 }\n        steps += 1\n    }\n    return steps\n}\nfunction sumTo(limit: int): int {\n    mut total = 0\n    for i in range(limit) { total += i * i % 7 }\n    for i in range(limit, 0, -1) { total -= i % 3 }\n    return total\n}\nfunction isLetter(c: char): boolean { return c >= 'a' and c <= 'z' or c >= 'A' and c <= 'Z' }\nfunction mix(a: int, b: int, c: int, d: int, e: int, f: int): int { return (a - b) * c + d / e - f }\nprint(string(fib(25)))\nprint(string(collatz(27)))\nprint(string(sumTo(1000)))\nprint(string(isLetter('q')) + string(isLetter('3')))\nprint(string(mix(9, 4, 3, 100, 7, 2)))\n";
+    let path = source_file("machine_ir", source);
+    let executable = path.with_extension("");
+    let built = koji::finish(koji::kojic().env("KOJI_MIR", "1").arg("build").arg(&path).arg("-o").arg(&executable), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let run = if has_valgrind() {
+        Command::new("valgrind").args(["-q", "--error-exitcode=99"]).arg(&executable).output().unwrap()
+    } else {
+        Command::new(&executable).output().unwrap()
+    };
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "75025\n111\n1001\ntruefalse\n27\n");
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+}

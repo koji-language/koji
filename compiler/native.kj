@@ -22,6 +22,10 @@ import { borrowedParams, borrowedLocals, constantGlobals, changes } from 'borrow
 import { Ranges, registerWeights, liveRanges, liveAtBlocks, assignRegisters, extend, has } from 'registers.kj'
 import { inlineSmall, targetPlatform } from 'inline.kj'
 import { reachableFunctions } from 'target.kj'
+import { mirLowers, lowerMir } from 'mirlower.kj'
+import { allocate } from 'mirregs.kj'
+import { emitX64, x64Registers } from 'x64.kj'
+import system
 
 foreign 'm' {
     function frexp(value: float, mut exponent: CInt): float
@@ -291,9 +295,21 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     // The functions the program may call on its system (target.kj); the others have no code.
     immut reachable = reachableFunctions(program, targetPlatform)
 
+    // The machine IR (mir.kj) for the functions it lowers, with KOJI_MIR=1 while it grows.
+    immut machineIr = match (system.env('KOJI_MIR')) {
+        Some(value) => value == '1'
+        None => false
+    }
+
     for id in range(program.functions.length()) {
         if (reachable[id]) {
-            native.generateFunction(id)?
+            immut chosen = machineIr and mirLowers(program, id)
+
+            if (chosen) {
+                native.generateMir(id)
+            } else {
+                native.generateFunction(id)?
+            }
         } else {
             native.starts.push(native.code.length())
         }
@@ -1233,6 +1249,37 @@ function paramTypes(routine: IrFunction): Ty[] {
 
 function isWriteback(routine: IrFunction, local: int): boolean {
     return local < routine.writeback.length() and routine.writeback[local]
+}
+
+// A function through the machine IR: lowered (mirlower.kj), its registers allocated (mirregs.kj),
+// encoded for x86-64 (x64.kj), then put in the object: its code, its relocations, its calls of
+// functions of the program and its texts.
+function Native.generateMir(mut self, id: int) {
+    immut routine = self.program.functions[id]
+    immut preemptible = routine.file != 'task' and not self.program.library
+    immut code = lowerMir(self.program, id, self.globals, preemptible)
+    immut emitted = emitX64(code, allocate(code, x64Registers))
+    self.flush()
+    self.knownAt = -1
+    immut start = self.code.length()
+    self.starts.push(start)
+
+    for each in emitted.code {
+        self.code.push(each)
+    }
+
+    for relocation in emitted.relocations {
+        self.relocations.push({ at: start + relocation.at, symbol: relocation.symbol, kind: relocation.kind, addend: relocation.addend })
+    }
+
+    for call in emitted.calls {
+        self.uses.push({ at: start + call.at, target: call.target, inData: false })
+    }
+
+    for use in emitted.texts {
+        immut offset = self.text(use.text)
+        self.relocations.push({ at: start + use.at, symbol: '.rodata', kind: pc32, addend: offset - 4 })
+    }
 }
 
 function Native.generateFunction(mut self, id: int): Result[void, string] {

@@ -1,0 +1,434 @@
+// The lowering of the IR to the machine IR (mir.kj): the semantics of Koji decided once for every
+// processor. It grows by the kinds of values and instructions: a function it does not lower yet
+// goes through the first native backend (native.kj), in the same object, by the same convention
+// (`mirLowers`). So far: functions of ints, booleans, chars and bytes (their operations, checked
+// as the language says), control flow, calls of such functions, globals of such types, and ranges
+// by 1 or -1.
+
+import { Ty, Operand, Place, Instruction, Terminator, IrFunction, IrProgram } from 'ir.kj'
+import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
+
+function scalar(ty: Ty): boolean {
+    return ty == IntTy or ty == BoolTy or ty == CharTy or ty == ByteTy
+}
+
+// Whether the machine IR lowers the function `id` (the others go through native.kj).
+export function mirLowers(program: IrProgram, id: int): boolean {
+    immut routine = program.functions[id]
+
+    for local in routine.locals {
+        if (not scalar(local.ty)) { return false }
+    }
+
+    for writeback in routine.writeback {
+        if (writeback) { return false }
+    }
+
+    if (not scalar(routine.returns) and routine.returns != VoidTy) { return false }
+
+    if (routine.params > 6) { return false }
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            if (not lowered(program, instruction)) { return false }
+        }
+
+        immut ending = match (block.terminator) {
+            BranchT(condition, _, _) => simpleOperand(program, condition)
+            ReturnT(Some(value)) => simpleOperand(program, value)
+            _ => true
+        }
+
+        if (not ending) { return false }
+    }
+
+    return true
+}
+
+function simpleOperand(program: IrProgram, operand: Operand): boolean {
+    return match (operand) {
+        LocalOp(_) => true
+        IntOp(_) => true
+        BoolOp(_) => true
+        CharOp(_) => true
+        GlobalOp(id) => scalar(program.globals[id].ty)
+        _ => false
+    }
+}
+
+immut unaries = ['IntNeg', 'Not', 'BitNot', 'CharCode', 'ByteToInt', 'CodeToChar', 'IntToByte']
+immut binaries = ['IntAdd', 'IntSub', 'IntMul', 'IntDiv', 'IntRem', 'IntMulWrapping', 'BitAnd', 'BitOr', 'BitXor', 'ByteAnd', 'ByteOr', 'ByteXor', 'ByteAdd', 'ByteSub', 'ByteMul']
+
+function lowered(program: IrProgram, instruction: Instruction): boolean {
+    return match (instruction) {
+        CopyIns(dest, value) => simpleOperand(program, value) and match (dest) {
+            LocalPlace(_) => true
+            GlobalPlace(id) => scalar(program.globals[id].ty)
+        }
+        UnaryIns(_, op, value, _) => op in unaries and simpleOperand(program, value)
+        BinaryIns(_, op, left, right, _) => simpleOperand(program, left) and simpleOperand(program, right) and (op in binaries or comparison(op) != '' or shift(op, right))
+        CallIns(_, callee, args, writebacks, _) => {
+            if (writebacks.length() > 0 or args.length() > 6 or not mirLowersSignature(program, callee)) { return false }
+
+            for arg in args {
+                if (not simpleOperand(program, arg)) { return false }
+            }
+
+            true
+        }
+        RangeNextIns(_, _, _, end, step, _) => simpleOperand(program, end) and (step == IntOp(1) or step == IntOp(-1))
+        RangeCheckIns(IntOp(step), _) => step != 0
+        _ => false
+    }
+}
+
+// A function with parameters and a result the machine IR passes (words of scalars).
+function mirLowersSignature(program: IrProgram, id: int): boolean {
+    immut routine = program.functions[id]
+
+    for writeback in routine.writeback {
+        if (writeback) { return false }
+    }
+
+    for param in range(routine.params) {
+        if (not scalar(routine.locals[param].ty)) { return false }
+    }
+
+    return scalar(routine.returns) or routine.returns == VoidTy
+}
+
+// A shift by a constant from 0 to 63 (others, which panic, wait).
+function shift(op: string, right: Operand): boolean {
+    if (op != 'ShiftLeft' and op != 'ShiftRight') { return false }
+
+    return match (right) {
+        IntOp(count) => count >= 0 and count < 64
+        _ => false
+    }
+}
+
+// The condition of a comparison of scalars (`IntCompare(Less)`), or ''.
+function comparison(op: string): string {
+    for name in ['IntCompare(', 'BoolCompare(', 'CharCompare(', 'ByteCompare('] {
+        if (op.startsWith(name)) {
+            return match (op[name.length()..op.length() - 1]) {
+                'Equal' => 'eq'
+                'NotEqual' => 'ne'
+                'Less' => 'lt'
+                'LessEqual' => 'le'
+                'Greater' => 'gt'
+                'GreaterEqual' => 'ge'
+                _ => ''
+            }
+        }
+    }
+
+    return ''
+}
+
+type Lowering = {
+    program: IrProgram
+    routine: IrFunction
+    // The offset in .bss of each global.
+    globals: int[]
+    floats: boolean[]
+    blocks: MBlock[]
+    current: MInstruction[]
+    panics: MPanic[]
+    // The panic of each place and message, by `place|message`.
+    panicIndex: Map[string, int]
+    reads: int[]
+}
+
+// The machine IR of the function `id` (which `mirLowers`): `globals` gives the offset in .bss of each
+// global, `preemptible` whether it checks for preemption (where it starts when it calls, and at the
+// jumps back of its loops).
+export function lowerMir(program: IrProgram, id: int, globals: int[], preemptible: boolean): MFunctionCode {
+    immut routine = program.functions[id]
+    mut floats: boolean[] = []
+    mut reads: int[] = []
+
+    for local in routine.locals {
+        floats.push(false)
+        reads.push(0)
+    }
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            for local in usesOf(instruction) {
+                reads[local] += 1
+            }
+        }
+
+        match (block.terminator) {
+            BranchT(LocalOp(local), _, _) => reads[local] += 1
+            ReturnT(Some(LocalOp(local))) => reads[local] += 1
+            _ => {}
+        }
+    }
+
+    mut self: Lowering = { program: program, routine: routine, globals: globals, floats: floats, blocks: [], current: [], panics: [], panicIndex: [:], reads: reads }
+    immut calls = makesCalls(routine)
+
+    for block in range(routine.blocks.length()) {
+        self.current = []
+
+        if (block == 0 and preemptible and calls) { self.current.push(MPreempt) }
+
+        for instruction in routine.blocks[block].instructions {
+            self.instruction(instruction)
+        }
+
+        immut terminator = routine.blocks[block].terminator
+        immut back = match (terminator) {
+            GotoT(target) => target <= block
+            BranchT(_, thenBlock, elseBlock) => thenBlock <= block or elseBlock <= block
+            _ => false
+        }
+
+        if (back and preemptible) { self.current.push(MPreempt) }
+
+        immut ending = self.terminator(terminator)
+        self.blocks.push({ instructions: self.current, terminator: ending })
+    }
+
+    mut params: int[] = []
+
+    for param in range(routine.params) {
+        params.push(param)
+    }
+
+    return { name: routine.name, params: params, floats: self.floats, blocks: self.blocks, slots: [], panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { [false] } }
+}
+
+function makesCalls(routine: IrFunction): boolean {
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            match (instruction) {
+                CallIns(_, _, _, _, _) => return true
+                _ => {}
+            }
+        }
+    }
+
+    return false
+}
+
+// The locals an instruction of the lowered kinds reads.
+function usesOf(instruction: Instruction): int[] {
+    mut found: int[] = []
+
+    match (instruction) {
+        CopyIns(_, value) => operandLocal(value, mut found)
+        UnaryIns(_, _, value, _) => operandLocal(value, mut found)
+        BinaryIns(_, _, left, right, _) => {
+            operandLocal(left, mut found)
+            operandLocal(right, mut found)
+        }
+        CallIns(_, _, args, _, _) => {
+            for arg in args {
+                operandLocal(arg, mut found)
+            }
+        }
+        RangeNextIns(_, _, next, end, _, _) => {
+            found.push(next)
+            operandLocal(end, mut found)
+        }
+        _ => {}
+    }
+
+    return found
+}
+
+function operandLocal(operand: Operand, mut found: int[]) {
+    match (operand) {
+        LocalOp(id) => found.push(id)
+        _ => {}
+    }
+}
+
+function Lowering.temporary(mut self): int {
+    self.floats.push(false)
+    return self.floats.length() - 1
+}
+
+// A panic of the function: its place (the line of the instruction) and its message.
+function Lowering.panic(mut self, line: int, message: string): int {
+    immut location = if (line == 0) { self.routine.file } else { `${self.routine.file}:${line}` }
+    immut key = `${location}|${message}`
+
+    match (self.panicIndex.get(key)) {
+        Some(index) => return index
+        None => {}
+    }
+
+    self.panics.push({ location: location, message: message })
+    self.panicIndex[key] = self.panics.length() - 1
+    return self.panics.length() - 1
+}
+
+function Lowering.value(mut self, operand: Operand): MValue {
+    return match (operand) {
+        LocalOp(id) => MReg(id)
+        IntOp(number) => MImm(number)
+        BoolOp(flag) => MImm(if (flag) { 1 } else { 0 })
+        CharOp(c) => MImm(c.code())
+        GlobalOp(id) => {
+            immut loaded = self.temporary()
+            self.current.push(MLoad(loaded, MSymbol('.bss', self.globals[id]), 8))
+            MReg(loaded)
+        }
+        _ => MImm(0)
+    }
+}
+
+function Lowering.instruction(mut self, instruction: Instruction) {
+    match (instruction) {
+        CopyIns(LocalPlace(dest), value) => {
+            immut source = self.value(value)
+            self.current.push(MMove(dest, source))
+        }
+        CopyIns(GlobalPlace(id), value) => {
+            immut source = self.value(value)
+            self.current.push(MStore(MSymbol('.bss', self.globals[id]), source, 8))
+        }
+        UnaryIns(dest, op, value, line) => {
+            immut source = self.value(value)
+
+            match (op) {
+                'IntNeg' => {
+                    immut overflow = self.panic(line, 'integer overflow')
+                    self.current.push(MUnary(dest, 'neg', source, overflow))
+                }
+                'Not' => self.current.push(MBinary(dest, 'xor', source, MImm(1), -1))
+                'BitNot' => self.current.push(MUnary(dest, 'not', source, -1))
+                // The same bits.
+                'CharCode' => self.current.push(MMove(dest, source))
+                'ByteToInt' => self.current.push(MMove(dest, source))
+                // The low 32 bits.
+                'CodeToChar' => self.current.push(MBinary(dest, 'and', source, MImm(0xFFFFFFFF), -1))
+                // Below 0 is above 255 as unsigned.
+                _ => {
+                    immut wrong = self.panic(line, 'the value is not a byte (0 to 255)')
+                    self.current.push(MPanicIf('a', source, MImm(255), wrong))
+                    self.current.push(MMove(dest, source))
+                }
+            }
+        }
+        BinaryIns(dest, op, left, right, line) => {
+            immut first = self.value(left)
+            immut second = self.value(right)
+            immut condition = comparison(op)
+
+            if (condition != '') {
+                self.current.push(MSet(dest, condition, first, second))
+                return
+            }
+
+            match (op) {
+                'IntAdd' => {
+                    immut overflow = self.panic(line, 'integer overflow')
+                    self.current.push(MBinary(dest, 'add', first, second, overflow))
+                }
+                'IntSub' => {
+                    immut overflow = self.panic(line, 'integer overflow')
+                    self.current.push(MBinary(dest, 'sub', first, second, overflow))
+                }
+                'IntMul' => {
+                    immut overflow = self.panic(line, 'integer overflow')
+                    self.current.push(MBinary(dest, 'mul', first, second, overflow))
+                }
+                'IntMulWrapping' => self.current.push(MBinary(dest, 'mul', first, second, -1))
+                other if (other == 'IntDiv' or other == 'IntRem') => {
+                    immut operation = if (other == 'IntDiv') { 'div' } else { 'rem' }
+
+                    match (second) {
+                        // Neither zero nor -1: nothing to check.
+                        MImm(number) if (number != 0 and number != -1) => self.current.push(MBinary(dest, operation, first, second, -1))
+                        _ => {
+                            immut zero = self.panic(line, 'division by zero')
+                            immut overflow = self.panic(line, 'integer overflow')
+                            self.current.push(MPanicIf('eq', second, MImm(0), zero))
+                            self.current.push(MBinary(dest, operation, first, second, overflow))
+                        }
+                    }
+                }
+                other if (other == 'BitAnd' or other == 'ByteAnd') => self.current.push(MBinary(dest, 'and', first, second, -1))
+                other if (other == 'BitOr' or other == 'ByteOr') => self.current.push(MBinary(dest, 'or', first, second, -1))
+                other if (other == 'BitXor' or other == 'ByteXor') => self.current.push(MBinary(dest, 'xor', first, second, -1))
+                'ShiftLeft' => self.current.push(MBinary(dest, 'shl', first, second, -1))
+                'ShiftRight' => self.current.push(MBinary(dest, 'sar', first, second, -1))
+                // Bytes: the result of the words, outside 0 to 255 a panic.
+                other => {
+                    immut operation = match (other) {
+                        'ByteAdd' => 'add'
+                        'ByteSub' => 'sub'
+                        _ => 'mul'
+                    }
+                    immut wrong = self.panic(line, 'byte overflow')
+                    self.current.push(MBinary(dest, operation, first, second, -1))
+                    self.current.push(MPanicIf('a', MReg(dest), MImm(255), wrong))
+                }
+            }
+        }
+        CallIns(dest, callee, args, _, _) => {
+            mut values: MValue[] = []
+
+            for arg in args {
+                values.push(self.value(arg))
+            }
+
+            immut results = match (dest) {
+                Some(local) => [local]
+                None => []
+            }
+            self.current.push(MCall(MFunction(callee), values, results))
+        }
+        // One step of a range by 1 or -1: whether there is an item (`next` before the end), the
+        // item, and the next one. Once past the end, the item and the next one are read no more.
+        RangeNextIns(hasValue, item, next, end, step, _) => {
+            immut limit = self.value(end)
+            immut unit = match (step) {
+                IntOp(number) => number
+                _ => 1
+            }
+            self.current.push(MSet(hasValue, if (unit == 1) { 'lt' } else { 'gt' }, MReg(next), limit))
+            self.current.push(MMove(item, MReg(next)))
+            self.current.push(MBinary(next, 'add', MReg(next), MImm(unit), -1))
+        }
+        _ => {}
+    }
+}
+
+function Lowering.terminator(mut self, terminator: Terminator): MTerminator {
+    return match (terminator) {
+        GotoT(target) => MJump(target)
+        BranchT(BoolOp(flag), thenBlock, elseBlock) => MJump(if (flag) { thenBlock } else { elseBlock })
+        BranchT(condition, thenBlock, elseBlock) => {
+            // A comparison just made, which only the branch reads: the branch compares.
+            match (condition) {
+                LocalOp(local) if (self.reads[local] == 1 and self.current.length() > 0) => {
+                    match (self.current[self.current.length() - 1]) {
+                        MSet(dest, kind, left, right) if (dest == local) => {
+                            self.current = self.current[0..self.current.length() - 1]
+                            return MBranch(kind, left, right, thenBlock, elseBlock)
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+
+            immut tested = self.value(condition)
+            MBranch('ne', tested, MImm(0), thenBlock, elseBlock)
+        }
+        ReturnT(Some(value)) => {
+            if (self.routine.returns == VoidTy) { return MReturn([]) }
+
+            immut returned = self.value(value)
+            MReturn([returned])
+        }
+        ReturnT(None) => MReturn([])
+        UnreachableT => MUnreachable
+    }
+}
