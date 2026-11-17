@@ -1997,6 +1997,100 @@ function Native.instructions(mut self, dest: Option[int], name: string, args: St
             self.patchShort(highDone)
             self.patchShort(lowDone)
         }
+        // The pool, inline (koji:prelude takes and gives its blocks): lea rax, [rip + koji_pool];
+        // movzx eax, byte [rip + koji_pool_off]
+        'koji_pool_heads' => {
+            self.bytes([0x48, 0x8D, 0x05])
+            self.relocation('koji_pool', pc32, -4)
+            self.int32(0)
+        }
+        'koji_pool_is_off' => {
+            self.bytes([0x0F, 0xB6, 0x05])
+            self.relocation('koji_pool_off', pc32, -4)
+            self.int32(0)
+        }
+        // A block of the pool of `words` words (in rcx): the head of its list, or koji_pool_refill.
+        other if (other == 'koji_memory_take' or other == 'koji_pool_take') => {
+            self.loadOperand(rcx, operands[0])
+            // cmp rcx, 16; ja refill; lea rdx, [rip + koji_pool]; mov rax, [rdx + rcx * 8];
+            // test rax, rax; jz refill; mov rsi, [rax]; mov [rdx + rcx * 8], rsi; jmp done
+            self.bytes([0x48, 0x83, 0xF9, 0x10])
+            immut large = self.jumpIf(0x7)
+            self.bytes([0x48, 0x8D, 0x15])
+            self.relocation('koji_pool', pc32, -4)
+            self.int32(0)
+            self.bytes([0x48, 0x8B, 0x04, 0xCA, 0x48, 0x85, 0xC0])
+            immut empty = self.jumpIf(equal)
+            self.bytes([0x48, 0x8B, 0x30, 0x48, 0x89, 0x34, 0xCA])
+            immut done = self.jump()
+            self.patchHere(large)
+            self.patchHere(empty)
+            self.forget()
+            // The words from rcx (a temporary may never be stored): mov [rbp + slot], rcx
+            immut words = self.slot(8)
+            self.bytes([0x48, 0x89, 0x8D])
+            self.int32(words)
+            self.callC('koji_pool_refill', [argument('word', words)], IntTy)
+            self.patchHere(done)
+            self.forget()
+        }
+        // A block back to the pool (in rdi, of `words` words in rsi): at the head of its list, or
+        // koji_pool_free (large, or the pool off).
+        other if (other == 'koji_memory_give' or other == 'koji_pool_give') => {
+            self.loadOperand(rsi, operands[1])
+            self.loadOperand(rdi, operands[0])
+            // cmp rsi, 16; ja free; cmp byte [rip + koji_pool_off], 0; jne free
+            self.bytes([0x48, 0x83, 0xFE, 0x10])
+            immut large = self.jumpIf(0x7)
+            self.bytes([0x80, 0x3D])
+            self.relocation('koji_pool_off', pc32, -5)
+            self.int32(0)
+            self.bytes([0x00])
+            immut off = self.jumpIf(notEqual)
+            // lea rdx, [rip + koji_pool]; mov rcx, [rdx + rsi * 8]; mov [rdi], rcx;
+            // mov [rdx + rsi * 8], rdi; jmp done
+            self.bytes([0x48, 0x8D, 0x15])
+            self.relocation('koji_pool', pc32, -4)
+            self.int32(0)
+            self.bytes([0x48, 0x8B, 0x0C, 0xF2, 0x48, 0x89, 0x0F, 0x48, 0x89, 0x3C, 0xF2])
+            immut done = self.jump()
+            self.patchHere(large)
+            self.patchHere(off)
+            self.forget()
+            // From rdi and rsi: mov [rbp + slot], rdi; mov [rbp + slot + 8], rsi
+            immut both = self.slot(16)
+            self.bytes([0x48, 0x89, 0xBD])
+            self.int32(both)
+            self.bytes([0x48, 0x89, 0xB5])
+            self.int32(both + 8)
+            self.callC('koji_pool_free', [argument('word', both), argument('word', both + 8)], VoidTy)
+            self.patchHere(done)
+            self.forget()
+        }
+        // What the type of a record says of a field (record in rax, index in rcx): the variant
+        // (variants + tag * 48) in rdx, then the slot (where the field starts, from the starts of
+        // the variant or the index), its description, or the number of fields.
+        other if (other in ['koji_record_field_slot', 'koji_record_get', 'koji_record_field_type', 'koji_record_field_count']) => {
+            if (other != 'koji_record_field_count') { self.loadOperand(rcx, operands[1]) }
+
+            self.loadOperand(rax, operands[0])
+            // mov rdx, [rax + 16]; imul rdx, rdx, 48; mov rsi, [rax + 8]; add rdx, [rsi + 16]
+            self.bytes([0x48, 0x8B, 0x50, 0x10, 0x48, 0x69, 0xD2, 0x30, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x70, 0x08, 0x48, 0x03, 0x56, 0x10])
+
+            match (other) {
+                // mov rax, [rdx + 8]
+                'koji_record_field_count' => self.bytes([0x48, 0x8B, 0x42, 0x08])
+                // mov rdx, [rdx + 24]; mov rax, [rdx + rcx * 8]
+                'koji_record_field_type' => self.bytes([0x48, 0x8B, 0x52, 0x18, 0x48, 0x8B, 0x04, 0xCA])
+                _ => {
+                    // mov rdx, [rdx + 40]; test rdx, rdx; jz plain; mov rcx, [rdx + rcx * 8];
+                    // plain: lea rax, [rax + rcx * 8 + 24]
+                    self.bytes([0x48, 0x8B, 0x52, 0x28, 0x48, 0x85, 0xD2, 0x74, 0x04, 0x48, 0x8B, 0x0C, 0xCA, 0x48, 0x8D, 0x44, 0xC8, 0x18])
+                }
+            }
+
+            self.forget()
+        }
         // The words of a decimal.
         'koji_unsafe_decimal_low' => self.loadPair(rax, rdx, operands[0])
         'koji_unsafe_decimal_high' => {
@@ -2030,7 +2124,7 @@ function Native.instructions(mut self, dest: Option[int], name: string, args: St
 
 // Whether a function of the standard library is written inline, calling nothing.
 function inlineStd(name: string): boolean {
-    return memoryFunctions.has(name) or accessors.has(name) or name in ['koji_element_counted', 'koji_unsafe_wide', 'koji_unsafe_low_word', 'koji_unsafe_high_word', 'koji_unsafe_word_product']
+    return memoryFunctions.has(name) or accessors.has(name) or name in ['koji_element_counted', 'koji_unsafe_wide', 'koji_unsafe_low_word', 'koji_unsafe_high_word', 'koji_unsafe_word_product', 'koji_pool_heads', 'koji_pool_is_off', 'koji_record_field_slot', 'koji_record_get', 'koji_record_field_type', 'koji_record_field_count', 'koji_unsafe_leading_zeros', 'koji_unsafe_decimal_low', 'koji_unsafe_decimal_high', 'koji_unsafe_decimal_of', 'koji_unsafe_reverse_bytes', 'koji_unsafe_set_list_length', 'koji_unsafe_task_entry', 'koji_unsafe_float_control', 'koji_unsafe_valgrind', 'koji_aes_available', 'koji_unsafe_aes_round', 'koji_unsafe_aes_last_round', 'koji_unsafe_carryless_product']
 }
 
 // For each position (see `liveRanges`), how many before it are of instructions that call a function

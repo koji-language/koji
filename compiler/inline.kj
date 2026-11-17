@@ -415,13 +415,26 @@ function readsAfter(block: IrBlock, position: int, local: int): int {
     return found
 }
 
-// The negations of constants folded (`-1` is `IntNeg 1` in the IR).
+// The negations of constants folded (`-1` is `IntNeg 1` in the IR), `x + 0`, and the checks of
+// constant steps of ranges dropped.
 function folded(given: IrFunction): IrFunction {
     mut routine = given
 
     for block in range(routine.blocks.length()) {
         mut instructions = routine.blocks[block].instructions
         mut changed = false
+
+        // The check of a constant step of a range that is not 0 checks nothing.
+        mut kept: Instruction[] = []
+
+        for instruction in instructions {
+            match (instruction) {
+                RangeCheckIns(IntOp(step), _) if (step != 0) => changed = true
+                _ => kept.push(instruction)
+            }
+        }
+
+        instructions = kept
 
         for position in range(instructions.length()) {
             match (instructions[position]) {
