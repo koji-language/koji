@@ -98,6 +98,8 @@ immut notEqual = 5
 immut absolute64 = 1
 immut pc32 = 2
 immut plt32 = 4
+// R_X86_64_GOTPCREL: the address of the entry of a symbol in the table of the linker.
+immut gotpc32 = 9
 
 type Relocation = {
     at: int
@@ -321,7 +323,11 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         native.bytes([0x55, 0x48, 0x89, 0xE5])
         native.callFunction(program.main)
         native.bytes([0x5D, 0xC3])
-        exported.push({ name: 'koji_library_init', at: init, size: native.code.length() - init })
+        exported.push({ name: 'koji_library_init', at: init, size: native.code.length() - init, section: 1 })
+
+        for each in native.runtimeCode() {
+            exported.push(each)
+        }
     } else {
         // push rbp; mov rbp, rsp; sub rsp, 16; argc and argv in the frame
         native.bytes([0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x10, 0x48, 0x89, 0x7D, 0xF8, 0x48, 0x89, 0x75, 0xF0])
@@ -342,7 +348,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         native.callExternal('koji_init')
         native.callFunction(program.main)
         native.bytes([0x31, 0xC0, 0xC9, 0xC3])
-        exported.push({ name: 'main', at: mainStart, size: native.code.length() - mainStart })
+        exported.push({ name: 'main', at: mainStart, size: native.code.length() - mainStart, section: 1 })
     }
 
     // The places of the functions, in the code and in the data.
@@ -364,6 +370,169 @@ type Export = {
     name: string
     at: int
     size: int
+    // 1 for a function (.text), 3 for data (.data).
+    section: int
+}
+
+// The part of the runtime that the native library writes as machine code and data itself (the C of
+// runtime/prelude.h for the C backend): the switch between the stacks of tasks and where a new task
+// starts; the heads of the pool and whether it is off, and the test `kojic test` runs; the
+// descriptions of the items of each built-in type (their functions in koji:prelude); and the
+// functions that call through the address of another (of a description, a record type, a closure).
+function Native.runtimeCode(mut self): Export[] {
+    mut exported: Export[] = []
+
+    // Saves the registers that calls keep, the control words of floating point, and the top of the
+    // stack at `save` (rdi); goes on with the stack at `to` (rsi), restoring them from it.
+    exported.push(self.stub('koji_task_switch', [
+        0x55, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+        0x48, 0x83, 0xEC, 0x08, 0x0F, 0xAE, 0x1C, 0x24, 0xD9, 0x7C, 0x24, 0x04,
+        0x48, 0x89, 0x27, 0x48, 0x89, 0xF4,
+        0x0F, 0xAE, 0x14, 0x24, 0xD9, 0x6C, 0x24, 0x04, 0x48, 0x83, 0xC4, 0x08,
+        0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5B, 0x5D, 0xC3
+    ]))
+    // A new task: koji_task_main(task), the task in rbx (koji_task_stack_start), on an aligned stack.
+    immut entry = self.code.length()
+    self.bytes([0x48, 0x89, 0xDF, 0x48, 0x83, 0xE4, 0xF0, 0xE8])
+    self.relocation('koji_task_main', plt32, -4)
+    self.int32(0)
+    self.bytes([0x0F, 0x0B])
+    exported.push({ name: 'koji_task_entry', at: entry, size: self.code.length() - entry, section: 1 })
+
+    // The data: the heads of the pool (18 words), whether it is off, the test to run (-1).
+    self.alignData(8)
+    immut pool = self.data.length()
+
+    for word in range(18) {
+        self.dataWord(0)
+    }
+
+    exported.push({ name: 'koji_pool', at: pool, size: 144, section: 3 })
+    immut off = self.data.length()
+    self.dataWord(0)
+    exported.push({ name: 'koji_pool_off', at: off, size: 8, section: 3 })
+    immut selected = self.data.length()
+    self.dataWord(-1)
+    exported.push({ name: 'koji_test_selected', at: selected, size: 8, section: 3 })
+
+    // lea rax, [rip + koji_pool]; ret
+    exported.push(self.stubWith('koji_pool_heads', [0x48, 0x8D, 0x05], 'koji_pool', pc32, -4, [0xC3]))
+    // movzx eax, byte [rip + koji_pool_off]; ret
+    exported.push(self.stubWith('koji_pool_is_off', [0x0F, 0xB6, 0x05], 'koji_pool_off', pc32, -4, [0xC3]))
+    // mov byte [rip + koji_pool_off], 1; ret
+    exported.push(self.stubWith('koji_pool_switch_off', [0xC6, 0x05], 'koji_pool_off', pc32, -5, [0x01, 0xC3]))
+    // mov rax, [rip + koji_test_selected]; ret
+    exported.push(self.stubWith('koji_test_index', [0x48, 0x8B, 0x05], 'koji_test_selected', pc32, -4, [0xC3]))
+    // The variable of C `environ`, through the table of the linker: mov rax, [rip + environ@GOT];
+    // mov rax, [rax]; ret
+    exported.push(self.stubWith('koji_system_environment', [0x48, 0x8B, 0x05], 'environ', gotpc32, -4, [0x48, 0x8B, 0x00, 0xC3]))
+
+    // A description of items (KojiElementType): its size, then its functions retain, release,
+    // repr, equal, compare, hash and display (0 for none).
+    immut counted = ['retain', 'release', 'repr', 'equal', '', 'hash', '']
+    immut ordered = ['', '', 'repr', 'equal', 'compare', 'hash', '']
+    immut descriptions: Map[string, int] = ['int': 8, 'float': 8, 'decimal': 16, 'u128': 16, 'bool': 1, 'char': 4, 'byte': 1, 'string': 8, 'list': 8, 'record': 8, 'map': 8, 'closure': 8, 'void': 0]
+
+    for kind in ['int', 'float', 'decimal', 'u128', 'bool', 'char', 'byte', 'string', 'list', 'record', 'map', 'closure', 'void'] {
+        self.alignData(8)
+        immut at = self.data.length()
+        self.dataWord(descriptions[kind])
+        immut functions = if (kind in ['list', 'record', 'map', 'closure']) { counted } else { if (kind == 'void') { ['', '', 'repr', 'equal', '', 'hash', ''] } else { ordered } }
+
+        for i in range(7) {
+            mut part = functions[i]
+
+            if (kind == 'string' and (i == 0 or i == 1 or i == 4 or i == 6)) { part = ['retain', 'release', '', '', 'compare', '', 'display'][i] }
+
+            if (kind == 'char' and i == 6) { part = 'display' }
+
+            immut word = self.data.length()
+            self.dataWord(0)
+
+            if (part != '') { self.dataRelocations.push({ at: word, symbol: `koji_${part}_${kind}`, kind: absolute64, addend: 0 }) }
+        }
+
+        exported.push({ name: `koji_element_${kind}`, at: at, size: 64, section: 3 })
+    }
+
+    // The functions of a description (rdi), for an item at rsi (and rdx): through their words.
+    exported.push(self.stub('koji_element_size', [0x48, 0x8B, 0x07, 0xC3]))
+    // cmp qword [rdi + 16 (40)], 0; setne al; movzx eax, al; ret
+    exported.push(self.stub('koji_element_counted', [0x48, 0x83, 0x7F, 0x10, 0x00, 0x0F, 0x95, 0xC0, 0x0F, 0xB6, 0xC0, 0xC3]))
+    exported.push(self.stub('koji_element_orderable', [0x48, 0x83, 0x7F, 0x28, 0x00, 0x0F, 0x95, 0xC0, 0x0F, 0xB6, 0xC0, 0xC3]))
+    // mov rax, [rdi + 8 (16)]; test rax, rax; jz done; mov rdi, rsi; jmp rax; done: ret
+    exported.push(self.stub('koji_element_retain', [0x48, 0x8B, 0x47, 0x08, 0x48, 0x85, 0xC0, 0x74, 0x05, 0x48, 0x89, 0xF7, 0xFF, 0xE0, 0xC3]))
+    exported.push(self.stub('koji_element_release', [0x48, 0x8B, 0x47, 0x10, 0x48, 0x85, 0xC0, 0x74, 0x05, 0x48, 0x89, 0xF7, 0xFF, 0xE0, 0xC3]))
+    // mov rax, [rdi + 24 (48)]; mov rdi, rsi; jmp rax
+    exported.push(self.stub('koji_element_repr', [0x48, 0x8B, 0x47, 0x18, 0x48, 0x89, 0xF7, 0xFF, 0xE0]))
+    exported.push(self.stub('koji_element_hash', [0x48, 0x8B, 0x47, 0x30, 0x48, 0x89, 0xF7, 0xFF, 0xE0]))
+    // mov rax, [rdi + 32 (40)]; mov rdi, rsi; mov rsi, rdx; jmp rax
+    exported.push(self.stub('koji_element_equal', [0x48, 0x8B, 0x47, 0x20, 0x48, 0x89, 0xF7, 0x48, 0x89, 0xD6, 0xFF, 0xE0]))
+    exported.push(self.stub('koji_element_compare', [0x48, 0x8B, 0x47, 0x28, 0x48, 0x89, 0xF7, 0x48, 0x89, 0xD6, 0xFF, 0xE0]))
+    // The display, or else the repr: mov rax, [rdi + 56]; test rax, rax; jnz call;
+    // mov rax, [rdi + 24]; call: mov rdi, rsi; jmp rax
+    exported.push(self.stub('koji_element_text', [0x48, 0x8B, 0x47, 0x38, 0x48, 0x85, 0xC0, 0x75, 0x04, 0x48, 0x8B, 0x47, 0x18, 0x48, 0x89, 0xF7, 0xFF, 0xE0]))
+
+    // `call(comparison, a, b)`: mov rax, rdi; mov rdi, rsi; mov rsi, rdx; mov rdx, rcx; jmp rax
+    exported.push(self.stub('koji_call_before', [0x48, 0x89, 0xF8, 0x48, 0x89, 0xF7, 0x48, 0x89, 0xD6, 0x48, 0x89, 0xCA, 0xFF, 0xE0]))
+    // The code of a closure (rdi) with its environment and the two items at rsi and rdx, by their
+    // types: mov rax, [rdi + 8]; mov rdi, [rdi + 16]; then the items; jmp rax.
+    immut closure = [0x48, 0x8B, 0x47, 0x08, 0x48, 0x8B, 0x7F, 0x10]
+    // mov rcx, rdx; mov rsi, [rsi]; mov rdx, [rcx]
+    immut word = [0x48, 0x89, 0xD1, 0x48, 0x8B, 0x36, 0x48, 0x8B, 0x11]
+
+    for kind in ['int', 'string', 'list', 'record', 'map', 'closure'] {
+        exported.push(self.stub(`koji_before_${kind}`, closure + word + [0xFF, 0xE0]))
+    }
+
+    // movsd xmm0, [rsi]; movsd xmm1, [rdx]
+    exported.push(self.stub('koji_before_float', closure + [0xF2, 0x0F, 0x10, 0x06, 0xF2, 0x0F, 0x10, 0x0A, 0xFF, 0xE0]))
+    // movzx esi, byte [rsi]; movzx edx, byte [rdx]
+    exported.push(self.stub('koji_before_bool', closure + [0x0F, 0xB6, 0x36, 0x0F, 0xB6, 0x12, 0xFF, 0xE0]))
+    exported.push(self.stub('koji_before_byte', closure + [0x0F, 0xB6, 0x36, 0x0F, 0xB6, 0x12, 0xFF, 0xE0]))
+    // mov esi, [rsi]; mov edx, [rdx]
+    exported.push(self.stub('koji_before_char', closure + [0x8B, 0x36, 0x8B, 0x12, 0xFF, 0xE0]))
+    // Two words each, in rsi and rdx, then rcx and r8: mov r9, rdx; mov rcx, [r9]; mov r8, [r9 + 8];
+    // mov rdx, [rsi + 8]; mov rsi, [rsi]
+    immut pairs = [0x49, 0x89, 0xD1, 0x49, 0x8B, 0x09, 0x4D, 0x8B, 0x41, 0x08, 0x48, 0x8B, 0x56, 0x08, 0x48, 0x8B, 0x36]
+    exported.push(self.stub('koji_before_decimal', closure + pairs + [0xFF, 0xE0]))
+    exported.push(self.stub('koji_before_u128', closure + pairs + [0xFF, 0xE0]))
+
+    // Records: a reference more; a reference less, the last one freeing it by its type
+    // (`free`, its word 3); the text of an opaque one (`display`, its word 4).
+    exported.push(self.stub('koji_record_retain', [0x48, 0x85, 0xFF, 0x74, 0x03, 0x48, 0xFF, 0x07, 0xC3]))
+
+    for name in ['koji_record_release', 'koji_record_drop'] {
+        exported.push(self.stub(name, [0x48, 0x85, 0xFF, 0x74, 0x0C, 0x48, 0xFF, 0x0F, 0x75, 0x07, 0x48, 0x8B, 0x47, 0x08, 0xFF, 0x60, 0x18, 0xC3]))
+    }
+
+    exported.push(self.stub('koji_record_shown', [0x48, 0x8B, 0x47, 0x08, 0xFF, 0x60, 0x20]))
+    return exported
+}
+
+// A function of the runtime of these bytes, aligned on 16 bytes.
+function Native.stub(mut self, name: string, code: int[]): Export {
+    while (self.code.length() % 16 != 0) {
+        self.code.push(0xCC)
+    }
+
+    immut at = self.code.length()
+    self.bytes(code)
+    return { name: name, at: at, size: code.length(), section: 1 }
+}
+
+// The same with a relocation to `symbol` between two parts of its bytes.
+function Native.stubWith(mut self, name: string, before: int[], symbol: string, kind: int, addend: int, after: int[]): Export {
+    while (self.code.length() % 16 != 0) {
+        self.code.push(0xCC)
+    }
+
+    immut at = self.code.length()
+    self.bytes(before)
+    self.relocation(symbol, kind, addend)
+    self.int32(0)
+    self.bytes(after)
+    return { name: name, at: at, size: self.code.length() - at, section: 1 }
 }
 
 // A function C calls by its name, under that name: C gives an `int`, a `bool`, a char or a byte in
@@ -433,7 +602,7 @@ function Native.forC(mut self, found: IrForC): Export {
         self.bytes([0xE9])
         self.uses.push({ at: self.code.length(), target: found.function, inData: false })
         self.int32(0)
-        return { name: found.name, at: start, size: self.code.length() - start }
+        return { name: found.name, at: start, size: self.code.length() - start, section: 1 }
     }
 
     // The strings given, kept in the frame for after the call (they are in registers: the functions
@@ -456,7 +625,7 @@ function Native.forC(mut self, found: IrForC): Export {
     }
 
     self.bytes([0x48, 0x8B, 0x45, 0xE0, 0x48, 0x8B, 0x55, 0xE8, 0xC9, 0xC3])
-    return { name: found.name, at: start, size: self.code.length() - start }
+    return { name: found.name, at: start, size: self.code.length() - start, section: 1 }
 }
 
 function words(ty: Ty): int {
@@ -1514,6 +1683,154 @@ function leaf(routine: IrFunction): boolean {
 
             if (not inline) { return false }
         }
+    }
+
+    return true
+}
+
+// A float has no infinity nor NaN: a result in rax (its bits) with the exponent all ones panics,
+// as a limit of the representation (koji_float_check of the prelude).
+function Native.finite(mut self, line: int) {
+    // mov rcx, rax; shr rcx, 52; and ecx, 0x7FF; cmp ecx, 0x7FF; je panic
+    self.bytes([0x48, 0x89, 0xC1, 0x48, 0xC1, 0xE9, 0x34, 0x81, 0xE1, 0xFF, 0x07, 0x00, 0x00, 0x81, 0xF9, 0xFF, 0x07, 0x00, 0x00])
+    self.check(equal, line, 'float overflow')
+}
+
+// The functions of `koji:unsafe` that are instructions of the processor, or that the library of C
+// gives (see "Instructions of the processor" in doc/design.md), as machine code: whether `name` is
+// one (its code written).
+function Native.instructions(mut self, dest: Option[int], name: string, args: StdArg[]): boolean {
+    mut operands: Operand[] = []
+
+    for arg in args {
+        match (arg) {
+            ValueArg(given) => operands.push(given)
+            _ => {}
+        }
+    }
+
+    match (name) {
+        // A call of the switch between stacks (see `runtimeCode`), which saves the registers.
+        'koji_unsafe_switch_stacks' => {
+            self.loadOperand(rsi, operands[1])
+            self.loadOperand(rdi, operands[0])
+            self.callExternal('koji_task_switch')
+            self.forget()
+        }
+        // lea rax, [rip + koji_task_entry]
+        'koji_unsafe_task_entry' => {
+            self.bytes([0x48, 0x8D, 0x05])
+            self.relocation('koji_task_entry', pc32, -4)
+            self.int32(0)
+        }
+        // stmxcsr [slot]; fnstcw [slot + 4]; mov eax, [slot]; movzx ecx, word [slot + 4];
+        // shl rcx, 32; or rax, rcx
+        'koji_unsafe_float_control' => {
+            immut slot = self.slot(8)
+            self.bytes([0x0F, 0xAE, 0x9D])
+            self.int32(slot)
+            self.bytes([0xD9, 0xBD])
+            self.int32(slot + 4)
+            self.bytes([0x8B, 0x85])
+            self.int32(slot)
+            self.bytes([0x0F, 0xB7, 0x8D])
+            self.int32(slot + 4)
+            self.bytes([0x48, 0xC1, 0xE1, 0x20, 0x48, 0x09, 0xC8])
+        }
+        // A request to valgrind: its words (the request, two arguments, three zeros) in the frame,
+        // their address in rax, the answer in rdx (`otherwise` when not under valgrind), after
+        // the rotations of rdi (by 128 bits: nothing) that valgrind recognizes.
+        'koji_unsafe_valgrind' => {
+            immut words = self.slot(48)
+
+            for i in range(6) {
+                if (i < 3) { self.loadOperand(rax, operands[i]) } else { self.moveConstant(rax, 0) }
+
+                self.bytes([0x48, 0x89, 0x85])
+                self.int32(words + 8 * i)
+            }
+
+            self.loadOperand(rdx, operands[3])
+            self.bytes([0x48, 0x8D, 0x85])
+            self.int32(words)
+            // rol rdi, 3; rol rdi, 13; rol rdi, 61; rol rdi, 51; xchg rbx, rbx; mov rax, rdx
+            self.bytes([0x48, 0xC1, 0xC7, 3, 0x48, 0xC1, 0xC7, 13, 0x48, 0xC1, 0xC7, 61, 0x48, 0xC1, 0xC7, 51, 0x48, 0x87, 0xDB, 0x48, 0x89, 0xD0])
+            self.forget()
+        }
+        // AES-NI: the state in xmm0 and the key in xmm1 (movq, pinsrq), aesenc (aesenclast), then
+        // the state back in rax and rdx (movq, pextrq).
+        other if (other == 'koji_unsafe_aes_round' or other == 'koji_unsafe_aes_last_round') => {
+            self.loadPair(rax, rdx, operands[1])
+            self.bytes([0x66, 0x48, 0x0F, 0x6E, 0xC8, 0x66, 0x48, 0x0F, 0x3A, 0x22, 0xCA, 0x01])
+            self.loadPair(rax, rdx, operands[0])
+            self.bytes([0x66, 0x48, 0x0F, 0x6E, 0xC0, 0x66, 0x48, 0x0F, 0x3A, 0x22, 0xC2, 0x01])
+            self.bytes([0x66, 0x0F, 0x38, if (other == 'koji_unsafe_aes_round') { 0xDC } else { 0xDD }, 0xC1])
+            self.bytes([0x66, 0x48, 0x0F, 0x7E, 0xC0, 0x66, 0x48, 0x0F, 0x3A, 0x16, 0xC2, 0x01])
+        }
+        // pclmulqdq of the two words (in xmm0 and xmm1): the product in rax and rdx.
+        'koji_unsafe_carryless_product' => {
+            self.loadOperand(rcx, operands[1])
+            self.loadOperand(rax, operands[0])
+            self.bytes([0x66, 0x48, 0x0F, 0x6E, 0xC0, 0x66, 0x48, 0x0F, 0x6E, 0xC9, 0x66, 0x0F, 0x3A, 0x44, 0xC1, 0x00])
+            self.bytes([0x66, 0x48, 0x0F, 0x7E, 0xC0, 0x66, 0x48, 0x0F, 0x3A, 0x16, 0xC2, 0x01])
+        }
+        // bswap rax
+        'koji_unsafe_reverse_bytes' => {
+            self.loadOperand(rax, operands[0])
+            self.bytes([0x48, 0x0F, 0xC8])
+        }
+        // cpuid (leaf 1, which changes rbx: kept around it): AES-NI (bit 25 of ecx), PCLMULQDQ (1)
+        // and SSSE3 (9).
+        'koji_aes_available' => {
+            self.bytes([0x53, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x31, 0xC9, 0x0F, 0xA2, 0x5B])
+            self.bytes([0x89, 0xC8, 0x89, 0xC2, 0xC1, 0xEA, 0x19, 0x83, 0xE2, 0x01, 0x89, 0xC1, 0xD1, 0xE9, 0x21, 0xD1, 0xC1, 0xE8, 0x09, 0x21, 0xC8])
+            self.forget()
+        }
+        // The zeros before the first bit set (128 for none), by bsr on the high word, else the low.
+        'koji_unsafe_leading_zeros' => {
+            self.loadPair(rax, rdx, operands[0])
+            // test rdx, rdx; jz low; bsr rax, rdx; xor rax, 63; jmp done
+            self.bytes([0x48, 0x85, 0xD2])
+            immut low = self.jumpShort(0x74)
+            self.bytes([0x48, 0x0F, 0xBD, 0xC2, 0x48, 0x83, 0xF0, 0x3F])
+            immut highDone = self.jumpShort(0xEB)
+            self.patchShort(low)
+            // test rax, rax; jz none; bsr rax, rax; xor rax, 63; add rax, 64; jmp done
+            self.bytes([0x48, 0x85, 0xC0])
+            immut none = self.jumpShort(0x74)
+            self.bytes([0x48, 0x0F, 0xBD, 0xC0, 0x48, 0x83, 0xF0, 0x3F, 0x48, 0x83, 0xC0, 0x40])
+            immut lowDone = self.jumpShort(0xEB)
+            self.patchShort(none)
+            self.bytes([0xB8, 0x80, 0x00, 0x00, 0x00])
+            self.patchShort(highDone)
+            self.patchShort(lowDone)
+        }
+        // The words of a decimal.
+        'koji_unsafe_decimal_low' => self.loadPair(rax, rdx, operands[0])
+        'koji_unsafe_decimal_high' => {
+            self.loadPair(rax, rdx, operands[0])
+            self.bytes([0x48, 0x89, 0xD0])
+        }
+        'koji_unsafe_decimal_of' => {
+            self.loadOperand(rdx, operands[1])
+            self.loadOperand(rax, operands[0])
+        }
+        // mov [list + 32], length
+        'koji_unsafe_set_list_length' => {
+            self.loadOperand(rax, operands[1])
+            self.loadOperand(rcx, operands[0])
+            self.bytes([0x48, 0x89, 0x41, 0x20])
+        }
+        // The memory of the system, and a string of a copy of bytes.
+        'koji_unsafe_allocate' => self.callC('malloc', [value(operands[0], IntTy)], IntTy)
+        'koji_unsafe_free' => self.callC('free', [value(operands[0], IntTy)], VoidTy)
+        'koji_unsafe_new_string' => self.callC('koji_string_from_utf8', [value(operands[0], IntTy), value(operands[1], IntTy)], StrTy)
+        _ => return false
+    }
+
+    match (dest) {
+        Some(local) => self.storeResult(LocalPlace(local), self.routine.locals[local].ty)
+        None => {}
     }
 
     return true
@@ -2745,6 +3062,8 @@ function Native.callClosure(mut self, dest: Option[int], closure: Operand, args:
 function Native.stdCall(mut self, dest: Option[int], name: string, args: StdArg[]): Result[void, string] {
     immut routine = self.routine
 
+    if (self.instructions(dest, name, args)) { return Ok() }
+
     // The cells of std/task.kj: an item of a shared list, read or changed in place.
     if (name == 'koji_list_shared_get' or name == 'koji_list_shared_set') {
         immut list = match (args[0]) {
@@ -3393,7 +3712,13 @@ function Native.unary(mut self, dest: int, op: string, operand: Operand, line: i
             self.loadValue(operand, IntTy)
             self.bytes([0x89, 0xC0])
         }
-        'IntToByte' => self.callC('koji_int_to_byte', [value(operand, IntTy), self.location(line)], ByteTy)
+        // cmp rax, 255; ja panic (below 0 is above as unsigned)
+        'IntToByte' => {
+            self.loadValue(operand, IntTy)
+            self.bytes([0x48, 0x3D])
+            self.int32(255)
+            self.check(0x7, line, 'the value is not a byte (0 to 255)')
+        }
         'DecimalToFloat' => self.callC('koji_decimal_to_float', [value(operand, DecimalTy), self.location(line)], FloatTy)
         'DecimalToInt' => self.callC('koji_decimal_to_int', [value(operand, DecimalTy), argument('int', 3), self.location(line)], IntTy)
         'ByteToStr' => self.callC('koji_string_from_int', [value(operand, ByteTy)], StrTy)
@@ -3670,6 +3995,24 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
             self.loadBoth(left, right)
             self.bytes([0x48, 0x31, 0xC8])
         }
+        // A byte by a byte: the divisor zero panics; div keeps a byte.
+        other if (other == 'ByteDiv' or other == 'ByteRem') => {
+            self.loadBoth(left, right)
+            // test rcx, rcx; jz panic; xor edx, edx; div rcx
+            self.bytes([0x48, 0x85, 0xC9])
+            self.check(equal, line, 'division by zero')
+            self.bytes([0x31, 0xD2, 0x48, 0xF7, 0xF1])
+
+            if (other == 'ByteRem') { self.bytes([0x48, 0x89, 0xD0]) }
+        }
+        // A shift of a byte by 0 to 7, keeping 8 bits.
+        other if (other == 'ByteShiftLeft' or other == 'ByteShiftRight') => {
+            self.loadBoth(left, right)
+            // cmp rcx, 7; ja panic; shl (shr) rax, cl; movzx eax, al
+            self.bytes([0x48, 0x83, 0xF9, 0x07])
+            self.check(0x7, line, 'shift of a byte out of range (0 to 7)')
+            self.bytes([0x48, 0xD3, if (other == 'ByteShiftLeft') { 0xE0 } else { 0xE8 }, 0x0F, 0xB6, 0xC0])
+        }
         // On the bytes as words (zero-extended): a result outside 0 to 255 (below 0 is above as
         // unsigned) panics, as koji_byte_check of the prelude.
         other if (other == 'ByteAdd' or other == 'ByteSub' or other == 'ByteMul') => {
@@ -3774,11 +4117,51 @@ function Native.binary(mut self, dest: int, op: string, left: Operand, right: Op
                 _ => 0x59
             }
             self.loadBoth(left, right)
-            // movq xmm0, rax; movq xmm1, rcx; op xmm0, xmm1; checked by the runtime.
+            // movq xmm0, rax; movq xmm1, rcx; op xmm0, xmm1; movq rax, xmm0
             self.bytes([0x66, 0x48, 0x0F, 0x6E, 0xC0, 0x66, 0x48, 0x0F, 0x6E, 0xC9, 0xF2, 0x0F, operation, 0xC1, 0x66, 0x48, 0x0F, 0x7E, 0xC0])
-            immut sum = self.slot(8)
-            self.storeWord(rax, sum)
-            self.callC('koji_float_check', [{ kind: 'word', operand: IntOp(0), ty: FloatTy, number: sum, name: '' }, self.location(line)], FloatTy)
+            self.finite(line)
+        }
+        // The divisor zero (its bits but the sign) panics; then divsd, or fmod of the library of C.
+        other if (other == 'FloatDiv' or other == 'FloatRem') => {
+            self.loadBoth(left, right)
+            // mov rdx, rcx; shl rdx, 1; test rdx, rdx; jz panic
+            self.bytes([0x48, 0x89, 0xCA, 0x48, 0xD1, 0xE2, 0x48, 0x85, 0xD2])
+            self.check(equal, line, 'division by zero')
+
+            if (other == 'FloatDiv') {
+                // movq xmm0, rax; movq xmm1, rcx; divsd xmm0, xmm1; movq rax, xmm0
+                self.bytes([0x66, 0x48, 0x0F, 0x6E, 0xC0, 0x66, 0x48, 0x0F, 0x6E, 0xC9, 0xF2, 0x0F, 0x5E, 0xC1, 0x66, 0x48, 0x0F, 0x7E, 0xC0])
+            } else {
+                self.callC('fmod', [value(left, FloatTy), value(right, FloatTy)], FloatTy)
+            }
+
+            self.finite(line)
+        }
+        // A divisor of one word above the high word of the dividend: one div (the quotient in rax,
+        // the remainder in rdx); the library divides the others (and panics for zero).
+        other if (other == 'U128Div' or other == 'U128Rem') => {
+            self.loadU128Both(left, right)
+            // test r9, r9; jnz wide; test r8, r8; jz wide; cmp rdx, r8; jae wide; div r8
+            self.bytes([0x4D, 0x85, 0xC9])
+            immut wideDivisor = self.jumpIf(notEqual)
+            self.bytes([0x4D, 0x85, 0xC0])
+            immut zero = self.jumpIf(equal)
+            self.bytes([0x4C, 0x39, 0xC2])
+            immut large = self.jumpIf(0x3)
+            self.bytes([0x49, 0xF7, 0xF0])
+
+            // The quotient, or the remainder, with a high word of 0: xor edx, edx
+            if (other == 'U128Rem') { self.bytes([0x48, 0x89, 0xD0]) }
+
+            self.bytes([0x31, 0xD2])
+            immut done = self.jump()
+            self.patchHere(wideDivisor)
+            self.patchHere(zero)
+            self.patchHere(large)
+            self.forget()
+            self.callC(if (other == 'U128Div') { 'koji_u128_div' } else { 'koji_u128_rem' }, withPlace, ty)
+            self.patchHere(done)
+            self.forget()
         }
         'U128Add' => {
             self.loadU128Both(left, right)
@@ -5583,7 +5966,7 @@ function elfObject(native: Native, mainStart: int, extras: int[], exported: Expo
     // The symbols it defines for others (a relocation to one of them uses it, not another undefined).
     for each in exported {
         external[each.name] = symbols.length()
-        symbols.push({ name: each.name, info: 0x12, section: 1, value: each.at, size: each.size })
+        symbols.push({ name: each.name, info: if (each.section == 1) { 0x12 } else { 0x11 }, section: each.section, value: each.at, size: each.size })
     }
 
     for relocation in native.relocations + native.dataRelocations {

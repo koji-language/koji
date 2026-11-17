@@ -467,7 +467,7 @@ The value of `Shared` is the one reference of Koji, which its copies share: the 
 
 ### Instructions of the processor: functions of `koji:unsafe` that the compiler knows
 
-**Decision**: the few things of the runtime that are instructions of the processor and nothing else (switching between the stacks of tasks, the rounds of AES and the products without carries of GHASH, the requests to valgrind) are functions of `koji:unsafe` that the compiler knows, a small and closed set (`switchStacks`, `taskEntry`, `floatControl`, `valgrind`, `aesRound`, `aesLastRound`, `carrylessProduct`, `reverseBytes` and `aesAvailable` so far): each backend writes their instructions (the C backend as it writes them today, the native one as machine code), for each processor.
+**Decision**: the few things of the runtime that are instructions of the processor and nothing else (switching between the stacks of tasks, the rounds of AES and the products without carries of GHASH, the requests to valgrind) are functions of `koji:unsafe` that the compiler knows, a small and closed set (`switchStacks`, `taskEntry`, `floatControl`, `valgrind`, `aesRound`, `aesLastRound`, `carrylessProduct`, `reverseBytes` and `aesAvailable` so far): each backend writes their instructions (the C backend as it writes them today, the native one as machine code, inline, but the switch between stacks, a function of the library it writes), for each processor.
 
 **Why**: they cannot be written with the operations of the language, and they are few; functions keep their uses checked by types and portable, each instruction written once for each processor in the compiler.
 
@@ -483,7 +483,7 @@ The value of `Shared` is the one reference of Koji, which its copies share: the 
 
 ### The library of the runtime built by the compiler
 
-**Decision**: the native backend compiles the library of the runtime (`kojic library`): its object, with the part of the prelude still in C compiled by the C compiler, in the archive that programs link. The seed of the bootstrap stays C, the compiler and its library (`bootstrap/kojic.c.gz`, `bootstrap/libkoji.c.gz`), so that a system without a compiler of Koji can build one; the compiler it builds then builds the library natively.
+**Decision**: the native backend compiles the library of the runtime (`kojic library`): its object, with the part of the prelude still in C compiled by the C compiler, in the archive that programs link. That part is only the threads of the runtime and the calls that block they run (see "The threads of the runtime stay in C for now"): the rest of runtime/prelude.h, which the C backend keeps in C, is Koji in the native library (`koji:prelude`, std/koji/prelude.kj, a module only `kojic library` compiles, so that the C of `kojic dump library` does not define it twice), and machine code the backend writes itself: the switch between the stacks of tasks, where a task starts, the heads of the pool, the descriptions of the items of the built-in types, and the few functions that call through an address (of a description, of the type of a record, of a closure). The seed of the bootstrap stays C, the compiler and its library (`bootstrap/kojic.c.gz`, `bootstrap/libkoji.c.gz`), so that a system without a compiler of Koji can build one; the compiler it builds then builds the library natively.
 
 **Why**: the library is Koji: building it with the compiler takes the C compiler away from all of it but the small part of the prelude, as the backend did for programs.
 

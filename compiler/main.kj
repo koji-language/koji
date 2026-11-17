@@ -357,7 +357,7 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
 }
 
 function buildLibrary(output: string): Result[void, string] {
-    immut checked = checkLibrary()?
+    immut checked = checkLibrary(true)?
     immut lowered = lower(checked)?
     immut object = match (generateNative(lowered)) {
         Ok(bytes) => bytes
@@ -367,7 +367,7 @@ function buildLibrary(output: string): Result[void, string] {
     writeBytes(objectPath, object)?
     // The prelude, as the library has it (its functions once, for the programs and the library).
     immut c = temporary('.c')
-    writeFile(c, '#define KOJI_LIBRARY 1\n' + preludeLines.join('\n') + '\n')?
+    writeFile(c, '#define KOJI_LIBRARY 1\n#define KOJI_NATIVE_LIBRARY 1\n' + preludeLines.join('\n') + '\n')?
     immut preludeObject = temporary('.o')
     immut compiler = variable('KOJI_CC', 'cc')
     mut flags = ['-O2']
@@ -722,7 +722,7 @@ if (command == 'library' and args.length() == 3 and args[1] == '-o') {
 
 // The IR of std/koji/ as the native backend gets it (`kojic library`).
 if (command == 'dump' and args.length() == 3 and args[1] == 'inlined' and args[2] == 'library') {
-    match (checkLibrary()) {
+    match (checkLibrary(true)) {
         Ok(program) => match (lower(program)) {
             Ok(lowered) => print(programText(inlineSmall(lowered)).join('\n'))
             Err(message) => printError(message)
@@ -736,7 +736,7 @@ if (command == 'dump' and args.length() == 3 and args[1] == 'inlined' and args[2
 // The C of std/koji/ (but `koji:core`), which bootstrap/build.sh and build.rs compile into the
 // runtime library.
 if (command == 'dump' and args.length() == 2 and args[1] == 'library') {
-    match (checkLibrary()) {
+    match (checkLibrary(false)) {
         Ok(program) => {
             match (lower(program)) {
                 Ok(lowered) => print(generate(lowered).join('\n'))
