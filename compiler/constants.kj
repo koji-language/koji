@@ -1,0 +1,56 @@
+// The bits of constants, as the processors hold them: a float of 64 bits (IEEE 754), for the
+// native backend and its machine IR.
+
+foreign 'm' {
+    function frexp(value: float, mut exponent: CInt): float
+}
+
+// The 8 bytes of a float (IEEE 754, little-endian), from its mantissa and exponent (frexp).
+export function floatBits(number: float): byte[] {
+    mut bytes: byte[] = []
+
+    if (number == float(0)) {
+        for i in range(8) {
+            bytes.push(0)
+        }
+
+        return bytes
+    }
+
+    immut negative = number < float(0)
+    immut magnitude = if (negative) { -number } else { number }
+    mut exponent = 0
+    immut fraction = frexp(magnitude, mut exponent)
+    // magnitude = fraction * 2^exponent, fraction in [0.5, 1): 1.f * 2^(exponent - 1).
+    mut biased = exponent - 1 + 1023
+    mut mantissa = int(fraction * float(9007199254740992))
+
+    if (biased <= 0) {
+        // Subnormal: the mantissa shifted, the exponent 0.
+        mantissa = int(fraction * float(9007199254740992)) >> (1 - biased)
+        biased = 0
+    } else {
+        mantissa -= 4503599627370496
+    }
+
+    // The 52 bits of the mantissa, then 11 of the exponent, then the sign.
+    for i in range(6) {
+        bytes.push(byte(mantissa >> (8 * i) & 0xFF))
+    }
+
+    bytes.push(byte((mantissa >> 48 & 0x0F) | (biased & 0x0F) << 4))
+    bytes.push(byte((biased >> 4 & 0x7F) | (if (negative) { 0x80 } else { 0 })))
+    return bytes
+}
+
+// The bits of a float as a word.
+export function floatWord(number: float): int {
+    immut bytes = floatBits(number)
+    mut word = 0
+
+    for i in range(8) {
+        word = word | int(bytes[i]) << (8 * i)
+    }
+
+    return word
+}

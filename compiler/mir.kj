@@ -19,6 +19,8 @@ export type MAddress = {
     MSlot(slot: int, offset: int)
     // A symbol, or a section of the object (`.rodata`, `.data`, `.bss`), plus an offset.
     MSymbol(name: string, offset: int)
+    // A text of the constants of the object, ended by 0 (the place of a call, for its panics).
+    MText(text: string)
 }
 
 export type MCallee = {
@@ -31,7 +33,7 @@ export type MCallee = {
 }
 
 // The conditions of comparisons: signed (`lt`, `le`, `gt`, `ge`), unsigned (`b`, `be`, `a`, `ae`),
-// and `eq`, `ne`.
+// and `eq`, `ne`; between floats, `lt`, `le`, `gt`, `ge`, `eq`, `ne` as numbers.
 export type MInstruction = {
     MMove(dest: int, value: MValue)
     // A load of 1, 4 or 8 bytes, zero-extended.
@@ -40,9 +42,12 @@ export type MInstruction = {
     MAddressOf(dest: int, at: MAddress)
     // `add`, `sub`, `mul`, `and`, `or`, `xor`, `shl`, `sar`, `shr` (by a constant or a register),
     // `div`, `rem` (signed); `check` is the panic of an overflow (a signed one; for `div` and `rem`
-    // the division by zero and the overflow), or -1.
+    // the overflow of int.min / -1), or -1. On floats: `fadd`, `fsub`, `fmul`, `fdiv`, `check` the
+    // panic of a result that is not finite (a float has no infinity).
     MBinary(dest: int, op: string, left: MValue, right: MValue, check: int)
-    // `neg` (checked like an operation), `not` (of the bits), `bool` (1 for anything but 0).
+    // `neg` (checked like an operation), `not` (of the bits); `fneg`, `itof` (an int to the nearest
+    // float), `ftoi` (a float truncated to an int), `fcheck` (a copy of a float that panics with
+    // `check` when it is not finite).
     MUnary(dest: int, op: string, value: MValue, check: int)
     // 1 when the condition holds between the values, else 0.
     MSet(dest: int, condition: string, left: MValue, right: MValue)
@@ -133,6 +138,7 @@ function addressText(at: MAddress, code: MFunctionCode): string {
         MIndexed(base, index, scale, offset) => `[${registerText(base, code)} + ${registerText(index, code)} * ${scale} + ${offset}]`
         MSlot(slot, offset) => `[s${slot} + ${offset}]`
         MSymbol(name, offset) => `[${name} + ${offset}]`
+        MText(text) => `[text '${text}']`
     }
 }
 

@@ -3216,3 +3216,25 @@ fn the_machine_ir_compiles_functions() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), "75025\n111\n1001\ntruefalse\n27\n");
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
 }
+
+#[test]
+fn the_machine_ir_compiles_floats() {
+    // Floats in the machine IR (KOJI_MIR=1): in xmm registers, checked as the language says (a
+    // result that is not finite, a division by zero), arguments of both classes moved in parallel
+    // (here in a cycle of xmm registers: a call with its arguments rotated).
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let source = "function series(n: int, x: float): float {\n    if (n == 0) { return float(1) }\n    return float(1) + x * series(n - 1, x) / float(n)\n}\nfunction horner(n: int, x: float, a: float, b: float, c: float, d: float): float {\n    if (n == 0) { return a }\n    immut inner = horner(n - 1, x, b, c, d, a)\n    return inner * x + -b\n}\nfunction signs(n: int, x: float): int {\n    if (n == 0) { return 0 }\n    mut s = 0\n    if (x < float(0)) { s = -1 }\n    if (x >= float(1)) { s = 1 }\n    return s + signs(n - 1, x - float(0.5))\n}\nfunction mixed(n: int, x: float): float {\n    if (n <= 0) { return x % float(7) }\n    immut t = int(x * float(10))\n    return mixed(n - 1, x ** float(1.01) + float(t % 3))\n}\nprint(string(series(20, float(1))))\nprint(string(horner(6, float(0.5), float(1), float(2), float(3), float(4))))\nprint(string(signs(10, float(2.2))))\nprint(string(mixed(5, float(1.5))))\n";
+    let path = source_file("machine_ir_floats", source);
+    let executable = path.with_extension("");
+    let built = koji::finish(koji::kojic().env("KOJI_MIR", "1").arg("build").arg(&path).arg("-o").arg(&executable), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let run = if has_valgrind() {
+        Command::new("valgrind").args(["-q", "--error-exitcode=99"]).arg(&executable).output().unwrap()
+    } else {
+        Command::new(&executable).output().unwrap()
+    };
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "0x1.0d837220475dep0\n-0x1.33p2\n-2\n0x1.88065f96266c9p0\n");
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+}

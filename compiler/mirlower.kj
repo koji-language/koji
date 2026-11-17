@@ -7,9 +7,11 @@
 
 import { Ty, Operand, Place, Instruction, Terminator, IrFunction, IrProgram } from 'ir.kj'
 import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
+import { floatWord } from 'constants.kj'
 
+// The values of one word of no references: ints, booleans, chars, bytes and floats.
 function scalar(ty: Ty): boolean {
-    return ty == IntTy or ty == BoolTy or ty == CharTy or ty == ByteTy
+    return ty == IntTy or ty == BoolTy or ty == CharTy or ty == ByteTy or ty == FloatTy
 }
 
 // Whether the machine IR lowers the function `id` (the others go through native.kj).
@@ -51,13 +53,14 @@ function simpleOperand(program: IrProgram, operand: Operand): boolean {
         IntOp(_) => true
         BoolOp(_) => true
         CharOp(_) => true
+        FloatOp(_) => true
         GlobalOp(id) => scalar(program.globals[id].ty)
         _ => false
     }
 }
 
-immut unaries = ['IntNeg', 'Not', 'BitNot', 'CharCode', 'ByteToInt', 'CodeToChar', 'IntToByte']
-immut binaries = ['IntAdd', 'IntSub', 'IntMul', 'IntDiv', 'IntRem', 'IntMulWrapping', 'BitAnd', 'BitOr', 'BitXor', 'ByteAnd', 'ByteOr', 'ByteXor', 'ByteAdd', 'ByteSub', 'ByteMul']
+immut unaries = ['IntNeg', 'Not', 'BitNot', 'CharCode', 'ByteToInt', 'CodeToChar', 'IntToByte', 'FloatNeg', 'IntToFloat', 'FloatTruncate']
+immut binaries = ['IntAdd', 'IntSub', 'IntMul', 'IntDiv', 'IntRem', 'IntMulWrapping', 'BitAnd', 'BitOr', 'BitXor', 'ByteAnd', 'ByteOr', 'ByteXor', 'ByteAdd', 'ByteSub', 'ByteMul', 'FloatAdd', 'FloatSub', 'FloatMul', 'FloatDiv', 'FloatRem', 'FloatPow']
 
 function lowered(program: IrProgram, instruction: Instruction): boolean {
     return match (instruction) {
@@ -109,7 +112,7 @@ function shift(op: string, right: Operand): boolean {
 
 // The condition of a comparison of scalars (`IntCompare(Less)`), or ''.
 function comparison(op: string): string {
-    for name in ['IntCompare(', 'BoolCompare(', 'CharCompare(', 'ByteCompare('] {
+    for name in ['IntCompare(', 'BoolCompare(', 'CharCompare(', 'ByteCompare(', 'FloatCompare('] {
         if (op.startsWith(name)) {
             return match (op[name.length()..op.length() - 1]) {
                 'Equal' => 'eq'
@@ -149,7 +152,7 @@ export function lowerMir(program: IrProgram, id: int, globals: int[], preemptibl
     mut reads: int[] = []
 
     for local in routine.locals {
-        floats.push(false)
+        floats.push(local.ty == FloatTy)
         reads.push(0)
     }
 
@@ -198,7 +201,7 @@ export function lowerMir(program: IrProgram, id: int, globals: int[], preemptibl
         params.push(param)
     }
 
-    return { name: routine.name, params: params, floats: self.floats, blocks: self.blocks, slots: [], panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { [false] } }
+    return { name: routine.name, params: params, floats: self.floats, blocks: self.blocks, slots: [], panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { [routine.returns == FloatTy] } }
 }
 
 function makesCalls(routine: IrFunction): boolean {
@@ -252,9 +255,19 @@ function Lowering.temporary(mut self): int {
     return self.floats.length() - 1
 }
 
+function Lowering.floatTemporary(mut self): int {
+    self.floats.push(true)
+    return self.floats.length() - 1
+}
+
+// The text of the place of an instruction (`main.kj:12`).
+function Lowering.location(self, line: int): string {
+    return if (line == 0) { self.routine.file } else { `${self.routine.file}:${line}` }
+}
+
 // A panic of the function: its place (the line of the instruction) and its message.
 function Lowering.panic(mut self, line: int, message: string): int {
-    immut location = if (line == 0) { self.routine.file } else { `${self.routine.file}:${line}` }
+    immut location = self.location(line)
     immut key = `${location}|${message}`
 
     match (self.panicIndex.get(key)) {
@@ -273,8 +286,14 @@ function Lowering.value(mut self, operand: Operand): MValue {
         IntOp(number) => MImm(number)
         BoolOp(flag) => MImm(if (flag) { 1 } else { 0 })
         CharOp(c) => MImm(c.code())
+        // Its bits, in a register of floats (so that a call passes it as a float).
+        FloatOp(number) => {
+            immut constant = self.floatTemporary()
+            self.current.push(MMove(constant, MImm(floatWord(number))))
+            MReg(constant)
+        }
         GlobalOp(id) => {
-            immut loaded = self.temporary()
+            immut loaded = if (self.program.globals[id].ty == FloatTy) { self.floatTemporary() } else { self.temporary() }
             self.current.push(MLoad(loaded, MSymbol('.bss', self.globals[id]), 8))
             MReg(loaded)
         }
@@ -307,6 +326,9 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                 'ByteToInt' => self.current.push(MMove(dest, source))
                 // The low 32 bits.
                 'CodeToChar' => self.current.push(MBinary(dest, 'and', source, MImm(0xFFFFFFFF), -1))
+                'FloatNeg' => self.current.push(MUnary(dest, 'fneg', source, -1))
+                'IntToFloat' => self.current.push(MUnary(dest, 'itof', source, -1))
+                'FloatTruncate' => self.current.push(MUnary(dest, 'ftoi', source, -1))
                 // Below 0 is above 255 as unsigned.
                 _ => {
                     immut wrong = self.panic(line, 'the value is not a byte (0 to 255)')
@@ -339,6 +361,31 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                     self.current.push(MBinary(dest, 'mul', first, second, overflow))
                 }
                 'IntMulWrapping' => self.current.push(MBinary(dest, 'mul', first, second, -1))
+                // Floats: a result that is not finite panics (a float has no infinity).
+                other if (other == 'FloatAdd' or other == 'FloatSub' or other == 'FloatMul') => {
+                    immut overflow = self.panic(line, 'float overflow')
+                    self.current.push(MBinary(dest, if (other == 'FloatAdd') { 'fadd' } else { if (other == 'FloatSub') { 'fsub' } else { 'fmul' } }, first, second, overflow))
+                }
+                other if (other == 'FloatDiv' or other == 'FloatRem') => {
+                    immut zero = self.panic(line, 'division by zero')
+                    immut overflow = self.panic(line, 'float overflow')
+                    self.current.push(MPanicIf('eq', second, MImm(0), zero))
+
+                    if (other == 'FloatDiv') {
+                        self.current.push(MBinary(dest, 'fdiv', first, second, overflow))
+                    } else {
+                        // fmod of the library of C.
+                        immut remainder = self.floatTemporary()
+                        self.current.push(MCall(MExternal('fmod'), [first, second], [remainder]))
+                        self.current.push(MUnary(dest, 'fcheck', MReg(remainder), overflow))
+                    }
+                }
+                // koji_float_pow of the library (it panics itself, at the place of the call).
+                'FloatPow' => {
+                    immut place = self.temporary()
+                    self.current.push(MAddressOf(place, MText(self.location(line))))
+                    self.current.push(MCall(MExternal('koji_float_pow'), [first, second, MReg(place)], [dest]))
+                }
                 other if (other == 'IntDiv' or other == 'IntRem') => {
                     immut operation = if (other == 'IntDiv') { 'div' } else { 'rem' }
 

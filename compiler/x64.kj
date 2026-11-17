@@ -186,12 +186,28 @@ function Emitter.instruction(mut self, instruction: MInstruction) {
             }
         }
         MLoad(dest, at, width) => {
+            if (self.code.floats[dest]) {
+                // movq xmm0, [memory]
+                immut memory = self.memory(at)
+                self.modrm([0xF3, 0x0F, 0x7E], 0, memory, false, 0)
+                self.storeFloat(dest, xmm)
+                return
+            }
+
             immut target = self.target(dest)
             immut memory = self.memory(at)
             self.load(target, memory, width)
             self.finish(dest, target)
         }
         MStore(at, value, width) => {
+            if (self.isFloat(value)) {
+                // movq [memory], xmm0
+                self.floatValue(xmm, value)
+                immut memory = self.memory(at)
+                self.modrm([0x66, 0x0F, 0xD6], 0, memory, false, 0)
+                return
+            }
+
             self.loadValue(rax, value)
             immut memory = self.memory(at)
             self.store(memory, rax, width)
@@ -204,6 +220,33 @@ function Emitter.instruction(mut self, instruction: MInstruction) {
             self.finish(dest, target)
         }
         MBinary(dest, op, left, right, check) => self.binary(dest, op, left, right, check)
+        MUnary(dest, op, value, check) if (op == 'fneg' or op == 'itof' or op == 'ftoi' or op == 'fcheck') => {
+            match (op) {
+                // movq rax, xmm0; btc rax, 63; movq xmm0, rax
+                'fneg' => {
+                    self.floatValue(xmm, value)
+                    self.bytes([0x66, 0x48, 0x0F, 0x7E, 0xC0, 0x48, 0x0F, 0xBA, 0xF8, 0x3F, 0x66, 0x48, 0x0F, 0x6E, 0xC0])
+                    self.storeFloat(dest, xmm)
+                }
+                // cvtsi2sd xmm0, rax
+                'itof' => {
+                    self.loadValue(rax, value)
+                    self.bytes([0xF2, 0x48, 0x0F, 0x2A, 0xC0])
+                    self.storeFloat(dest, xmm)
+                }
+                // cvttsd2si rax, xmm0
+                'ftoi' => {
+                    self.floatValue(xmm, value)
+                    self.bytes([0xF2, 0x48, 0x0F, 0x2C, 0xC0])
+                    self.finish(dest, rax)
+                }
+                _ => {
+                    self.floatValue(xmm, value)
+                    self.finite(check)
+                    self.storeFloat(dest, xmm)
+                }
+            }
+        }
         MUnary(dest, op, value, check) => {
             immut target = self.target(dest)
             self.loadValue(target, value)
@@ -223,15 +266,15 @@ function Emitter.instruction(mut self, instruction: MInstruction) {
             self.finish(dest, target)
         }
         MSet(dest, condition, left, right) => {
-            self.compare(left, right)
+            immut code = self.compare(left, right, condition)
             // setcc al; movzx eax, al
-            self.bytes([0x0F, 0x90 + conditionCode(condition), 0xC0, 0x0F, 0xB6, 0xC0])
+            self.bytes([0x0F, 0x90 + code, 0xC0, 0x0F, 0xB6, 0xC0])
             self.storeTo(dest, rax)
         }
         MCall(callee, args, results) => self.call(callee, args, results)
         MPanicIf(condition, left, right, panic) => {
-            self.compare(left, right)
-            self.panicIf(conditionCode(condition), panic)
+            immut code = self.compare(left, right, condition)
+            self.panicIf(code, panic)
         }
         MPreempt => self.preempt()
     }
@@ -260,6 +303,24 @@ function Emitter.storeTo(mut self, dest: int, register: int) {
 }
 
 function Emitter.binary(mut self, dest: int, op: string, left: MValue, right: MValue, check: int) {
+    // On floats: xmm0 = left; op xmm0, xmm1 (the right one); a result not finite panics.
+    if (op == 'fadd' or op == 'fsub' or op == 'fmul' or op == 'fdiv') {
+        self.floatValue(xmm, left)
+        self.floatValue(xmm + 1, right)
+        immut code = match (op) {
+            'fadd' => 0x58
+            'fsub' => 0x5C
+            'fmul' => 0x59
+            _ => 0x5E
+        }
+        self.bytes([0xF2, 0x0F, code, 0xC1])
+
+        if (check >= 0) { self.finite(check) }
+
+        self.storeFloat(dest, xmm)
+        return
+    }
+
     if (op == 'div' or op == 'rem') {
         self.loadValue(rax, left)
         // The divisor in rcx (a constant, or one in the frame).
@@ -376,9 +437,36 @@ function Emitter.binary(mut self, dest: int, op: string, left: MValue, right: MV
     self.finish(dest, target)
 }
 
+// The comparison of two values for a condition: its code (of jcc and setcc). Floats: ucomisd
+// xmm0, xmm1, its flags those of an unsigned comparison.
+function Emitter.compare(mut self, left: MValue, right: MValue, condition: string): int {
+    if (self.isFloat(left) or self.isFloat(right)) {
+        self.floatValue(xmm, left)
+        self.floatValue(xmm + 1, right)
+        self.bytes([0x66, 0x0F, 0x2E, 0xC1])
+        return conditionCode(match (condition) {
+            'lt' => 'b'
+            'le' => 'be'
+            'gt' => 'a'
+            'ge' => 'ae'
+            other => other
+        })
+    }
+
+    self.compareWords(left, right)
+    return conditionCode(condition)
+}
+
+function Emitter.isFloat(self, value: MValue): boolean {
+    return match (value) {
+        MReg(id) => self.code.floats[id]
+        MImm(_) => false
+    }
+}
+
 // cmp left, right: the left one in a register (rax when it is not in one), the right one in a
 // register, the frame or an immediate.
-function Emitter.compare(mut self, left: MValue, right: MValue) {
+function Emitter.compareWords(mut self, left: MValue, right: MValue) {
     immut first = match (left) {
         MReg(id) => match (self.place(id)) {
             InRegister(register) => register
@@ -480,6 +568,13 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
     }
 }
 
+// The float in xmm0 panics when it is not finite (its exponent all ones): movq rax, xmm0;
+// shr rax, 52; and eax, 0x7FF; cmp eax, 0x7FF; je panic
+function Emitter.finite(mut self, check: int) {
+    self.bytes([0x66, 0x48, 0x0F, 0x7E, 0xC0, 0x48, 0xC1, 0xE8, 0x34, 0x25, 0xFF, 0x07, 0x00, 0x00, 0x3D, 0xFF, 0x07, 0x00, 0x00])
+    self.panicIf(0x4, check)
+}
+
 // The check of preemption: cmp dword [rip + koji_preempt_flag], 0; je on; the registers that calls
 // do not keep and that hold a value alive, saved around call koji_task_preempt.
 function Emitter.preempt(mut self) {
@@ -549,8 +644,7 @@ function Emitter.terminator(mut self, block: int, terminator: MTerminator) {
             if (target != block + 1) { self.jumpTo(0, target) }
         }
         MBranch(condition, left, right, thenBlock, elseBlock) => {
-            self.compare(left, right)
-            immut code = conditionCode(condition)
+            immut code = self.compare(left, right, condition)
 
             if (thenBlock == block + 1) {
                 self.jumpTo(0x80 + (code ^ 1), elseBlock)
@@ -627,16 +721,46 @@ function Emitter.parallelMove(mut self, given: int[], targets: Place[]) {
             progressed = true
         }
 
-        if (not progressed) {
-            // A cycle: one source through rax (rax is no target), the move then reads rax.
-            for i in range(sources.length()) {
-                if (not done[i] and sources[i] < xmm) {
-                    self.moveRegister(rax, sources[i])
-                    sources[i] = rax
-                    break
-                }
-            }
+        if (not progressed) { self.breakCycle(mut sources, done, registerTargets(targets)) }
+    }
+}
+
+// The registers the moves write (-1 for a word of the frame).
+function registerTargets(targets: Place[]): int[] {
+    mut found: int[] = []
+
+    for target in targets {
+        found.push(match (target) {
+            InRegister(register) => register
+            InFrame(_) => -1
+        })
+    }
+
+    return found
+}
+
+// Moves left in cycles (each writes a register another still reads): the content of the register
+// a move writes kept in rax (movq from an xmm register), those that read it reading rax instead,
+// so that the move can be done; once one cycle is broken, the moves of its chain all can be, before
+// another needs rax.
+function Emitter.breakCycle(mut self, mut sources: int[], done: boolean[], destinations: int[]) {
+    for i in range(sources.length()) {
+        if (done[i] or destinations[i] < 0) { continue }
+
+        immut written = destinations[i]
+
+        if (written >= xmm) {
+            // movq rax, xmmN
+            self.modrm([0x66, 0x0F, 0x7E], written - xmm, ORegister(rax), true, 0)
+        } else {
+            self.moveRegister(rax, written)
         }
+
+        for j in range(sources.length()) {
+            if (not done[j] and sources[j] == written) { sources[j] = rax }
+        }
+
+        return
     }
 }
 
@@ -710,14 +834,8 @@ function Emitter.argumentMove(mut self, given: MValue[], destinations: int[]) {
         }
 
         if (pending and not progressed) {
-            for i in range(sources.length()) {
-                if (not done[i] and sources[i] < xmm) {
-                    self.moveRegister(rax, sources[i])
-                    sources[i] = rax
-                    progressed = true
-                    break
-                }
-            }
+            self.breakCycle(mut sources, done, destinations)
+            progressed = true
         }
     }
 
@@ -826,6 +944,7 @@ function Emitter.memory(mut self, at: MAddress): Operand {
         }
         MSlot(slot, offset) => OMemory(rbp, -1, 1, self.slots[slot] + offset)
         MSymbol(name, offset) => ORip(name, offset)
+        MText(text) => OText(text)
     }
 }
 
@@ -863,6 +982,7 @@ type Operand = {
     ORegister(register: int)
     OMemory(base: int, index: int, scale: int, displacement: int)
     ORip(symbol: string, addend: int)
+    OText(text: string)
 }
 
 // An instruction: its prefixes (66, F2, F3) and opcode `opcode`, the register `reg` in ModRM, the
@@ -881,7 +1001,7 @@ function Emitter.modrm(mut self, opcode: int[], reg: int, rm: Operand, wide: boo
     immut base = match (rm) {
         ORegister(register) => register
         OMemory(found, _, _, _) => found
-        ORip(_, _) => 0
+        _ => 0
     }
     immut index = match (rm) {
         OMemory(_, found, _, _) => if (found >= 0) { found } else { 0 }
@@ -900,6 +1020,10 @@ function Emitter.modrm(mut self, opcode: int[], reg: int, rm: Operand, wide: boo
             self.out.push(byte(0x05 | (reg & 7) << 3))
             self.relocations.push({ at: self.out.length(), symbol: symbol, kind: 2, addend: addend - 4 - immediate })
             self.int32(0)
+        }
+        OText(text) => {
+            self.out.push(byte(0x05 | (reg & 7) << 3))
+            self.textUse(text)
         }
         OMemory(found, indexed, scale, displacement) => {
             immut small = displacement >= -128 and displacement <= 127
