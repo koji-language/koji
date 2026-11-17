@@ -29,6 +29,8 @@ export type MirContext = {
     records: int[]
     borrowed: boolean[][]
     constants: boolean[]
+    // The globals each function may see (globals.kj).
+    seen: Set[int][]
 }
 
 // The values of one word of no references: ints, booleans, chars, bytes and floats.
@@ -69,7 +71,6 @@ export function mirRefusal(program: IrProgram, id: int): string {
 
     if (not word(routine.returns) and routine.returns != VoidTy) { return `a result of ${tyText(routine.returns)}` }
 
-    if (routine.params + mutCount(routine) > 6) { return 'more than 6 parameters' }
 
     for block in routine.blocks {
         // The first block starts the function only (its locals set to none there).
@@ -188,22 +189,14 @@ function lowered(program: IrProgram, instruction: Instruction): boolean {
         UnaryIns(_, op, value, _) => (op in unaries or unaryHelpers.has(op) or op == 'ListLength' or op == 'RecordTag') and simpleOperand(program, value)
         BinaryIns(_, op, left, right, _) => simpleOperand(program, left) and simpleOperand(program, right) and (op in binaries or comparison(op) != '' or op in checkedBinaries or binaryHelpers.has(op) or objectComparison(op) != '' or op in ['StrContains', 'StrContainsChar', 'ListContains', 'MapContains', 'ListIndexOf'])
         CallIns(_, callee, args, writebacks, _) => {
-            if (args.length() + writebacks.length() > 6 or not mirLowersSignature(program, callee)) { return false }
+            if (not mirLowersSignature(program, callee)) { return false }
 
             for arg in args {
                 if (not simpleOperand(program, arg)) { return false }
             }
 
-            // Into a variable (not a field or an item of one).
             for writeback in writebacks {
-                if (writeback.target.path.length() > 0) { return false }
-
-                match (writeback.target.root) {
-                    GlobalPlace(id) => {
-                        if (not word(program.globals[id].ty)) { return false }
-                    }
-                    _ => {}
-                }
+                if (not simpleTarget(program, writeback.target)) { return false }
             }
 
             true
@@ -282,7 +275,7 @@ function lowersLibraryCall(program: IrProgram, dest: Option[int], name: string, 
         if (name.startsWith(prefix)) { return false }
     }
 
-    if (name == 'koji_record_get' or args.length() > 6) { return false }
+    if (name == 'koji_record_get') { return false }
 
     for each in program.externs {
         if (each.name == name and (each.blocking or '...' in each.params)) { return false }
@@ -841,6 +834,17 @@ function Lowering.movedBy(self, instruction: Instruction, block: int, position: 
         CopyIns(LocalPlace(dest), _) if (not self.owned[dest] and isManaged(self.routine.locals[dest].ty)) => -1
         CopyIns(dest, LocalOp(source)) if (dest != LocalPlace(source)) => self.movable(source, block, position)
         BinaryIns(dest, 'StrConcat', LocalOp(left), right, _) if (right != LocalOp(left) and dest != left) => self.movable(left, block, position)
+        CallIns(_, callee, args, writebacks, _) => {
+            mut moved: int[] = []
+
+            for writeback in writebacks {
+                immut temporary = self.givenFromTarget(callee, args, writeback.param, writeback.target, block, position)
+
+                if (temporary >= 0) { moved.push(temporary) }
+            }
+
+            return moved
+        }
         FieldSetIns(record, _, LocalOp(local), _) if (not targetReads(record, local)) => self.movable(local, block, position)
         ListSetIns(list, index, LocalOp(local), _) if (not targetReads(list, local) and index != LocalOp(local)) => self.movable(local, block, position)
         RecordNewIns(dest, _, fields) => {
@@ -867,6 +871,38 @@ function Lowering.movedBy(self, instruction: Instruction, block: int, position: 
     }
 
     return if (found >= 0) { [found] } else { [] }
+}
+
+// `f(mut self.code)`: the argument is a temporary read from a place inside a variable (a local, or
+// a global the function does not see), for the last time. The place gives its reference for the
+// call (it is empty meanwhile, and gets the value back after), so that the function changes the
+// value in place instead of a copy; the temporary, which is not read again, gives its own back
+// (see `CallIns`). Not when another argument reads the variable, the temporary or an index or a
+// key of the path. The temporary, or -1.
+function Lowering.givenFromTarget(self, callee: int, args: Operand[], param: int, target: Target, block: int, position: int): int {
+    immut temporary = match (args[param]) {
+        LocalOp(local) => local
+        _ => return -1
+    }
+    immut root = match (target.root) {
+        LocalPlace(local) => LocalOp(local)
+        GlobalPlace(global) => if (self.context.seen[callee].has(global)) { return -1 } else { GlobalOp(global) }
+    }
+
+    if (target.path.length() == 0 or root == LocalOp(temporary) or not isManaged(self.routine.locals[temporary].ty)) { return -1 }
+
+    if (not (temporary in self.live[block][position])) { return -1 }
+
+    for i in range(args.length()) {
+        if (i != param and (args[i] == root or args[i] == LocalOp(temporary))) { return -1 }
+
+        match (args[i]) {
+            LocalOp(other) if (i != param and targetReads(target, other)) => return -1
+            _ => {}
+        }
+    }
+
+    return temporary
 }
 
 // The local, when its reference can move: owned, and read for the last time here; or -1.
@@ -1733,7 +1769,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                 }
             }
         }
-        CallIns(dest, callee, args, writebacks, _) => {
+        CallIns(dest, callee, args, writebacks, line) => {
             mut values: MValue[] = []
             // A global given to a borrowed parameter: the function may change the global, so the
             // caller keeps the value alive with a reference of its own during the call.
@@ -1768,10 +1804,38 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                 immut slot = self.slot()
                 backs.push(slot)
 
+                // From a place inside a variable: taken out of it (and the temporary released).
+                immut temporary = self.givenFromTarget(callee, args, param, writeback.target, self.block, self.position)
+
+                if (temporary >= 0) {
+                    immut variable = self.variable(writeback.target, line)
+                    immut taken = self.temporary()
+                    self.current.push(MLoad(taken, MBase(variable.address, 0), 8))
+                    self.current.push(MStore(MBase(variable.address, 0), MImm(0), 8))
+                    self.closeVariable(variable)
+
+                    if (self.owned[temporary]) { self.current.push(MRelease(MReg(temporary), kindOf(self.routine.locals[temporary].ty))) }
+
+                    values[param] = MReg(taken)
+                    self.current.push(MStore(MSlot(slot, 0), MImm(0), 8))
+                    values.push(self.addressOf(MSlot(slot, 0)))
+                    continue
+                }
+
                 if (isManaged(self.operandType(args[param]))) {
                     mut alone = false
 
                     match (args[param]) {
+                        // A global the function does not see, that no other argument reads.
+                        GlobalOp(global) if (writeback.target.root == GlobalPlace(global) and writeback.target.path.length() == 0 and not self.context.seen[callee].has(global)) => {
+                            alone = true
+
+                            for i in range(args.length()) {
+                                if (i != param and args[i] == GlobalOp(global)) { alone = false }
+                            }
+
+                            if (alone) { self.current.push(MStore(MSymbol('.bss', self.context.globals[global]), MImm(0), 8)) }
+                        }
                         LocalOp(local) if (self.owned[local] and writeback.target.root == LocalPlace(local)) => {
                             alone = true
 
@@ -1800,15 +1864,38 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                 None => self.current.push(MCall(MFunction(callee), values, []))
             }
 
-            // The final values into their variables (the old ones released, but those given).
+            // The final values into their variables (the old ones released, but those given), or
+            // set in their places by the library (which retains them).
             for i in range(writebacks.length()) {
-                immut root = writebacks[i].target.root
-                immut ty = match (root) {
-                    LocalPlace(local) => self.routine.locals[local].ty
-                    GlobalPlace(global) => self.program.globals[global].ty
-                }
+                immut target = writebacks[i].target
+                immut root = target.root
+                immut ty = self.targetType(target)
                 immut back = if (ty == FloatTy) { self.floatTemporary() } else { self.temporary() }
                 self.current.push(MLoad(back, MSlot(backs[i], 0), 8))
+
+                if (target.path.length() > 0) {
+                    immut container: Target = { root: root, path: target.path[0..target.path.length() - 1] }
+                    immut variable = self.variable(container, line)
+
+                    match (target.path[target.path.length() - 1]) {
+                        IndexStep(index) => {
+                            immut at = self.value(index)
+                            immut where = self.addressOf(MText(self.location(line)))
+                            self.current.push(MCall(MExternal('koji_list_set'), [MReg(variable.address), at, self.addressOf(MSlot(backs[i], 0)), where], []))
+                        }
+                        FieldStep(field) => self.current.push(MCall(MExternal('koji_record_set'), [MReg(variable.address), MImm(field), self.addressOf(MSlot(backs[i], 0))], []))
+                        KeyStep(key) => {
+                            immut place = self.inSlot(self.value(key))
+                            self.current.push(MCall(MExternal('koji_map_set'), [MReg(variable.address), place, self.addressOf(MSlot(backs[i], 0))], []))
+                        }
+                    }
+
+                    self.closeVariable(variable)
+
+                    if (isManaged(ty)) { self.current.push(MRelease(MReg(back), kindOf(ty))) }
+
+                    continue
+                }
 
                 match (root) {
                     LocalPlace(local) => {

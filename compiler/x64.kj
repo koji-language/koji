@@ -107,22 +107,43 @@ export function emitX64(code: MFunctionCode, allocation: Allocation): Emitted {
     // The parameters, from the registers of the convention to their places.
     mut sources: int[] = []
     mut targets: Place[] = []
+    // Those beyond the registers, on the stack of the caller (above the return address and rbp).
+    mut stacked: int[] = []
     mut integers = 0
     mut floats = 0
 
     for param in code.params {
-        if (code.floats[param]) {
+        if (code.floats[param] and floats < 8) {
             sources.push(xmm + floats)
             floats += 1
-        } else {
-            sources.push(argumentRegisters[integers])
-            integers += 1
+            targets.push(self.place(param))
+            continue
         }
 
-        targets.push(self.place(param))
+        if (not code.floats[param] and integers < 6) {
+            sources.push(argumentRegisters[integers])
+            integers += 1
+            targets.push(self.place(param))
+            continue
+        }
+
+        stacked.push(param)
     }
 
     self.parallelMove(sources, targets)
+
+    for i in range(stacked.length()) {
+        immut param = stacked[i]
+
+        if (code.floats[param]) {
+            // movq xmm0, [rbp + 16 + 8 * i]
+            self.modrm([0xF3, 0x0F, 0x7E], 0, OMemory(rbp, -1, 1, 16 + 8 * i), false, 0)
+            self.moveTo(self.place(param), xmm)
+        } else {
+            self.loadFrame(rax, 16 + 8 * i)
+            self.moveTo(self.place(param), rax)
+        }
+    }
 
     for block in range(code.blocks.length()) {
         self.blockAt.push(self.out.length())
@@ -606,6 +627,9 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
     // The arguments in the registers of the convention (a parallel move).
     mut sources: MValue[] = []
     mut destinations: int[] = []
+    // Those beyond the registers, pushed on the stack (the last first; a word more when they are
+    // odd in number, so that the stack stays aligned).
+    mut stacked: MValue[] = []
     mut integers = 0
     mut floats = 0
 
@@ -615,15 +639,41 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
             MImm(_) => false
         }
 
-        if (float) {
+        if (float and floats < 8) {
             destinations.push(xmm + floats)
             floats += 1
-        } else {
-            destinations.push(argumentRegisters[integers])
-            integers += 1
+            sources.push(arg)
+            continue
         }
 
-        sources.push(arg)
+        if (not float and integers < 6) {
+            destinations.push(argumentRegisters[integers])
+            integers += 1
+            sources.push(arg)
+            continue
+        }
+
+        stacked.push(arg)
+    }
+
+    immut pushed = stacked.length() + stacked.length() % 2
+
+    if (stacked.length() % 2 == 1) { self.bytes([0x48, 0x83, 0xEC, 0x08]) }
+
+    mut at = stacked.length() - 1
+
+    while (at >= 0) {
+        if (self.isFloat(stacked[at])) {
+            // movq rax, xmm0
+            self.floatValue(xmm, stacked[at])
+            self.bytes([0x66, 0x48, 0x0F, 0x7E, 0xC0])
+        } else {
+            self.loadValue(rax, stacked[at])
+        }
+
+        // push rax
+        self.bytes([0x50])
+        at -= 1
     }
 
     match (callee) {
@@ -645,6 +695,11 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
         MExternal(name) => self.callExternal(name)
         // call r11
         MIndirect(_) => self.bytes([0x41, 0xFF, 0xD3])
+    }
+
+    if (pushed > 0) {
+        self.bytes([0x48, 0x81, 0xC4])
+        self.int32(8 * pushed)
     }
 
     // The results: rax, rdx; xmm0.

@@ -1287,7 +1287,7 @@ function isWriteback(routine: IrFunction, local: int): boolean {
 function Native.generateMir(mut self, id: int) {
     immut routine = self.program.functions[id]
     immut preemptible = routine.file != 'task' and not self.program.library
-    immut context: MirContext = { globals: self.globals, strings: self.strings, records: self.records, borrowed: self.borrowed, constants: self.constants }
+    immut context: MirContext = { globals: self.globals, strings: self.strings, records: self.records, borrowed: self.borrowed, constants: self.constants, seen: self.seen }
     immut code = lowerMir(self.program, id, context, preemptible)
 
     // KOJI_MIR_DUMP=name: the machine IR of the function `name`, printed.
