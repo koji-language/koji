@@ -11,23 +11,14 @@
 /* The small functions below are inlined where they are called. Left to its heuristics, gcc spends
    most of its time (20 minutes for the compiler) weighing them in the large functions kojic
    generates. */
-#if defined(KOJI_NATIVE_LIBRARY)
-/* The library the native backend builds (`kojic library`) has the rest in Koji (std/koji/prelude.kj)
-   and in the machine code the backend writes: from this file it takes only the threads of the
-   runtime and the calls that block, which they run (KOJI_THREADS). */
-#define KOJI_INLINE static inline __attribute__((always_inline, unused))
-#define KOJI_SHARED static __attribute__((unused))
-#define KOJI_THREADS extern inline __attribute__((always_inline))
-#elif defined(KOJI_LIBRARY)
+#if defined(KOJI_LIBRARY)
 /* In the library they are functions of their own too, which the machine code of the native
    backend (compiler/native.kj) calls: the operations of both backends are the same. */
 #define KOJI_INLINE extern inline __attribute__((always_inline))
 #define KOJI_SHARED
-#define KOJI_THREADS KOJI_INLINE
 #else
 #define KOJI_INLINE static inline __attribute__((always_inline))
 #define KOJI_SHARED static
-#define KOJI_THREADS KOJI_INLINE
 #endif
 
 typedef struct KojiString KojiString;
@@ -202,15 +193,9 @@ int64_t koji_list_index_of(const void *list, const void *value);
 /* The memory of small values (std/koji/memory.kj): the first free block of each size, in 8-byte words
    up to 16, each free block holding the next one; word 17 holds the chunks taken. Weak, as is
    `koji_pool_off`: one array for the program and the library (the linker keeps one). */
-/* With KOJI_POOL=0, every block comes from the system and goes back to it (for valgrind). The
-   native library defines them itself. */
-#if defined(KOJI_NATIVE_LIBRARY)
-extern void *koji_pool[18];
-extern bool koji_pool_off;
-#else
 __attribute__((weak)) void *koji_pool[18];
+/* With KOJI_POOL=0, every block comes from the system and goes back to it (for valgrind). */
 __attribute__((weak)) bool koji_pool_off;
-#endif
 void *koji_pool_refill(size_t words);
 void koji_pool_free(const void *block, size_t words);
 KOJI_INLINE void *koji_pool_heads(void) { return koji_pool; }
@@ -583,7 +568,7 @@ void koji_task_switch(const void *save, const void *to);
 /* Once, in the library: the code of a new task starts at koji_task_entry, which calls
    koji_task_main(task) with the task that koji_task_stack_start left in a register the switch
    restores (rbx, x19). */
-#if defined(KOJI_LIBRARY) && !defined(KOJI_NATIVE_LIBRARY) && defined(__x86_64__)
+#if defined(KOJI_LIBRARY) && defined(__x86_64__)
 __asm__(".text\n" KOJI_FUNCTION(koji_task_switch)
         "pushq %rbp\npushq %rbx\npushq %r12\npushq %r13\npushq %r14\npushq %r15\n"
         "subq $8, %rsp\nstmxcsr (%rsp)\nfnstcw 4(%rsp)\n"
@@ -592,7 +577,7 @@ __asm__(".text\n" KOJI_FUNCTION(koji_task_switch)
         "popq %r15\npopq %r14\npopq %r13\npopq %r12\npopq %rbx\npopq %rbp\nret\n"
         KOJI_FUNCTION(koji_task_entry)
         "movq %rbx, %rdi\nandq $-16, %rsp\ncall " KOJI_SYMBOL(koji_task_main) "\nud2\n");
-#elif defined(KOJI_LIBRARY) && !defined(KOJI_NATIVE_LIBRARY) && defined(__aarch64__)
+#elif defined(KOJI_LIBRARY) && defined(__aarch64__)
 __asm__(".text\n" KOJI_FUNCTION(koji_task_switch)
         "sub sp, sp, #176\n"
         "stp x19, x20, [sp, #0]\nstp x21, x22, [sp, #16]\nstp x23, x24, [sp, #32]\n"
@@ -672,7 +657,7 @@ struct KojiJob {
 bool koji_task_alone(void);
 void koji_task_offload(const void *job);
 /* The result of a job, with errno, made by a helping thread unless the task is alone. */
-KOJI_THREADS int64_t koji_task_blocking(KojiJob *job) {
+KOJI_INLINE int64_t koji_task_blocking(KojiJob *job) {
     if (koji_task_alone()) {
         job->run(job);
         return job->result;
@@ -783,7 +768,7 @@ bool koji_ticks(bool on) {
 }
 #endif
 /* Clears the flag (koji_task_preempt). */
-KOJI_THREADS void koji_preempt_clear(void) { koji_preempt_flag = 0; }
+KOJI_INLINE void koji_preempt_clear(void) { koji_preempt_flag = 0; }
 
 /* The calls that block, as jobs. By other names than the C library's, which the `extern`
    declarations of the standard library use (with other types). */
@@ -840,62 +825,62 @@ static __attribute__((unused)) void koji_run_readdir(KojiJob *job) { job->result
 static __attribute__((unused)) void koji_run_access(KojiJob *job) { job->result = koji_c_access((const char *)KOJI_P(0), (int)KOJI_A(1)); }
 static __attribute__((unused)) void koji_run_unlink(KojiJob *job) { job->result = koji_c_unlink((const char *)KOJI_P(0)); }
 static __attribute__((unused)) void koji_run_mkdir(KojiJob *job) { job->result = koji_c_mkdir((const char *)KOJI_P(0), (int)KOJI_A(1)); }
-KOJI_THREADS int64_t koji_blocking_getline(const void *line, const void *capacity, const void *stream) {
+KOJI_INLINE int64_t koji_blocking_getline(const void *line, const void *capacity, const void *stream) {
     KOJI_JOB((int64_t)(intptr_t)line, (int64_t)(intptr_t)capacity, (int64_t)(intptr_t)stream);
     job.run = koji_run_getline;
     return koji_task_blocking(&job);
 }
-KOJI_THREADS size_t koji_blocking_fread(const void *target, size_t size, size_t count, const void *stream) {
+KOJI_INLINE size_t koji_blocking_fread(const void *target, size_t size, size_t count, const void *stream) {
     KOJI_JOB((int64_t)(intptr_t)target, (int64_t)size, (int64_t)count, (int64_t)(intptr_t)stream);
     job.run = koji_run_fread;
     return (size_t)koji_task_blocking(&job);
 }
-KOJI_THREADS int koji_blocking_waitpid(int pid, const void *status, int options) {
+KOJI_INLINE int koji_blocking_waitpid(int pid, const void *status, int options) {
     KOJI_JOB(pid, (int64_t)(intptr_t)status, options);
     job.run = koji_run_waitpid;
     return (int)koji_task_blocking(&job);
 }
-KOJI_THREADS int koji_blocking_poll(const void *fds, size_t count, int timeout) {
+KOJI_INLINE int koji_blocking_poll(const void *fds, size_t count, int timeout) {
     KOJI_JOB((int64_t)(intptr_t)fds, (int64_t)count, timeout);
     job.run = koji_run_poll;
     return (int)koji_task_blocking(&job);
 }
-KOJI_THREADS void *koji_blocking_fopen(const void *path, const void *mode) {
+KOJI_INLINE void *koji_blocking_fopen(const void *path, const void *mode) {
     KOJI_JOB((int64_t)(intptr_t)path, (int64_t)(intptr_t)mode);
     job.run = koji_run_fopen;
     return (void *)(intptr_t)koji_task_blocking(&job);
 }
-KOJI_THREADS int64_t koji_blocking_readv(int fd, const void *vectors, int count) {
+KOJI_INLINE int64_t koji_blocking_readv(int fd, const void *vectors, int count) {
     KOJI_JOB(fd, (int64_t)(intptr_t)vectors, count);
     job.run = koji_run_readv;
     return koji_task_blocking(&job);
 }
-KOJI_THREADS int64_t koji_blocking_writev(int fd, const void *vectors, int count) {
+KOJI_INLINE int64_t koji_blocking_writev(int fd, const void *vectors, int count) {
     KOJI_JOB(fd, (int64_t)(intptr_t)vectors, count);
     job.run = koji_run_writev;
     return koji_task_blocking(&job);
 }
-KOJI_THREADS void *koji_blocking_opendir(const void *path) {
+KOJI_INLINE void *koji_blocking_opendir(const void *path) {
     KOJI_JOB((int64_t)(intptr_t)path);
     job.run = koji_run_opendir;
     return (void *)(intptr_t)koji_task_blocking(&job);
 }
-KOJI_THREADS void *koji_blocking_readdir(const void *directory) {
+KOJI_INLINE void *koji_blocking_readdir(const void *directory) {
     KOJI_JOB((int64_t)(intptr_t)directory);
     job.run = koji_run_readdir;
     return (void *)(intptr_t)koji_task_blocking(&job);
 }
-KOJI_THREADS int koji_blocking_access(const void *path, int mode) {
+KOJI_INLINE int koji_blocking_access(const void *path, int mode) {
     KOJI_JOB((int64_t)(intptr_t)path, mode);
     job.run = koji_run_access;
     return (int)koji_task_blocking(&job);
 }
-KOJI_THREADS int koji_blocking_unlink(const void *path) {
+KOJI_INLINE int koji_blocking_unlink(const void *path) {
     KOJI_JOB((int64_t)(intptr_t)path);
     job.run = koji_run_unlink;
     return (int)koji_task_blocking(&job);
 }
-KOJI_THREADS int koji_blocking_mkdir(const void *path, int mode) {
+KOJI_INLINE int koji_blocking_mkdir(const void *path, int mode) {
     KOJI_JOB((int64_t)(intptr_t)path, mode);
     job.run = koji_run_mkdir;
     return (int)koji_task_blocking(&job);
@@ -911,7 +896,7 @@ KojiU128 koji_unsafe_aes_round(KojiU128 state, KojiU128 key);
 KojiU128 koji_unsafe_aes_last_round(KojiU128 state, KojiU128 key);
 KojiU128 koji_unsafe_carryless_product(int64_t a, int64_t b);
 KOJI_INLINE int64_t koji_unsafe_reverse_bytes(int64_t word) { return (int64_t)__builtin_bswap64((uint64_t)word); }
-#if defined(KOJI_LIBRARY) && !defined(KOJI_NATIVE_LIBRARY) && defined(__x86_64__)
+#if defined(KOJI_LIBRARY) && defined(__x86_64__)
 typedef long long koji_v2i __attribute__((vector_size(16)));
 #define KOJI_AES __attribute__((target("aes,pclmul")))
 KOJI_AES static inline koji_v2i koji_vector(KojiU128 value) { koji_v2i v; __builtin_memcpy(&v, &value, 16); return v; }
@@ -921,7 +906,7 @@ KOJI_AES KojiU128 koji_unsafe_aes_last_round(KojiU128 state, KojiU128 key) { ret
 KOJI_AES KojiU128 koji_unsafe_carryless_product(int64_t a, int64_t b) {
     return koji_wide_of(__builtin_ia32_pclmulqdq128((koji_v2i){a, 0}, (koji_v2i){b, 0}, 0));
 }
-#elif defined(KOJI_LIBRARY) && !defined(KOJI_NATIVE_LIBRARY) && defined(__aarch64__)
+#elif defined(KOJI_LIBRARY) && defined(__aarch64__)
 #include <arm_neon.h>
 #if defined(__APPLE__)
 /* Every processor of Apple on arm64 has the instructions: the target has them. */
@@ -945,7 +930,7 @@ KOJI_AES KojiU128 koji_unsafe_carryless_product(int64_t a, int64_t b) {
     __builtin_memcpy(&value, &product, 16);
     return value;
 }
-#elif defined(KOJI_LIBRARY) && !defined(KOJI_NATIVE_LIBRARY)
+#elif defined(KOJI_LIBRARY)
 KojiU128 koji_unsafe_aes_round(KojiU128 state, KojiU128 key) { (void)key; return state; }
 KojiU128 koji_unsafe_aes_last_round(KojiU128 state, KojiU128 key) { (void)key; return state; }
 KojiU128 koji_unsafe_carryless_product(int64_t a, int64_t b) { (void)b; return (KojiU128)(uint64_t)a; }
@@ -973,11 +958,7 @@ KOJI_INLINE bool koji_aes_available(void) {
 
 /* `kojic test`: the number of the test to run, the last argument of the executable (taken from the
    arguments the program sees), or -1. Weak: one for the program and the library. */
-#if defined(KOJI_NATIVE_LIBRARY)
-extern int64_t koji_test_selected;
-#else
 __attribute__((weak)) int64_t koji_test_selected = -1;
-#endif
 KOJI_INLINE int64_t koji_test_argument(int *count, char **values) {
     if (*count < 2) return -1;
     int64_t number = 0;

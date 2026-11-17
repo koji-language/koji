@@ -365,33 +365,11 @@ function buildLibrary(output: string): Result[void, string] {
     }
     immut objectPath = temporary('.o')
     writeBytes(objectPath, object)?
-    // The prelude, as the library has it (its functions once, for the programs and the library).
-    immut c = temporary('.c')
-    writeFile(c, '#define KOJI_LIBRARY 1\n#define KOJI_NATIVE_LIBRARY 1\n' + preludeLines.join('\n') + '\n')?
-    immut preludeObject = temporary('.o')
-    immut compiler = variable('KOJI_CC', 'cc')
-    mut flags = ['-O2']
-
-    // The tasks of the library switch between stacks, which the shadow stack of x86-64 (CET)
-    // forbids: without its mark on the library, no program asks the system for one.
-    if (system.architecture == system.X64) { flags.push('-fcf-protection=none') }
-
-    immut compiled = system.capture(compiler, flags + ['-c', '-o', preludeObject, c])
-    file.remove(c)
-
-    match (compiled) {
-        Ok(run) => {
-            if (run.status != 0) { return Err(`compile error: the C compiler '${compiler}' failed:\n${run.stderr.trim()}`) }
-        }
-        Err(_) => return Err(`compile error: cannot run the C compiler '${compiler}' (set KOJI_CC to choose another one)`)
-    }
-
     // A new archive (`ar` adds to an existing one).
     if (file.exists(output)) { file.remove(output) }
 
-    immut archived = system.capture('ar', ['rcs', output, objectPath, preludeObject])
+    immut archived = system.capture('ar', ['rcs', output, objectPath])
     file.remove(objectPath)
-    file.remove(preludeObject)
 
     return match (archived) {
         Ok(run) => if (run.status == 0) { Ok() } else { Err(`compile error: ar failed:\n${run.stderr.trim()}`) }
@@ -707,7 +685,7 @@ if (command == 'build') {
 
 // `kojic library -o libkoji_runtime.a`: the runtime library, built natively (see "The library of the
 // runtime built by the compiler" in doc/design.md): the machine code of std/koji/ (but `koji:core`),
-// and the part of the prelude still in C, compiled by the C compiler, in one archive.
+// with `koji:prelude` and the code the backend writes for the runtime, alone in an archive.
 if (command == 'library' and args.length() == 3 and args[1] == '-o') {
     match (buildLibrary(args[2])) {
         Ok(_) => {}

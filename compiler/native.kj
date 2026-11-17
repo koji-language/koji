@@ -507,7 +507,199 @@ function Native.runtimeCode(mut self): Export[] {
     }
 
     exported.push(self.stub('koji_record_shown', [0x48, 0x8B, 0x47, 0x08, 0xFF, 0x60, 0x20]))
+
+    for each in self.threadsCode() {
+        exported.push(each)
+    }
+
     return exported
+}
+
+// The threads of the runtime (see "The threads of the runtime" in doc/design.md), machine code that
+// runs no Koji: the threads that help with the calls that block, each taking jobs (KojiJob of
+// runtime/prelude.h: its code, 6 arguments, its result, errno, the task that waits, done) from a pipe
+// and giving them back through another; the thread that ticks for preemption; the job of each call
+// that blocks of the library, and running a job (on this thread when the task is alone). Their
+// state, which koji:prelude starts and stops: the pipes of the jobs, whether the clock ticks, the
+// pipe that wakes it, and `koji_preempt_flag`, which it sets.
+function Native.threadsCode(mut self): Export[] {
+    mut exported: Export[] = []
+    self.alignData(8)
+    immut flag = self.data.length()
+    self.dataWord(0)
+    exported.push({ name: 'koji_preempt_flag', at: flag, size: 8, section: 3 })
+    // Words: the pipe of the jobs (read, write), of the jobs done, whether the clock ticks, the pipe
+    // that wakes it (-1 for none).
+    immut state = self.data.length()
+
+    for word in [-1, -1, -1, -1, 0, -1, -1] {
+        self.dataWord(word)
+    }
+
+    exported.push({ name: 'koji_threads_state', at: state, size: 56, section: 3 })
+    // mov dword [rip + koji_preempt_flag], 0; ret
+    exported.push(self.stubWith('koji_preempt_clear', [0xC7, 0x05], 'koji_preempt_flag', pc32, -8, [0x00, 0x00, 0x00, 0x00, 0xC3]))
+    exported.push(self.stubWith('koji_threads_place', [0x48, 0x8D, 0x05], 'koji_threads_state', pc32, -4, [0xC3]))
+
+    // A thread that helps (its argument the state): read a job (8 bytes) from the pipe, run it,
+    // keep errno in it, write it to the pipe of the jobs done; an end of the pipe or an error but
+    // EINTR ends the thread.
+    immut helper = self.alignedCode()
+    // push rbp; mov rbp, rsp; push rbx; push r12; sub rsp, 16; mov rbx, rdi
+    self.bytes([0x55, 0x48, 0x89, 0xE5, 0x53, 0x41, 0x54, 0x48, 0x83, 0xEC, 0x10, 0x48, 0x89, 0xFB])
+    immut taking = self.code.length()
+    // mov edi, [rbx]; mov rsi, rsp; mov edx, 8; call read; cmp rax, 8; je got
+    self.bytes([0x8B, 0x3B, 0x48, 0x89, 0xE6, 0xBA, 0x08, 0x00, 0x00, 0x00])
+    self.callExternal('read')
+    self.bytes([0x48, 0x83, 0xF8, 0x08])
+    immut got = self.jumpIf(equal)
+    // test rax, rax; jns end; errno == EINTR: again
+    self.bytes([0x48, 0x85, 0xC0])
+    immut ended = self.jumpIf(0x9)
+    self.callExternal('__errno_location')
+    self.bytes([0x83, 0x38, 0x04])
+    self.jumpBack(0x84, taking)
+    immut failed = self.jump()
+    self.patchHere(got)
+    // mov r12, [rsp]; mov rdi, r12; call [r12]; errno: movsxd rcx, [rax]; mov [r12 + 64], rcx
+    self.bytes([0x4C, 0x8B, 0x24, 0x24, 0x4C, 0x89, 0xE7, 0x41, 0xFF, 0x14, 0x24])
+    self.callExternal('__errno_location')
+    self.bytes([0x48, 0x63, 0x08, 0x49, 0x89, 0x4C, 0x24, 0x40])
+    immut giving = self.code.length()
+    // mov [rsp], r12; mov edi, [rbx + 24]; mov rsi, rsp; mov edx, 8; call write
+    self.bytes([0x4C, 0x89, 0x24, 0x24, 0x8B, 0x7B, 0x18, 0x48, 0x89, 0xE6, 0xBA, 0x08, 0x00, 0x00, 0x00])
+    self.callExternal('write')
+    // test rax, rax; jns take; errno == EINTR: write again; else take
+    self.bytes([0x48, 0x85, 0xC0])
+    self.jumpBack(0x89, taking)
+    self.callExternal('__errno_location')
+    self.bytes([0x83, 0x38, 0x04])
+    self.jumpBack(0x84, giving)
+    self.jumpBack(0, taking)
+    self.patchHere(ended)
+    self.patchHere(failed)
+    // xor eax, eax; add rsp, 16; pop r12; pop rbx; pop rbp; ret
+    self.bytes([0x31, 0xC0, 0x48, 0x83, 0xC4, 0x10, 0x41, 0x5C, 0x5B, 0x5D, 0xC3])
+    exported.push({ name: 'koji_helper', at: helper, size: self.code.length() - helper, section: 1 })
+
+    // The thread that ticks (its argument the state): stopped, it waits for a byte of its pipe;
+    // ticking, it sleeps 10 ms and sets the flag.
+    immut ticker = self.alignedCode()
+    // push rbp; mov rbp, rsp; push rbx; sub rsp, 24; mov rbx, rdi
+    self.bytes([0x55, 0x48, 0x89, 0xE5, 0x53, 0x48, 0x83, 0xEC, 0x18, 0x48, 0x89, 0xFB])
+    immut ticking = self.code.length()
+    // cmp qword [rbx + 32], 0; jne sleep
+    self.bytes([0x48, 0x83, 0x7B, 0x20, 0x00])
+    immut running = self.jumpIf(notEqual)
+    // mov edi, [rbx + 40]; mov rsi, rsp; mov edx, 1; call read
+    self.bytes([0x8B, 0x7B, 0x28, 0x48, 0x89, 0xE6, 0xBA, 0x01, 0x00, 0x00, 0x00])
+    self.callExternal('read')
+    // test rax, rax; jns again; errno == EINTR: again; else end
+    self.bytes([0x48, 0x85, 0xC0])
+    self.jumpBack(0x89, ticking)
+    self.callExternal('__errno_location')
+    self.bytes([0x83, 0x38, 0x04])
+    self.jumpBack(0x84, ticking)
+    immut stopped = self.jump()
+    self.patchHere(running)
+    // mov qword [rsp], 0; mov qword [rsp + 8], 10000000; mov rdi, rsp; xor esi, esi; call nanosleep
+    self.bytes([0x48, 0xC7, 0x04, 0x24, 0x00, 0x00, 0x00, 0x00, 0x48, 0xC7, 0x44, 0x24, 0x08, 0x80, 0x96, 0x98, 0x00, 0x48, 0x89, 0xE7, 0x31, 0xF6])
+    self.callExternal('nanosleep')
+    // cmp qword [rbx + 32], 0; je again; mov dword [rip + koji_preempt_flag], 1; jmp again
+    self.bytes([0x48, 0x83, 0x7B, 0x20, 0x00])
+    self.jumpBack(0x84, ticking)
+    self.bytes([0xC7, 0x05])
+    self.relocation('koji_preempt_flag', pc32, -8)
+    self.int32(0)
+    self.int32(1)
+    self.jumpBack(0, ticking)
+    self.patchHere(stopped)
+    // xor eax, eax; add rsp, 24; pop rbx; pop rbp; ret
+    self.bytes([0x31, 0xC0, 0x48, 0x83, 0xC4, 0x18, 0x5B, 0x5D, 0xC3])
+    exported.push({ name: 'koji_ticker', at: ticker, size: self.code.length() - ticker, section: 1 })
+    // lea rax, [rip + koji_helper]; ret (and koji_ticker)
+    exported.push(self.stubWith('koji_helper_code', [0x48, 0x8D, 0x05], 'koji_helper', pc32, -4, [0xC3]))
+    exported.push(self.stubWith('koji_ticker_code', [0x48, 0x8D, 0x05], 'koji_ticker', pc32, -4, [0xC3]))
+
+    // A job (rdi): run here when the task is alone (koji_task_alone), else by a thread that helps
+    // while the task waits (koji_task_offload), errno then the job's: its result.
+    immut blocking = self.alignedCode()
+    // push rbp; mov rbp, rsp; push rbx; push rbx; mov rbx, rdi; call koji_task_alone; test al, al; jz offload
+    self.bytes([0x55, 0x48, 0x89, 0xE5, 0x53, 0x53, 0x48, 0x89, 0xFB])
+    self.callExternal('koji_task_alone')
+    self.bytes([0x84, 0xC0])
+    immut offload = self.jumpIf(equal)
+    // mov rdi, rbx; call [rbx]; jmp done
+    self.bytes([0x48, 0x89, 0xDF, 0xFF, 0x13])
+    immut ran = self.jump()
+    self.patchHere(offload)
+    // mov rdi, rbx; call koji_task_offload; errno = job.error: mov ecx, [rbx + 64]; mov [rax], ecx
+    self.bytes([0x48, 0x89, 0xDF])
+    self.callExternal('koji_task_offload')
+    self.callExternal('__errno_location')
+    self.bytes([0x8B, 0x4B, 0x40, 0x89, 0x08])
+    self.patchHere(ran)
+    // mov rax, [rbx + 56]; pop rbx; pop rbx; leave; ret
+    self.bytes([0x48, 0x8B, 0x43, 0x38, 0x5B, 0x5B, 0xC9, 0xC3])
+    exported.push({ name: 'koji_task_blocking', at: blocking, size: self.code.length() - blocking, section: 1 })
+
+    // The calls that block of the library (std/file.kj, std/system.kj): the function of C, its
+    // arguments, and whether it gives an `int` of C (sign-extended into the result of the job).
+    immut calls: Map[string, int[]] = ['getline': [3, 0], 'fread': [4, 0], 'waitpid': [3, 1], 'poll': [3, 1], 'fopen': [2, 0], 'readv': [3, 0], 'writev': [3, 0], 'opendir': [1, 0], 'readdir': [1, 0], 'access': [2, 1], 'unlink': [1, 1], 'mkdir': [2, 1]]
+
+    for called in ['getline', 'fread', 'waitpid', 'poll', 'fopen', 'readv', 'writev', 'opendir', 'readdir', 'access', 'unlink', 'mkdir'] {
+        immut shape = calls[called]
+        // The code of the job: the function with the arguments of the job (rbx), its result in it.
+        immut job = self.alignedCode()
+        // push rbp; mov rbp, rsp; push rbx; push rbx; mov rbx, rdi; mov rdi, [rbx + 8];
+        // mov rsi, [rbx + 16]; mov rdx, [rbx + 24]; mov rcx, [rbx + 32]
+        self.bytes([0x55, 0x48, 0x89, 0xE5, 0x53, 0x53, 0x48, 0x89, 0xFB, 0x48, 0x8B, 0x7B, 0x08, 0x48, 0x8B, 0x73, 0x10, 0x48, 0x8B, 0x53, 0x18, 0x48, 0x8B, 0x4B, 0x20])
+        self.callExternal(called)
+
+        // movsxd rax, eax
+        if (shape[1] == 1) { self.bytes([0x48, 0x63, 0xC0]) }
+
+        // mov [rbx + 56], rax; pop rbx; pop rbx; leave; ret
+        self.bytes([0x48, 0x89, 0x43, 0x38, 0x5B, 0x5B, 0xC9, 0xC3])
+        // The function the library calls: the job in its frame (the arguments from their registers,
+        // the rest zero), then koji_task_blocking.
+        immut call = self.alignedCode()
+        // push rbp; mov rbp, rsp; sub rsp, 96; lea rax, [rip + job]; mov [rbp - 96], rax
+        self.bytes([0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x60, 0x48, 0x8D, 0x05])
+        self.int32(job - (self.code.length() + 4))
+        self.bytes([0x48, 0x89, 0x45, 0xA0])
+        // mov [rbp - 88], rdi; mov [rbp - 80], rsi; mov [rbp - 72], rdx; mov [rbp - 64], rcx
+        self.bytes([0x48, 0x89, 0x7D, 0xA8, 0x48, 0x89, 0x75, 0xB0, 0x48, 0x89, 0x55, 0xB8, 0x48, 0x89, 0x4D, 0xC0])
+        // xor eax, eax; the words 5 and 6 of the arguments, the result, errno, the task and done zero
+        self.bytes([0x31, 0xC0, 0x48, 0x89, 0x45, 0xC8, 0x48, 0x89, 0x45, 0xD0, 0x48, 0x89, 0x45, 0xD8, 0x48, 0x89, 0x45, 0xE0, 0x48, 0x89, 0x45, 0xE8, 0x48, 0x89, 0x45, 0xF0])
+        // lea rdi, [rbp - 96]; call koji_task_blocking; leave; ret
+        self.bytes([0x48, 0x8D, 0x7D, 0xA0])
+        self.callExternal('koji_task_blocking')
+        self.bytes([0xC9, 0xC3])
+        exported.push({ name: `koji_blocking_${called}`, at: call, size: self.code.length() - call, section: 1 })
+    }
+
+    return exported
+}
+
+// The code at a multiple of 16 bytes: where it starts.
+function Native.alignedCode(mut self): int {
+    while (self.code.length() % 16 != 0) {
+        self.code.push(0xCC)
+    }
+
+    return self.code.length()
+}
+
+// A jump back to `target`: jcc rel32 (the second byte of its opcode `code`), or jmp for 0.
+function Native.jumpBack(mut self, code: int, target: int) {
+    if (code == 0) {
+        self.bytes([0xE9])
+    } else {
+        self.bytes([0x0F, code])
+    }
+
+    self.int32(target - (self.code.length() + 4))
 }
 
 // A function of the runtime of these bytes, aligned on 16 bytes.

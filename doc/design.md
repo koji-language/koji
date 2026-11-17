@@ -473,18 +473,18 @@ The value of `Shared` is the one reference of Koji, which its copies share: the 
 
 **Alternatives**: blocks of assembly in Koji (`asm`), which can do anything but are checked by nothing and written in the syntax of each processor; leaving them in C or in files of assembly, which keeps a language other than Koji in the runtime.
 
-### The threads of the runtime stay in C for now
+### The threads of the runtime
 
-**Decision**: the threads that help with the calls that block, and the one that ticks for preemption, stay in C (runtime/prelude.h) until the C backend goes: all the Koji of a program runs on its one thread.
+**Decision**: the threads that help with the calls that block, and the one that ticks for preemption, run machine code that the native backend writes into the library (as it writes the switch between stacks): their loops, the job of each call that blocks, and running a job; no Koji runs on them, and all the Koji of a program runs on its one thread. What runs on that thread (making their pipes, starting them, giving them jobs, starting and stopping the clock) is Koji (`koji:prelude`). The C backend keeps them in C (runtime/prelude.h), until it goes.
 
-**Why**: in Koji they would need code of Koji that runs on another thread, where it must neither allocate nor count references, with nothing to check it, and the address of a function of Koji given to C. They are about 150 lines; the guarantee that Koji runs on one thread is worth more than them.
+**Why**: in Koji they would need code of Koji that runs on another thread, where it must neither allocate nor count references, with nothing to check it; written by the backend, they are a few loops around calls of the system, with no Koji in them, and the library needs no C compiler.
 
-**Alternatives**: functions of `koji:unsafe` for the address of a function and a call through an address, with the rule, unchecked, that the code of other threads allocates nothing.
+**Alternatives**: functions of `koji:unsafe` for the address of a function and a call through an address, with the rule, unchecked, that the code of other threads allocates nothing; keeping them in C (as at first: the library then needed a C compiler for them).
 
 ### The library of the runtime built by the compiler
 
-**Decision**: the native backend compiles the library of the runtime (`kojic library`): its object, with the part of the prelude still in C compiled by the C compiler, in the archive that programs link. That part is only the threads of the runtime and the calls that block they run (see "The threads of the runtime stay in C for now"): the rest of runtime/prelude.h, which the C backend keeps in C, is Koji in the native library (`koji:prelude`, std/koji/prelude.kj, a module only `kojic library` compiles, so that the C of `kojic dump library` does not define it twice), and machine code the backend writes itself: the switch between the stacks of tasks, where a task starts, the heads of the pool, the descriptions of the items of the built-in types, and the few functions that call through an address (of a description, of the type of a record, of a closure). The seed of the bootstrap stays C, the compiler and its library (`bootstrap/kojic.c.gz`, `bootstrap/libkoji.c.gz`), so that a system without a compiler of Koji can build one; the compiler it builds then builds the library natively.
+**Decision**: the native backend compiles the library of the runtime (`kojic library`): its object alone, in the archive that programs link, with no C compiled. What runtime/prelude.h writes in C for the C backend is Koji in the native library (`koji:prelude`, std/koji/prelude.kj, a module only `kojic library` compiles, so that the C of `kojic dump library` does not define it twice), and machine code the backend writes itself: the switch between the stacks of tasks, where a task starts, the heads of the pool, the descriptions of the items of the built-in types, and the few functions that call through an address (of a description, of the type of a record, of a closure), and the threads of the runtime (see "The threads of the runtime"). The seed of the bootstrap stays C, the compiler and its library (`bootstrap/kojic.c.gz`, `bootstrap/libkoji.c.gz`), so that a system without a compiler of Koji can build one; the compiler it builds then builds the library natively.
 
-**Why**: the library is Koji: building it with the compiler takes the C compiler away from all of it but the small part of the prelude, as the backend did for programs.
+**Why**: the library is Koji: building it with the compiler takes the C compiler away from it, as the backend did for programs; the system's linker (and `ar`) are what is left of the toolchain of C.
 
 **Alternatives**: committing the object of the library (a binary in the repository, one for each platform); keeping the library compiled through C.
