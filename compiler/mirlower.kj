@@ -17,7 +17,7 @@
 import { Ty, Operand, Place, Target, Step, Instruction, Terminator, IrFunction, IrProgram, StdArg, isManaged, itemOf, tyText } from 'ir.kj'
 import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
 import { lastUses, defs, uses, terminatorUses, successors, targetReads } from 'liveness.kj'
-import { borrowedLocals } from 'borrow.kj'
+import { borrowedLocals, changes } from 'borrow.kj'
 import { floatWord } from 'constants.kj'
 
 // What the lowering needs to know of the object: the offsets of the globals (in .bss), of the
@@ -380,11 +380,19 @@ type Lowering = {
     position: int
     // The locals a `TakeIns` empties, set to none when the function starts (see `step`).
     emptied: boolean[]
+    // For each local, the variant of the record it holds when it is only compared (see
+    // `tagOnlyLocals`), or -1.
+    tagOnly: int[]
     // The `mut` parameters: theirs is the reference the caller gives (never released nor moved
     // out but to the address where their final values go, in `outs`, when the function returns).
     writeback: boolean[]
     outs: int[]
     slots: int[]
+    slotsUsed: int
+    // For each block after those of the IR, the block of the IR it continues, or -1 when cold.
+    owners: int[]
+    // The char whose string the next instruction adds (see `charAdded`).
+    charValue: MValue
     // The block of the machine IR being written: that of the block of the IR (the same number), or
     // one after them that goes on with it or that an instruction branches to (`newBlock`).
     piece: int
@@ -428,7 +436,14 @@ export function lowerMir(program: IrProgram, id: int, context: MirContext, preem
         }
     }
 
-    mut self: Lowering = { program: program, routine: routine, context: context, floats: floats, blocks: [], current: [], panics: [], panicIndex: [:], reads: reads, owned: owned, held: [], live: lastUses(routine), block: 0, position: 0, emptied: emptied, writeback: writeback, outs: [], slots: [], piece: 0 }
+    // The records of a variant without fields only compared: never made (their variant is known).
+    immut tagOnly = tagOnlyLocals(program, routine)
+
+    for local in range(routine.locals.length()) {
+        if (tagOnly[local] >= 0) { owned[local] = false }
+    }
+
+    mut self: Lowering = { program: program, routine: routine, context: context, floats: floats, blocks: [], current: [], panics: [], panicIndex: [:], reads: reads, owned: owned, held: [], live: lastUses(routine), block: 0, position: 0, emptied: emptied, tagOnly: tagOnly, writeback: writeback, outs: [], slots: [], slotsUsed: 0, owners: [], charValue: MImm(0), piece: 0 }
     mut params: int[] = []
 
     for param in range(routine.params) {
@@ -475,6 +490,7 @@ export function lowerMir(program: IrProgram, id: int, context: MirContext, preem
 
         for position in range(instructions.length()) {
             self.position = position
+            self.slotsUsed = 0
             self.instruction(instructions[position])
             self.step(mut self.held, instructions[position], block, position, true)
         }
@@ -507,7 +523,73 @@ export function lowerMir(program: IrProgram, id: int, context: MirContext, preem
         self.endPiece(ending)
     }
 
-    return { name: routine.name, params: params, floats: self.floats, blocks: self.blocks, slots: self.slots, panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { [routine.returns == FloatTy] } }
+    return { name: routine.name, params: params, floats: self.floats, blocks: self.ordered(), slots: self.slots, panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { [routine.returns == FloatTy] } }
+}
+
+function Lowering.tagOf(self, operand: Operand): int {
+    return match (operand) {
+        LocalOp(local) => self.tagOnly[local]
+        _ => -1
+    }
+}
+
+// The locals (not parameters) written once, by a record of a variant without fields, and only
+// compared (`==`, `!=`): their variants, or -1.
+function tagOnlyLocals(program: IrProgram, routine: IrFunction): int[] {
+    immut count = routine.locals.length()
+    mut variants: int[] = []
+    mut writes: int[] = []
+    mut compared: boolean[] = []
+
+    for local in range(count) {
+        variants.push(-1)
+        writes.push(0)
+        compared.push(true)
+    }
+
+    for block in routine.blocks {
+        for instruction in block.instructions {
+            for local in changes(instruction) {
+                writes[local] += 1
+            }
+
+            match (instruction) {
+                RecordNewIns(dest, variant, _) => {
+                    mut empty = true
+
+                    for field in program.records[recordOf(routine.locals[dest].ty)].variants[variant].fields {
+                        if (field.ty != VoidTy) { empty = false }
+                    }
+
+                    if (empty) { variants[dest] = variant }
+                }
+                _ => {}
+            }
+
+            immut comparison = match (instruction) {
+                BinaryIns(_, op, _, _, _) => op == 'RecordCompare(Equal)' or op == 'RecordCompare(NotEqual)'
+                _ => false
+            }
+
+            if (not comparison) {
+                for local in uses(instruction) {
+                    compared[local] = false
+                }
+            }
+        }
+
+        for local in terminatorUses(block.terminator) {
+            compared[local] = false
+        }
+    }
+
+    mut result: int[] = []
+
+    for local in range(count) {
+        result.push(if (local >= routine.params and writes[local] == 1 and compared[local]) { variants[local] } else { -1 })
+    }
+
+    return result
 }
 
 // A value in a new slot of the frame: its address (for the library, which takes items and keys so).
@@ -596,6 +678,68 @@ function Lowering.targetType(self, target: Target): Ty {
     return ty
 }
 
+// The local of a target that is a local itself (no path), or -1.
+function directLocal(target: Target): int {
+    return match (target.root) {
+        LocalPlace(local) if (target.path.length() == 0) => local
+        _ => -1
+    }
+}
+
+// On a slow path, the address of the variable of a target (see `directLocal`): a local put in a
+// slot of the frame (`variable.slot`, read back by the caller after the library), or the address
+// already known.
+function Lowering.slowVariable(mut self, direct: int, mut variable: Variable): MValue {
+    if (direct < 0) { return MReg(variable.address) }
+
+    variable.slot = self.slot()
+    self.current.push(MStore(MSlot(variable.slot, 0), MReg(direct), 8))
+    return self.addressOf(MSlot(variable.slot, 0))
+}
+
+// The value at a target, unshared (copied by `unshare` of the library when another reference sees
+// it): a local itself when it is not shared (through a slot only to copy it).
+function Lowering.unshared(mut self, target: Target, line: int, unshare: string): int {
+    immut own = self.temporary()
+
+    match (target.root) {
+        LocalPlace(local) if (target.path.length() == 0) => {
+            immut count = self.temporary()
+            self.current.push(MLoad(count, MBase(local, 0), 8))
+            immut alone = self.newBlock()
+            immut copy = self.coldBlock()
+            self.endPiece(MBranch('gt', MReg(count), MImm(1), copy, alone))
+            self.startPiece(copy)
+            immut slot = self.slot()
+            self.current.push(MStore(MSlot(slot, 0), MReg(local), 8))
+            immut address = self.addressOf(MSlot(slot, 0))
+            self.current.push(MCall(MExternal(unshare), [address], []))
+            self.current.push(MLoad(local, MSlot(slot, 0), 8))
+            self.endPiece(MJump(alone))
+            self.startPiece(alone)
+            self.current.push(MMove(own, MReg(local)))
+            return own
+        }
+        _ => {}
+    }
+
+    immut variable = self.variable(target, line)
+    immut shared = self.temporary()
+    self.current.push(MLoad(shared, MBase(variable.address, 0), 8))
+    immut count = self.temporary()
+    self.current.push(MLoad(count, MBase(shared, 0), 8))
+    immut alone = self.newBlock()
+    immut copy = self.coldBlock()
+    self.endPiece(MBranch('gt', MReg(count), MImm(1), copy, alone))
+    self.startPiece(copy)
+    self.current.push(MCall(MExternal(unshare), [MReg(variable.address)], []))
+    self.endPiece(MJump(alone))
+    self.startPiece(alone)
+    self.current.push(MLoad(own, MBase(variable.address, 0), 8))
+    self.closeVariable(variable)
+    return own
+}
+
 // The address of the variable of a target (a `void **`, as the library takes it): a local is put
 // in a slot of the frame for the instruction (read back by `closeVariable`: the library may have
 // copied the value), a global is in .bss; each step copies a shared list, record or map before
@@ -674,7 +818,7 @@ function Lowering.poolTake(mut self, target: int, size: int) {
     immut head = MSymbol('koji_pool', 8 * size)
     self.current.push(MLoad(target, head, 8))
     immut taken = self.newBlock()
-    immut refill = self.newBlock()
+    immut refill = self.coldBlock()
     immut next = self.newBlock()
     self.endPiece(MBranch('eq', MReg(target), MImm(0), refill, taken))
     self.startPiece(taken)
@@ -702,15 +846,81 @@ function wideType(ty: Ty): boolean {
 }
 
 // A new slot of a word in the frame: its number.
+// The slots live for one instruction only: the next one reuses them.
 function Lowering.slot(mut self): int {
-    self.slots.push(8)
-    return self.slots.length() - 1
+    if (self.slotsUsed == self.slots.length()) { self.slots.push(8) }
+
+    self.slotsUsed += 1
+    return self.slotsUsed - 1
 }
 
-// A new block of the machine IR (after those of the IR): its number.
+// A new block of the machine IR (after those of the IR): its number. It goes after the block of
+// the IR it continues (see `ordered`).
 function Lowering.newBlock(mut self): int {
     self.blocks.push({ instructions: [], terminator: MUnreachable })
+    self.owners.push(self.block)
     return self.blocks.length() - 1
+}
+
+// A new block rarely run (a panic, a slow path): it goes after all the others.
+function Lowering.coldBlock(mut self): int {
+    self.blocks.push({ instructions: [], terminator: MUnreachable })
+    self.owners.push(-1)
+    return self.blocks.length() - 1
+}
+
+// The blocks in the order of the code: each block of the IR, then those that continue it, then
+// the cold ones (so that the ranges of the values alive in a loop stay short, and the jumps few).
+function Lowering.ordered(self): MBlock[] {
+    immut count = self.routine.blocks.length()
+    mut pieces: int[][] = []
+
+    for block in range(count) {
+        pieces.push([block])
+    }
+
+    mut cold: int[] = []
+
+    for id in range(count, self.blocks.length()) {
+        immut owner = self.owners[id - count]
+
+        if (owner < 0) {
+            cold.push(id)
+        } else {
+            pieces[owner].push(id)
+        }
+    }
+
+    mut order: int[] = []
+
+    for each in pieces {
+        order = order + each
+    }
+
+    order = order + cold
+    mut place: int[] = []
+
+    for id in range(self.blocks.length()) {
+        place.push(0)
+    }
+
+    for i in range(order.length()) {
+        place[order[i]] = i
+    }
+
+    mut blocks: MBlock[] = []
+
+    for id in order {
+        immut block = self.blocks[id]
+        immut ending = match (block.terminator) {
+            MJump(target) => MJump(place[target])
+            MBranch(condition, left, right, thenBlock, elseBlock) => MBranch(condition, left, right, place[thenBlock], place[elseBlock])
+            other => other
+        }
+        blocks.push({ instructions: block.instructions, terminator: ending })
+    }
+
+    return blocks
 }
 
 function Lowering.startPiece(mut self, block: int) {
@@ -795,8 +1005,11 @@ function Lowering.step(mut self, mut held: boolean[], instruction: Instruction, 
 
     immut written = defs(instruction)
 
-    for local in written {
-        if (self.owned[local]) { held[local] = true }
+    // The string of a char added to the next instruction's is never made (see `charAdded`).
+    if (not self.charAdded(block, position)) {
+        for local in written {
+            if (self.owned[local]) { held[local] = true }
+        }
     }
 
     // The variables given the final values of `mut` arguments.
@@ -903,6 +1116,25 @@ function Lowering.givenFromTarget(self, callee: int, args: Operand[], param: int
     }
 
     return temporary
+}
+
+// `text = text + string(c)`, `text` read for the last time: the instruction at `position` makes
+// the string of the char, which only the next one reads, adding it to `text` (which it may change
+// in place). Then the string is never made: the next one adds the char itself.
+function Lowering.charAdded(self, block: int, position: int): boolean {
+    immut instructions = self.routine.blocks[block].instructions
+
+    if (position + 1 >= instructions.length()) { return false }
+
+    immut local = match (instructions[position]) {
+        UnaryIns(dest, 'CharToStr', _, _) => dest
+        _ => return false
+    }
+
+    return match (instructions[position + 1]) {
+        BinaryIns(dest, 'StrConcat', left, LocalOp(right), _) if (right == local and left != LocalOp(local)) => local in self.live[block][position + 1] and self.movedBy(instructions[position + 1], block, position + 1).length() > 0
+        _ => false
+    }
 }
 
 // The local, when its reference can move: owned, and read for the last time here; or -1.
@@ -1228,20 +1460,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
         // record unshared, then the field set, its old value released.
         FieldSetIns(record, field, value, line) => {
             immut fresh = self.taken(instruction, value)
-            immut variable = self.variable(record, line)
-            immut shared = self.temporary()
-            self.current.push(MLoad(shared, MBase(variable.address, 0), 8))
-            immut count = self.temporary()
-            self.current.push(MLoad(count, MBase(shared, 0), 8))
-            immut alone = self.newBlock()
-            immut copy = self.newBlock()
-            self.endPiece(MBranch('gt', MReg(count), MImm(1), copy, alone))
-            self.startPiece(copy)
-            self.current.push(MCall(MExternal('koji_record_unshare'), [MReg(variable.address)], []))
-            self.endPiece(MJump(alone))
-            self.startPiece(alone)
-            immut own = self.temporary()
-            self.current.push(MLoad(own, MBase(variable.address, 0), 8))
+            immut own = self.unshared(record, line, 'koji_record_unshare')
             immut ty = self.operandType(value)
             immut variants = self.program.records[recordOf(self.targetType(record))].variants
             mut wide = false
@@ -1268,8 +1487,6 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             } else {
                 self.current.push(MStore(at, fresh, 8))
             }
-
-            self.closeVariable(variable)
         }
         // In place when the list is not shared and has room (the runtime grows it otherwise).
         ListPushIns(list, value, line) => {
@@ -1278,14 +1495,21 @@ function Lowering.instruction(mut self, instruction: Instruction) {
 
             if (isManaged(ty)) { self.current.push(MRetain(fresh)) }
 
-            immut variable = self.variable(list, line)
-            immut items = self.temporary()
-            self.current.push(MLoad(items, MBase(variable.address, 0), 8))
+            immut direct = directLocal(list)
+            mut variable: Variable = { address: -1, slot: -1, root: -1 }
+            mut items = direct
+
+            if (direct < 0) {
+                variable = self.variable(list, line)
+                items = self.temporary()
+                self.current.push(MLoad(items, MBase(variable.address, 0), 8))
+            }
+
             immut count = self.temporary()
             self.current.push(MLoad(count, MBase(items, 0), 8))
             immut check = self.newBlock()
             immut fast = self.newBlock()
-            immut slow = self.newBlock()
+            immut slow = self.coldBlock()
             immut done = self.newBlock()
             self.endPiece(MBranch('ne', MReg(count), MImm(1), slow, check))
             self.startPiece(check)
@@ -1307,13 +1531,17 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             immut held = self.slot()
             self.current.push(MStore(MSlot(held, 0), fresh, 8))
             immut place = self.addressOf(MSlot(held, 0))
-            self.current.push(MCall(MExternal('koji_list_push'), [MReg(variable.address), place], []))
+            immut address = self.slowVariable(direct, mut variable)
+            self.current.push(MCall(MExternal('koji_list_push'), [address, place], []))
+
+            if (direct >= 0) { self.current.push(MLoad(direct, MSlot(variable.slot, 0), 8)) }
 
             if (isManaged(ty)) { self.current.push(MRelease(fresh, kindOf(ty))) }
 
             self.endPiece(MJump(done))
             self.startPiece(done)
-            self.closeVariable(variable)
+
+            if (direct < 0) { self.closeVariable(variable) }
         }
         // In place when the list is not shared and the index is in it (the runtime copies the
         // list, or panics, otherwise).
@@ -1321,14 +1549,21 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             immut ty = self.operandType(value)
             immut fresh = self.taken(instruction, value)
             immut at = self.register(self.value(index))
-            immut variable = self.variable(list, line)
-            immut items = self.temporary()
-            self.current.push(MLoad(items, MBase(variable.address, 0), 8))
+            immut direct = directLocal(list)
+            mut variable: Variable = { address: -1, slot: -1, root: -1 }
+            mut items = direct
+
+            if (direct < 0) {
+                variable = self.variable(list, line)
+                items = self.temporary()
+                self.current.push(MLoad(items, MBase(variable.address, 0), 8))
+            }
+
             immut count = self.temporary()
             self.current.push(MLoad(count, MBase(items, 0), 8))
             immut check = self.newBlock()
             immut fast = self.newBlock()
-            immut slow = self.newBlock()
+            immut slow = self.coldBlock()
             immut done = self.newBlock()
             self.endPiece(MBranch('ne', MReg(count), MImm(1), slow, check))
             self.startPiece(check)
@@ -1355,13 +1590,17 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             self.current.push(MStore(MSlot(held, 0), fresh, 8))
             immut place = self.addressOf(MSlot(held, 0))
             immut where = self.addressOf(MText(self.location(line)))
-            self.current.push(MCall(MExternal('koji_list_set'), [MReg(variable.address), MReg(at), place, where], []))
+            immut address = self.slowVariable(direct, mut variable)
+            self.current.push(MCall(MExternal('koji_list_set'), [address, MReg(at), place, where], []))
+
+            if (direct >= 0) { self.current.push(MLoad(direct, MSlot(variable.slot, 0), 8)) }
 
             if (isManaged(ty)) { self.current.push(MRelease(fresh, kindOf(ty))) }
 
             self.endPiece(MJump(done))
             self.startPiece(done)
-            self.closeVariable(variable)
+
+            if (direct < 0) { self.closeVariable(variable) }
         }
         // The library retains the value it inserts.
         ListInsertIns(list, index, value, line) => {
@@ -1539,7 +1778,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             immut length = self.temporary()
             self.current.push(MLoad(length, MBase(base, 32), 8))
             immut next = self.newBlock()
-            immut wrong = self.newBlock()
+            immut wrong = self.coldBlock()
             self.endPiece(MBranch('ae', MReg(at), MReg(length), wrong, next))
             self.startPiece(wrong)
             immut place = self.addressOf(MText(self.location(line)))
@@ -1550,6 +1789,8 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             self.current.push(MLoad(slots, MBase(base, 24), 8))
             self.loadItem(dest, MIndexed(slots, at, 8, 0))
         }
+        // Added by the next instruction (see `charAdded`).
+        UnaryIns(_, 'CharToStr', value, _) if (self.charAdded(self.block, self.position)) => self.charValue = self.value(value)
         UnaryIns(dest, op, value, _) if (unaryHelpers.has(op) or op == 'ListLength' or op == 'RecordTag') => {
             immut source = self.value(value)
 
@@ -1566,6 +1807,24 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             }
             self.callLibrary(helper, [source], Some(dest), false)
         }
+        // Against a record of a variant without fields, never made: the variant of the other.
+        BinaryIns(dest, op, left, right, _) if (op.startsWith('RecordCompare(') and (self.tagOf(left) >= 0 or self.tagOf(right) >= 0)) => {
+            immut known = if (self.tagOf(left) >= 0) { self.tagOf(left) } else { self.tagOf(right) }
+            immut other = if (self.tagOf(left) >= 0) { right } else { left }
+            immut condition = objectComparison(op)
+
+            if (self.tagOf(other) >= 0) {
+                immut same = self.tagOf(other) == known
+                self.current.push(MMove(dest, MImm(if (same == (condition == 'eq')) { 1 } else { 0 })))
+                return
+            }
+
+            immut base = self.register(self.value(other))
+            immut variant = self.temporary()
+            self.current.push(MLoad(variant, MBase(base, 16), 8))
+            self.current.push(MSet(dest, condition, MReg(variant), MImm(known)))
+        }
+        RecordNewIns(dest, _, _) if (self.tagOnly[dest] >= 0) => {}
         BinaryIns(dest, op, left, right, line) if (objectComparison(op) != '') => {
             immut first = self.value(left)
             immut second = self.value(right)
@@ -1613,6 +1872,44 @@ function Lowering.instruction(mut self, instruction: Instruction) {
         // when no one else sees it (it takes the reference of `text`).
         BinaryIns(dest, 'StrConcat', left, right, _) if (self.movedBy(instruction, self.block, self.position).length() > 0) => {
             immut first = self.value(left)
+
+            // The char of the instruction before, whose string was never made: an ASCII one goes in
+            // place when no one else sees `text` and its block has room; the library does the rest.
+            if (self.position > 0 and self.charAdded(self.block, self.position - 1)) {
+                immut text = self.register(first)
+                immut code = self.register(self.charValue)
+                immut target = self.resultOf(dest)
+                immut ascii = self.newBlock()
+                immut alone = self.newBlock()
+                immut fast = self.newBlock()
+                immut slow = self.coldBlock()
+                immut done = self.newBlock()
+                self.endPiece(MBranch('ae', MReg(code), MImm(0x80), slow, ascii))
+                self.startPiece(ascii)
+                immut count = self.temporary()
+                self.current.push(MLoad(count, MBase(text, 0), 8))
+                self.endPiece(MBranch('ne', MReg(count), MImm(1), slow, alone))
+                self.startPiece(alone)
+                immut size = self.temporary()
+                immut room = self.temporary()
+                self.current.push(MLoad(size, MBase(text, 8), 8))
+                self.current.push(MLoad(room, MBase(text, 16), 8))
+                self.endPiece(MBranch('ge', MReg(size), MReg(room), slow, fast))
+                self.startPiece(fast)
+                self.current.push(MStore(MIndexed(text, size, 1, 24), MReg(code), 1))
+                immut grown = self.temporary()
+                self.current.push(MBinary(grown, 'add', MReg(size), MImm(1), -1))
+                self.current.push(MStore(MBase(text, 8), MReg(grown), 8))
+                self.current.push(MMove(target, MReg(text)))
+                self.endPiece(MJump(done))
+                self.startPiece(slow)
+                self.current.push(MCall(MExternal('koji_string_append_char'), [MReg(text), MReg(code)], [target]))
+                self.endPiece(MJump(done))
+                self.startPiece(done)
+                self.setResult(dest, target)
+                return
+            }
+
             immut second = self.value(right)
             self.callLibrary('koji_string_append', [first, second], Some(dest), false)
         }
@@ -1622,7 +1919,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             immut first = self.value(left)
             immut count = self.register(self.value(right))
             immut next = self.newBlock()
-            immut wrong = self.newBlock()
+            immut wrong = self.coldBlock()
             self.endPiece(MBranch('a', MReg(count), MImm(63), wrong, next))
             self.startPiece(wrong)
             immut place = self.addressOf(MText(self.location(line)))

@@ -290,9 +290,16 @@ function Emitter.instruction(mut self, instruction: MInstruction) {
         }
         MSet(dest, condition, left, right) => {
             immut code = self.compare(left, right, condition)
-            // setcc al; movzx eax, al
-            self.bytes([0x0F, 0x90 + code, 0xC0, 0x0F, 0xB6, 0xC0])
-            self.storeTo(dest, rax)
+            immut target = self.target(dest)
+            // setcc r8; movzx r32, r8 (a REX prefix for sil, dil and r8b to r15b)
+            if (target >= 4) { self.bytes([0x40 | (target >> 3)]) }
+
+            self.bytes([0x0F, 0x90 + code, 0xC0 | (target & 7)])
+
+            if (target >= 4) { self.bytes([0x40 | (target >> 3) << 2 | (target >> 3)]) }
+
+            self.bytes([0x0F, 0xB6, 0xC0 | (target & 7) << 3 | (target & 7)])
+            self.finish(dest, target)
         }
         MCall(callee, args, results) => self.call(callee, args, results)
         MPanicIf(condition, left, right, panic) => {
@@ -595,6 +602,13 @@ function Emitter.compareWords(mut self, left: MValue, right: MValue) {
     }
 
     match (right) {
+        // test first, first
+        MImm(0) => self.bytes([rex(first, first), 0x85, 0xC0 | (first & 7) << 3 | (first & 7)])
+        MImm(number) if (number >= -128 and number <= 127) => {
+            // cmp first, imm8
+            self.bytes([rex(0, first), 0x83, 0xF8 | (first & 7)])
+            self.out.push(byte(number & 0xFF))
+        }
         MImm(number) if (fits32(number)) => {
             // cmp first, imm32
             self.bytes([rex(0, first), 0x81, 0xF8 | (first & 7)])
