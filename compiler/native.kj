@@ -1355,7 +1355,7 @@ function machOf(native: Native, extras: int[], exported: Export[]): byte[] {
         relocations.push({ section: 3, at: relocation.at, symbol: relocation.symbol, kind: 257, addend: relocation.addend })
     }
 
-    return machObject(native.code, native.rodata, native.data, native.bss, symbols, relocations)
+    return machObject(native.arm, native.code, native.rodata, native.data, native.bss, symbols, relocations)
 }
 
 // The relocatable object of ELF64 (x86-64) of the code and data.

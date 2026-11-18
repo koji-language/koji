@@ -1,15 +1,15 @@
-// The linker of Koji for macOS on arm64 (see "A linker of Koji's own" in doc/design.md): the executable
-// of Mach-O of the objects of a program and of its runtime library (macho.kj writes them), linked
-// with libSystem, without the linker of the system.
+// The linker of Koji for macOS on arm64 and x86-64 (see "A linker of Koji's own" in
+// doc/design.md): the executable of Mach-O of the objects of a program and of its runtime library
+// (macho.kj writes them), linked with libSystem, without the linker of the system.
 //
-// The executable is position-independent, as macOS asks of arm64: __PAGEZERO, then __TEXT (the
-// headers, the code, the stubs, the constants), __DATA (the table of addresses of libSystem, the
-// data, the zeros) and __LINKEDIT, each at a multiple of 16 KB. The functions of libSystem are called
-// through stubs (`adrp`, `ldr`, `br`) and an entry each in the table of addresses, which the dynamic
-// loader fills when the program starts (the opcodes of binding of LC_DYLD_INFO_ONLY), and the
-// addresses in the data are moved by it to where the program is loaded (its opcodes of rebasing).
-// Its entry is `_main` (LC_MAIN). An ad-hoc signature closes it (a CodeDirectory: the SHA-256 of each
-// page of 4 KB), which macOS asks of every program on arm64.
+// The executable is position-independent, as macOS asks: __PAGEZERO, then __TEXT (the headers, the
+// code, the stubs, the constants), __DATA (the table of addresses of libSystem, the data, the
+// zeros) and __LINKEDIT, each at a multiple of 16 KB. The functions of libSystem are called through
+// stubs (`adrp`, `ldr`, `br` on arm64, `jmp [rip + entry]` on x86-64) and an entry each in the
+// table of addresses, which the dynamic loader fills when the program starts (the opcodes of
+// binding of LC_DYLD_INFO_ONLY), and the addresses in the data are moved by it to where the program
+// is loaded (its opcodes of rebasing). Its entry is `_main` (LC_MAIN). An ad-hoc signature closes it
+// (a CodeDirectory: the SHA-256 of each page of 4 KB), which macOS asks of every program on arm64.
 
 type MachSection = {
     name: string
@@ -42,6 +42,8 @@ type MachInputRelocation = {
 }
 
 type MachInput = {
+    // CPU_TYPE_ARM64 or CPU_TYPE_X86_64.
+    cpu: int
     sections: MachSection[]
     symbols: MachInputSymbol[]
     relocations: MachInputRelocation[]
@@ -112,6 +114,17 @@ export function linkMach(objects: byte[][]): Result[byte[], string] {
 
     if (not defined.has('_main')) { return Err("no '_main' to start") }
 
+    // x86-64 or arm64, as the objects all are: the stubs are `jmp [rip + entry]` (6 bytes) or
+    // `adrp`, `ldr`, `br` (12).
+    immut cpu = inputs[0].cpu
+
+    for input in inputs {
+        if (input.cpu != cpu) { return Err('objects of two processors') }
+    }
+
+    immut x86 = cpu == 0x01000007
+    immut stubSize = if (x86) { 6 } else { 12 }
+
     // The symbols of libSystem: those no object defines; the table of addresses has an entry for
     // each one called or read through it.
     mut externals: string[] = []
@@ -157,12 +170,12 @@ export function linkMach(objects: byte[][]): Result[byte[], string] {
         }
     }
 
-    // The layout: the headers, the code, the stubs (12 bytes each), the constants; the table of
+    // The layout: the headers, the code, the stubs, the constants; the table of
     // addresses, the data, the zeros.
     immut headerSpace = 4096
     immut textAt = headerSpace
     immut stubsAt = align(textAt + sizes['text'], 16)
-    immut constAt = align(stubsAt + 12 * externals.length(), 16)
+    immut constAt = align(stubsAt + stubSize * externals.length(), 16)
     immut textEnd = align(constAt + sizes['const'], page)
     immut gotAt = textEnd
     immut dataAt = align(gotAt + 8 * externals.length(), 16)
@@ -211,10 +224,18 @@ export function linkMach(objects: byte[][]): Result[byte[], string] {
         }
     }
 
-    // The stubs: adrp x16, entry; ldr x16, [x16, :lo12:entry]; br x16
+    // The stubs: adrp x16, entry; ldr x16, [x16, :lo12:entry]; br x16 (on x86-64: jmp [rip + entry]).
     for i in range(externals.length()) {
-        immut at = stubsAt + 12 * i
+        immut at = stubsAt + stubSize * i
         immut entry = gotAt + 8 * i
+
+        if (x86) {
+            code[at - textAt] = 0xFF
+            code[at - textAt + 1] = 0x25
+            put32(mut code, at - textAt + 2, entry - (at + 6))
+            continue
+        }
+
         put32(mut code, at - textAt, adrp(16, at, entry))
         put32(mut code, at - textAt + 4, 0xF9400210 | ((entry & 0xFFF) >> 3) << 10)
         put32(mut code, at - textAt + 8, 0xD61F0200)
@@ -263,13 +284,39 @@ export function linkMach(objects: byte[][]): Result[byte[], string] {
             }
 
             immut instruction = read32(code, place - textAt)
+
+            // x86-64: a displacement of 32 bits from the end of its field, its addend in it.
+            if (x86) {
+                immut addend = if (instruction >= 0x80000000) { instruction - 0x100000000 } else { instruction }
+                immut destination = match (relocation.kind) {
+                    // X86_64_RELOC_BRANCH: to the stub of a function of libSystem.
+                    2 => if (external >= 0) { stubsAt + stubSize * external } else { target }
+                    // X86_64_RELOC_SIGNED (and SIGNED_1, _2, _4: their addends count the bytes of
+                    // the immediate after the field, which the end of the instruction is after).
+                    kind if (kind == 1 or kind >= 6 and kind <= 8) => {
+                        if (external >= 0) { return Err(`the data of '${symbol.name}' of libSystem`) }
+
+                        target
+                    }
+                    // X86_64_RELOC_GOT_LOAD, X86_64_RELOC_GOT: the entry of the symbol.
+                    kind if (kind == 3 or kind == 4) => {
+                        if (external < 0) { return Err(`an entry of the table of addresses for '${symbol.name}', which is defined`) }
+
+                        gotAt + 8 * external
+                    }
+                    other => return Err(`a relocation of type ${other}`)
+                }
+                put32(mut code, place - textAt, destination + addend - (place + 4))
+                continue
+            }
+
             immut address = target + relocation.addend
             mut value = 0
 
             match (relocation.kind) {
                 // ARM64_RELOC_BRANCH26: to the stub of a function of libSystem.
                 2 => {
-                    immut destination = if (external >= 0) { stubsAt + 12 * external } else { address }
+                    immut destination = if (external >= 0) { stubsAt + stubSize * external } else { address }
                     value = instruction | ((destination - place) >> 2 & 0x3FFFFFF)
                 }
                 // ARM64_RELOC_PAGE21
@@ -404,7 +451,7 @@ export function linkMach(objects: byte[][]): Result[byte[], string] {
     segment(mut commands, '__PAGEZERO', 0, base, 0, 0, 0, 0, [])
     segment(mut commands, '__TEXT', base, textEnd, 0, textEnd, 5, 5, [
         sectionHeader('__text', '__TEXT', base + textAt, sizes['text'], textAt, 4, 0x80000400),
-        sectionHeader('__stubs', '__TEXT', base + stubsAt, 12 * externals.length(), stubsAt, 2, 0x80000400),
+        sectionHeader('__stubs', '__TEXT', base + stubsAt, stubSize * externals.length(), stubsAt, if (x86) { 1 } else { 2 }, 0x80000400),
         sectionHeader('__const', '__TEXT', base + constAt, sizes['const'], constAt, 4, 0)
     ])
     segment(mut commands, '__DATA', base + gotAt, dataEnd - gotAt, gotAt, dataFileEnd - gotAt, 3, 3, [
@@ -468,11 +515,11 @@ export function linkMach(objects: byte[][]): Result[byte[], string] {
 
     if (32 + commands.length() > headerSpace) { return Err('too many load commands') }
 
-    // The file: the header (MH_MAGIC_64, arm64, MH_EXECUTE, MH_NOUNDEFS | MH_DYLDLINK |
+    // The file: the header (MH_MAGIC_64, the processor, MH_EXECUTE, MH_NOUNDEFS | MH_DYLDLINK |
     // MH_TWOLEVEL | MH_PIE), the commands, the contents, __LINKEDIT, then the signature.
     mut out: byte[] = []
 
-    for value in [0xFEEDFACF, 0x0100000C, 0, 2, count, commands.length(), 0x200085, 0] {
+    for value in [0xFEEDFACF, cpu, if (x86) { 3 } else { 0 }, 2, count, commands.length(), 0x200085, 0] {
         putInt32(mut out, value)
     }
 
@@ -532,7 +579,9 @@ function signature(file: byte[], identifier: byte[], pages: int, limit: int, tex
 function parseMach(bytes: byte[]): Result[MachInput, string] {
     if (bytes.length() < 32 or number(bytes, 0, 4) != 0xFEEDFACF) { return Err('not an object of Mach-O of 64 bits') }
 
-    if (number(bytes, 4, 4) != 0x0100000C) { return Err('not an object of arm64') }
+    immut cpu = number(bytes, 4, 4)
+
+    if (cpu != 0x0100000C and cpu != 0x01000007) { return Err('not an object of arm64 or x86-64') }
 
     if (number(bytes, 12, 4) != 1) { return Err('not a relocatable object') }
 
@@ -596,7 +645,7 @@ function parseMach(bytes: byte[]): Result[MachInput, string] {
         }
     }
 
-    return Ok({ sections: sections, symbols: symbols, relocations: relocations })
+    return Ok({ cpu: cpu, sections: sections, symbols: symbols, relocations: relocations })
 }
 
 // The low 12 bits of an address as the instruction takes them: as they are for an add, scaled by
