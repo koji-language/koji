@@ -23,6 +23,9 @@ export type MAddress = {
     MText(text: string)
     // The code of a function of the program (its number), for its address.
     MCode(id: int)
+    // The word of the table of the linker (the GOT) that holds the address of a symbol of a library
+    // (a variable of C).
+    MGot(name: string)
 }
 
 export type MCallee = {
@@ -169,6 +172,7 @@ function addressText(at: MAddress, code: MFunctionCode): string {
         MSymbol(name, offset) => `[${name} + ${offset}]`
         MText(text) => `[text '${text}']`
         MCode(id) => `[f${id}]`
+        MGot(name) => `[got ${name}]`
     }
 }
 

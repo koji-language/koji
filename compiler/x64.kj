@@ -1254,6 +1254,7 @@ function Emitter.memory(mut self, at: MAddress): Operand {
         MSlot(slot, offset) => OMemory(rbp, -1, 1, self.slots[slot] + offset)
         MSymbol(name, offset) => ORip(name, offset)
         MCode(id) => OCode(id)
+        MGot(name) => OGot(name)
         MText(text) => OText(text)
     }
 }
@@ -1294,6 +1295,8 @@ type Operand = {
     ORip(symbol: string, addend: int)
     // The code of a function of the program, [rip + displacement] (a call's use).
     OCode(id: int)
+    // The word of the GOT of a symbol, [rip + displacement] (R_X86_64_GOTPCREL).
+    OGot(symbol: string)
     OText(text: string)
 }
 
@@ -1328,6 +1331,11 @@ function Emitter.modrm(mut self, opcode: int[], reg: int, rm: Operand, wide: boo
 
     match (rm) {
         ORegister(register) => self.out.push(byte(0xC0 | (reg & 7) << 3 | (register & 7)))
+        OGot(symbol) => {
+            self.out.push(byte(0x05 | (reg & 7) << 3))
+            self.relocations.push({ at: self.out.length(), symbol: symbol, kind: 9, addend: -4 - immediate })
+            self.int32(0)
+        }
         OCode(id) => {
             self.out.push(byte(0x05 | (reg & 7) << 3))
             self.calls.push({ at: self.out.length(), target: id })
