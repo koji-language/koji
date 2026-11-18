@@ -13,6 +13,7 @@
 import { Ty, Operand, Place, Step, Target, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrProgram, isManaged } from 'ir.kj'
 import { changes, constantGlobals } from 'borrow.kj'
 import { uses, terminatorUses, successors } from 'liveness.kj'
+import { addBit, removeBit, hasBit, liveness } from 'bits.kj'
 import { Platformed, foldFor, platformGlobals, readsSystem } from 'target.kj'
 import system
 
@@ -213,9 +214,13 @@ export function simplify(given: IrFunction): IrFunction {
 
     routine = folded(routine)
 
-    for round in range(4) {
+    for round in range(2) {
+        routine = knownThreaded(routine)
+        routine = threaded(routine)
         routine = threaded(routine)
     }
+
+    routine = deadCopies(routine)
 
     routine = propagated(propagated(routine))
 
@@ -248,7 +253,7 @@ export function simplify(given: IrFunction): IrFunction {
 
     // A branch on the negation of a value, which only the branch reads, branches on the value the
     // other way.
-    for block in range(count) {
+    for block in range(routine.blocks.length()) {
         immut instructions = routine.blocks[block].instructions
 
         if (instructions.length() == 0) { continue }
@@ -267,7 +272,7 @@ export function simplify(given: IrFunction): IrFunction {
         }
     }
 
-    for block in range(count) {
+    for block in range(routine.blocks.length()) {
         mut instructions = routine.blocks[block].instructions
         mut kept: Instruction[] = []
         mut position = 0
@@ -297,6 +302,251 @@ export function simplify(given: IrFunction): IrFunction {
     }
 
     return laidOut(routine)
+}
+
+// The copies into locals of no references that nothing reads after them (by liveness over the
+// blocks): `t = a; branch a, ...` where every path writes `t` again before reading it. Not those
+// into `mut` parameters, whose final values go back to the caller.
+function deadCopies(given: IrFunction): IrFunction {
+    mut routine = given
+    immut count = routine.blocks.length()
+    immut words = (routine.locals.length() + 63) / 64
+    mut none: int[] = []
+
+    for word in range(words) {
+        none.push(0)
+    }
+
+    // For each block, the locals it reads before writing them, and those it writes (bits).
+    mut reads: int[][] = []
+    mut writes: int[][] = []
+
+    for block in range(count) {
+        mut read = none
+        mut written = none
+        immut instructions = routine.blocks[block].instructions
+
+        for local in terminatorUses(routine.blocks[block].terminator) {
+            addBit(mut read, local)
+        }
+
+        mut at = instructions.length() - 1
+
+        while (at >= 0) {
+            for local in changes(instructions[at]) {
+                addBit(mut written, local)
+                removeBit(mut read, local)
+            }
+
+            for local in uses(instructions[at]) {
+                addBit(mut read, local)
+            }
+
+            at -= 1
+        }
+
+        reads.push(read)
+        writes.push(written)
+    }
+
+    mut following: int[][] = []
+
+    for block in routine.blocks {
+        following.push(successors(block.terminator))
+    }
+
+    immut liveOut = liveness(reads, writes, following, words).out
+
+    for block in range(count) {
+        mut live = liveOut[block]
+
+        for local in terminatorUses(routine.blocks[block].terminator) {
+            addBit(mut live, local)
+        }
+
+        immut instructions = routine.blocks[block].instructions
+        mut kept: Instruction[] = []
+        mut removed = false
+        mut at = instructions.length() - 1
+
+        while (at >= 0) {
+            immut instruction = instructions[at]
+            immut dead = match (instruction) {
+                CopyIns(LocalPlace(dest), _) => not hasBit(live, dest) and not isManaged(routine.locals[dest].ty) and not (dest < routine.writeback.length() and routine.writeback[dest])
+                _ => false
+            }
+
+            if (dead) {
+                removed = true
+            } else {
+                kept.push(instruction)
+
+                for local in changes(instruction) {
+                    removeBit(mut live, local)
+                }
+
+                for local in uses(instruction) {
+                    addBit(mut live, local)
+                }
+            }
+
+            at -= 1
+        }
+
+        if (not removed) { continue }
+
+        mut ordered: Instruction[] = []
+        mut back = kept.length() - 1
+
+        while (back >= 0) {
+            ordered.push(kept[back])
+            back -= 1
+        }
+
+        routine.blocks[block] = { instructions: ordered, terminator: routine.blocks[block].terminator }
+    }
+
+    return routine
+}
+
+
+
+
+// A branch to a block of copies that branches on a value known on that edge (the condition of the
+// branch, or a copy of it, or a constant copied): the edge goes to a block of its own with those
+// copies, which goes where that branch would (`a or b` of functions inlined: `t = a; branch a, x,
+// y` then `y: u = t; branch t, ...`). The copies left unread go afterwards (`threaded`).
+function knownThreaded(given: IrFunction): IrFunction {
+    mut routine = given
+    immut count = routine.blocks.length()
+
+    // First, the jumps to an empty block that only jumps go where it goes.
+    for block in range(count) {
+        immut retarget = (target: int) => {
+            mut place = target
+            mut steps = 0
+
+            while (steps < 8 and routine.blocks[place].instructions.length() == 0) {
+                match (routine.blocks[place].terminator) {
+                    GotoT(next) if (next != place) => place = next
+                    _ => break
+                }
+
+                steps += 1
+            }
+
+            place
+        }
+        immut ending = match (routine.blocks[block].terminator) {
+            GotoT(next) => GotoT(retarget(next))
+            BranchT(condition, thenBlock, elseBlock) => BranchT(condition, retarget(thenBlock), retarget(elseBlock))
+            other => other
+        }
+        routine.blocks[block] = { instructions: routine.blocks[block].instructions, terminator: ending }
+    }
+
+    for block in range(count) {
+        immut ending = routine.blocks[block].terminator
+
+        // A jump to a block of a few copies that branches: those copies here, and the branch.
+        match (ending) {
+            GotoT(next) if (next != block and routine.blocks[next].instructions.length() <= 2) => {
+                match (routine.blocks[next].terminator) {
+                    BranchT(LocalOp(_), _, _) => {
+                        mut plain = true
+
+                        for copy in routine.blocks[next].instructions {
+                            match (copy) {
+                                CopyIns(LocalPlace(_), LocalOp(_)) => {}
+                                _ => plain = false
+                            }
+                        }
+
+                        if (plain) {
+                            routine.blocks[block] = { instructions: routine.blocks[block].instructions + routine.blocks[next].instructions, terminator: routine.blocks[next].terminator }
+                            continue
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+
+        immut condition = match (routine.blocks[block].terminator) {
+            BranchT(LocalOp(local), _, _) => local
+            _ => continue
+        }
+        immut instructions = routine.blocks[block].instructions
+        mut targets = successors(ending)
+
+        for side in [0, 1] {
+            immut next = targets[side]
+
+            if (next == block or targets[0] == targets[1]) { continue }
+
+            immut copies = routine.blocks[next].instructions
+
+            if (copies.length() > 4) { continue }
+
+            immut again = match (routine.blocks[next].terminator) {
+                BranchT(LocalOp(local), _, _) => local
+                _ => continue
+            }
+            // What is known on the edge: the condition, and the copies of it after it was written.
+            mut known: Map[int, boolean] = [:]
+            known[condition] = side == 0
+
+            for instruction in instructions {
+                match (instruction) {
+                    CopyIns(LocalPlace(dest), LocalOp(source)) if (source == condition and dest != condition) => known[dest] = side == 0
+                    other => {
+                        immut written = changes(other)
+
+                        // The condition written again: the copies before are of another value.
+                        if (condition in written) {
+                            known = [:]
+                            known[condition] = side == 0
+                        }
+
+                        for local in written {
+                            if (local != condition) { known.remove(local) }
+                        }
+                    }
+                }
+            }
+
+            mut plain = true
+
+            for copy in copies {
+                match (copy) {
+                    CopyIns(LocalPlace(dest), LocalOp(source)) => {
+                        match (known.get(source)) {
+                            Some(value) => known[dest] = value
+                            None => known.remove(dest)
+                        }
+                    }
+                    CopyIns(LocalPlace(dest), BoolOp(value)) => known[dest] = value
+                    _ => plain = false
+                }
+            }
+
+            if (not plain) { continue }
+
+            match (known.get(again)) {
+                Some(value) => {
+                    immut destinations = successors(routine.blocks[next].terminator)
+                    routine.blocks.push({ instructions: copies, terminator: GotoT(if (value) { destinations[0] } else { destinations[1] }) })
+                    targets[side] = routine.blocks.length() - 1
+                }
+                None => {}
+            }
+        }
+
+        routine.blocks[block] = { instructions: instructions, terminator: BranchT(LocalOp(condition), targets[0], targets[1]) }
+    }
+
+    return routine
 }
 
 // The copies into a local written only by them, of no references, replaced by what they copy where

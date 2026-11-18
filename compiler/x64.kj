@@ -10,7 +10,7 @@
 // slots, then the slots of the spilled values, its size a multiple of 16.
 
 import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode, EmittedRelocation, EmittedUse, EmittedText, Emitted } from 'mir.kj'
-import { RegisterSet, Allocation, positionOf } from 'mirregs.kj'
+import { RegisterSet, Allocation, positionOf, LiveSweep, sweepOf, liveAt } from 'mirregs.kj'
 
 immut rax = 0
 immut rcx = 1
@@ -51,10 +51,14 @@ type Emitter = {
     pairs: int[]
     // The entries of the tables of switches: where, the table, the block.
     tables: int[][]
+    // The registers alive at calls (see `liveAt`).
+    sweep: LiveSweep
+    // Whether the block being emitted is cold (its calls save the registers alive across them).
+    cold: boolean
 }
 
 export function emitX64(code: MFunctionCode, allocation: Allocation): Emitted {
-    mut self: Emitter = { code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [], tables: [] }
+    mut self: Emitter = { code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [], tables: [], cold: false, sweep: sweepOf(allocation, x64Registers.free, xmm) }
     // The frame: the kept registers used, the slots, the spills.
     mut size = 8 * allocation.used.length()
 
@@ -136,6 +140,7 @@ export function emitX64(code: MFunctionCode, allocation: Allocation): Emitted {
     for block in range(code.blocks.length()) {
         self.blockAt.push(self.out.length())
         immut each = code.blocks[block]
+        self.cold = block < code.cold.length() and code.cold[block]
 
         for index in range(each.instructions.length()) {
             self.position = positionOf(allocation, block, index)
@@ -473,18 +478,8 @@ function Emitter.valueRegister(mut self, value: MValue, spare: int): int {
 }
 
 // The registers calls do not keep that hold a value alive at the current position.
-function Emitter.liveCallerSaved(self): int[] {
-    mut saved: int[] = []
-
-    for id in range(self.code.floats.length()) {
-        immut register = self.allocation.registers[id]
-
-        if (register < 0 or register in saved) { continue }
-
-        if (self.allocation.first[id] <= self.position and self.position <= self.allocation.last[id] and (register in x64Registers.free or register >= xmm)) { saved.push(register) }
-    }
-
-    return saved
+function Emitter.liveCallerSaved(mut self): int[] {
+    return liveAt(mut self.sweep, self.allocation, self.position, false)
 }
 
 // The registers saved below the stack (16 bytes at a time, so that it stays aligned): the bytes.
@@ -751,7 +746,33 @@ function Emitter.operand(mut self, value: MValue, spare: int): Operand {
     }
 }
 
+// A call: in a cold block, with the registers that calls do not keep and that hold a value alive
+// across it saved around it (the allocator does not count it: see `allocate`).
 function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[]) {
+    if (not self.cold) {
+        self.callNow(callee, args, results)
+        return
+    }
+
+    // Not the registers of its results (which may be written elsewhere before too).
+    mut saved: int[] = []
+
+    for register in liveAt(mut self.sweep, self.allocation, self.position, true) {
+        mut written = false
+
+        for result in results {
+            if (self.allocation.registers[result] == register) { written = true }
+        }
+
+        if (not written) { saved.push(register) }
+    }
+
+    immut size = self.saveRegisters(saved)
+    self.callNow(callee, args, results)
+    self.restoreRegisters(saved, size)
+}
+
+function Emitter.callNow(mut self, callee: MCallee, args: MValue[], results: int[]) {
     // The arguments in the registers of the convention (a parallel move).
     mut sources: MValue[] = []
     mut destinations: int[] = []

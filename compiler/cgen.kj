@@ -1259,7 +1259,7 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
                 // `text + more` where `text` is read for the last time: the runtime adds to it in
                 // place when no one else sees it.
                 'StrConcat' => {
-                    match (self.movable(routine, left)) {
+                    match (self.movableAdded(routine, dest, left)) {
                         Some(local) if (left != right and dest != local and right == LocalOp(self.charLocal)) => {
                             self.charLocal = -1
                             self.setLocal(routine, dest, `koji_string_push_char(l${local}, ${self.charValue})`)
@@ -1276,6 +1276,17 @@ function Generator.instruction(mut self, routine: IrFunction, instruction: Instr
 
                             expression = self.binary(op, operand(left), operand(right), line)
                         }
+                    }
+                }
+                // `items + more` where `items` is read for the last time: the same.
+                'ListConcat' => {
+                    match (self.movableAdded(routine, dest, left)) {
+                        Some(local) if (left != right and dest != local) => {
+                            self.setLocal(routine, dest, `koji_list_append(l${local}, ${operand(right)})`)
+                            self.line(`    l${local} = NULL;`)
+                            return
+                        }
+                        _ => expression = self.binary(op, operand(left), operand(right), line)
                     }
                 }
                 // Against a record on the stack, whose variant is known: its tag, then its fields.
@@ -1887,6 +1898,27 @@ function Generator.appendsChar(mut self, routine: IrFunction, local: int): boole
         }
         _ => return false
     }
+}
+
+// The left of `left + more` when it is read for the last time (`movable`), or when it is a `mut`
+// parameter given the sum at once (`x = x + more`: `l = x + more`, then `x = l`), which no other
+// instruction may see emptied.
+function Generator.movableAdded(self, routine: IrFunction, dest: int, left: Operand): Option[int] {
+    match (left) {
+        LocalOp(local) if (local < routine.writeback.length() and routine.writeback[local] and not self.current[local]) => {
+            immut instructions = routine.blocks[self.block].instructions
+
+            if (self.position + 1 < instructions.length()) {
+                match (instructions[self.position + 1]) {
+                    CopyIns(LocalPlace(target), LocalOp(value)) if (target == local and value == dest) => return Some(local)
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+
+    return self.movable(routine, left)
 }
 
 function Generator.movable(self, routine: IrFunction, value: Operand): Option[int] {

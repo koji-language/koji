@@ -127,6 +127,9 @@ export type MFunctionCode = {
     // them aligned on 16 bytes (see `MPairs`).
     pairs: int[]
     aligned: int[]
+    // The blocks rarely run (panics, slow paths): their calls save the registers alive across them
+    // themselves, so that the allocator does not count them (see `allocate`).
+    cold: boolean[]
 }
 
 // The text of a function of the machine IR (`kojic dump mir`).

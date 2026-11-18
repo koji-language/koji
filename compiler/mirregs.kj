@@ -7,6 +7,7 @@
 // of the frame (this one, if it ends after them all).
 
 import { MValue, MAddress, MInstruction, MTerminator, MBlock, MFunctionCode } from 'mir.kj'
+import { addBit, hasBit, bitMembers, liveness } from 'bits.kj'
 
 // The registers of a processor for the allocator (their numbers for its emitter).
 export type RegisterSet = {
@@ -184,60 +185,31 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
 
         for instruction in block.instructions {
             for id in readOf(instruction) {
-                if (not has(written, id)) { add(mut read, id) }
+                if (not hasBit(written, id)) { addBit(mut read, id) }
             }
 
             for id in writtenBy(instruction) {
-                add(mut written, id)
+                addBit(mut written, id)
             }
         }
 
         for id in terminatorReads(block.terminator) {
-            if (not has(written, id)) { add(mut read, id) }
+            if (not hasBit(written, id)) { addBit(mut read, id) }
         }
 
         reads.push(read)
         writes.push(written)
     }
 
-    mut liveIn: int[][] = []
-    mut liveOut: int[][] = []
+    mut following: int[][] = []
 
-    for block in range(blocks) {
-        liveIn.push(empty)
-        liveOut.push(empty)
+    for block in code.blocks {
+        following.push(successorsOf(block.terminator))
     }
 
-    mut changed = true
-
-    while (changed) {
-        changed = false
-        mut block = blocks - 1
-
-        while (block >= 0) {
-            mut out = empty
-
-            for next in successorsOf(code.blocks[block].terminator) {
-                for word in range(words) {
-                    out[word] = out[word] | liveIn[next][word]
-                }
-            }
-
-            mut entering = empty
-
-            for word in range(words) {
-                entering[word] = reads[block][word] | (out[word] & ~writes[block][word])
-            }
-
-            if (entering != liveIn[block] or out != liveOut[block]) {
-                liveIn[block] = entering
-                liveOut[block] = out
-                changed = true
-            }
-
-            block -= 1
-        }
-    }
+    immut alive = liveness(reads, writes, following, words)
+    immut liveIn = alive.into
+    immut liveOut = alive.out
 
     // The ranges, and the positions of the calls.
     mut first: int[] = []
@@ -248,20 +220,60 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
         last.push(-1)
     }
 
+    // Alive into or out of blocks: only the first block where each is alive into one, and the
+    // last where it is alive out of one, extend its range (one range a register).
+    mut met = empty
+
+    for block in range(blocks) {
+        mut fresh = empty
+        mut any = false
+
+        for word in range(words) {
+            fresh[word] = liveIn[block][word] & ~met[word]
+
+            if (fresh[word] != 0) {
+                met[word] = met[word] | fresh[word]
+                any = true
+            }
+        }
+
+        if (any) {
+            for id in bitMembers(fresh) {
+                extend(mut first, mut last, id, blockStarts[block] - 1)
+            }
+        }
+    }
+
+    met = empty
+    mut back = blocks - 1
+
+    while (back >= 0) {
+        mut fresh = empty
+        mut any = false
+
+        for word in range(words) {
+            fresh[word] = liveOut[back][word] & ~met[word]
+
+            if (fresh[word] != 0) {
+                met[word] = met[word] | fresh[word]
+                any = true
+            }
+        }
+
+        if (any) {
+            for id in bitMembers(fresh) {
+                extend(mut first, mut last, id, blockStarts[back] + 2 * code.blocks[back].instructions.length())
+            }
+        }
+
+        back -= 1
+    }
+
     mut calls: int[] = []
 
     for block in range(blocks) {
         immut start = blockStarts[block]
         immut end = start + 2 * code.blocks[block].instructions.length()
-
-        for id in members(liveIn[block]) {
-            extend(mut first, mut last, id, start - 1)
-        }
-
-        for id in members(liveOut[block]) {
-            extend(mut first, mut last, id, end)
-        }
-
         immut instructions = code.blocks[block].instructions
 
         for index in range(instructions.length()) {
@@ -276,7 +288,8 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
             }
 
             match (instructions[index]) {
-                MCall(_, _, _) => calls.push(at)
+                // Not those of cold blocks: they save the registers alive across them.
+                MCall(_, _, _) if (not (block < code.cold.length() and code.cold[block])) => calls.push(at)
                 _ => {}
             }
         }
@@ -481,24 +494,96 @@ function extend(mut first: int[], mut last: int[], id: int, at: int) {
     if (at > last[id]) { last[id] = at }
 }
 
-function has(set: int[], member: int): boolean {
-    return (set[member / 64] >> (member % 64)) & 1 == 1
+
+
+
+// The virtual registers in registers that calls do not keep, met in the order of the positions
+// where they start, for the registers alive at each call (the positions only grow as the code is
+// emitted: see `liveAt`).
+export type LiveSweep = {
+    order: int[]
+    next: int
+    active: int[]
+    at: int
 }
 
-function add(mut set: int[], member: int) {
-    set[member / 64] = set[member / 64] | (1 << (member % 64))
-}
+// `free`: the registers calls do not keep among those the allocator gives; `floats`: the first
+// register of floats (none is kept).
+export function sweepOf(allocation: Allocation, free: int[], floats: int): LiveSweep {
+    mut end = 0
 
-function members(set: int[]): int[] {
-    mut found: int[] = []
+    for id in range(allocation.registers.length()) {
+        if (allocation.first[id] + 1 > end) { end = allocation.first[id] + 1 }
+    }
 
-    for word in range(set.length()) {
-        if (set[word] == 0) { continue }
+    mut counts: int[] = []
 
-        for bit in range(64) {
-            if ((set[word] >> bit) & 1 == 1) { found.push(64 * word + bit) }
+    for i in range(end + 1) {
+        counts.push(0)
+    }
+
+    mut chosen: int[] = []
+
+    for id in range(allocation.registers.length()) {
+        immut register = allocation.registers[id]
+
+        if (register < 0 or allocation.first[id] < 0) { continue }
+
+        if (register in free or register >= floats) {
+            chosen.push(id)
+            counts[allocation.first[id] + 1] += 1
         }
     }
 
-    return found
+    for i in range(end) {
+        counts[i + 1] += counts[i]
+    }
+
+    mut order: int[] = []
+
+    for id in chosen {
+        order.push(0)
+    }
+
+    for id in chosen {
+        order[counts[allocation.first[id]]] = id
+        counts[allocation.first[id]] += 1
+    }
+
+    return { order: order, next: 0, active: [], at: -1 }
+}
+
+// The registers that calls do not keep and that hold a value alive at `position` (with `across`,
+// one alive before it and after it: not one a call there reads for the last time or writes).
+export function liveAt(mut sweep: LiveSweep, allocation: Allocation, position: int, across: boolean): int[] {
+    // From the start again should a position come before the last.
+    if (position < sweep.at) {
+        sweep.next = 0
+        sweep.active = []
+    }
+
+    sweep.at = position
+
+    while (sweep.next < sweep.order.length() and allocation.first[sweep.order[sweep.next]] <= position) {
+        sweep.active.push(sweep.order[sweep.next])
+        sweep.next += 1
+    }
+
+    mut kept: int[] = []
+    mut saved: int[] = []
+
+    for id in sweep.active {
+        if (allocation.last[id] < position) { continue }
+
+        kept.push(id)
+
+        if (across and (allocation.first[id] >= position or allocation.last[id] <= position)) { continue }
+
+        immut register = allocation.registers[id]
+
+        if (not (register in saved)) { saved.push(register) }
+    }
+
+    sweep.active = kept
+    return saved
 }

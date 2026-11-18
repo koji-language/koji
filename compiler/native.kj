@@ -1143,9 +1143,7 @@ function Native.emitCode(mut self, code: MFunctionCode): int {
     immut emitted = if (self.arm) { emitA64(code, allocate(code, a64Registers), self.macos) } else { emitX64(code, allocate(code, x64Registers)) }
     immut start = self.code.length()
 
-    for each in emitted.code {
-        self.code.push(each)
-    }
+    append(mut self.code, emitted.code)
 
     for relocation in emitted.relocations {
         // The code of the job of a function that blocks (see `trampolineCode`).
@@ -1302,11 +1300,9 @@ function putInt32(mut out: byte[], number: int) {
     putBytes(mut out, number, 4)
 }
 
-// Adds the bytes at the end, in place (a `+` would copy the whole list each time).
+// Adds the bytes at the end, in place (`out` read for the last time: see `koji_list_append`).
 function append(mut out: byte[], bytes: byte[]) {
-    for each in bytes {
-        out.push(each)
-    }
+    out = out + bytes
 }
 
 type Section = {

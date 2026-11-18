@@ -1,0 +1,134 @@
+// Sets of small integers as bits (64 a word), and liveness over the blocks of a function with them:
+// the analyses of the IR after inlining (inline.kj) and of the machine IR (mirlower.kj, mirregs.kj).
+
+// A set of `count` members, none in it.
+export function emptyBits(count: int): int[] {
+    mut set: int[] = []
+
+    for word in range((count + 63) / 64) {
+        set.push(0)
+    }
+
+    return set
+}
+
+export function addBit(mut set: int[], member: int) {
+    set[member / 64] = set[member / 64] | (1 << (member % 64))
+}
+
+export function removeBit(mut set: int[], member: int) {
+    set[member / 64] = set[member / 64] & ~(1 << (member % 64))
+}
+
+export function hasBit(set: int[], member: int): boolean {
+    return (set[member / 64] >> (member % 64)) & 1 == 1
+}
+
+// The members of a set, in order.
+export function bitMembers(set: int[]): int[] {
+    mut found: int[] = []
+
+    for word in range(set.length()) {
+        mut bits = set[word]
+
+        if (bits == 0) { continue }
+
+        // The top bit last (a shift right keeps the sign).
+        immut top = bits < 0
+        bits = bits & 0x7FFFFFFFFFFFFFFF
+        mut bit = 0
+
+        while (bits != 0) {
+            if (bits & 1 == 1) { found.push(64 * word + bit) }
+
+            bits = bits >> 1
+            bit += 1
+        }
+
+        if (top) { found.push(64 * word + 63) }
+    }
+
+    return found
+}
+
+// What is alive into each block and out of it.
+export type Liveness = {
+    into: int[][]
+    out: int[][]
+}
+
+// Liveness backwards from what each block reads before writing it (`reads`), what it writes
+// (`writes`) and the blocks it goes to (`following`): to a fixed point, from a list of the blocks
+// to visit again (those before one whose values alive into it grew), the last first, so that each
+// block is visited again only when what follows it changed.
+export function liveness(reads: int[][], writes: int[][], following: int[][], words: int): Liveness {
+    immut blocks = reads.length()
+    mut none: int[] = []
+
+    for word in range(words) {
+        none.push(0)
+    }
+
+    mut into: int[][] = []
+    mut out: int[][] = []
+    mut predecessors: int[][] = []
+    mut pending: int[] = []
+    mut queued: boolean[] = []
+
+    for block in range(blocks) {
+        into.push(none)
+        out.push(none)
+        predecessors.push([])
+        pending.push(block)
+        queued.push(true)
+    }
+
+    for block in range(blocks) {
+        for next in following[block] {
+            if (not (block in predecessors[next])) { predecessors[next].push(block) }
+        }
+    }
+
+    while (pending.length() > 0) {
+        immut block = pending[pending.length() - 1]
+        pending.pop()
+        queued[block] = false
+        mut leaving = none
+
+        for next in following[block] {
+            immut entering = into[next]
+
+            for word in range(words) {
+                leaving[word] = leaving[word] | entering[word]
+            }
+        }
+
+        immut read = reads[block]
+        immut written = writes[block]
+        immut before = into[block]
+        mut entering = none
+        mut grew = false
+
+        for word in range(words) {
+            immut now = read[word] | (leaving[word] & ~written[word])
+            entering[word] = now
+
+            if (now != before[word]) { grew = true }
+        }
+
+        out[block] = leaving
+
+        if (grew) {
+            into[block] = entering
+
+            for each in predecessors[block] {
+                if (not queued[each]) {
+                    queued[each] = true
+                    pending.push(each)
+                }
+            }
+        }
+    }
+
+    return { into: into, out: out }
+}

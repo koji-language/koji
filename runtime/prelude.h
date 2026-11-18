@@ -176,6 +176,7 @@ KOJI_INLINE void koji_unsafe_set_list_length(KojiList *list, int64_t length) { l
 void koji_list_insert(const void *variable, int64_t index, const void *value, const char *location);
 void koji_list_sort(const void *variable);
 void *koji_list_concat(const void *a, const void *b);
+void *koji_list_append(const void *a, const void *b);
 void *koji_list_slice(const void *list, bool has_start, int64_t start, bool has_end, int64_t end,
                      const char *location);
 bool koji_list_equal(const void *a, const void *b);

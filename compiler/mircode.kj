@@ -96,5 +96,5 @@ function MBuilder.code(self): MFunctionCode {
         blocks.push({ instructions: block.instructions, terminator: ending })
     }
 
-    return { name: self.name, params: self.params, floats: self.floats, blocks: blocks, slots: self.slots, panics: [], results: self.results, pairs: self.pairs, aligned: self.aligned }
+    return { name: self.name, params: self.params, floats: self.floats, blocks: blocks, slots: self.slots, panics: [], results: self.results, pairs: self.pairs, aligned: self.aligned, cold: [] }
 }

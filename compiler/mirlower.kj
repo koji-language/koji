@@ -16,6 +16,7 @@
 import { Ty, Operand, Place, Target, Step, Instruction, Terminator, IrFunction, IrProgram, StdArg, isManaged, itemOf, tyText } from 'ir.kj'
 import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
 import { lastUses, defs, uses, terminatorUses, successors, targetReads } from 'liveness.kj'
+import { addBit, removeBit, hasBit, bitMembers } from 'bits.kj'
 import { borrowedLocals, changes } from 'borrow.kj'
 import { floatWord, decimalBits } from 'constants.kj'
 import { targetPlatform } from 'inline.kj'
@@ -530,7 +531,7 @@ type Lowering = {
     // For each local, whether the function owns its references (managed, not borrowed), and
     // whether it may hold one now.
     owned: boolean[]
-    held: boolean[]
+    held: int[]
     // The locals each instruction reads for the last time (liveness.kj), and where the lowering is.
     live: int[][][]
     block: int
@@ -549,7 +550,7 @@ type Lowering = {
     outs: int[]
     slots: int[]
     slotsUsed: int
-    // For each block after those of the IR, the block of the IR it continues, or -1 when cold.
+    // For each block after those of the IR, the block of the IR it continues (-2 less it when cold).
     owners: int[]
     // The char whose string the next instruction adds (see `charAdded`).
     charValue: MValue
@@ -682,22 +683,28 @@ export function lowerMir(program: IrProgram, id: int, context: MirContext, preem
         immut ending = self.terminator(terminator)
 
         // The locals held where the paths from here meet others that hold them: none here.
-        for local in range(routine.locals.length()) {
-            if (not owned[local] or self.held[local]) { continue }
+        mut wanted = self.held
+        immut following = successors(terminator)
 
-            mut wanted = false
+        for word in range(wanted.length()) {
+            mut merged = 0
 
-            for next in successors(terminator) {
-                if (heldIn[next][local]) { wanted = true }
+            for next in following {
+                merged = merged | heldIn[next][word]
             }
 
-            if (wanted) { self.current.push(MMove(local, MImm(0))) }
+            wanted[word] = merged & ~self.held[word]
+        }
+
+        for local in bitMembers(wanted) {
+            if (owned[local]) { self.current.push(MMove(local, MImm(0))) }
         }
 
         self.endPiece(ending)
     }
 
-    return { name: routine.name, params: params, floats: self.floats, blocks: self.ordered(), slots: self.slots, panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { if (wideType(routine.returns)) { [false, false] } else { [routine.returns == FloatTy] } }, pairs: pairs, aligned: aligned }
+    immut order = self.layout()
+    return { name: routine.name, params: params, floats: self.floats, blocks: self.ordered(order), cold: self.coldOrdered(order), slots: self.slots, panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { if (wideType(routine.returns)) { [false, false] } else { [routine.returns == FloatTy] } }, pairs: pairs, aligned: aligned }
 }
 
 function Lowering.tagOf(self, operand: Operand): int {
@@ -1138,16 +1145,17 @@ function Lowering.newBlock(mut self): int {
     return self.blocks.length() - 1
 }
 
-// A new block rarely run (a panic, a slow path): it goes after all the others.
+// A new block rarely run (a panic, a slow path): it goes after those of the block of the IR (not at
+// the end of the function, so that the values it reads are not alive across the rest of it).
 function Lowering.coldBlock(mut self): int {
     self.blocks.push({ instructions: [], terminator: MUnreachable })
-    self.owners.push(-1)
+    self.owners.push(-2 - self.block)
     return self.blocks.length() - 1
 }
 
-// The blocks in the order of the code: each block of the IR, then those that continue it, then
-// the cold ones (so that the ranges of the values alive in a loop stay short, and the jumps few).
-function Lowering.ordered(self): MBlock[] {
+// The order of the code: each block of the IR, then those that continue it, then its cold ones (so
+// that the ranges of the values alive in a loop stay short, and the jumps few).
+function Lowering.layout(self): int[] {
     immut count = self.routine.blocks.length()
     mut pieces: int[][] = []
 
@@ -1155,13 +1163,17 @@ function Lowering.ordered(self): MBlock[] {
         pieces.push([block])
     }
 
-    mut cold: int[] = []
+    mut cold: int[][] = []
+
+    for block in range(count) {
+        cold.push([])
+    }
 
     for id in range(count, self.blocks.length()) {
         immut owner = self.owners[id - count]
 
         if (owner < 0) {
-            cold.push(id)
+            cold[-owner - 2].push(id)
         } else {
             pieces[owner].push(id)
         }
@@ -1169,11 +1181,15 @@ function Lowering.ordered(self): MBlock[] {
 
     mut order: int[] = []
 
-    for each in pieces {
-        order = order + each
+    for block in range(count) {
+        order = order + pieces[block] + cold[block]
     }
 
-    order = order + cold
+    return order
+}
+
+// The blocks in the order of the code (`layout`), their jumps to the blocks there.
+function Lowering.ordered(self, order: int[]): MBlock[] {
     mut place: int[] = []
 
     for id in range(self.blocks.length()) {
@@ -1208,6 +1224,18 @@ function Lowering.ordered(self): MBlock[] {
     return blocks
 }
 
+// Whether each block in the order of the code (`layout`) is cold.
+function Lowering.coldOrdered(self, order: int[]): boolean[] {
+    immut count = self.routine.blocks.length()
+    mut cold: boolean[] = []
+
+    for id in order {
+        cold.push(id >= count and self.owners[id - count] < 0)
+    }
+
+    return cold
+}
+
 function Lowering.startPiece(mut self, block: int) {
     self.piece = block
     self.current = []
@@ -1218,16 +1246,20 @@ function Lowering.endPiece(mut self, terminator: MTerminator) {
 }
 
 // The locals that may hold a reference at the start of each block (forwards over the blocks: see
-// `step`). The parameters owned hold one from the start, and the locals a `TakeIns` empties.
-function Lowering.heldAtBlocks(mut self): boolean[][] {
+// `step`), as sets of bits (64 locals a word). The parameters owned hold one from the start, and the
+// locals a `TakeIns` empties.
+function Lowering.heldAtBlocks(mut self): int[][] {
     immut routine = self.routine
-    mut none: boolean[] = []
+    immut words = (routine.locals.length() + 63) / 64
+    mut none: int[] = []
+    mut all: int[] = []
 
-    for local in range(routine.locals.length()) {
-        none.push(false)
+    for word in range(words) {
+        none.push(0)
+        all.push(-1)
     }
 
-    mut heldIn: boolean[][] = []
+    mut heldIn: int[][] = []
 
     for block in routine.blocks {
         heldIn.push(none)
@@ -1236,35 +1268,56 @@ function Lowering.heldAtBlocks(mut self): boolean[][] {
     mut entry = none
 
     for local in range(routine.locals.length()) {
-        if (self.owned[local] and (local < routine.params or self.emptied[local])) { entry[local] = true }
+        if (self.owned[local] and (local < routine.params or self.emptied[local])) { addBit(mut entry, local) }
     }
 
     heldIn[0] = entry
+    // What each block does to them, once: those that hold one after it whatever held one before
+    // (`given`), and those that hold one after it if they did before (`kept`); a local is held
+    // after the block when it is given, or kept and held before.
+    mut given: int[][] = []
+    mut kept: int[][] = []
+    mut following: int[][] = []
+
+    for block in range(routine.blocks.length()) {
+        mut low = none
+        mut high = all
+        immut instructions = routine.blocks[block].instructions
+
+        for position in range(instructions.length()) {
+            self.summarize(mut low, mut high, instructions[position], block, position)
+        }
+
+        given.push(low)
+        kept.push(high)
+        following.push(successors(routine.blocks[block].terminator))
+    }
+
     mut changed = true
+    mut held = none
 
     while (changed) {
         changed = false
 
         for block in range(routine.blocks.length()) {
-            mut held = heldIn[block]
-            immut instructions = routine.blocks[block].instructions
-
-            for position in range(instructions.length()) {
-                self.step(mut held, instructions[position], block, position, false)
+            for word in range(words) {
+                held[word] = given[block][word] | (heldIn[block][word] & kept[block][word])
             }
 
-            for next in successors(routine.blocks[block].terminator) {
-                mut merged = heldIn[next]
+            for next in following[block] {
                 mut grew = false
 
-                for local in range(held.length()) {
-                    if (held[local] and not merged[local]) {
-                        merged[local] = true
-                        grew = true
-                    }
+                for word in range(words) {
+                    if (held[word] & ~heldIn[next][word] != 0) { grew = true }
                 }
 
                 if (grew) {
+                    mut merged = heldIn[next]
+
+                    for word in range(words) {
+                        merged[word] = merged[word] | held[word]
+                    }
+
                     heldIn[next] = merged
                     changed = true
                 }
@@ -1275,36 +1328,51 @@ function Lowering.heldAtBlocks(mut self): boolean[][] {
     return heldIn
 }
 
-// What an instruction does to the locals that hold references (`held`): the one it moves out
-// holds none, those it writes hold one, and those it reads for the last time are released (with
-// `emit`, in the code: and set to none when a `TakeIns` may read them again).
-function Lowering.step(mut self, mut held: boolean[], instruction: Instruction, block: int, position: int, emit: boolean) {
+
+
+
+
+// `step` for the summaries of a block (see `heldAtBlocks`): what an instruction does to those that
+// hold a reference after the instructions before it whatever held one (`low`), and to those that
+// hold one if they did (`high`). Each local is either set, emptied or left as it was.
+function Lowering.summarize(mut self, mut low: int[], mut high: int[], instruction: Instruction, block: int, position: int) {
     for moved in self.movedBy(instruction, block, position) {
-        held[moved] = false
+        removeBit(mut low, moved)
+        removeBit(mut high, moved)
     }
 
     match (instruction) {
-        TakeIns(_, LocalPlace(source)) => held[source] = false
-        DropIns(LocalPlace(source), _) => held[source] = false
+        TakeIns(_, LocalPlace(source)) => {
+            removeBit(mut low, source)
+            removeBit(mut high, source)
+        }
+        DropIns(LocalPlace(source), _) => {
+            removeBit(mut low, source)
+            removeBit(mut high, source)
+        }
         _ => {}
     }
 
     immut written = defs(instruction)
 
-    // The string of a char added to the next instruction's is never made (see `charAdded`).
     if (not self.charAdded(block, position)) {
         for local in written {
-            if (self.owned[local]) { held[local] = true }
+            if (self.owned[local]) {
+                addBit(mut low, local)
+                addBit(mut high, local)
+            }
         }
     }
 
-    // The variables given the final values of `mut` arguments.
     match (instruction) {
         CallIns(_, _, _, writebacks, _) => {
             for each in writebacks {
                 match (each.target.root) {
                     LocalPlace(local) => {
-                        if (self.owned[local]) { held[local] = true }
+                        if (self.owned[local]) {
+                            addBit(mut low, local)
+                            addBit(mut high, local)
+                        }
                     }
                     _ => {}
                 }
@@ -1314,7 +1382,53 @@ function Lowering.step(mut self, mut held: boolean[], instruction: Instruction, 
     }
 
     for local in self.live[block][position] {
-        if (not self.owned[local] or not held[local] or local in written or self.writeback[local]) { continue }
+        if (not self.owned[local] or local in written or self.writeback[local]) { continue }
+
+        removeBit(mut low, local)
+        removeBit(mut high, local)
+    }
+}
+
+// What an instruction does to the locals that hold references (`held`): the one it moves out
+// holds none, those it writes hold one, and those it reads for the last time are released (with
+// `emit`, in the code: and set to none when a `TakeIns` may read them again).
+function Lowering.step(mut self, mut held: int[], instruction: Instruction, block: int, position: int, emit: boolean) {
+    for moved in self.movedBy(instruction, block, position) {
+        removeBit(mut held, moved)
+    }
+
+    match (instruction) {
+        TakeIns(_, LocalPlace(source)) => removeBit(mut held, source)
+        DropIns(LocalPlace(source), _) => removeBit(mut held, source)
+        _ => {}
+    }
+
+    immut written = defs(instruction)
+
+    // The string of a char added to the next instruction's is never made (see `charAdded`).
+    if (not self.charAdded(block, position)) {
+        for local in written {
+            if (self.owned[local]) { addBit(mut held, local) }
+        }
+    }
+
+    // The variables given the final values of `mut` arguments.
+    match (instruction) {
+        CallIns(_, _, _, writebacks, _) => {
+            for each in writebacks {
+                match (each.target.root) {
+                    LocalPlace(local) => {
+                        if (self.owned[local]) { addBit(mut held, local) }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+
+    for local in self.live[block][position] {
+        if (not self.owned[local] or not hasBit(held, local) or local in written or self.writeback[local]) { continue }
 
         if (emit) {
             self.current.push(MRelease(MReg(local), kindOf(self.routine.locals[local].ty)))
@@ -1322,7 +1436,7 @@ function Lowering.step(mut self, mut held: boolean[], instruction: Instruction, 
             if (self.emptied[local]) { self.current.push(MMove(local, MImm(0))) }
         }
 
-        held[local] = false
+        removeBit(mut held, local)
     }
 }
 
@@ -1332,7 +1446,11 @@ function Lowering.movedBy(self, instruction: Instruction, block: int, position: 
     immut found = match (instruction) {
         CopyIns(LocalPlace(dest), _) if (not self.owned[dest] and isManaged(self.routine.locals[dest].ty)) => -1
         CopyIns(dest, LocalOp(source)) if (dest != LocalPlace(source)) => self.movable(source, block, position)
-        BinaryIns(dest, 'StrConcat', LocalOp(left), right, _) if (right != LocalOp(left) and dest != left) => self.movable(left, block, position)
+        BinaryIns(dest, op, LocalOp(left), right, _) if ((op == 'StrConcat' or op == 'ListConcat') and right != LocalOp(left) and dest != left) => {
+            if (self.writeback[left] and self.owned[left] and self.reassigned(left, dest, block, position)) { return [left] }
+
+            self.movable(left, block, position)
+        }
         CallIns(_, callee, args, writebacks, _) => {
             mut moved: int[] = []
 
@@ -1424,6 +1542,20 @@ function Lowering.charAdded(self, block: int, position: int): boolean {
 }
 
 // The local, when its reference can move: owned, and read for the last time here; or -1.
+// `x = x + more` on a `mut` parameter (`l = x + more`, then `x = l`): the parameter is given the
+// new value at once, so its reference can go into the addition (it is written back at the end,
+// which no other instruction may see emptied).
+function Lowering.reassigned(self, local: int, dest: int, block: int, position: int): boolean {
+    immut instructions = self.routine.blocks[block].instructions
+
+    if (position + 1 >= instructions.length()) { return false }
+
+    return match (instructions[position + 1]) {
+        CopyIns(LocalPlace(target), LocalOp(value)) => target == local and value == dest
+        _ => false
+    }
+}
+
 function Lowering.movable(self, local: int, block: int, position: int): int {
     return if (self.owned[local] and not self.writeback[local] and local in self.live[block][position]) { local } else { -1 }
 }
@@ -1552,7 +1684,7 @@ function Lowering.register(mut self, value: MValue): int {
 // Where an instruction writes the value of the local `dest`: itself, or a temporary when the
 // local holds a reference until the new value is in (`setResult`).
 function Lowering.resultOf(mut self, dest: int): int {
-    if (self.owned[dest] and self.held[dest]) { return self.temporary() }
+    if (self.owned[dest] and hasBit(self.held, dest)) { return self.temporary() }
 
     return dest
 }
@@ -1636,7 +1768,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
 
             immut source = self.shared(value)
 
-            if (self.held[dest]) { self.current.push(MRelease(MReg(dest), kindOf(ty))) }
+            if (hasBit(self.held, dest)) { self.current.push(MRelease(MReg(dest), kindOf(ty))) }
 
             self.current.push(MMove(dest, source))
         }
@@ -2428,6 +2560,12 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             immut second = self.value(right)
             self.callLibrary('koji_string_append', [first, second], Some(dest), false)
         }
+        // `items + more` where `items` is read for the last time: the same (`koji_list_append`).
+        BinaryIns(dest, 'ListConcat', left, right, _) if (self.movedBy(instruction, self.block, self.position).length() > 0) => {
+            immut first = self.value(left)
+            immut second = self.value(right)
+            self.callLibrary('koji_list_append', [first, second], Some(dest), false)
+        }
         // A shift of an int by a count: checked (0 to 63, unsigned so that a negative one fails
         // too), the count in the message of the panic.
         BinaryIns(dest, op, left, right, line) if ((op == 'ShiftLeft' or op == 'ShiftRight') and not shift(op, right)) => {
@@ -2756,7 +2894,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
 
                 match (root) {
                     LocalPlace(local) => {
-                        if (self.owned[local] and self.held[local] and not (local in given)) { self.current.push(MRelease(MReg(local), kindOf(ty))) }
+                        if (self.owned[local] and hasBit(self.held, local) and not (local in given)) { self.current.push(MRelease(MReg(local), kindOf(ty))) }
 
                         self.current.push(MMove(local, MReg(back)))
                     }
@@ -2831,9 +2969,11 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                 IntOp(number) => number
                 _ => 1
             }
-            self.current.push(MSet(hasValue, if (unit == 1) { 'lt' } else { 'gt' }, MReg(next), limit))
+            // The comparison last (of the item, the value before the step), so that the branch
+            // after it compares itself.
             self.current.push(MMove(item, MReg(next)))
             self.current.push(MBinary(next, 'add', MReg(next), MImm(unit), -1))
+            self.current.push(MSet(hasValue, if (unit == 1) { 'lt' } else { 'gt' }, MReg(item), limit))
         }
         _ => {}
     }
@@ -2896,7 +3036,7 @@ function Lowering.terminator(mut self, terminator: Terminator): MTerminator {
                 match (value) {
                     LocalOp(local) if (self.owned[local] and not self.writeback[local]) => {
                         returned = MReg(local)
-                        self.held[local] = false
+                        removeBit(mut self.held, local)
                     }
                     _ => {
                         returned = self.value(value)
@@ -2929,10 +3069,10 @@ function Lowering.releaseHeld(mut self) {
         if (self.highs[param] >= 0) { self.current.push(MStore(MBase(self.outs[param], 8), MReg(self.highs[param]), 8)) }
     }
 
-    for local in range(self.routine.locals.length()) {
-        if (self.owned[local] and self.held[local] and not self.writeback[local]) {
+    for local in bitMembers(self.held) {
+        if (self.owned[local] and not self.writeback[local]) {
             self.current.push(MRelease(MReg(local), kindOf(self.routine.locals[local].ty)))
-            self.held[local] = false
+            removeBit(mut self.held, local)
         }
     }
 }
