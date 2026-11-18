@@ -229,22 +229,41 @@ type Export = {
 function Native.runtimeCode(mut self): Export[] {
     mut exported: Export[] = []
 
-    // Saves the registers that calls keep, the control words of floating point, and the top of the
-    // stack at `save` (rdi); goes on with the stack at `to` (rsi), restoring them from it.
-    exported.push(self.stub('koji_task_switch', [
-        0x55, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-        0x48, 0x83, 0xEC, 0x08, 0x0F, 0xAE, 0x1C, 0x24, 0xD9, 0x7C, 0x24, 0x04,
-        0x48, 0x89, 0x27, 0x48, 0x89, 0xF4,
-        0x0F, 0xAE, 0x14, 0x24, 0xD9, 0x6C, 0x24, 0x04, 0x48, 0x83, 0xC4, 0x08,
-        0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5B, 0x5D, 0xC3
-    ]))
-    // A new task: koji_task_main(task), the task in rbx (koji_task_stack_start), on an aligned stack.
-    immut entry = self.code.length()
-    self.bytes([0x48, 0x89, 0xDF, 0x48, 0x83, 0xE4, 0xF0, 0xE8])
-    self.relocation('koji_task_main', plt32, -4)
-    self.int32(0)
-    self.bytes([0x0F, 0x0B])
-    exported.push({ name: 'koji_task_entry', at: entry, size: self.code.length() - entry, section: 1 })
+    if (self.arm) {
+        // Saves x19 to x30, d8 to d15 and fpcr below the stack, its top at `save` (x0); goes on
+        // with the stack at `to` (x1), restoring them from it (the layout of stackStart in
+        // std/koji/task.kj).
+        exported.push(self.stub('koji_task_switch', wordBytes([
+            0xD102C3FF, 0xA90053F3, 0xA9015BF5, 0xA90263F7, 0xA9036BF9, 0xA90473FB, 0xA9057BFD, 0x6D0627E8, 0x6D072FEA, 0x6D0837EC, 0x6D093FEE,
+            0xD53B4409, 0xF90053E9, 0x910003E9, 0xF9000009, 0x9100003F, 0xF94053E9, 0xD51B4409,
+            0xA94053F3, 0xA9415BF5, 0xA94263F7, 0xA9436BF9, 0xA94473FB, 0xA9457BFD, 0x6D4627E8, 0x6D472FEA, 0x6D4837EC, 0x6D493FEE,
+            0x9102C3FF, 0xD65F03C0
+        ])))
+        // A new task: koji_task_main(task), the task in x19: mov x0, x19; bl koji_task_main; brk 1
+        immut entry = self.code.length()
+        self.bytes(wordBytes([0xAA1303E0]))
+        self.relocation('koji_task_main', 283, 0)
+        self.bytes(wordBytes([0x94000000, 0xD4200020]))
+        exported.push({ name: 'koji_task_entry', at: entry, size: self.code.length() - entry, section: 1 })
+    } else {
+        // Saves the registers that calls keep, the control words of floating point, and the top of
+        // the stack at `save` (rdi); goes on with the stack at `to` (rsi), restoring them from it.
+        exported.push(self.stub('koji_task_switch', [
+            0x55, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+            0x48, 0x83, 0xEC, 0x08, 0x0F, 0xAE, 0x1C, 0x24, 0xD9, 0x7C, 0x24, 0x04,
+            0x48, 0x89, 0x27, 0x48, 0x89, 0xF4,
+            0x0F, 0xAE, 0x14, 0x24, 0xD9, 0x6C, 0x24, 0x04, 0x48, 0x83, 0xC4, 0x08,
+            0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5B, 0x5D, 0xC3
+        ]))
+        // A new task: koji_task_main(task), the task in rbx (koji_task_stack_start), on an aligned
+        // stack.
+        immut entry = self.code.length()
+        self.bytes([0x48, 0x89, 0xDF, 0x48, 0x83, 0xE4, 0xF0, 0xE8])
+        self.relocation('koji_task_main', plt32, -4)
+        self.int32(0)
+        self.bytes([0x0F, 0x0B])
+        exported.push({ name: 'koji_task_entry', at: entry, size: self.code.length() - entry, section: 1 })
+    }
 
     // The data: the heads of the pool (18 words), whether it is off, the test to run (-1).
     self.alignData(8)
@@ -452,6 +471,19 @@ function Native.runtimeCode(mut self): Export[] {
     }
 
     return exported
+}
+
+// The bytes of instructions of 4 bytes (arm64), little-endian.
+function wordBytes(words: int[]): int[] {
+    mut bytes: int[] = []
+
+    for each in words {
+        for i in range(4) {
+            bytes.push((each >> (8 * i)) & 0xFF)
+        }
+    }
+
+    return bytes
 }
 
 // A function of the machine IR, emitted and exported under its name.
