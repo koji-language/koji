@@ -1187,6 +1187,15 @@ function Lowering.ordered(self): MBlock[] {
         immut ending = match (block.terminator) {
             MJump(target) => MJump(place[target])
             MBranch(condition, left, right, thenBlock, elseBlock) => MBranch(condition, left, right, place[thenBlock], place[elseBlock])
+            MSwitch(value, targets, otherwise) => {
+                mut moved: int[] = []
+
+                for target in targets {
+                    moved.push(place[target])
+                }
+
+                MSwitch(value, moved, place[otherwise])
+            }
             other => other
         }
         blocks.push({ instructions: block.instructions, terminator: ending })

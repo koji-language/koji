@@ -76,10 +76,12 @@ type Emitter = {
     position: int
     // The arguments of the next call that start a pair (`MPairs`).
     pairs: int[]
+    // The entries of the tables of switches: where, the table, the block.
+    tables: int[][]
 }
 
 export function emitX64(code: MFunctionCode, allocation: Allocation): Emitted {
-    mut self: Emitter = { code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [] }
+    mut self: Emitter = { code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [], tables: [] }
     // The frame: the kept registers used, the slots, the spills.
     mut size = 8 * allocation.used.length()
 
@@ -175,6 +177,10 @@ export function emitX64(code: MFunctionCode, allocation: Allocation): Emitted {
         patch32(mut self.out, jump[0], self.blockAt[jump[1]] - (jump[0] + 4))
     }
 
+    for entry in self.tables {
+        patch32(mut self.out, entry[0], self.blockAt[entry[2]] - entry[1])
+    }
+
     // The panics: lea rdi, [place]; lea rsi, [message]; call koji_panic.
     for i in range(code.panics.length()) {
         immut stub = self.out.length()
@@ -240,6 +246,33 @@ function Emitter.instruction(mut self, instruction: MInstruction) {
                 immut memory = self.memory(at)
                 self.modrm([0x66, 0x0F, 0xD6], 0, memory, false, 0)
                 return
+            }
+
+            match (value) {
+                // From its register.
+                MReg(id) => match (self.place(id)) {
+                    InRegister(register) => {
+                        immut memory = self.memory(at)
+                        self.store(memory, register, width)
+                        return
+                    }
+                    _ => {}
+                }
+                // mov [memory], imm8 or imm32 (sign-extended for 8 bytes).
+                MImm(number) if (fits32(number) and (width != 1 or (number >= -128 and number <= 255))) => {
+                    immut memory = self.memory(at)
+
+                    if (width == 1) {
+                        self.modrm([0xC6], 0, memory, false, 1)
+                        self.out.push(byte(number & 0xFF))
+                    } else {
+                        self.modrm([0xC7], 0, memory, width == 8, 4)
+                        self.int32(number)
+                    }
+
+                    return
+                }
+                _ => {}
             }
 
             self.loadValue(rax, value)
@@ -938,6 +971,25 @@ function Emitter.terminator(mut self, block: int, terminator: MTerminator) {
         }
         // ud2
         MUnreachable => self.bytes([0x0F, 0x0B])
+        // cmp rax, count; jae otherwise; lea rcx, [rip + table]; movsxd rax, dword [rcx + rax * 4];
+        // add rax, rcx; jmp rax; the table after (the places of the blocks from it, 4 bytes each).
+        MSwitch(value, targets, otherwise) => {
+            self.loadValue(rax, value)
+            self.bytes([0x48, 0x3D])
+            self.int32(targets.length())
+            self.jumpTo(0x83, otherwise)
+            self.bytes([0x48, 0x8D, 0x0D])
+            immut place = self.out.length()
+            self.int32(0)
+            self.bytes([0x48, 0x63, 0x04, 0x81, 0x48, 0x01, 0xC8, 0xFF, 0xE0])
+            immut table = self.out.length()
+            patch32(mut self.out, place, table - (place + 4))
+
+            for target in targets {
+                self.tables.push([self.out.length(), table, target])
+                self.int32(0)
+            }
+        }
     }
 }
 

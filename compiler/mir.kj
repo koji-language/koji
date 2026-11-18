@@ -90,6 +90,9 @@ export type MTerminator = {
     MBranch(condition: string, left: MValue, right: MValue, thenBlock: int, elseBlock: int)
     MReturn(values: MValue[])
     MUnreachable
+    // To `targets[value]` for a value from 0 to their number less one, else to `otherwise` (a table
+    // of jumps).
+    MSwitch(value: MValue, targets: int[], otherwise: int)
 }
 
 export type MBlock = {
@@ -256,5 +259,14 @@ function terminatorText(terminator: MTerminator, code: MFunctionCode): string {
             `return ${texts.join(', ')}`
         }
         MUnreachable => 'unreachable'
+        MSwitch(value, targets, otherwise) => {
+            mut names: string[] = []
+
+            for target in targets {
+                names.push(`b${target}`)
+            }
+
+            `switch ${valueText(value, code)}, [${names.join(', ')}], b${otherwise}`
+        }
     }
 }

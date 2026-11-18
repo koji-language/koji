@@ -1,0 +1,99 @@
+// A builder of functions of the machine IR (mir.kj) written by the backend itself rather than lowered
+// from the IR: the functions that free records, the jobs of `blocking` functions, the functions C
+// calls by their names, and where a program or the library starts. Any emitter encodes them.
+
+import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
+
+export type MBuilder = {
+    name: string
+    params: int[]
+    pairs: int[]
+    floats: boolean[]
+    blocks: MBlock[]
+    current: MInstruction[]
+    // The block being written (its number), or -1 when the last one ended; the blocks in the order
+    // they were written (that of the code: a block opened goes right after the one before).
+    block: int
+    order: int[]
+    slots: int[]
+    results: boolean[]
+}
+
+// A function of parameters of the classes `params` (true for a float) and of results of the
+// classes `results`; its first block is open.
+export function builder(name: string, params: boolean[], results: boolean[]): MBuilder {
+    mut made: MBuilder = { name: name, params: [], pairs: [], floats: [], blocks: [{ instructions: [], terminator: MUnreachable }], current: [], block: 0, order: [0], slots: [], results: results }
+
+    for float in params {
+        made.params.push(made.floats.length())
+        made.floats.push(float)
+    }
+
+    return made
+}
+
+// A new virtual register (of a float, or of a word).
+function MBuilder.register(mut self, float: boolean): int {
+    self.floats.push(float)
+    return self.floats.length() - 1
+}
+
+function MBuilder.add(mut self, instruction: MInstruction) {
+    self.current.push(instruction)
+}
+
+// A new block, not open yet: its number.
+function MBuilder.newBlock(mut self): int {
+    self.blocks.push({ instructions: [], terminator: MUnreachable })
+    return self.blocks.length() - 1
+}
+
+// Ends the open block, then opens `next` (or none, for -1).
+function MBuilder.end(mut self, terminator: MTerminator, next: int) {
+    self.blocks[self.block] = { instructions: self.current, terminator: terminator }
+    self.current = []
+    self.block = next
+
+    if (next >= 0) { self.order.push(next) }
+}
+
+// A slot of the frame of `bytes` bytes: its number.
+function MBuilder.slot(mut self, bytes: int): int {
+    self.slots.push(bytes)
+    return self.slots.length() - 1
+}
+
+function MBuilder.code(self): MFunctionCode {
+    mut place: int[] = []
+
+    for block in self.blocks {
+        place.push(-1)
+    }
+
+    for i in range(self.order.length()) {
+        place[self.order[i]] = i
+    }
+
+    mut blocks: MBlock[] = []
+
+    for id in self.order {
+        immut block = self.blocks[id]
+        immut ending = match (block.terminator) {
+            MJump(target) => MJump(place[target])
+            MBranch(condition, left, right, thenBlock, elseBlock) => MBranch(condition, left, right, place[thenBlock], place[elseBlock])
+            MSwitch(value, targets, otherwise) => {
+                mut moved: int[] = []
+
+                for target in targets {
+                    moved.push(place[target])
+                }
+
+                MSwitch(value, moved, place[otherwise])
+            }
+            other => other
+        }
+        blocks.push({ instructions: block.instructions, terminator: ending })
+    }
+
+    return { name: self.name, params: self.params, floats: self.floats, blocks: blocks, slots: self.slots, panics: [], results: self.results, pairs: self.pairs }
+}

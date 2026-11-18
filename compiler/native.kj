@@ -20,7 +20,8 @@ import { borrowedParams, constantGlobals } from 'borrow.kj'
 import { inlineSmall, targetPlatform } from 'inline.kj'
 import { reachableFunctions } from 'target.kj'
 import { mirRefusal, lowerMir, MirContext } from 'mirlower.kj'
-import { mirText } from 'mir.kj'
+import { MValue, MAddress, MCallee, MInstruction, MTerminator, MFunctionCode, mirText } from 'mir.kj'
+import { MBuilder, builder } from 'mircode.kj'
 import { allocate } from 'mirregs.kj'
 import { emitX64, x64Registers } from 'x64.kj'
 import system
@@ -31,7 +32,6 @@ immut rcx = 1
 immut rdx = 2
 immut rsi = 6
 immut rdi = 7
-immut argumentRegisters = [7, 6, 2, 1, 8, 9]
 immut equal = 4
 immut notEqual = 5
 
@@ -162,35 +162,37 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
             exported.push(native.forC(found))
         }
 
-        immut init = native.code.length()
-        native.bytes([0x55, 0x48, 0x89, 0xE5])
-        native.callFunction(program.main)
-        native.bytes([0x5D, 0xC3])
-        exported.push({ name: 'koji_library_init', at: init, size: native.code.length() - init, section: 1 })
+        mut init = builder('koji_library_init', [], [])
+        init.add(MCall(MFunction(program.main), [], []))
+        init.end(MReturn([]), -1)
+        immut start = native.emitCode(init.code())
+        exported.push({ name: 'koji_library_init', at: start, size: native.code.length() - start, section: 1 })
 
         for each in native.runtimeCode() {
             exported.push(each)
         }
     } else {
-        // push rbp; mov rbp, rsp; sub rsp, 16; argc and argv in the frame
-        native.bytes([0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x10, 0x48, 0x89, 0x7D, 0xF8, 0x48, 0x89, 0x75, 0xF0])
+        // The runtime first (with argc and argv), then the program. `kojic test`: the number of the
+        // test to run, the last argument (taken from argc).
+        mut code = builder('main', [false, false], [false])
+        immut count = code.params[0]
+        immut arguments = code.params[1]
 
-        // `kojic test`: the number of the test to run, the last argument (taken from argc).
         if (program.testing) {
-            // lea rdi, [rbp - 8]; mov rsi, [rbp - 16]; call koji_test_argument;
-            // mov [koji_test_selected], rax
-            native.bytes([0x48, 0x8D, 0x7D, 0xF8, 0x48, 0x8B, 0x75, 0xF0])
-            native.callExternal('koji_test_argument')
-            native.bytes([0x48, 0x89, 0x05])
-            native.relocation('koji_test_selected', pc32, -4)
-            native.int32(0)
+            immut held = code.slot(8)
+            immut address = code.register(false)
+            immut selected = code.register(false)
+            code.add(MStore(MSlot(held, 0), MReg(count), 8))
+            code.add(MAddressOf(address, MSlot(held, 0)))
+            code.add(MCall(MExternal('koji_test_argument'), [MReg(address), MReg(arguments)], [selected]))
+            code.add(MStore(MSymbol('koji_test_selected', 0), MReg(selected), 8))
+            code.add(MLoad(count, MSlot(held, 0), 4))
         }
 
-        // mov edi, [rbp - 8]; mov rsi, [rbp - 16]; call koji_init; call main; xor eax, eax; leave; ret
-        native.bytes([0x8B, 0x7D, 0xF8, 0x48, 0x8B, 0x75, 0xF0])
-        native.callExternal('koji_init')
-        native.callFunction(program.main)
-        native.bytes([0x31, 0xC0, 0xC9, 0xC3])
+        code.add(MCall(MExternal('koji_init'), [MReg(count), MReg(arguments)], []))
+        code.add(MCall(MFunction(program.main), [], []))
+        code.end(MReturn([MImm(0)]), -1)
+        native.emitCode(code.code())
         exported.push({ name: 'main', at: mainStart, size: native.code.length() - mainStart, section: 1 })
     }
 
@@ -570,95 +572,75 @@ function Native.stubWith(mut self, name: string, before: int[], symbol: string, 
     return { name: name, at: at, size: self.code.length() - at, section: 1 }
 }
 
-// A function C calls by its name, under that name: C gives an `int`, a `bool`, a char or a byte in
-// the low bits of its word (the others undefined), which are made a whole word in place (in its
-// register, or in its word of the stack), then the function goes on in the function of Koji. A string
-// C gives (`take`) is released after the call.
+// A function C calls by its name: its arguments of the types of C made words (an `int`
+// sign-extended, a `bool` or a byte in its low byte), the function called, then the strings it
+// took released (their references were the caller's).
 function Native.forC(mut self, found: IrForC): Export {
-    immut start = self.code.length()
     immut routine = self.program.functions[found.function]
-    immut places = placesOf(paramTypes(routine))
-    mut taken = false
+    mut classes: boolean[] = []
+    mut pairs: int[] = []
+    mut owners: int[] = []
 
-    for flag in found.taken {
-        if (flag) { taken = true }
-    }
+    for param in range(routine.params) {
+        immut ty = routine.locals[param].ty
 
-    // A frame for the call when strings are released after it (rsp moves: the words of the stack are
-    // 16 bytes further).
-    if (taken) { self.bytes([0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x20]) }
-
-    for i in range(found.params.length()) {
-        if (i >= places.length()) { break }
-
-        immut c = found.params[i]
-        immut place = places[i]
-        immut number = placeNumber(place)
-
-        if (place.startsWith('reg:')) {
-            immut register = argumentRegisters[number]
-            immut extension = rex(register, register) & 0x47
-
-            if (c == 'int') { self.bytes([rex(register, register), 0x63, 0xC0 | (register & 7) << 3 | (register & 7)]) }
-
-            if (c == 'bool' or c == 'uint8_t') { self.bytes([0x40 | extension, 0x0F, 0xB6, 0xC0 | (register & 7) << 3 | (register & 7)]) }
-
-            if (c == 'uint32_t') { self.bytes([0x40 | extension, 0x89, 0xC0 | (register & 7) << 3 | (register & 7)]) }
+        if (words(ty) == 2) {
+            pairs.push(classes.length())
+            classes.push(false)
+            owners.push(param)
         }
 
-        if (place.startsWith('stack:')) {
-            // [rsp + 8 + 8 * number] at the entry (rbp + 16 + 8 * number with the frame).
-            immut load = match (c) {
-                'int' => [0x48, 0x63]
-                'bool' => [0x0F, 0xB6]
-                'uint8_t' => [0x0F, 0xB6]
-                'uint32_t' => [0x8B]
-                _ => []
+        classes.push(ty == FloatTy)
+        owners.push(param)
+    }
+
+    immut results = if (routine.returns == VoidTy) { [] } else { if (words(routine.returns) == 2) { [false, false] } else { [routine.returns == FloatTy] } }
+    mut code = builder(found.name, classes, results)
+    code.pairs = pairs
+    mut args: MValue[] = []
+
+    for i in range(code.params.length()) {
+        immut value = code.params[i]
+        immut param = owners[i]
+        immut c = if (param < found.params.length() and (i == 0 or owners[i - 1] != param)) { found.params[param] } else { '' }
+
+        match (c) {
+            'int' => code.add(MUnary(value, 'sext32', MReg(value), -1))
+            'bool' => code.add(MBinary(value, 'and', MReg(value), MImm(0xFF), -1))
+            'uint8_t' => code.add(MBinary(value, 'and', MReg(value), MImm(0xFF), -1))
+            'uint32_t' => code.add(MBinary(value, 'and', MReg(value), MImm(0xFFFFFFFF), -1))
+            _ => {}
+        }
+
+        args.push(MReg(value))
+    }
+
+    mut returned: int[] = []
+
+    for float in results {
+        returned.push(code.register(float))
+    }
+
+    if (pairs.length() > 0) { code.add(MPairs(pairs)) }
+
+    code.add(MCall(MFunction(found.function), args, returned))
+
+    for param in range(found.taken.length()) {
+        if (found.taken[param]) {
+            for i in range(owners.length()) {
+                if (owners[i] == param) { code.add(MRelease(args[i], 'string')) }
             }
-
-            if (load.length() > 0) {
-                if (taken) {
-                    self.bytes(load + [0x85])
-                    self.int32(16 + 8 * number)
-                    self.bytes([0x48, 0x89, 0x85])
-                    self.int32(16 + 8 * number)
-                } else {
-                    self.bytes(load + [0x84, 0x24])
-                    self.int32(8 + 8 * number)
-                    self.bytes([0x48, 0x89, 0x84, 0x24])
-                    self.int32(8 + 8 * number)
-                }
-            }
         }
     }
 
-    if (not taken) {
-        // jmp function
-        self.bytes([0xE9])
-        self.uses.push({ at: self.code.length(), target: found.function, inData: false })
-        self.int32(0)
-        return { name: found.name, at: start, size: self.code.length() - start, section: 1 }
+    mut values: MValue[] = []
+
+    for each in returned {
+        values.push(MReg(each))
     }
 
-    // The strings given, kept in the frame for after the call (they are in registers: the functions
-    // that take them have few parameters).
-    for i in range(found.taken.length()) {
-        if (found.taken[i] and i < places.length() and places[i].startsWith('reg:')) { self.storeWord(argumentRegisters[placeNumber(places[i])], -8 - 8 * i) }
-    }
-
-    self.callFunction(found.function)
-    // The result, kept while the strings are released.
-    self.bytes([0x48, 0x89, 0x45, 0xE0, 0x48, 0x89, 0x55, 0xE8])
-
-    for i in range(found.taken.length()) {
-        if (found.taken[i] and i < places.length() and places[i].startsWith('reg:')) {
-            self.bytes([0x48, 0x8B, 0xBD])
-            self.int32(-8 - 8 * i)
-            self.releaseRdi('string')
-        }
-    }
-
-    self.bytes([0x48, 0x8B, 0x45, 0xE0, 0x48, 0x8B, 0x55, 0xE8, 0xC9, 0xC3])
+    code.end(MReturn(values), -1)
+    immut start = self.emitCode(code.code())
     return { name: found.name, at: start, size: self.code.length() - start, section: 1 }
 }
 
@@ -795,59 +777,52 @@ function Native.recordDescriptions(mut self) {
     }
 }
 
-// The function that frees each record (it releases its fields and gives its memory back) and, for
-// an opaque one, the function that shows it: their places, by record, in the code after the
-// functions of the program.
+// The functions that free the records of each type (the function of its description): the managed
+// fields of its variant released, then its block back to the pool (inline, unless the pool is off
+// or the block is large); and the text of an opaque record without a function to show it. Where
+// each starts.
 function Native.recordFunctions(mut self): int[] {
     immut records = self.program.records
     mut starts: int[] = []
 
     for id in range(records.length()) {
         immut record = records[id]
-        starts.push(self.code.length())
-        self.patchDataFunction(self.records[id] + 24, self.code.length())
-        // push rbp; mov rbp, rsp; push rbx; push rbx (rbx keeps the record, aligned).
-        self.bytes([0x55, 0x48, 0x89, 0xE5, 0x53, 0x53, 0x48, 0x89, 0xFB])
-        // Many variants: a table of the places of their code, by the variant (relative to the table).
+        mut code = builder(`free ${record.name}`, [false], [])
+        immut held = code.params[0]
+        immut tag = code.register(false)
+        code.add(MLoad(tag, MBase(held, 16), 8))
+        // Many variants: a table of jumps, by the variant.
         immut table = record.variants.length() >= 4
-        mut tableAt = 0
+        mut blocks: int[] = []
 
         if (table) {
-            // mov rax, [rbx + 16]; lea rcx, [rip + table]; movsxd rax, dword [rcx + rax * 4];
-            // add rax, rcx; jmp rax
-            self.bytes([0x48, 0x8B, 0x43, 0x10, 0x48, 0x8D, 0x0D])
-            immut place = self.code.length()
-            self.int32(0)
-            self.bytes([0x48, 0x63, 0x04, 0x81, 0x48, 0x01, 0xC8, 0xFF, 0xE0])
-            tableAt = self.code.length()
-            self.patch32(place, tableAt - (place + 4))
-
             for index in range(record.variants.length()) {
-                self.int32(0)
+                blocks.push(code.newBlock())
             }
+
+            immut none = code.newBlock()
+            code.end(MSwitch(MReg(tag), blocks, none), none)
+            code.end(MReturn([]), blocks[0])
         }
 
         for index in range(record.variants.length()) {
             immut fields = record.variants[index].fields
-            mut other = -1
+            // The block after this variant: the next one's (or that of the next test).
+            mut following = if (index + 1 < blocks.length()) { blocks[index + 1] } else { -1 }
 
-            if (table) {
-                self.patch32(tableAt + 4 * index, self.code.length() - tableAt)
-            } else {
-                // cmp qword [rbx + 16], index; jne next
-                self.bytes([0x48, 0x83, 0x7B, 0x10, index & 0x7F])
-                other = self.jumpIf(notEqual)
+            if (not table) {
+                immut mine = code.newBlock()
+                following = code.newBlock()
+                code.end(MBranch('eq', MReg(tag), MImm(index), mine, following), mine)
             }
-
             mut word = 0
 
             for field in fields {
                 match (managed(field.ty)) {
                     Some(kind) => {
-                        // mov rdi, [rbx + 24 + 8 * word]
-                        self.bytes([0x48, 0x8B, 0xBB])
-                        self.int32(24 + 8 * word)
-                        self.releaseRdi(kind)
+                        immut value = code.register(false)
+                        code.add(MLoad(value, MBase(held, 24 + 8 * word), 8))
+                        code.add(MRelease(MReg(value), kind))
                     }
                     None => {}
                 }
@@ -855,51 +830,44 @@ function Native.recordFunctions(mut self): int[] {
                 word += words(field.ty)
             }
 
-            // The block back to the pool (koji_pool_give of the prelude, inline), unless the pool is
-            // off or the block is large.
             immut size = 3 + word
 
             if (size <= 16) {
-                // cmp byte [koji_pool_off], 0; jne slow
-                self.bytes([0x80, 0x3D])
-                self.relocation('koji_pool_off', pc32, -5)
-                self.int32(0)
-                self.bytes([0])
-                immut slow = self.jumpIf(notEqual)
-                // mov rax, [koji_pool + 8 * size]; mov [rbx], rax; mov [koji_pool + 8 * size], rbx
-                self.bytes([0x48, 0x8B, 0x05])
-                self.relocation('koji_pool', pc32, 8 * size - 4)
-                self.int32(0)
-                self.bytes([0x48, 0x89, 0x03, 0x48, 0x89, 0x1D])
-                self.relocation('koji_pool', pc32, 8 * size - 4)
-                self.int32(0)
-                self.bytes([0x5B, 0x5B, 0xC9, 0xC3])
-                self.patchHere(slow)
+                immut off = code.register(false)
+                immut give = code.newBlock()
+                immut slow = code.newBlock()
+                code.add(MLoad(off, MSymbol('koji_pool_off', 0), 1))
+                code.end(MBranch('ne', MReg(off), MImm(0), slow, give), give)
+                immut head = code.register(false)
+                code.add(MLoad(head, MSymbol('koji_pool', 8 * size), 8))
+                code.add(MStore(MBase(held, 0), MReg(head), 8))
+                code.add(MStore(MSymbol('koji_pool', 8 * size), MReg(held), 8))
+                code.end(MReturn([]), slow)
             }
 
-            self.bytes([0x48, 0x89, 0xDF])
-            self.moveConstant(rsi, size)
-            self.callExternal('koji_pool_give')
-            self.bytes([0x5B, 0x5B, 0xC9, 0xC3])
+            code.add(MCall(MExternal('koji_pool_give'), [MReg(held), MImm(size)], []))
 
-            if (other >= 0) { self.patchHere(other) }
+            code.end(MReturn([]), following)
         }
 
-        self.bytes([0x5B, 0x5B, 0xC9, 0xC3])
+        if (not table) { code.end(MReturn([]), -1) }
+        immut start = self.emitCode(code.code())
+        starts.push(start)
+        self.patchDataFunction(self.records[id] + 24, start)
 
         if (not record.opaque) { continue }
 
         match (record.display) {
-            Some(code) => self.dataUse(self.records[id] + 32, code)
+            Some(display) => self.dataUse(self.records[id] + 32, display)
             None => {
-                self.patchDataFunction(self.records[id] + 32, self.code.length())
                 immut text = `<${record.name}>`
-                immut offset = self.text(text)
-                self.bytes([0x55, 0x48, 0x89, 0xE5])
-                self.leaRodata(rdi, offset)
-                self.moveConstant(rsi, utf8(text).length())
-                self.callExternal('koji_string_new')
-                self.bytes([0xC9, 0xC3])
+                mut shown = builder(`show ${record.name}`, [false], [false])
+                immut address = shown.register(false)
+                immut result = shown.register(false)
+                shown.add(MAddressOf(address, MText(text)))
+                shown.add(MCall(MExternal('koji_string_new'), [MReg(address), MImm(utf8(text).length())], [result]))
+                shown.end(MReturn([MReg(result)]), -1)
+                self.patchDataFunction(self.records[id] + 32, self.emitCode(shown.code()))
             }
         }
     }
@@ -918,40 +886,31 @@ function Native.trampolineCode(mut self) {
             None => continue
         }
 
-        self.trampolines[use.symbol] = self.code.length()
-        // push rbp; mov rbp, rsp; push rbx; push rbx; mov rbx, rdi
-        self.bytes([0x55, 0x48, 0x89, 0xE5, 0x53, 0x53, 0x48, 0x89, 0xFB])
-        mut integers = 0
-        mut floats = 0
+        mut code = builder(`job ${declared.name}`, [false], [])
+        immut job = code.params[0]
+        mut args: MValue[] = []
 
         for i in range(declared.params.length()) {
-            if (declared.params[i] == 'double') {
-                // movq xmmN, [rbx + 8 + 8 * i]
-                self.bytes([0xF3, 0x0F, 0x7E, 0x83 | floats << 3])
-                self.int32(8 + 8 * i)
-                floats += 1
-                continue
-            }
-
-            immut register = argumentRegisters[integers]
-            self.bytes([rex(register, 3), 0x8B, 0x83 | (register & 7) << 3])
-            self.int32(8 + 8 * i)
-            integers += 1
+            immut value = code.register(declared.params[i] == 'double')
+            code.add(MLoad(value, MBase(job, 8 + 8 * i), 8))
+            args.push(MReg(value))
         }
 
-        self.callExternal(declared.symbol)
+        immut result = code.register(declared.returns == 'double')
+        code.add(MCall(MExternal(declared.symbol), args, if (declared.returns == 'void') { [] } else { [result] }))
 
         match (declared.returns) {
-            'int' => self.bytes([0x48, 0x63, 0xC0])
-            'bool' => self.bytes([0x0F, 0xB6, 0xC0])
-            'uint8_t' => self.bytes([0x0F, 0xB6, 0xC0])
-            'uint32_t' => self.bytes([0x89, 0xC0])
-            'double' => self.bytes([0x66, 0x48, 0x0F, 0x7E, 0xC0])
+            'int' => code.add(MUnary(result, 'sext32', MReg(result), -1))
+            'bool' => code.add(MBinary(result, 'and', MReg(result), MImm(0xFF), -1))
+            'uint8_t' => code.add(MBinary(result, 'and', MReg(result), MImm(0xFF), -1))
+            'uint32_t' => code.add(MBinary(result, 'and', MReg(result), MImm(0xFFFFFFFF), -1))
             _ => {}
         }
 
-        // mov [rbx + 56], rax; pop rbx; pop rbx; leave; ret
-        self.bytes([0x48, 0x89, 0x43, 0x38, 0x5B, 0x5B, 0xC9, 0xC3])
+        if (declared.returns != 'void') { code.add(MStore(MBase(job, 56), MReg(result), 8)) }
+
+        code.end(MReturn([]), -1)
+        self.trampolines[use.symbol] = self.emitCode(code.code())
     }
 
     for use in self.trampolineUses {
@@ -985,79 +944,6 @@ function Native.pointerToData(mut self, at: int, target: int) {
 
 // Functions
 
-// Where each parameter of a function comes, as System V places them: `reg:N`, `sse:N`, `stack:N`
-// (the word N above the return address), and for a value of two words, `pair:N` or `stack2:N`.
-function placesOf(types: Ty[]): string[] {
-    mut integers = 0
-    mut floats = 0
-    mut stack = 0
-    mut places: string[] = []
-
-    for ty in types {
-        if (ty == FloatTy) {
-            if (floats < 8) {
-                places.push(`sse:${floats}`)
-                floats += 1
-            } else {
-                places.push(`stack:${stack}`)
-                stack += 1
-            }
-
-            continue
-        }
-
-        if (words(ty) == 2) {
-            if (integers <= 4) {
-                places.push(`pair:${integers}`)
-                integers += 2
-            } else {
-                places.push(`stack2:${stack}`)
-                stack += 2
-            }
-
-            continue
-        }
-
-        if (integers < 6) {
-            places.push(`reg:${integers}`)
-            integers += 1
-        } else {
-            places.push(`stack:${stack}`)
-            stack += 1
-        }
-    }
-
-    return places
-}
-
-function placeNumber(place: string): int {
-    immut colon = match (place.indexOf(':')) {
-        Some(at) => at
-        None => 0
-    }
-
-    return match (int(place[colon + 1..])) {
-        Ok(number) => number
-        Err(_) => 0
-    }
-}
-
-// The types of the parameters of a function as C has them: its parameters, then an address for
-// each `mut` one.
-function paramTypes(routine: IrFunction): Ty[] {
-    mut types: Ty[] = []
-
-    for param in range(routine.params) {
-        types.push(routine.locals[param].ty)
-    }
-
-    for param in range(routine.writeback.length()) {
-        if (routine.writeback[param]) { types.push(IntTy) }
-    }
-
-    return types
-}
-
 // A function through the machine IR: lowered (mirlower.kj), its registers allocated (mirregs.kj),
 // encoded for x86-64 (x64.kj), then put in the object: its code, its relocations, its calls of
 // functions of the program and its texts.
@@ -1073,9 +959,14 @@ function Native.generateMir(mut self, id: int) {
             print(line)
         }
     }
+    self.starts.push(self.emitCode(code))
+}
+
+// A function of the machine IR, its registers allocated and encoded, put in the object: its code, its
+// relocations, its calls of functions of the program and its texts. Where it starts.
+function Native.emitCode(mut self, code: MFunctionCode): int {
     immut emitted = emitX64(code, allocate(code, x64Registers))
     immut start = self.code.length()
-    self.starts.push(start)
 
     for each in emitted.code {
         self.code.push(each)
@@ -1101,6 +992,8 @@ function Native.generateMir(mut self, id: int) {
         immut offset = self.text(use.text)
         self.relocations.push({ at: start + use.at, symbol: '.rodata', kind: pc32, addend: offset - 4 })
     }
+
+    return start
 }
 
 function Native.externOf(self, name: string): Option[IrExtern] {
@@ -1109,64 +1002,6 @@ function Native.externOf(self, name: string): Option[IrExtern] {
     }
 
     return None
-}
-
-function Native.moveConstant(mut self, register: int, number: int) {
-    // mov r32, imm32 (zero extended) when it fits, mov r64, imm64 otherwise.
-    if (number >= 0 and number <= 4294967295) {
-        if (register >= 8) { self.bytes([0x41]) }
-
-        self.bytes([0xB8 + (register & 7)])
-        self.int32(number)
-        return
-    }
-
-    self.bytes([rex(0, register), 0xB8 + (register & 7)])
-    self.word64(number)
-}
-
-// The prefix REX.W with the high bits of the register of ModRM (`reg`) and of its base (`base`).
-function rex(reg: int, base: int): int {
-    return 0x48 | (reg >> 3) << 2 | (base >> 3)
-}
-
-// mov [rbp + offset], register
-function Native.storeWord(mut self, register: int, offset: int) {
-    self.bytes([rex(register, 0), 0x89, 0x85 | (register & 7) << 3])
-    self.int32(offset)
-}
-
-function Native.leaRodata(mut self, register: int, offset: int) {
-    self.bytes([rex(register, 0), 0x8D, 0x05 | (register & 7) << 3])
-    self.relocate('.rodata', offset, pc32)
-}
-
-// References, inline (as KOJI_INLINE of the prelude): the count is the first word of every managed
-// value; at the last reference, the runtime frees it.
-
-// A reference less to the value in rdi, of the kind of value `kind`, freed at the last.
-function Native.releaseRdi(mut self, kind: string) {
-    // test rdi, rdi; jz done; dec qword [rdi]; jnz done; free
-    self.bytes([0x48, 0x85, 0xFF])
-    immut empty = self.jumpIf(equal)
-    self.bytes([0x48, 0xFF, 0x0F])
-    immut alive = self.jumpIf(notEqual)
-
-    if (kind == 'record') {
-        // The type of the record frees it: call [[rdi + 8] + 24]
-        self.bytes([0x48, 0x8B, 0x47, 0x08, 0xFF, 0x50, 0x18])
-    } else {
-        self.callExternal(`koji_${kind}_free`)
-    }
-
-    self.patchHere(empty)
-    self.patchHere(alive)
-}
-
-function Native.callFunction(mut self, target: int) {
-    self.bytes([0xE8])
-    self.uses.push({ at: self.code.length(), target: target, inData: false })
-    self.int32(0)
 }
 
 function Native.callExternal(mut self, name: string) {
@@ -1192,11 +1027,6 @@ function Native.jump(mut self): int {
 
 function Native.patchHere(mut self, at: int) {
     self.patch32(at, self.code.length() - (at + 4))
-}
-
-function Native.relocate(mut self, section: string, offset: int, kind: int) {
-    self.relocations.push({ at: self.code.length(), symbol: section, kind: kind, addend: offset - 4 })
-    self.int32(0)
 }
 
 function Native.relocation(mut self, symbol: string, kind: int, addend: int) {
@@ -1227,12 +1057,6 @@ function Native.text(mut self, text: string): int {
 // The code and the data, changed in place (a function given `mut self.code` would get a copy).
 function Native.int32(mut self, number: int) {
     for i in range(4) {
-        self.code.push(byte(number >> (8 * i) & 0xFF))
-    }
-}
-
-function Native.word64(mut self, number: int) {
-    for i in range(8) {
         self.code.push(byte(number >> (8 * i) & 0xFF))
     }
 }

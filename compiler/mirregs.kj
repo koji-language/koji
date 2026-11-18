@@ -121,6 +121,7 @@ export function terminatorReads(terminator: MTerminator): int[] {
                 valueRegister(value, mut found)
             }
         }
+        MSwitch(value, _, _) => valueRegister(value, mut found)
         _ => {}
     }
 
@@ -131,6 +132,7 @@ export function successorsOf(terminator: MTerminator): int[] {
     return match (terminator) {
         MJump(target) => [target]
         MBranch(_, _, _, thenBlock, elseBlock) => [thenBlock, elseBlock]
+        MSwitch(_, targets, otherwise) => targets + [otherwise]
         _ => []
     }
 }
