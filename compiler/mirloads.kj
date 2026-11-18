@@ -6,7 +6,7 @@
 // a block with one predecessor laid out before it starts with what is known at the end of it.
 
 import { MValue, MAddress, MInstruction, MTerminator, MBlock, MFunctionCode } from 'mir.kj'
-import { writtenBy, successorsOf } from 'mirregs.kj'
+import { readOf, writtenBy, successorsOf, terminatorReads } from 'mirregs.kj'
 
 // A word known at an address: `base` and `offset` (MBase), or `symbol` and `offset` (MSymbol, base
 // -1); the virtual register that holds it.
@@ -197,4 +197,87 @@ function changedAt(known: Known[], offset: int, width: int): Known[] {
 
 function overlaps(a: int, aWidth: int, b: int, bWidth: int): boolean {
     return a < b + bWidth and b < a + aWidth
+}
+
+// An instruction that writes a temporary only copied by the next one (`t = x + 8; x = t`) writes
+// where the copy goes, without the copy: two ranges that the allocator could not give one register
+// (`x` is alive across `t`'s) become one.
+export function foldedCopies(code: MFunctionCode): MFunctionCode {
+    mut reads: int[] = []
+    mut writes: int[] = []
+
+    for id in range(code.floats.length()) {
+        reads.push(0)
+        writes.push(0)
+    }
+
+    for block in code.blocks {
+        for instruction in block.instructions {
+            for id in readOf(instruction) {
+                reads[id] += 1
+            }
+
+            for id in writtenBy(instruction) {
+                writes[id] += 1
+            }
+        }
+
+        for id in terminatorReads(block.terminator) {
+            reads[id] += 1
+        }
+    }
+
+    for id in code.params {
+        writes[id] += 1
+    }
+
+    mut blocks: MBlock[] = []
+    mut changed = false
+
+    for block in code.blocks {
+        immut instructions = block.instructions
+        mut kept: MInstruction[] = []
+        mut index = 0
+
+        while (index < instructions.length()) {
+            if (index + 1 < instructions.length()) {
+                match (instructions[index + 1]) {
+                    MMove(dest, MReg(temporary)) if (dest != temporary and reads[temporary] == 1 and writes[temporary] == 1 and code.floats[dest] == code.floats[temporary]) => {
+                        match (writing(instructions[index], temporary, dest)) {
+                            Some(rewritten) => {
+                                kept.push(rewritten)
+                                index += 2
+                                changed = true
+                                continue
+                            }
+                            None => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            kept.push(instructions[index])
+            index += 1
+        }
+
+        blocks.push({ instructions: kept, terminator: block.terminator })
+    }
+
+    if (not changed) { return code }
+
+    return { name: code.name, params: code.params, floats: code.floats, blocks: blocks, slots: code.slots, panics: code.panics, results: code.results, pairs: code.pairs, aligned: code.aligned, cold: code.cold }
+}
+
+// The instruction writing `dest` instead of `temporary`, when it writes only that.
+function writing(instruction: MInstruction, temporary: int, dest: int): Option[MInstruction] {
+    return match (instruction) {
+        MMove(written, value) if (written == temporary) => Some(MMove(dest, value))
+        MLoad(written, at, width) if (written == temporary) => Some(MLoad(dest, at, width))
+        MAddressOf(written, at) if (written == temporary) => Some(MAddressOf(dest, at))
+        MBinary(written, op, left, right, check) if (written == temporary) => Some(MBinary(dest, op, left, right, check))
+        MUnary(written, op, value, check) if (written == temporary) => Some(MUnary(dest, op, value, check))
+        MSet(written, condition, left, right) if (written == temporary) => Some(MSet(dest, condition, left, right))
+        _ => None
+    }
 }

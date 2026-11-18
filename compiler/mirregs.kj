@@ -16,6 +16,8 @@ export type RegisterSet = {
     free: int[]
     // Of floats (calls keep none).
     floats: int[]
+    // The registers of the arguments of words, in order (by the convention).
+    arguments: int[]
     // Of words that calls do not keep, which the emitter uses itself for some instructions (see
     // `clobbers`): only for the ranges without one of them.
     limited: int[]
@@ -410,6 +412,61 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
         }
     }
 
+    // Preferences: a parameter its register of the convention, a value read for the last time by a
+    // call the register of its argument there (no move then, when it is free). Words only, and not
+    // with values of two words about (they shift the registers).
+    mut preferred: int[] = []
+
+    for id in range(count) {
+        preferred.push(-1)
+    }
+
+    if (code.pairs.length() == 0) {
+        mut word = 0
+
+        for param in code.params {
+            if (code.floats[param]) { continue }
+
+            if (word < set.arguments.length()) { preferred[param] = set.arguments[word] }
+
+            word += 1
+        }
+    }
+
+    for block in range(blocks) {
+        immut instructions = code.blocks[block].instructions
+
+        for index in range(instructions.length()) {
+            immut at = blockStarts[block] + 2 * index
+            immut paired = index > 0 and match (instructions[index - 1]) {
+                MPairs(_, _) => true
+                _ => false
+            }
+
+            match (instructions[index]) {
+                MCall(callee, args, _) if (not paired) => {
+                    match (callee) {
+                        MVariadic(_, _) => continue
+                        _ => {}
+                    }
+
+                    mut word = 0
+
+                    for arg in args {
+                        match (arg) {
+                            MReg(id) if (code.floats[id]) => continue
+                            MReg(id) if (last[id] == at and word < set.arguments.length() and preferred[id] < 0) => preferred[id] = set.arguments[word]
+                            _ => {}
+                        }
+
+                        word += 1
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     // For each position, how many instructions that use the limited registers are before it.
     immut clobbersBefore = countsBefore(clobbered, position)
 
@@ -460,6 +517,18 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
             }
 
             active = kept
+        }
+
+        immut wanted = preferred[id]
+
+        if (chosen < 0 and wanted >= 0 and wanted in candidates) {
+            mut taken = false
+
+            for other in active {
+                if (registers[other] == wanted) { taken = true }
+            }
+
+            if (not taken) { chosen = wanted }
         }
 
         for register in candidates {

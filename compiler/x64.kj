@@ -22,7 +22,7 @@ immut rbp = 5
 immut xmm = 16
 immut argumentRegisters = [7, 6, 2, 1, 8, 9]
 
-export immut x64Registers: RegisterSet = { kept: [3, 12, 13, 14, 15], free: [6, 7, 8, 9, 10], floats: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31], limited: [2, 11] }
+export immut x64Registers: RegisterSet = { kept: [3, 12, 13, 14, 15], free: [6, 7, 8, 9, 10], floats: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31], limited: [2, 11], arguments: [7, 6, 2, 1, 8, 9] }
 
 // Where a virtual register is: a register, or a word of the frame (its offset from rbp).
 type Place = {
