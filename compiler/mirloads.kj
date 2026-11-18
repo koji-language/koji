@@ -1,0 +1,200 @@
+// Loads of the machine IR (mir.kj) that read again what is known: a word loaded or stored before
+// at the same address (the same virtual register and offset, or the same global), with nothing
+// between that may have changed it, is copied from the register that holds it (which the allocator
+// then often coalesces). A store to another address forgets all but the other words at its base
+// (two bases may address the same memory), a call or a release everything. Over extended blocks:
+// a block with one predecessor laid out before it starts with what is known at the end of it.
+
+import { MValue, MAddress, MInstruction, MTerminator, MBlock, MFunctionCode } from 'mir.kj'
+import { writtenBy, successorsOf } from 'mirregs.kj'
+
+// A word known at an address: `base` and `offset` (MBase), or `symbol` and `offset` (MSymbol, base
+// -1); the virtual register that holds it.
+type Known = {
+    base: int
+    symbol: string
+    offset: int
+    width: int
+    value: int
+}
+
+export function reusedLoads(code: MFunctionCode): MFunctionCode {
+    immut count = code.blocks.length()
+    mut predecessors: int[] = []
+    mut single: int[] = []
+
+    for block in range(count) {
+        predecessors.push(0)
+        single.push(-1)
+    }
+
+    for block in range(count) {
+        for next in successorsOf(code.blocks[block].terminator) {
+            predecessors[next] += 1
+            single[next] = block
+        }
+    }
+
+    mut ends: Known[][] = []
+    mut blocks: MBlock[] = []
+
+    for block in range(count) {
+        mut known: Known[] = []
+
+        if (predecessors[block] == 1 and single[block] < block) { known = ends[single[block]] }
+
+        mut instructions: MInstruction[] = []
+
+        for instruction in code.blocks[block].instructions {
+            match (instruction) {
+                MLoad(dest, at, width) => {
+                    immut found = find(known, at, width)
+
+                    if (found >= 0 and code.floats[known[found].value] == code.floats[dest]) {
+                        immut value = known[found].value
+
+                        if (value != dest) { instructions.push(MMove(dest, MReg(value))) }
+
+                        known = without(known, dest)
+                        continue
+                    }
+
+                    instructions.push(instruction)
+                    known = without(known, dest)
+                    remember(mut known, at, width, dest)
+                    continue
+                }
+                MStore(at, value, width) => {
+                    known = afterStore(known, at, width)
+
+                    match (value) {
+                        MReg(id) if (width == 8) => remember(mut known, at, width, id)
+                        _ => {}
+                    }
+                }
+                // The first word of the value changes (its count of references).
+                MRetain(_) => known = changedAt(known, 0, 8)
+                MCall(_, _, _) => known = []
+                MRelease(_, _) => known = []
+                MPreempt => known = []
+                MMachine(_, _, _) => known = []
+                _ => {}
+            }
+
+            instructions.push(instruction)
+
+            if (known.length() > 0) {
+                for id in writtenBy(instruction) {
+                    known = without(known, id)
+                }
+            }
+        }
+
+        ends.push(known)
+        blocks.push({ instructions: instructions, terminator: code.blocks[block].terminator })
+    }
+
+    return { name: code.name, params: code.params, floats: code.floats, blocks: blocks, slots: code.slots, panics: code.panics, results: code.results, pairs: code.pairs, aligned: code.aligned, cold: code.cold }
+}
+
+// The entry known at an address, or -1.
+function find(known: Known[], at: MAddress, width: int): int {
+    for i in range(known.length()) {
+        immut each = known[i]
+
+        if (each.width != width) { continue }
+
+        match (at) {
+            MBase(base, offset) => {
+                if (each.base == base and each.offset == offset) { return i }
+            }
+            MSymbol(name, offset) => {
+                if (each.base < 0 and each.symbol == name and each.offset == offset) { return i }
+            }
+            _ => {}
+        }
+    }
+
+    return -1
+}
+
+// What is at an address (16 entries at most: the oldest go first).
+function remember(mut known: Known[], at: MAddress, width: int, value: int) {
+    mut entry: Known = { base: -1, symbol: '', offset: 0, width: width, value: value }
+
+    match (at) {
+        MBase(base, offset) => {
+            if (base == value) { return }
+
+            entry.base = base
+            entry.offset = offset
+        }
+        MSymbol(name, offset) => {
+            entry.symbol = name
+            entry.offset = offset
+        }
+        _ => return
+    }
+
+    if (known.length() >= 16) { known.removeAt(0) }
+
+    known.push(entry)
+}
+
+// Without the entries that read or hold a virtual register written.
+function without(known: Known[], id: int): Known[] {
+    mut kept: Known[] = []
+    mut changed = false
+
+    for each in known {
+        if (each.base == id or each.value == id) {
+            changed = true
+        } else {
+            kept.push(each)
+        }
+    }
+
+    return if (changed) { kept } else { known }
+}
+
+// After a store: a word of the pool's lists (which nothing else addresses) changes only those
+// entries; one at a base and an offset, all but the other words at the same base (another base
+// may address the same memory); any other, everything.
+function afterStore(known: Known[], at: MAddress, width: int): Known[] {
+    return match (at) {
+        MSymbol(name, offset) if (name == 'koji_pool') => {
+            mut kept: Known[] = []
+
+            for each in known {
+                if (not (each.base < 0 and each.symbol == name and overlaps(each.offset, each.width, offset, width))) { kept.push(each) }
+            }
+
+            kept
+        }
+        MBase(base, offset) => {
+            mut kept: Known[] = []
+
+            for each in known {
+                if (each.base == base and not overlaps(each.offset, each.width, offset, width)) { kept.push(each) }
+            }
+
+            kept
+        }
+        _ => []
+    }
+}
+
+// Without the words at that offset from any base (and below it), and the globals.
+function changedAt(known: Known[], offset: int, width: int): Known[] {
+    mut kept: Known[] = []
+
+    for each in known {
+        if (each.base >= 0 and each.offset >= 0 and not overlaps(each.offset, each.width, offset, width)) { kept.push(each) }
+    }
+
+    return kept
+}
+
+function overlaps(a: int, aWidth: int, b: int, bWidth: int): boolean {
+    return a < b + bWidth and b < a + aWidth
+}

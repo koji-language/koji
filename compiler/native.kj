@@ -14,6 +14,7 @@
 // with its own reference, and the address where the function writes its last value, after the
 // other parameters (as in the C backend).
 
+import { reusedLoads } from 'mirloads.kj'
 import { Ty, Operand, IrFunction, IrProgram, IrExtern, IrForC } from 'ir.kj'
 import { globalsSeen } from 'globals.kj'
 import { borrowedParams, constantGlobals } from 'borrow.kj'
@@ -1139,7 +1140,8 @@ function Native.generateMir(mut self, id: int) {
 
 // A function of the machine IR, its registers allocated and encoded, put in the object: its code, its
 // relocations, its calls of functions of the program and its texts. Where it starts.
-function Native.emitCode(mut self, code: MFunctionCode): int {
+function Native.emitCode(mut self, given: MFunctionCode): int {
+    immut code = reusedLoads(given)
     immut emitted = if (self.arm) { emitA64(code, allocate(code, a64Registers), self.macos) } else { emitX64(code, allocate(code, x64Registers)) }
     immut start = self.code.length()
 

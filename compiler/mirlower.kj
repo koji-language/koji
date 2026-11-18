@@ -805,30 +805,58 @@ function Lowering.optionFrom(mut self, dest: int, found: MValue, source: MValue,
         if (variants[i].fields.length() > 0) { some = i } else { none = i }
     }
 
+    immut itemType = variants[some].fields[0].ty
     immut target = self.resultOf(dest)
     immut present = self.newBlock()
     immut absent = self.newBlock()
     immut done = self.newBlock()
     self.endPiece(MBranch('eq', found, MImm(0), absent, present))
     self.startPiece(present)
-    immut description = self.addressOf(MSymbol('.data', self.context.records[option]))
-    self.current.push(MCall(MExternal('koji_record_new'), [description, MImm(some)], [target]))
-    self.current.push(MCall(MExternal('koji_record_init'), [MReg(target), MImm(0), source], []))
-    immut itemType = variants[some].fields[0].ty
 
-    if (copied >= 0 and isManaged(itemType)) {
-        immut item = self.temporary()
-        self.current.push(MLoad(item, MSlot(copied, 0), 8))
-        self.current.push(MRelease(MReg(item), kindOf(itemType)))
+    if (itemType == VoidTy) {
+        immut description = self.addressOf(MSymbol('.data', self.context.records[option]))
+        self.current.push(MCall(MExternal('koji_record_new'), [description, MImm(some)], [target]))
+    } else {
+        // The item first (a reference of its own, unless it was moved out to `copied`), then the
+        // record from the pool, as `RecordNewIns` makes it.
+        immut address = self.register(source)
+        immut low = self.temporary()
+        immut wide = wideType(itemType)
+        immut width = match (itemType) {
+            BoolTy => 1
+            ByteTy => 1
+            CharTy => 4
+            _ => 8
+        }
+        self.current.push(MLoad(low, MBase(address, 0), width))
+        immut high = self.temporary()
+
+        if (wide) { self.current.push(MLoad(high, MBase(address, 8), 8)) }
+
+        if (copied < 0 and isManaged(itemType)) { self.current.push(MRetain(MReg(low))) }
+
+        self.newOption(target, option, some, if (wide) { [MReg(low), MReg(high)] } else { [MReg(low)] })
     }
 
     self.endPiece(MJump(done))
     self.startPiece(absent)
-    immut other = self.addressOf(MSymbol('.data', self.context.records[option]))
-    self.current.push(MCall(MExternal('koji_record_new'), [other, MImm(none)], [target]))
+    self.newOption(target, option, none, [])
     self.endPiece(MJump(done))
     self.startPiece(done)
     self.setResult(dest, target)
+}
+
+// A record of the pool with its words (its variant has fields of 1 or 2 words).
+function Lowering.newOption(mut self, target: int, record: int, variant: int, words: MValue[]) {
+    self.poolTake(target, 3 + words.length())
+    immut description = self.addressOf(MSymbol('.data', self.context.records[record]))
+    self.current.push(MStore(MBase(target, 0), MImm(1), 8))
+    self.current.push(MStore(MBase(target, 8), description, 8))
+    self.current.push(MStore(MBase(target, 16), MImm(variant), 8))
+
+    for i in range(words.length()) {
+        self.current.push(MStore(MBase(target, 24 + 8 * i), words[i], 8))
+    }
 }
 
 // An operation on decimals (by the library) or U128 (inline, but divisions and shifts by a count).
