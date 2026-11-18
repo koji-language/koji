@@ -1,13 +1,13 @@
 // The register allocator of the machine IR (mir.kj): linear scan over the ranges of liveness. Each
 // virtual register is alive over a range of positions (its instructions in order, each block's
 // terminator after them), from the first to the last where it is alive; the ranges are taken by
-// their starts, each given a free register of its class: one that calls keep when a call is
-// inside its range (a register of floats then never: none is kept), else one they do not keep
+// their starts, each given a free register of its class: one that calls keep when its value is
+// alive across a call (a register of floats then never: none is kept), else one they do not keep
 // first. When none is free, the range of those it could take that ends last is spilled to a slot
 // of the frame (this one, if it ends after them all).
 
 import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MFunctionCode } from 'mir.kj'
-import { addBit, hasBit, bitMembers, liveness } from 'bits.kj'
+import { addBit, removeBit, hasBit, bitMembers, liveness } from 'bits.kj'
 
 // The registers of a processor for the allocator (their numbers for its emitter).
 export type RegisterSet = {
@@ -213,8 +213,49 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
     immut alive = liveness(reads, writes, following, words)
     immut liveIn = alive.into
     immut liveOut = alive.out
+    // The values alive across a call (read after it, not written by it): backwards over each
+    // block from what is alive out of it. Not the calls of cold blocks: they save the registers
+    // alive across them. (A range may hold a call where its value is not alive: a result written
+    // on another path, a value read only on another.)
+    mut across = empty
 
-    // The ranges, and the positions of the calls.
+    for block in range(blocks) {
+        if (block < code.cold.length() and code.cold[block]) { continue }
+
+        mut live = liveOut[block]
+
+        for id in terminatorReads(code.blocks[block].terminator) {
+            addBit(mut live, id)
+        }
+
+        immut instructions = code.blocks[block].instructions
+        mut index = instructions.length() - 1
+
+        while (index >= 0) {
+            immut instruction = instructions[index]
+
+            for id in writtenBy(instruction) {
+                removeBit(mut live, id)
+            }
+
+            match (instruction) {
+                MCall(_, _, _) => {
+                    for word in range(words) {
+                        across[word] = across[word] | live[word]
+                    }
+                }
+                _ => {}
+            }
+
+            for id in readOf(instruction) {
+                addBit(mut live, id)
+            }
+
+            index -= 1
+        }
+    }
+
+    // The ranges, and the positions of the instructions that use the limited registers.
     mut first: int[] = []
     mut last: int[] = []
 
@@ -272,7 +313,6 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
         back -= 1
     }
 
-    mut calls: int[] = []
     mut clobbered: int[] = []
 
     for block in range(blocks) {
@@ -289,12 +329,6 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
 
             for id in writtenBy(instructions[index]) {
                 extend(mut first, mut last, id, at)
-            }
-
-            match (instructions[index]) {
-                // Not those of cold blocks: they save the registers alive across them.
-                MCall(_, _, _) if (not (block < code.cold.length() and code.cold[block])) => calls.push(at)
-                _ => {}
             }
 
             if (clobbers(instructions[index])) { clobbered.push(at) }
@@ -376,9 +410,7 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
         }
     }
 
-    // For each position, how many calls are before it (whether a range has one inside), and how
-    // many instructions that use the limited registers.
-    immut callsBefore = countsBefore(calls, position)
+    // For each position, how many instructions that use the limited registers are before it.
     immut clobbersBefore = countsBefore(clobbered, position)
 
     // The ranges by their starts.
@@ -413,7 +445,7 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
         active = still
             // A call strictly inside the range (a call reads its arguments before and writes its
         // results after).
-        immut crossing = callsBefore[last[id]] > callsBefore[first[id] + 1]
+        immut crossing = hasBit(across, id)
         immut limited = if (clobbersBefore[last[id] + 1] > clobbersBefore[first[id]]) { [] } else { set.limited }
         immut candidates = if (code.floats[id]) { if (crossing) { [] } else { set.floats } } else { if (crossing) { set.kept } else { set.free + limited + set.kept } }
         mut chosen = -1
