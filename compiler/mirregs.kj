@@ -75,7 +75,7 @@ export function readOf(instruction: MInstruction): int[] {
             valueRegister(right, mut found)
         }
         MPreempt => {}
-        MPairs(_) => {}
+        MPairs(_, _) => {}
         MMachine(_, _, args) => {
             for value in args {
                 valueRegister(value, mut found)

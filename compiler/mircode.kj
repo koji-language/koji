@@ -17,12 +17,13 @@ export type MBuilder = {
     order: int[]
     slots: int[]
     results: boolean[]
+    aligned: int[]
 }
 
 // A function of parameters of the classes `params` (true for a float) and of results of the
 // classes `results`; its first block is open.
 export function builder(name: string, params: boolean[], results: boolean[]): MBuilder {
-    mut made: MBuilder = { name: name, params: [], pairs: [], floats: [], blocks: [{ instructions: [], terminator: MUnreachable }], current: [], block: 0, order: [0], slots: [], results: results }
+    mut made: MBuilder = { name: name, params: [], pairs: [], floats: [], blocks: [{ instructions: [], terminator: MUnreachable }], current: [], block: 0, order: [0], slots: [], results: results, aligned: [] }
 
     for float in params {
         made.params.push(made.floats.length())
@@ -95,5 +96,5 @@ function MBuilder.code(self): MFunctionCode {
         blocks.push({ instructions: block.instructions, terminator: ending })
     }
 
-    return { name: self.name, params: self.params, floats: self.floats, blocks: blocks, slots: self.slots, panics: [], results: self.results, pairs: self.pairs }
+    return { name: self.name, params: self.params, floats: self.floats, blocks: blocks, slots: self.slots, panics: [], results: self.results, pairs: self.pairs, aligned: self.aligned }
 }

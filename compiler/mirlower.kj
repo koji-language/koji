@@ -611,8 +611,11 @@ export function lowerMir(program: IrProgram, id: int, context: MirContext, preem
 
     mut params: int[] = []
     mut pairs: int[] = []
+    mut aligned: int[] = []
 
     for param in range(routine.params) {
+        if (routine.locals[param].ty == U128Ty) { aligned.push(params.length()) }
+
         if (self.highs[param] >= 0) { pairs.push(params.length()) }
 
         params.push(param)
@@ -693,7 +696,7 @@ export function lowerMir(program: IrProgram, id: int, context: MirContext, preem
         self.endPiece(ending)
     }
 
-    return { name: routine.name, params: params, floats: self.floats, blocks: self.ordered(), slots: self.slots, panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { if (wideType(routine.returns)) { [false, false] } else { [routine.returns == FloatTy] } }, pairs: pairs }
+    return { name: routine.name, params: params, floats: self.floats, blocks: self.ordered(), slots: self.slots, panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { if (wideType(routine.returns)) { [false, false] } else { [routine.returns == FloatTy] } }, pairs: pairs, aligned: aligned }
 }
 
 function Lowering.tagOf(self, operand: Operand): int {
@@ -1704,14 +1707,17 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             self.current.push(MLoad(environment, MBase(base, 16), 8))
             mut values = [MReg(environment)]
             mut pairs: int[] = []
+            mut aligned: int[] = []
 
             for arg in args {
+                if (self.operandType(arg) == U128Ty) { aligned.push(values.length()) }
+
                 if (wideType(self.operandType(arg))) { pairs.push(values.length()) }
 
                 values = values + self.words(arg)
             }
 
-            if (pairs.length() > 0) { self.current.push(MPairs(pairs)) }
+            if (pairs.length() > 0) { self.current.push(MPairs(pairs, aligned)) }
 
             match (dest) {
                 Some(local) if (self.highs[local] >= 0) => self.current.push(MCall(MIndirect(MReg(code)), values, self.registersOf(local)))
@@ -2588,11 +2594,14 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             mut positions: int[] = []
 
             mut pairs: int[] = []
+            mut aligned: int[] = []
 
             for i in range(args.length()) {
                 positions.push(values.length())
 
                 if (wideType(self.operandType(args[i]))) {
+                    if (self.operandType(args[i]) == U128Ty) { aligned.push(values.length()) }
+
                     pairs.push(values.length())
                     values = values + self.words(args[i])
                     continue
@@ -2683,7 +2692,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                 values.push(self.addressOf(MSlot(slot, 0)))
             }
 
-            if (pairs.length() > 0) { self.current.push(MPairs(pairs)) }
+            if (pairs.length() > 0) { self.current.push(MPairs(pairs, aligned)) }
 
             match (dest) {
                 Some(local) if (self.highs[local] >= 0) => self.current.push(MCall(MFunction(callee), values, self.registersOf(local)))
@@ -2932,11 +2941,14 @@ function Lowering.releaseHeld(mut self) {
 function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: StdArg[]) {
     mut values: MValue[] = []
     mut pairs: int[] = []
+    mut aligned: int[] = []
 
     for arg in args {
         match (arg) {
             // A value of two words: both.
             ValueArg(given) if (wideType(self.operandType(given))) => {
+                if (self.operandType(given) == U128Ty) { aligned.push(values.length()) }
+
                 pairs.push(values.length())
                 values = values + self.words(given)
                 continue
@@ -3102,7 +3114,7 @@ function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: S
         }
     }
 
-    if (pairs.length() > 0) { self.current.push(MPairs(pairs)) }
+    if (pairs.length() > 0) { self.current.push(MPairs(pairs, aligned)) }
 
     if (variadic) {
         match (dest) {

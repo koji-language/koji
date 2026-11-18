@@ -9,7 +9,7 @@
 // xmm0 and xmm1 for floats; the allocator has the others (`x64Registers`). The frame: rbp, the registers kept that the function uses, its
 // slots, then the slots of the spilled values, its size a multiple of 16.
 
-import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
+import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode, EmittedRelocation, EmittedUse, EmittedText, Emitted } from 'mir.kj'
 import { RegisterSet, Allocation, positionOf } from 'mirregs.kj'
 
 immut rax = 0
@@ -21,33 +21,6 @@ immut xmm = 16
 immut argumentRegisters = [7, 6, 2, 1, 8, 9]
 
 export immut x64Registers: RegisterSet = { kept: [3, 12, 13, 14, 15], free: [6, 7, 8, 9, 10], floats: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31] }
-
-// A relocation of the code: at an offset, to a symbol or a section, of a kind of ELF.
-export type EmittedRelocation = {
-    at: int
-    symbol: string
-    kind: int
-    addend: int
-}
-
-// A call of a function of the program (its number), or a reference to a text of the constants (a
-// displacement of 32 bits to it, from the end of the displacement).
-export type EmittedUse = {
-    at: int
-    target: int
-}
-
-export type EmittedText = {
-    at: int
-    text: string
-}
-
-export type Emitted = {
-    code: byte[]
-    relocations: EmittedRelocation[]
-    calls: EmittedUse[]
-    texts: EmittedText[]
-}
 
 // Where a virtual register is: a register, or a word of the frame (its offset from rbp).
 type Place = {
@@ -353,7 +326,7 @@ function Emitter.instruction(mut self, instruction: MInstruction) {
             self.panicIf(code, panic)
         }
         MPreempt => self.preempt()
-        MPairs(starts) => self.pairs = starts
+        MPairs(starts, _) => self.pairs = starts
         MMachine(dests, op, args) => self.machine(dests, op, args)
         MWide(dests, op, left, right) => self.wide(dests, op, left, right)
         // test r, r; jz none; inc qword [r]
@@ -855,7 +828,7 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
     match (callee) {
         MFunction(id) => {
             self.bytes([0xE8])
-            self.calls.push({ at: self.out.length(), target: id })
+            self.calls.push({ at: self.out.length(), target: id, kind: 0 })
             self.int32(0)
         }
         MExternal(name) => self.callExternal(name)
@@ -1338,7 +1311,7 @@ function Emitter.modrm(mut self, opcode: int[], reg: int, rm: Operand, wide: boo
         }
         OCode(id) => {
             self.out.push(byte(0x05 | (reg & 7) << 3))
-            self.calls.push({ at: self.out.length(), target: id })
+            self.calls.push({ at: self.out.length(), target: id, kind: 0 })
             self.int32(0)
         }
         ORip(symbol, addend) => {
@@ -1384,7 +1357,7 @@ function Emitter.callExternal(mut self, name: string) {
 }
 
 function Emitter.textUse(mut self, text: string) {
-    self.texts.push({ at: self.out.length(), text: text })
+    self.texts.push({ at: self.out.length(), text: text, kind: 0 })
     self.int32(0)
 }
 

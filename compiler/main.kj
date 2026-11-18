@@ -335,7 +335,10 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
     // when it cannot link the objects (KOJI_LINKER=koji to see why), or with KOJI_LINKER=system.
     immut chosen = variable('KOJI_LINKER', '')
 
-    if (program.libraries.length() == 0 and chosen != 'system') {
+    // (Not yet for arm64, which the system's linker for it links: KOJI_CC.)
+    immut arm = system.env('KOJI_TARGET') == Some('arm64')
+
+    if (program.libraries.length() == 0 and chosen != 'system' and not arm) {
         match (linkOwn(object, runtime, output)) {
             Ok(_) => return Ok()
             Err(message) => {

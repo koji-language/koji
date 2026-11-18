@@ -14,6 +14,7 @@ import { Ty, Operand, Place, Step, Target, StdArg, Writeback, MapEntry, Instruct
 import { changes, constantGlobals } from 'borrow.kj'
 import { uses, terminatorUses, successors } from 'liveness.kj'
 import { Platformed, foldFor, platformGlobals, readsSystem } from 'target.kj'
+import system
 
 // The locals of the callee in the caller: from `base`, but the parameters given as operands.
 type Names = {
@@ -90,8 +91,11 @@ function inlinable(program: IrProgram, blocks: int, most: int): boolean[] {
     return result
 }
 
-// The platform the native backend compiles for (see target.kj): Linux on x86-64.
-export immut targetPlatform = 0
+// The platform the native backend compiles for (see target.kj): Linux on x86-64, or on arm64 with
+// KOJI_TARGET=arm64 (the system times 3 plus the processor).
+export function targetPlatform(): int {
+    return if (system.env('KOJI_TARGET') == Some('arm64')) { 1 } else { 0 }
+}
 
 // The function on one system (target.kj): its branches on `system.os` go one way, and the blocks no
 // longer reached are empty (their code, and the functions of C it calls, are not generated).
@@ -148,7 +152,7 @@ export function inlineSmall(program: IrProgram): IrProgram {
     mut simplified: IrFunction[] = []
 
     for routine in done {
-        simplified.push(simplify(forSystem(routine, platformGlobals(program), targetPlatform)))
+        simplified.push(simplify(forSystem(routine, platformGlobals(program), targetPlatform())))
     }
 
     mut result = program

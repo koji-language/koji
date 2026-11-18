@@ -1,0 +1,1404 @@
+// The emitter of arm64 (AArch64) for the machine IR (mir.kj), after its registers are allocated
+// (mirregs.kj): the instructions of a function (4 bytes each), with the relocations of ELF for
+// AArch64, the calls of other functions of the program (relocations too) and the texts. Functions
+// follow AAPCS64: integers and addresses in x0 to x7, floats in d0 to d7, the result in x0 (and x1)
+// or d0, a value of two words in two registers (a U128 from an even one), one that does not fit
+// whole on the stack whole (and the next ones there too); x19 to x28 kept, x29 the frame, x30 the
+// return address.
+//
+// x8, x9, x10, x16 and x17 are left to the emitter (a value moved through a register, an address,
+// an offset too large for an instruction), and d0 to d2 for floats; the allocator has the others
+// (`a64Registers`). The frame: x29 and x30 at x29, then below it the registers kept that the
+// function uses, its slots and the slots of the spilled values, its size a multiple of 16.
+
+import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode, EmittedRelocation, EmittedUse, EmittedText, Emitted } from 'mir.kj'
+import { RegisterSet, Allocation, positionOf } from 'mirregs.kj'
+
+// The registers: x0 to x30, then the floats from 32 (d0 is 32). 31 is the stack pointer or the zero
+// register, by the instruction.
+immut v = 32
+immut zero = 31
+immut fp = 29
+immut lr = 30
+// The registers of the emitter: values, an address, an offset.
+immut sa = 9
+immut sb = 10
+immut sc = 8
+immut address = 16
+immut offsetRegister = 17
+
+export immut a64Registers: RegisterSet = { kept: [19, 20, 21, 22, 23, 24, 25, 26, 27, 28], free: [2, 3, 4, 5, 6, 7, 11, 12, 13, 14, 15], floats: [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63] }
+
+// The relocations of ELF for AArch64.
+immut call26 = 283
+immut jump26 = 282
+immut page21 = 275
+immut lo12 = 277
+immut load8lo12 = 278
+immut load32lo12 = 285
+immut load64lo12 = 286
+immut gotPage = 311
+immut gotLo12 = 312
+
+// Where a virtual register is: a register, or a word of the frame (its offset from x29).
+type Place = {
+    InRegister(register: int)
+    InFrame(offset: int)
+}
+
+type Emitter = {
+    code: MFunctionCode
+    allocation: Allocation
+    out: byte[]
+    relocations: EmittedRelocation[]
+    calls: EmittedUse[]
+    texts: EmittedText[]
+    slots: int[]
+    spills: int[]
+    frame: int
+    blockAt: int[]
+    // The branches to patch: where, the block, the kind (0 b, 1 b.cond, cbz and cbnz).
+    jumps: int[][]
+    // The branches to the panics: where, the panic.
+    panicJumps: int[][]
+    position: int
+    // The arguments of the next call that start a pair, and those of them aligned (`MPairs`).
+    pairs: int[]
+    aligned: int[]
+    // The entries of the tables of switches: where, the table, the block.
+    tables: int[][]
+}
+
+export function emitA64(code: MFunctionCode, allocation: Allocation): Emitted {
+    mut self: Emitter = { code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [], aligned: [], tables: [] }
+    mut size = 8 * allocation.used.length()
+
+    for bytes in code.slots {
+        size += (bytes + 7) / 8 * 8
+        self.slots.push(-size)
+    }
+
+    for spill in range(allocation.spillCount) {
+        size += 8
+        self.spills.push(-size)
+    }
+
+    self.frame = (size + 15) / 16 * 16
+    // stp x29, x30, [sp, #-16]!; mov x29, sp; sub sp, sp, frame
+    self.word32(0xA9BF7BFD)
+    self.word32(0x910003FD)
+    self.adjustStack(-self.frame)
+
+    for i in range(allocation.used.length()) {
+        self.storeFrame(allocation.used[i], -8 * (i + 1))
+    }
+
+    // The parameters, from the registers of the convention (or the stack of the caller, above x29
+    // and x30) to their places.
+    immut places = argumentPlaces(code.params.length(), code.floats, code.params, code.pairs, code.aligned)
+    mut sources: int[] = []
+    mut targets: Place[] = []
+
+    for i in range(code.params.length()) {
+        if (places[i] >= 0) {
+            sources.push(places[i])
+            targets.push(self.place(code.params[i]))
+        }
+    }
+
+    self.parallelMove(sources, targets)
+
+    for i in range(code.params.length()) {
+        if (places[i] < 0) {
+            immut at = 16 - places[i] - 1
+            immut param = code.params[i]
+
+            if (code.floats[param]) {
+                self.access(true, true, 8, v, fp, at)
+                self.moveTo(self.place(param), v)
+            } else {
+                self.access(true, false, 8, sa, fp, at)
+                self.moveTo(self.place(param), sa)
+            }
+        }
+    }
+
+    for block in range(code.blocks.length()) {
+        self.blockAt.push(self.out.length())
+        immut each = code.blocks[block]
+
+        for index in range(each.instructions.length()) {
+            self.position = positionOf(allocation, block, index)
+            self.instruction(each.instructions[index])
+        }
+
+        self.position = positionOf(allocation, block, each.instructions.length())
+        self.terminator(block, each.terminator)
+    }
+
+    for jump in self.jumps {
+        self.patchBranch(jump[0], self.blockAt[jump[1]], jump[2])
+    }
+
+    for entry in self.tables {
+        patch32(mut self.out, entry[0], self.blockAt[entry[2]] - entry[1])
+    }
+
+    // The panics: the place in x0, the message in x1, koji_panic.
+    for i in range(code.panics.length()) {
+        immut stub = self.out.length()
+
+        for jump in self.panicJumps {
+            if (jump[1] == i) { self.patchBranch(jump[0], stub, 1) }
+        }
+
+        self.textAddress(0, code.panics[i].location)
+        self.textAddress(1, code.panics[i].message)
+        self.callExternal('koji_panic')
+    }
+
+    return { code: self.out, relocations: self.relocations, calls: self.calls, texts: self.texts }
+}
+
+// Where each argument (or parameter) goes by AAPCS64: a register (x0 to x7 as 0 to 7, d0 to d7 as
+// 32 to 39), or the stack (-1 - its offset there). A pair goes in two registers, from an even one
+// when aligned, or on the stack whole, and the next ones of words after it on the stack too.
+function argumentPlaces(count: int, floats: boolean[], registers: int[], pairs: int[], aligned: int[]): int[] {
+    mut places: int[] = []
+    mut integers = 0
+    mut fractions = 0
+    mut stack = 0
+    mut i = 0
+
+    while (i < count) {
+        immut float = registers[i] >= 0 and floats[registers[i]]
+
+        if (i in pairs) {
+            if (i in aligned and integers % 2 == 1) { integers += 1 }
+
+            if (integers + 2 <= 8) {
+                places.push(integers)
+                places.push(integers + 1)
+                integers += 2
+            } else {
+                integers = 8
+
+                if (i in aligned and stack % 16 != 0) { stack += 8 }
+
+                places.push(-1 - stack)
+                places.push(-1 - (stack + 8))
+                stack += 16
+            }
+
+            i += 2
+            continue
+        }
+
+        if (float) {
+            if (fractions < 8) {
+                places.push(v + fractions)
+                fractions += 1
+            } else {
+                places.push(-1 - stack)
+                stack += 8
+            }
+        } else {
+            if (integers < 8) {
+                places.push(integers)
+                integers += 1
+            } else {
+                places.push(-1 - stack)
+                stack += 8
+            }
+        }
+
+        i += 1
+    }
+
+    return places
+}
+
+function Emitter.place(self, id: int): Place {
+    immut register = self.allocation.registers[id]
+
+    if (register >= 0) { return InRegister(register) }
+
+    immut spill = self.allocation.spills[id]
+    return InFrame(if (spill >= 0) { self.spills[spill] } else { 0 })
+}
+
+function Emitter.isFloat(self, value: MValue): boolean {
+    return match (value) {
+        MReg(id) => self.code.floats[id]
+        MImm(_) => false
+    }
+}
+
+function Emitter.instruction(mut self, instruction: MInstruction) {
+    match (instruction) {
+        MMove(dest, value) => {
+            if (self.code.floats[dest]) {
+                immut source = self.floatRegister(value, v)
+                self.storeFloat(dest, source)
+                return
+            }
+
+            match (self.place(dest)) {
+                InRegister(register) => self.loadValue(register, value)
+                InFrame(offset) => {
+                    immut source = self.valueRegister(value, sa)
+                    self.storeFrame(source, offset)
+                }
+            }
+        }
+        MLoad(dest, at, width) => {
+            immut float = self.code.floats[dest]
+            immut target = if (float) { v } else { self.target(dest) }
+
+            match (at) {
+                // adrp x16, :got:name; ldr target, [x16, :got_lo12:name]
+                MGot(name) => {
+                    self.relocate(name, gotPage, 0)
+                    self.word32(0x90000000 | address)
+                    self.relocate(name, gotLo12, 0)
+                    self.word32(0xF9400000 | address << 5 | target)
+                }
+                _ => {
+                    immut base = self.base(at)
+                    self.access(true, float, width, target, base[0], base[1])
+                }
+            }
+
+            if (float) {
+                self.storeFloat(dest, v)
+            } else {
+                self.finish(dest, target)
+            }
+        }
+        MStore(at, value, width) => {
+            immut float = self.isFloat(value)
+            immut source = if (float) { self.floatRegister(value, v) } else { self.storedRegister(value) }
+            immut base = self.base(at)
+            self.access(false, float, width, source, base[0], base[1])
+        }
+        MAddressOf(dest, at) => {
+            immut target = self.target(dest)
+            immut base = self.base(at)
+            self.addConstant(target, base[0], base[1])
+            self.finish(dest, target)
+        }
+        MBinary(dest, op, left, right, check) => self.binary(dest, op, left, right, check)
+        MUnary(dest, op, value, check) => self.unary(dest, op, value, check)
+        MSet(dest, condition, left, right) => {
+            immut code = self.compare(left, right, condition)
+            immut target = self.target(dest)
+            self.conditionSet(target, code)
+            self.finish(dest, target)
+        }
+        MCall(callee, args, results) => self.call(callee, args, results)
+        MPanicIf(condition, left, right, panic) => {
+            immut code = self.compare(left, right, condition)
+            self.panicJumps.push([self.out.length(), panic])
+            self.word32(0x54000000 | code)
+        }
+        MPreempt => self.preempt()
+        MPairs(starts, aligned) => {
+            self.pairs = starts
+            self.aligned = aligned
+        }
+        MMachine(dests, op, args) => self.machine(dests, op, args)
+        MWide(dests, op, left, right) => self.wide(dests, op, left, right)
+        // cbz r, none; ldr x17, [r]; add x17, x17, 1; str x17, [r]
+        MRetain(value) => {
+            immut held = self.valueRegister(value, sa)
+            immut none = self.out.length()
+            self.word32(0xB4000000 | held)
+            self.word32(0xF9400000 | held << 5 | offsetRegister)
+            self.word32(0x91000400 | offsetRegister << 5 | offsetRegister)
+            self.word32(0xF9000000 | held << 5 | offsetRegister)
+            self.patchBranch(none, self.out.length(), 1)
+        }
+        // cbz r, none; ldr x17, [r]; subs x17, x17, 1; str x17, [r]; b.ne none; then the registers
+        // alive saved around the call that frees it (mov x0, r).
+        MRelease(value, kind) => {
+            immut held = self.valueRegister(value, sa)
+            immut none = self.out.length()
+            self.word32(0xB4000000 | held)
+            self.word32(0xF9400000 | held << 5 | offsetRegister)
+            self.word32(0xF1000400 | offsetRegister << 5 | offsetRegister)
+            self.word32(0xF9000000 | held << 5 | offsetRegister)
+            immut alive = self.out.length()
+            self.word32(0x54000001)
+            immut saved = self.liveCallerSaved()
+            immut size = self.saveRegisters(saved)
+            self.moveRegister(0, held)
+
+            if (kind == 'record') {
+                // The type of the record frees it: ldr x16, [x0, 8]; ldr x16, [x16, 24]; blr x16
+                self.word32(0xF9400400 | address)
+                self.word32(0xF9400C00 | address << 5 | address)
+                self.word32(0xD63F0000 | address << 5)
+            } else {
+                self.callExternal(`koji_${kind}_free`)
+            }
+
+            self.restoreRegisters(saved, size)
+            self.patchBranch(none, self.out.length(), 1)
+            self.patchBranch(alive, self.out.length(), 1)
+        }
+    }
+}
+
+// The register and the offset an address is at (an address computed in x16 when it needs one).
+function Emitter.base(mut self, at: MAddress): int[] {
+    return match (at) {
+        MBase(base, offset) => [self.inRegister(base, address), offset]
+        // add x16, base, index, lsl log2(scale)
+        MIndexed(base, index, scale, offset) => {
+            immut first = self.inRegister(base, address)
+            immut second = self.inRegister(index, offsetRegister)
+            immut shift = match (scale) {
+                1 => 0
+                2 => 1
+                4 => 2
+                _ => 3
+            }
+            self.word32(0x8B000000 | second << 16 | shift << 10 | first << 5 | address)
+            [address, offset]
+        }
+        MSlot(slot, offset) => [fp, self.slots[slot] + offset]
+        // adrp x16, symbol; add x16, x16, :lo12:symbol
+        MSymbol(name, offset) => {
+            self.relocate(name, page21, offset)
+            self.word32(0x90000000 | address)
+            self.relocate(name, lo12, offset)
+            self.word32(0x91000000 | address << 5 | address)
+            [address, 0]
+        }
+        MText(text) => {
+            self.textAddress(address, text)
+            [address, 0]
+        }
+        // The code of a function of the program: adrp and add, to be relocated.
+        MCode(id) => {
+            self.calls.push({ at: self.out.length(), target: id, kind: page21 })
+            self.word32(0x90000000 | address)
+            self.calls.push({ at: self.out.length(), target: id, kind: lo12 })
+            self.word32(0x91000000 | address << 5 | address)
+            [address, 0]
+        }
+        MGot(name) => {
+            self.relocate(name, gotPage, 0)
+            self.word32(0x90000000 | address)
+            self.relocate(name, gotLo12, 0)
+            self.word32(0xF9400000 | address << 5 | address)
+            [address, 0]
+        }
+    }
+}
+
+// adrp register, text; add register, register, :lo12:text
+function Emitter.textAddress(mut self, register: int, text: string) {
+    self.texts.push({ at: self.out.length(), text: text, kind: page21 })
+    self.word32(0x90000000 | register)
+    self.texts.push({ at: self.out.length(), text: text, kind: lo12 })
+    self.word32(0x91000000 | register << 5 | register)
+}
+
+function Emitter.relocate(mut self, symbol: string, kind: int, addend: int) {
+    self.relocations.push({ at: self.out.length(), symbol: symbol, kind: kind, addend: addend })
+}
+
+// A load or a store of `width` bytes (a word of a float with `float`) of `register` at `base` plus
+// `offset`: scaled when it fits, else unscaled, else through x17.
+function Emitter.access(mut self, load: boolean, float: boolean, width: int, register: int, base: int, offset: int) {
+    immut reg = register & 31
+    immut kind = if (float) { 3 } else { match (width) {
+        1 => 0
+        4 => 1
+        _ => 2
+    } }
+    // ldr/str by kind: B, W, X, D.
+    immut scaled = if (load) { [0x39400000, 0xB9400000, 0xF9400000, 0xFD400000] } else { [0x39000000, 0xB9000000, 0xF9000000, 0xFD000000] }
+    immut unscaled = if (load) { [0x38400000, 0xB8400000, 0xF8400000, 0xFC400000] } else { [0x38000000, 0xB8000000, 0xF8000000, 0xFC000000] }
+    immut indexed = if (load) { [0x38606800, 0xB8606800, 0xF8606800, 0xFC606800] } else { [0x38206800, 0xB8206800, 0xF8206800, 0xFC206800] }
+    immut size = if (float) { 8 } else { width }
+
+    if (offset >= 0 and offset % size == 0 and offset / size < 4096) {
+        self.word32(scaled[kind] | (offset / size) << 10 | base << 5 | reg)
+        return
+    }
+
+    if (offset >= -256 and offset <= 255) {
+        self.word32(unscaled[kind] | (offset & 0x1FF) << 12 | base << 5 | reg)
+        return
+    }
+
+    self.moveConstant(offsetRegister, offset)
+    self.word32(indexed[kind] | offsetRegister << 16 | base << 5 | reg)
+}
+
+// target = base + number (a constant of any size).
+function Emitter.addConstant(mut self, target: int, base: int, number: int) {
+    if (number >= 0 and number < 4096) {
+        self.word32(0x91000000 | number << 10 | base << 5 | target)
+        return
+    }
+
+    if (number < 0 and number > -4096) {
+        self.word32(0xD1000000 | (-number) << 10 | base << 5 | target)
+        return
+    }
+
+    self.moveConstant(offsetRegister, number)
+    // add target, base, x17 (the extended form: base may be sp)
+    self.word32(0x8B206000 | offsetRegister << 16 | base << 5 | target)
+}
+
+// sp += number (a multiple of 16).
+function Emitter.adjustStack(mut self, number: int) {
+    if (number == 0) { return }
+
+    self.addConstant(zero, zero, number)
+}
+
+function Emitter.storeFrame(mut self, register: int, offset: int) {
+    self.access(false, register >= v, 8, register, fp, offset)
+}
+
+function Emitter.loadFrame(mut self, register: int, offset: int) {
+    self.access(true, register >= v, 8, register, fp, offset)
+}
+
+function Emitter.target(self, dest: int): int {
+    return match (self.place(dest)) {
+        InRegister(register) => register
+        InFrame(_) => sa
+    }
+}
+
+function Emitter.finish(mut self, dest: int, register: int) {
+    match (self.place(dest)) {
+        InRegister(own) => self.moveRegister(own, register)
+        InFrame(offset) => self.storeFrame(register, offset)
+    }
+}
+
+// The register of a virtual register: its own, or `spare` loaded with it.
+function Emitter.inRegister(mut self, id: int, spare: int): int {
+    return match (self.place(id)) {
+        InRegister(register) => register
+        InFrame(offset) => {
+            self.loadFrame(spare, offset)
+            spare
+        }
+    }
+}
+
+// A value in a register: its own, or `spare` loaded with it (0 is the zero register).
+function Emitter.valueRegister(mut self, value: MValue, spare: int): int {
+    return match (value) {
+        MReg(id) => self.inRegister(id, spare)
+        MImm(number) => {
+            self.moveConstant(spare, number)
+            spare
+        }
+    }
+}
+
+// The register of a value to store: 0 is the zero register.
+function Emitter.storedRegister(mut self, value: MValue): int {
+    return match (value) {
+        MImm(0) => zero
+        _ => self.valueRegister(value, sa)
+    }
+}
+
+function Emitter.loadValue(mut self, register: int, value: MValue) {
+    match (value) {
+        MReg(id) => match (self.place(id)) {
+            InRegister(own) => self.moveRegister(register, own)
+            InFrame(offset) => self.loadFrame(register, offset)
+        }
+        MImm(number) => self.moveConstant(register, number)
+    }
+}
+
+// A float in a register: its own, or `spare` loaded with it.
+function Emitter.floatRegister(mut self, value: MValue, spare: int): int {
+    match (value) {
+        MReg(id) => match (self.place(id)) {
+            InRegister(own) => {
+                if (own >= v) { return own }
+
+                // fmov d, x
+                self.word32(0x9E670000 | own << 5 | (spare - v))
+                return spare
+            }
+            InFrame(offset) => {
+                self.loadFrame(spare, offset)
+                return spare
+            }
+        }
+        MImm(number) => {
+            self.moveConstant(sa, number)
+            self.word32(0x9E670000 | sa << 5 | (spare - v))
+            return spare
+        }
+    }
+}
+
+function Emitter.storeFloat(mut self, dest: int, register: int) {
+    match (self.place(dest)) {
+        InRegister(own) => self.moveRegister(own, register)
+        InFrame(offset) => self.storeFrame(register, offset)
+    }
+}
+
+// mov to, source, of any classes (fmov between them).
+function Emitter.moveRegister(mut self, to: int, source: int) {
+    if (to == source) { return }
+
+    if (to >= v and source >= v) {
+        self.word32(0x1E604000 | (source - v) << 5 | (to - v))
+        return
+    }
+
+    if (to >= v) {
+        self.word32(0x9E670000 | source << 5 | (to - v))
+        return
+    }
+
+    if (source >= v) {
+        self.word32(0x9E660000 | (source - v) << 5 | to)
+        return
+    }
+
+    // orr to, xzr, source
+    self.word32(0xAA0003E0 | source << 16 | to)
+}
+
+// A constant in a register: movz (or movn) and movk for its chunks of 16 bits.
+function Emitter.moveConstant(mut self, register: int, number: int) {
+    mut chunks: int[] = []
+
+    for i in range(4) {
+        chunks.push((number >> (16 * i)) & 0xFFFF)
+    }
+
+    mut zeros = 0
+    mut ones = 0
+
+    for chunk in chunks {
+        if (chunk == 0) { zeros += 1 }
+
+        if (chunk == 0xFFFF) { ones += 1 }
+    }
+
+    if (zeros == 4) {
+        self.word32(0xAA1F03E0 | register)
+        return
+    }
+
+    immut inverted = ones > zeros
+    mut first = true
+
+    for i in range(4) {
+        immut chunk = chunks[i]
+
+        if ((inverted and chunk == 0xFFFF) or (not inverted and chunk == 0)) { continue }
+
+        if (first) {
+            // movz or movn
+            if (inverted) {
+                self.word32(0x92800000 | i << 21 | ((~chunk) & 0xFFFF) << 5 | register)
+            } else {
+                self.word32(0xD2800000 | i << 21 | chunk << 5 | register)
+            }
+
+            first = false
+        } else {
+            self.word32(0xF2800000 | i << 21 | chunk << 5 | register)
+        }
+    }
+
+    // All ones: movn of 0.
+    if (first) { self.word32(0x92800000 | register) }
+}
+
+// cset target, code: csinc target, xzr, xzr, the condition inverted.
+function Emitter.conditionSet(mut self, target: int, code: int) {
+    self.word32(0x9A9F07E0 | (code ^ 1) << 12 | target)
+}
+
+// The condition of a comparison (see `MInstruction`), as a code of AArch64.
+function conditionCode(condition: string): int {
+    return match (condition) {
+        'eq' => 0
+        'ne' => 1
+        'ae' => 2
+        'b' => 3
+        'a' => 8
+        'be' => 9
+        'ge' => 10
+        'lt' => 11
+        'gt' => 12
+        'le' => 13
+        _ => 0
+    }
+}
+
+// cmp left, right (fcmp for floats): the code of the condition.
+function Emitter.compare(mut self, left: MValue, right: MValue, condition: string): int {
+    if (self.isFloat(left) or self.isFloat(right)) {
+        immut first = self.floatRegister(left, v)
+        immut second = self.floatRegister(right, v + 1)
+        self.word32(0x1E602000 | (second - v) << 16 | (first - v) << 5)
+        return match (condition) {
+            'eq' => 0
+            'ne' => 1
+            'lt' => 4
+            'le' => 9
+            'gt' => 12
+            _ => 10
+        }
+    }
+
+    immut first = self.valueRegister(left, sa)
+
+    match (right) {
+        // cmp first, imm12 (cmn for a negative one)
+        MImm(number) if (number >= 0 and number < 4096) => self.word32(0xF100001F | number << 10 | first << 5)
+        MImm(number) if (number < 0 and number > -4096) => self.word32(0xB100001F | (-number) << 10 | first << 5)
+        _ => {
+            immut second = self.valueRegister(right, sb)
+            self.word32(0xEB00001F | second << 16 | first << 5)
+        }
+    }
+
+    return conditionCode(condition)
+}
+
+function Emitter.binary(mut self, dest: int, op: string, left: MValue, right: MValue, check: int) {
+    // On floats: d0 = left op right; a result not finite panics.
+    if (op == 'fadd' or op == 'fsub' or op == 'fmul' or op == 'fdiv') {
+        immut first = self.floatRegister(left, v)
+        immut second = self.floatRegister(right, v + 1)
+        immut code = match (op) {
+            'fadd' => 0x1E602800
+            'fsub' => 0x1E603800
+            'fmul' => 0x1E600800
+            _ => 0x1E601800
+        }
+        self.word32(code | (second - v) << 16 | (first - v) << 5)
+
+        if (check >= 0) { self.finite(check) }
+
+        self.storeFloat(dest, v)
+        return
+    }
+
+    immut first = self.valueRegister(left, sa)
+    immut target = self.target(dest)
+
+    match (op) {
+        other if (other == 'div' or other == 'rem') => {
+            immut divisor = self.valueRegister(right, sb)
+
+            if (check >= 0) {
+                // The overflow of int.min / -1: cmn divisor, 1; b.ne go; cmp first, int.min; b.eq panic
+                self.word32(0xB100041F | divisor << 5)
+                immut go = self.out.length()
+                self.word32(0x54000001)
+                self.moveConstant(sc, -9223372036854775807 - 1)
+                self.word32(0xEB00001F | sc << 16 | first << 5)
+                self.panicJumps.push([self.out.length(), check])
+                self.word32(0x54000000)
+                self.patchBranch(go, self.out.length(), 1)
+            }
+
+            if (other == 'div') {
+                // sdiv target, first, divisor
+                self.word32(0x9AC00C00 | divisor << 16 | first << 5 | target)
+            } else {
+                // sdiv x8, first, divisor; msub target, x8, divisor, first
+                self.word32(0x9AC00C00 | divisor << 16 | first << 5 | sc)
+                self.word32(0x9B008000 | divisor << 16 | first << 10 | sc << 5 | target)
+            }
+        }
+        other if (other == 'shl' or other == 'sar' or other == 'shr') => {
+            match (right) {
+                MImm(number) => {
+                    immut count = number & 63
+
+                    match (other) {
+                        // lsl: ubfm target, first, (64 - count) % 64, 63 - count
+                        'shl' => self.word32(0xD3400000 | ((64 - count) % 64) << 16 | (63 - count) << 10 | first << 5 | target)
+                        // asr: sbfm target, first, count, 63
+                        'sar' => self.word32(0x93400000 | count << 16 | 63 << 10 | first << 5 | target)
+                        // lsr: ubfm target, first, count, 63
+                        _ => self.word32(0xD3400000 | count << 16 | 63 << 10 | first << 5 | target)
+                    }
+                }
+                MReg(_) => {
+                    immut count = self.valueRegister(right, sb)
+                    immut code = match (other) {
+                        'shl' => 0x9AC02000
+                        'sar' => 0x9AC02800
+                        _ => 0x9AC02400
+                    }
+                    self.word32(code | count << 16 | first << 5 | target)
+                }
+            }
+        }
+        'mul' => {
+            immut second = self.valueRegister(right, sb)
+            // mul x8, first, second; checked: smulh x17, first, second; cmp x17, x8, asr 63; b.ne panic
+            self.word32(0x9B007C00 | second << 16 | first << 5 | sc)
+
+            if (check >= 0) {
+                self.word32(0x9B407C00 | second << 16 | first << 5 | offsetRegister)
+                self.word32(0xEB80FC1F | sc << 16 | offsetRegister << 5)
+                self.panicJumps.push([self.out.length(), check])
+                self.word32(0x54000001)
+            }
+
+            self.moveRegister(target, sc)
+        }
+        other if (other == 'add' or other == 'sub') => {
+            // adds or subs with a check (the overflow: b.vs panic)
+            immut flags = if (check >= 0) { 0x20000000 } else { 0 }
+            immut negative = other == 'sub'
+
+            match (right) {
+                MImm(number) if (number > -4096 and number < 4096) => {
+                    immut subtract = (number < 0) != negative
+                    immut amount = if (number < 0) { -number } else { number }
+                    self.word32((if (subtract) { 0xD1000000 } else { 0x91000000 }) | flags | amount << 10 | first << 5 | target)
+                }
+                _ => {
+                    immut second = self.valueRegister(right, sb)
+                    self.word32((if (negative) { 0xCB000000 } else { 0x8B000000 }) | flags | second << 16 | first << 5 | target)
+                }
+            }
+
+            if (check >= 0) {
+                self.panicJumps.push([self.out.length(), check])
+                self.word32(0x54000006)
+            }
+        }
+        _ => {
+            immut second = self.valueRegister(right, sb)
+            immut code = match (op) {
+                'and' => 0x8A000000
+                'or' => 0xAA000000
+                _ => 0xCA000000
+            }
+            self.word32(code | second << 16 | first << 5 | target)
+        }
+    }
+
+    self.finish(dest, target)
+}
+
+// fmov x9, d0; ubfx x9, x9, 52, 11; cmp x9, 0x7FF; b.eq panic
+function Emitter.finite(mut self, check: int) {
+    self.word32(0x9E660000 | sa)
+    self.word32(0xD340F800 | 52 << 16 | sa << 5 | sa)
+    self.word32(0xF11FFC1F | sa << 5)
+    self.panicJumps.push([self.out.length(), check])
+    self.word32(0x54000000)
+}
+
+function Emitter.unary(mut self, dest: int, op: string, value: MValue, check: int) {
+    match (op) {
+        'fneg' => {
+            immut source = self.floatRegister(value, v)
+            self.word32(0x1E614000 | (source - v) << 5)
+            self.storeFloat(dest, v)
+            return
+        }
+        // scvtf d0, x
+        'itof' => {
+            immut source = self.valueRegister(value, sa)
+            self.word32(0x9E620000 | source << 5)
+            self.storeFloat(dest, v)
+            return
+        }
+        // fcvtzs target, d
+        'ftoi' => {
+            immut source = self.floatRegister(value, v)
+            immut target = self.target(dest)
+            self.word32(0x9E780000 | (source - v) << 5 | target)
+            self.finish(dest, target)
+            return
+        }
+        'fcheck' => {
+            immut source = self.floatRegister(value, v)
+            self.moveRegister(v, source)
+            self.finite(check)
+            self.storeFloat(dest, v)
+            return
+        }
+        _ => {}
+    }
+
+    immut source = self.valueRegister(value, sa)
+    immut target = self.target(dest)
+
+    match (op) {
+        // negs target, source; b.vs panic
+        'neg' => {
+            self.word32((if (check >= 0) { 0xEB0003E0 } else { 0xCB0003E0 }) | source << 16 | target)
+
+            if (check >= 0) {
+                self.panicJumps.push([self.out.length(), check])
+                self.word32(0x54000006)
+            }
+        }
+        // mvn target, source
+        'not' => self.word32(0xAA2003E0 | source << 16 | target)
+        // sxtw target, source
+        _ => self.word32(0x93407C00 | source << 5 | target)
+    }
+
+    self.finish(dest, target)
+}
+
+// The registers calls do not keep that hold a value alive at the current position.
+function Emitter.liveCallerSaved(self): int[] {
+    mut saved: int[] = []
+
+    for id in range(self.code.floats.length()) {
+        immut register = self.allocation.registers[id]
+
+        if (register < 0 or register in saved) { continue }
+
+        if (self.allocation.first[id] <= self.position and self.position <= self.allocation.last[id] and (register in a64Registers.free or register >= v)) { saved.push(register) }
+    }
+
+    return saved
+}
+
+// The registers saved below the stack (16 bytes at a time): the bytes.
+function Emitter.saveRegisters(mut self, saved: int[]): int {
+    immut size = (8 * saved.length() + 15) / 16 * 16
+    self.adjustStack(-size)
+
+    for i in range(saved.length()) {
+        self.access(false, saved[i] >= v, 8, saved[i], zero, 8 * i)
+    }
+
+    return size
+}
+
+function Emitter.restoreRegisters(mut self, saved: int[], size: int) {
+    for i in range(saved.length()) {
+        self.access(true, saved[i] >= v, 8, saved[i], zero, 8 * i)
+    }
+
+    self.adjustStack(size)
+}
+
+// The check of preemption: adrp x16, flag; ldr w16, [x16, :lo12:flag]; cbz w16, calm; the registers
+// that calls do not keep and that hold a value alive, saved around bl koji_task_preempt.
+function Emitter.preempt(mut self) {
+    self.relocate('koji_preempt_flag', page21, 0)
+    self.word32(0x90000000 | address)
+    self.relocate('koji_preempt_flag', load32lo12, 0)
+    self.word32(0xB9400000 | address << 5 | address)
+    immut calm = self.out.length()
+    self.word32(0x34000000 | address)
+    immut saved = self.liveCallerSaved()
+    immut size = self.saveRegisters(saved)
+    self.callExternal('koji_task_preempt')
+    self.restoreRegisters(saved, size)
+    self.patchBranch(calm, self.out.length(), 1)
+}
+
+function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[]) {
+    mut classes: boolean[] = []
+    mut ids: int[] = []
+
+    for arg in args {
+        ids.push(classes.length())
+        classes.push(self.isFloat(arg))
+    }
+
+    immut places = argumentPlaces(args.length(), classes, ids, self.pairs, self.aligned)
+    self.pairs = []
+    self.aligned = []
+    // The arguments on the stack: stored below it (its size a multiple of 16), then those in the
+    // registers of the convention, in parallel.
+    mut stack = 0
+
+    for place in places {
+        if (place < 0 and -place - 1 + 8 > stack) { stack = -place - 1 + 8 }
+    }
+
+    stack = (stack + 15) / 16 * 16
+    self.adjustStack(-stack)
+
+    for i in range(args.length()) {
+        if (places[i] >= 0) { continue }
+
+        if (classes[i]) {
+            immut source = self.floatRegister(args[i], v)
+            self.access(false, true, 8, source, zero, -places[i] - 1)
+        } else {
+            immut source = self.storedRegister(args[i])
+            self.access(false, false, 8, source, zero, -places[i] - 1)
+        }
+    }
+
+    match (callee) {
+        MIndirect(value) => self.loadValue(address, value)
+        _ => {}
+    }
+
+    mut sources: MValue[] = []
+    mut destinations: int[] = []
+
+    for i in range(args.length()) {
+        if (places[i] >= 0) {
+            sources.push(args[i])
+            destinations.push(places[i])
+        }
+    }
+
+    self.argumentMove(sources, destinations)
+
+    match (callee) {
+        MFunction(id) => {
+            self.calls.push({ at: self.out.length(), target: id, kind: call26 })
+            self.word32(0x94000000)
+        }
+        MExternal(name) => self.callExternal(name)
+        MVariadic(name) => self.callExternal(name)
+        // blr x16
+        MIndirect(_) => self.word32(0xD63F0000 | address << 5)
+    }
+
+    self.adjustStack(stack)
+    // The results: x0, x1; d0.
+    mut words = 0
+
+    for result in results {
+        if (self.code.floats[result]) {
+            self.storeFloat(result, v)
+        } else {
+            self.finish(result, words)
+            words += 1
+        }
+    }
+}
+
+// bl name
+function Emitter.callExternal(mut self, name: string) {
+    self.relocate(name, call26, 0)
+    self.word32(0x94000000)
+}
+
+// The arguments of a call into the registers of the convention: the values in registers moved
+// without overwriting one still to be read (a cycle through x9), then those in the frame and the
+// constants (which read no register).
+function Emitter.argumentMove(mut self, given: MValue[], destinations: int[]) {
+    mut sources: int[] = []
+
+    for value in given {
+        sources.push(match (value) {
+            MReg(id) => match (self.place(id)) {
+                InRegister(register) => register
+                InFrame(_) => -1
+            }
+            MImm(_) => -1
+        })
+    }
+
+    mut done: boolean[] = []
+
+    for source in sources {
+        done.push(source < 0)
+    }
+
+    mut progressed = true
+
+    while (progressed) {
+        progressed = false
+        mut pending = false
+
+        for i in range(sources.length()) {
+            if (done[i]) { continue }
+
+            pending = true
+            mut blocked = false
+
+            for j in range(sources.length()) {
+                if (j != i and not done[j] and sources[j] == destinations[i]) { blocked = true }
+            }
+
+            if (blocked) { continue }
+
+            self.moveRegister(destinations[i], sources[i])
+            done[i] = true
+            progressed = true
+        }
+
+        if (pending and not progressed) {
+            self.breakCycle(mut sources, done, destinations)
+            progressed = true
+        }
+    }
+
+    for i in range(given.length()) {
+        if (sources[i] >= 0) { continue }
+
+        if (destinations[i] >= v) {
+            immut source = self.floatRegister(given[i], destinations[i])
+            self.moveRegister(destinations[i], source)
+        } else {
+            self.loadValue(destinations[i], given[i])
+        }
+    }
+}
+
+function Emitter.parallelMove(mut self, given: int[], targets: Place[]) {
+    mut sources = given
+    mut done: boolean[] = []
+
+    for source in sources {
+        done.push(false)
+    }
+
+    mut remaining = sources.length()
+
+    while (remaining > 0) {
+        mut progressed = false
+
+        for i in range(sources.length()) {
+            if (done[i]) { continue }
+
+            immut writes = match (targets[i]) {
+                InRegister(register) => register
+                InFrame(_) => -1
+            }
+            mut blocked = false
+
+            for j in range(sources.length()) {
+                if (j != i and not done[j] and sources[j] == writes) { blocked = true }
+            }
+
+            if (blocked) { continue }
+
+            self.moveTo(targets[i], sources[i])
+            done[i] = true
+            remaining -= 1
+            progressed = true
+        }
+
+        if (not progressed) {
+            mut destinations: int[] = []
+
+            for target in targets {
+                destinations.push(match (target) {
+                    InRegister(register) => register
+                    InFrame(_) => -1
+                })
+            }
+
+            self.breakCycle(mut sources, done, destinations)
+        }
+    }
+}
+
+// Moves left in cycles: the content of the register a move writes kept in x9 (a float's bits in
+// it), those that read it reading x9 instead.
+function Emitter.breakCycle(mut self, mut sources: int[], done: boolean[], destinations: int[]) {
+    for i in range(sources.length()) {
+        if (done[i] or destinations[i] < 0) { continue }
+
+        immut written = destinations[i]
+        self.moveRegister(sa, written)
+
+        for j in range(sources.length()) {
+            if (not done[j] and sources[j] == written) { sources[j] = sa }
+        }
+
+        return
+    }
+}
+
+function Emitter.moveTo(mut self, target: Place, source: int) {
+    match (target) {
+        InRegister(register) => self.moveRegister(register, source)
+        InFrame(offset) => self.storeFrame(source, offset)
+    }
+}
+
+// An operation on values of two words (see `MWide`): the left one in x8:x9 (high, low), the right
+// one in x17:x10, the result from x8:x9 (or x9).
+function Emitter.wide(mut self, dests: int[], op: string, left: MValue[], right: MValue[]) {
+    self.loadValue(sa, left[0])
+
+    if (left.length() > 1) { self.loadValue(sc, left[1]) }
+
+    if (right.length() > 0) { self.loadValue(sb, right[0]) }
+
+    if (right.length() > 1) { self.loadValue(offsetRegister, right[1]) }
+
+    match (op) {
+        // adds x9, x9, x10; adc x8, x8, x17
+        'add' => {
+            self.word32(0xAB000000 | sb << 16 | sa << 5 | sa)
+            self.word32(0x9A000000 | offsetRegister << 16 | sc << 5 | sc)
+        }
+        // subs x9, x9, x10; sbc x8, x8, x17
+        'sub' => {
+            self.word32(0xEB000000 | sb << 16 | sa << 5 | sa)
+            self.word32(0xDA000000 | offsetRegister << 16 | sc << 5 | sc)
+        }
+        // umulh x16, x9, x10; madd x16, x9, x17, x16; madd x16, x8, x10, x16; mul x9, x9, x10;
+        // mov x8, x16
+        'mul' => {
+            self.word32(0x9BC07C00 | sb << 16 | sa << 5 | address)
+            self.word32(0x9B000000 | offsetRegister << 16 | address << 10 | sa << 5 | address)
+            self.word32(0x9B000000 | sb << 16 | address << 10 | sc << 5 | address)
+            self.word32(0x9B007C00 | sb << 16 | sa << 5 | sa)
+            self.moveRegister(sc, address)
+        }
+        // umulh x8, x9, x10; mul x9, x9, x10
+        'product' => {
+            self.word32(0x9BC07C00 | sb << 16 | sa << 5 | sc)
+            self.word32(0x9B007C00 | sb << 16 | sa << 5 | sa)
+        }
+        other if (other == 'shl' or other == 'shr') => {
+            // cmp x10, 64; b.ge big; cbz x10, done; neg x17, x10; then the words across, by the
+            // count and 64 less it (lslv and lsrv take it modulo 64); big: by the count less 64.
+            self.word32(0xF101015F)
+            immut big = self.out.length()
+            self.word32(0x5400000A)
+            immut none = self.out.length()
+            self.word32(0xB4000000 | sb)
+            self.word32(0xCB0003E0 | sb << 16 | offsetRegister)
+
+            if (other == 'shl') {
+                // lsrv x16, x9, x17; lslv x8, x8, x10; orr x8, x8, x16; lslv x9, x9, x10
+                self.word32(0x9AC02400 | offsetRegister << 16 | sa << 5 | address)
+                self.word32(0x9AC02000 | sb << 16 | sc << 5 | sc)
+                self.word32(0xAA000000 | address << 16 | sc << 5 | sc)
+                self.word32(0x9AC02000 | sb << 16 | sa << 5 | sa)
+            } else {
+                // lslv x16, x8, x17; lsrv x9, x9, x10; orr x9, x9, x16; lsrv x8, x8, x10
+                self.word32(0x9AC02000 | offsetRegister << 16 | sc << 5 | address)
+                self.word32(0x9AC02400 | sb << 16 | sa << 5 | sa)
+                self.word32(0xAA000000 | address << 16 | sa << 5 | sa)
+                self.word32(0x9AC02400 | sb << 16 | sc << 5 | sc)
+            }
+
+            immut over = self.out.length()
+            self.word32(0x14000000)
+            self.patchBranch(big, self.out.length(), 1)
+            // sub x17, x10, 64
+            self.word32(0xD1010000 | sb << 5 | offsetRegister)
+
+            if (other == 'shl') {
+                // lslv x8, x9, x17; mov x9, xzr
+                self.word32(0x9AC02000 | offsetRegister << 16 | sa << 5 | sc)
+                self.word32(0xAA1F03E0 | sa)
+            } else {
+                // lsrv x9, x8, x17; mov x8, xzr
+                self.word32(0x9AC02400 | offsetRegister << 16 | sc << 5 | sa)
+                self.word32(0xAA1F03E0 | sc)
+            }
+
+            self.patchBranch(none, self.out.length(), 1)
+            self.patchBranch(over, self.out.length(), 0)
+        }
+        // cmp x9, x10; sbcs xzr, x8, x17; cset x9, lo (hs)
+        other if (other == 'below' or other == 'aboveEqual') => {
+            self.word32(0xEB00001F | sb << 16 | sa << 5)
+            self.word32(0xFA00001F | offsetRegister << 16 | sc << 5)
+            self.conditionSet(sa, if (other == 'below') { 3 } else { 2 })
+        }
+        // cbz x8, low; clz x9, x8; b done; low: clz x9, x9; add x9, x9, 64
+        _ => {
+            immut low = self.out.length()
+            self.word32(0xB4000000 | sc)
+            self.word32(0xDAC01000 | sc << 5 | sa)
+            immut done = self.out.length()
+            self.word32(0x14000000)
+            self.patchBranch(low, self.out.length(), 1)
+            self.word32(0xDAC01000 | sa << 5 | sa)
+            self.word32(0x91010000 | sa << 5 | sa)
+            self.patchBranch(done, self.out.length(), 0)
+        }
+    }
+
+    self.finish(dests[0], sa)
+
+    if (dests.length() > 1) { self.finish(dests[1], sc) }
+}
+
+// An instruction of the processor (see `MMachine`): the result from x9 (and x8).
+function Emitter.machine(mut self, dests: int[], op: string, args: MValue[]) {
+    match (op) {
+        // rev x9, x9
+        'bswap' => {
+            self.loadValue(sa, args[0])
+            self.word32(0xDAC00C00 | sa << 5 | sa)
+        }
+        // AES on arm64 goes through the library's own code (none of the instructions is used yet).
+        'aesAvailable' => self.moveConstant(sa, 0)
+        // The state in v0 (fmov d0, x; ins v0.d[1], x) and the key in v1: aese v0, v2 (zero);
+        // aesmc v0, v0 (not for the last round); eor v0, v0, v1; then the state back in x9, x8.
+        other if (other == 'aesRound' or other == 'aesLastRound') => {
+            self.wordsToVector(0, args[0], args[1])
+            self.wordsToVector(1, args[2], args[3])
+            // movi v2.2d, 0; aese v0.16b, v2.16b
+            self.word32(0x6F00E402)
+            self.word32(0x4E284840)
+
+            if (other == 'aesRound') { self.word32(0x4E286800) }
+
+            self.word32(0x6E211C00)
+            self.vectorToWords(0)
+        }
+        // pmull v0.1q, v0.1d, v1.1d
+        'carryless' => {
+            self.loadValue(sa, args[0])
+            self.loadValue(sb, args[1])
+            self.word32(0x9E670000 | sa << 5)
+            self.word32(0x9E670000 | sb << 5 | 1)
+            self.word32(0x0EE0E000 | 1 << 16)
+            self.vectorToWords(0)
+        }
+        // mrs x9, fpcr
+        'floatControl' => self.word32(0xD53B4400 | sa)
+        // Not under valgrind: the answer otherwise.
+        _ => self.loadValue(sa, args[1])
+    }
+
+    if (dests.length() > 0) { self.finish(dests[0], sa) }
+
+    if (dests.length() > 1) { self.finish(dests[1], sc) }
+}
+
+// fmov dN, x9 (the low word); ins vN.d[1], x8 (the high one)
+function Emitter.wordsToVector(mut self, vector: int, low: MValue, high: MValue) {
+    self.loadValue(sa, low)
+    self.loadValue(sc, high)
+    self.word32(0x9E670000 | sa << 5 | vector)
+    self.word32(0x4E181C00 | sc << 5 | vector)
+}
+
+// fmov x9, dN; umov x8, vN.d[1]
+function Emitter.vectorToWords(mut self, vector: int) {
+    self.word32(0x9E660000 | vector << 5 | sa)
+    self.word32(0x4E183C00 | vector << 5 | sc)
+}
+
+function Emitter.terminator(mut self, block: int, terminator: MTerminator) {
+    match (terminator) {
+        MJump(target) => {
+            if (target != block + 1) { self.jumpTo(0x14000000, 0, target) }
+        }
+        MBranch(condition, left, right, thenBlock, elseBlock) => {
+            immut code = self.compare(left, right, condition)
+
+            if (thenBlock == block + 1) {
+                self.jumpTo(0x54000000 | (code ^ 1), 1, elseBlock)
+                return
+            }
+
+            self.jumpTo(0x54000000 | code, 1, thenBlock)
+
+            if (elseBlock != block + 1) { self.jumpTo(0x14000000, 0, elseBlock) }
+        }
+        MReturn(values) => {
+            mut words = 0
+
+            for value in values {
+                if (self.isFloat(value)) {
+                    immut source = self.floatRegister(value, v)
+                    self.moveRegister(v, source)
+                } else {
+                    self.loadValue(words, value)
+                    words += 1
+                }
+            }
+
+            for i in range(self.allocation.used.length()) {
+                self.loadFrame(self.allocation.used[i], -8 * (i + 1))
+            }
+
+            // mov sp, x29; ldp x29, x30, [sp], 16; ret
+            self.word32(0x910003BF)
+            self.word32(0xA8C17BFD)
+            self.word32(0xD65F03C0)
+        }
+        // brk 0
+        MUnreachable => self.word32(0xD4200000)
+        // cmp x9, count; b.hs otherwise; adr x16, table; ldrsw x17, [x16, x9, lsl 2];
+        // add x16, x16, x17; br x16; the table after (the places of the blocks from it).
+        MSwitch(value, targets, otherwise) => {
+            self.loadValue(sa, value)
+
+            if (targets.length() < 4096) {
+                self.word32(0xF100001F | targets.length() << 10 | sa << 5)
+            } else {
+                self.moveConstant(sb, targets.length())
+                self.word32(0xEB00001F | sb << 16 | sa << 5)
+            }
+
+            self.jumpTo(0x54000002, 1, otherwise)
+            // adr x16, +16 (the table, after this and three more instructions)
+            self.word32(0x10000000 | (16 >> 2) << 5 | address)
+            self.word32(0xB8A07800 | sa << 16 | address << 5 | offsetRegister)
+            self.word32(0x8B000000 | offsetRegister << 16 | address << 5 | address)
+            self.word32(0xD61F0000 | address << 5)
+            immut table = self.out.length()
+
+            for target in targets {
+                self.tables.push([self.out.length(), table, target])
+                self.word32(0)
+            }
+        }
+    }
+}
+
+// A branch to a block (its instruction, with the place of the offset of `kind`: 0 b, 1 b.cond).
+function Emitter.jumpTo(mut self, instruction: int, kind: int, block: int) {
+    self.jumps.push([self.out.length(), block, kind])
+    self.word32(instruction)
+}
+
+// The offset of the branch at `at` to `target`: 26 bits for b and bl (0), 19 for b.cond, cbz and
+// cbnz (1).
+function Emitter.patchBranch(mut self, at: int, target: int, kind: int) {
+    immut distance = (target - at) / 4
+    mut instruction = 0
+
+    for i in range(4) {
+        instruction = instruction | int(self.out[at + i]) << (8 * i)
+    }
+
+    if (kind == 0) {
+        instruction = instruction | (distance & 0x3FFFFFF)
+    } else {
+        instruction = instruction | (distance & 0x7FFFF) << 5
+    }
+
+    patch32(mut self.out, at, instruction)
+}
+
+function Emitter.word32(mut self, number: int) {
+    for i in range(4) {
+        self.out.push(byte((number >> (8 * i)) & 0xFF))
+    }
+}
+
+function patch32(mut out: byte[], at: int, number: int) {
+    for i in range(4) {
+        out[at + i] = byte((number >> (8 * i)) & 0xFF)
+    }
+}
