@@ -77,6 +77,11 @@ export function readOf(instruction: MInstruction): int[] {
         MPreempt => {}
         MRetain(value) => valueRegister(value, mut found)
         MRelease(value, _) => valueRegister(value, mut found)
+        MWide(_, _, left, right) => {
+            for value in left + right {
+                valueRegister(value, mut found)
+            }
+        }
     }
 
     return found
@@ -91,6 +96,7 @@ export function writtenBy(instruction: MInstruction): int[] {
         MUnary(dest, _, _, _) => [dest]
         MSet(dest, _, _, _) => [dest]
         MCall(_, _, results) => results
+        MWide(dests, _, _, _) => dests
         _ => []
     }
 }

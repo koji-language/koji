@@ -28,6 +28,8 @@ export type MCallee = {
     MFunction(id: int)
     // A function of another object (the runtime library, C), by its name.
     MExternal(name: string)
+    // One of C that takes as many arguments as it is given (al tells how many in vector registers).
+    MVariadic(name: string)
     // The code at the address in a register.
     MIndirect(value: MValue)
 }
@@ -60,6 +62,11 @@ export type MInstruction = {
     // The check of the task that ran long (KOJI_PREEMPT), a call when the flag is set: it keeps
     // every register (the emitter saves those alive).
     MPreempt
+    // An operation on values of two words (low, high: a U128): `add`, `sub`, `mul` (modulo 2^128),
+    // `shl`, `shr` (by the low word of `right`, 0 to 127), the results `dests` (low, high); `below`,
+    // `aboveEqual` (unsigned comparisons), 1 or 0 in the one of `dests`; `product` (the 128 bits of
+    // the product of the low words); `zeros` (the zeros before the first bit set, 128 for none).
+    MWide(dests: int[], op: string, left: MValue[], right: MValue[])
     // A reference more to the value at the address (none for 0): its first word counts them.
     MRetain(value: MValue)
     // A reference less, the last one freeing the value (koji_<kind>_free; a record by its type),
@@ -173,6 +180,7 @@ function instructionText(instruction: MInstruction, code: MFunctionCode): string
             immut target = match (callee) {
                 MFunction(id) => `f${id}`
                 MExternal(name) => name
+                MVariadic(name) => `${name}...`
                 MIndirect(value) => `*${valueText(value, code)}`
             }
             immut prefix = if (written.length() > 0) { `${written.join(', ')} = ` } else { '' }
@@ -180,6 +188,21 @@ function instructionText(instruction: MInstruction, code: MFunctionCode): string
         }
         MPanicIf(condition, left, right, panic) => `panic p${panic} if ${condition} ${valueText(left, code)}, ${valueText(right, code)}`
         MPreempt => 'preempt'
+        MWide(dests, op, left, right) => {
+            mut written: string[] = []
+
+            for dest in dests {
+                written.push(registerText(dest, code))
+            }
+
+            mut read: string[] = []
+
+            for value in left + right {
+                read.push(valueText(value, code))
+            }
+
+            `${written.join(', ')} = wide ${op} ${read.join(', ')}`
+        }
         MRetain(value) => `retain ${valueText(value, code)}`
         MRelease(value, kind) => `release ${kind} ${valueText(value, code)}`
     }

@@ -26,7 +26,7 @@ import { mirLowers, mirRefusal, lowerMir, MirContext } from 'mirlower.kj'
 import { mirText } from 'mir.kj'
 import { allocate } from 'mirregs.kj'
 import { emitX64, x64Registers } from 'x64.kj'
-import { floatBits } from 'constants.kj'
+import { floatBits, decimalBits } from 'constants.kj'
 import system
 
 // Registers.
@@ -6111,62 +6111,7 @@ function Native.appendRodata(mut self, bytes: byte[]) {
 
 // Constants
 
-// The 16 bytes of a decimal constant (koji_decimal_literal of the prelude): the coefficient
-// (high * 10^17 + low) in its low 113 bits, then the exponent plus 6176, then the sign; computed in
-// limbs of 16 bits.
-function decimalBits(negative: boolean, high: int, low: int, exponent: int): byte[] {
-    mut limbs = [0, 0, 0, 0, 0, 0, 0, 0]
-    // 10^17 in limbs of 16 bits.
-    immut ten17 = limbsOf(100000000000000000)
-    immut highLimbs = limbsOf(high)
 
-    for i in range(4) {
-        mut carry = 0
-
-        for j in range(4) {
-            if (i + j >= 8) { continue }
-
-            immut product = highLimbs[i] * ten17[j] + limbs[i + j] + carry
-            limbs[i + j] = product & 0xFFFF
-            carry = product >> 16
-        }
-
-        mut k = i + 4
-
-        while (carry > 0 and k < 8) {
-            immut sum = limbs[k] + carry
-            limbs[k] = sum & 0xFFFF
-            carry = sum >> 16
-            k += 1
-        }
-    }
-
-    immut lowLimbs = limbsOf(low)
-    mut carry = 0
-
-    for i in range(8) {
-        immut sum = limbs[i] + (if (i < 4) { lowLimbs[i] } else { 0 }) + carry
-        limbs[i] = sum & 0xFFFF
-        carry = sum >> 16
-    }
-
-    // The exponent (14 bits) from bit 49 of the high word, then the sign: in limbs 7 (bits 112
-    // to 127) and 6 (bits 96 to 111).
-    immut biased = exponent + 6176
-    limbs[7] = (limbs[7] & 0x1) | (biased & 0x3FFF) << 1 | (if (negative) { 0x8000 } else { 0 })
-    mut bytes: byte[] = []
-
-    for limb in limbs {
-        bytes.push(byte(limb & 0xFF))
-        bytes.push(byte(limb >> 8))
-    }
-
-    return bytes
-}
-
-function limbsOf(number: int): int[] {
-    return [number & 0xFFFF, number >> 16 & 0xFFFF, number >> 32 & 0xFFFF, number >> 48 & 0xFFFF]
-}
 
 // Bytes
 

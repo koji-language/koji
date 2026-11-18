@@ -18,7 +18,7 @@ import { Ty, Operand, Place, Target, Step, Instruction, Terminator, IrFunction, 
 import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
 import { lastUses, defs, uses, terminatorUses, successors, targetReads } from 'liveness.kj'
 import { borrowedLocals, changes } from 'borrow.kj'
-import { floatWord } from 'constants.kj'
+import { floatWord, decimalBits } from 'constants.kj'
 
 // What the lowering needs to know of the object: the offsets of the globals (in .bss), of the
 // string literals and of the descriptions of the records (in .data), the borrowed parameters of
@@ -66,10 +66,12 @@ export function mirRefusal(program: IrProgram, id: int): string {
     immut routine = program.functions[id]
 
     for local in routine.locals {
-        if (not word(local.ty)) { return `a local of ${tyText(local.ty)}` }
+        if (not oneOrTwo(local.ty)) { return `a local of ${tyText(local.ty)}` }
     }
 
-    if (not word(routine.returns) and routine.returns != VoidTy) { return `a result of ${tyText(routine.returns)}` }
+    if (not oneOrTwo(routine.returns) and routine.returns != VoidTy) { return `a result of ${tyText(routine.returns)}` }
+
+    if (not fitsConvention(signatureOf(routine))) { return 'a value of two words across registers and the stack' }
 
 
     for block in routine.blocks {
@@ -78,6 +80,8 @@ export function mirRefusal(program: IrProgram, id: int): string {
 
         for instruction in block.instructions {
             if (not lowered(program, instruction)) { return kindText(instruction) }
+
+            if (widened(program, routine, instruction) and not wideLowered(program, routine, instruction)) { return `${kindText(instruction)} of two words` }
         }
 
         immut ending = match (block.terminator) {
@@ -90,6 +94,169 @@ export function mirRefusal(program: IrProgram, id: int): string {
     }
 
     return ''
+}
+
+// Values of one word, or of two (a decimal, a U128: a pair of virtual registers).
+function oneOrTwo(ty: Ty): boolean {
+    return word(ty) or wideType(ty)
+}
+
+// The types of the parameters of a function, as its callers pass them.
+function signatureOf(routine: IrFunction): Ty[] {
+    mut types: Ty[] = []
+
+    for param in range(routine.params) {
+        types.push(routine.locals[param].ty)
+    }
+
+    return types
+}
+
+// Whether no value of two words falls across the registers of the convention and the stack (it
+// would go on the stack whole, the next words in the register left: not what a call of words does).
+function fitsConvention(types: Ty[]): boolean {
+    mut integers = 0
+
+    for ty in types {
+        if (ty == FloatTy) { continue }
+
+        if (wideType(ty) and integers == 5) { return false }
+
+        integers += if (wideType(ty)) { 2 } else { 1 }
+    }
+
+    return true
+}
+
+// Whether an instruction reads or writes a value of two words.
+function widened(program: IrProgram, routine: IrFunction, instruction: Instruction): boolean {
+    for local in uses(instruction) + defs(instruction) {
+        if (wideType(routine.locals[local].ty)) { return true }
+    }
+
+    match (instruction) {
+        CopyIns(GlobalPlace(id), _) => {
+            if (wideType(program.globals[id].ty)) { return true }
+        }
+        _ => {}
+    }
+
+    immut operands = operandsOf(instruction)
+
+    for operand in operands {
+        match (operand) {
+            DecimalOp(_, _, _, _) => return true
+            GlobalOp(id) => {
+                if (wideType(program.globals[id].ty)) { return true }
+            }
+            _ => {}
+        }
+    }
+
+    return false
+}
+
+// The operands an instruction reads (those of its targets too).
+function operandsOf(instruction: Instruction): Operand[] {
+    mut found: Operand[] = []
+
+    match (instruction) {
+        CopyIns(_, value) => found.push(value)
+        UnaryIns(_, _, value, _) => found.push(value)
+        BinaryIns(_, _, left, right, _) => found = [left, right]
+        CallIns(_, _, args, writebacks, _) => {
+            found = args
+
+            for each in writebacks {
+                found = found + stepOperands(each.target)
+            }
+        }
+        ListNewIns(_, items) => found = items
+        ListGetIns(_, list, index, _) => found = [list, index]
+        ListSetIns(list, index, value, _) => found = stepOperands(list) + [index, value]
+        ListPushIns(list, value, _) => found = stepOperands(list) + [value]
+        ListInsertIns(list, index, value, _) => found = stepOperands(list) + [index, value]
+        ListSortIns(list, _) => found = stepOperands(list)
+        ListSliceIns(_, list, _, _, _) => found.push(list)
+        RecordNewIns(_, _, fields) => found = fields
+        FieldGetIns(_, record, _) => found.push(record)
+        FieldSetIns(record, _, value, _) => found = stepOperands(record) + [value]
+        ListRemoveIns(_, list, _, _) => found = stepOperands(list)
+        StdCallIns(_, _, args) => {
+            for arg in args {
+                match (arg) {
+                    ValueArg(value) => found.push(value)
+                    PlaceArg(value) => found.push(value)
+                    _ => {}
+                }
+            }
+        }
+        MapNewIns(_, entries) => {
+            for entry in entries {
+                found.push(entry.key)
+                found.push(entry.value)
+            }
+        }
+        MapGetIns(_, map, key, _) => found = [map, key]
+        MapLookupIns(_, map, key) => found = [map, key]
+        MapSetIns(map, key, value, _) => {
+            found = stepOperands(map) + [key]
+
+            match (value) {
+                Some(given) => found.push(given)
+                None => {}
+            }
+        }
+        MapRemoveIns(_, map, key, _) => found = stepOperands(map) + [key]
+        _ => {}
+    }
+
+    return found
+}
+
+function stepOperands(target: Target): Operand[] {
+    mut found: Operand[] = []
+
+    for step in target.path {
+        match (step) {
+            IndexStep(index) => found.push(index)
+            KeyStep(key) => found.push(key)
+            FieldStep(_) => {}
+        }
+    }
+
+    return found
+}
+
+immut wideUnaries = ['U128Not', 'IntToU128', 'U128ToStr', 'DecimalNeg', 'IntToDecimal', 'FloatToDecimal', 'DecimalToFloat', 'DecimalToInt', 'DecimalToStr']
+
+// The instructions on values of two words the machine IR lowers.
+function wideLowered(program: IrProgram, routine: IrFunction, instruction: Instruction): boolean {
+    return match (instruction) {
+        CopyIns(_, _) => true
+        UnaryIns(_, op, _, _) => op in wideUnaries
+        BinaryIns(_, op, _, _, _) => op.startsWith('U128') or op.startsWith('Decimal')
+        CallIns(_, callee, args, _, _) => fitsConvention(signatureOf(program.functions[callee]))
+        StdCallIns(dest, name, args) => {
+            mut types: Ty[] = []
+
+            for arg in args {
+                match (arg) {
+                    ValueArg(LocalOp(local)) => types.push(routine.locals[local].ty)
+                    ValueArg(DecimalOp(_, _, _, _)) => types.push(DecimalTy)
+                    ValueArg(GlobalOp(id)) => types.push(program.globals[id].ty)
+                    _ => types.push(IntTy)
+                }
+            }
+
+            fitsConvention(types)
+        }
+        FieldGetIns(_, _, _) => true
+        RecordNewIns(_, _, _) => true
+        ListGetIns(_, _, _, _) => true
+        ListNewIns(_, _) => true
+        _ => false
+    }
 }
 
 // The `mut` parameters of a function (each given the address where its final value goes).
@@ -134,7 +301,8 @@ function simpleOperand(program: IrProgram, operand: Operand): boolean {
         FloatOp(_) => true
         StrOp(_) => true
         LocationOp(_) => true
-        GlobalOp(id) => word(program.globals[id].ty)
+        DecimalOp(_, _, _, _) => true
+        GlobalOp(id) => oneOrTwo(program.globals[id].ty)
         _ => false
     }
 }
@@ -177,17 +345,24 @@ immut placed = ['IntPow', 'BytePow']
 // Done inline, checked.
 immut checkedBinaries = ['ShiftLeft', 'ShiftRight', 'ByteDiv', 'ByteRem', 'ByteShiftLeft', 'ByteShiftRight']
 
-// A word of a value read inline (the accessors of the prelude): its offset.
-immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16]
+// A word of a value read inline (the accessors of the prelude): its offset (an address inside the
+// value for a negative one).
+immut accessors: Map[string, int] = ['koji_list_length': 32, 'koji_record_tag': 16, 'koji_unsafe_string_size': 8, 'koji_unsafe_string_bytes': -24, 'koji_unsafe_list_items': 24, 'koji_unsafe_string_references': 0, 'koji_unsafe_string_capacity': 16, 'koji_element_size': 0]
+
+// The memory of `koji:unsafe`, inline: the widths of its reads and writes.
+immut memoryWidths: Map[string, int] = ['koji_unsafe_read_int': 8, 'koji_unsafe_read_float': 8, 'koji_unsafe_read_bool': 1, 'koji_unsafe_read_byte': 1, 'koji_unsafe_read_char': 4, 'koji_unsafe_write_int': 8, 'koji_unsafe_write_float': 8, 'koji_unsafe_write_bool': 1, 'koji_unsafe_write_byte': 1, 'koji_unsafe_write_char': 4]
+
+// The functions of `koji:unsafe` and of the pool the machine IR writes itself (see `libraryCall`).
+immut inlineLibrary = ['koji_unsafe_wide', 'koji_unsafe_low_word', 'koji_unsafe_high_word', 'koji_unsafe_word_product', 'koji_unsafe_decimal_low', 'koji_unsafe_decimal_high', 'koji_unsafe_decimal_of', 'koji_unsafe_leading_zeros', 'koji_unsafe_offset', 'koji_unsafe_distance', 'koji_unsafe_allocate', 'koji_unsafe_free', 'koji_unsafe_new_string', 'koji_unsafe_blank_string', 'koji_unsafe_set_string_size', 'koji_unsafe_set_list_length', 'koji_pool_heads', 'koji_pool_is_off', 'koji_memory_take', 'koji_pool_take', 'koji_memory_give', 'koji_pool_give', 'koji_record_field_count', 'koji_record_field_type', 'koji_record_field_slot', 'koji_record_get', 'koji_element_counted', 'koji_element_retain', 'koji_element_release']
 
 function lowered(program: IrProgram, instruction: Instruction): boolean {
     return match (instruction) {
         CopyIns(dest, value) => simpleOperand(program, value) and match (dest) {
             LocalPlace(_) => true
-            GlobalPlace(id) => word(program.globals[id].ty)
+            GlobalPlace(id) => oneOrTwo(program.globals[id].ty)
         }
-        UnaryIns(_, op, value, _) => (op in unaries or unaryHelpers.has(op) or op == 'ListLength' or op == 'RecordTag') and simpleOperand(program, value)
-        BinaryIns(_, op, left, right, _) => simpleOperand(program, left) and simpleOperand(program, right) and (op in binaries or comparison(op) != '' or op in checkedBinaries or binaryHelpers.has(op) or objectComparison(op) != '' or op in ['StrContains', 'StrContainsChar', 'ListContains', 'MapContains', 'ListIndexOf'])
+        UnaryIns(_, op, value, _) => (op in unaries or op in wideUnaries or unaryHelpers.has(op) or op == 'ListLength' or op == 'RecordTag') and simpleOperand(program, value)
+        BinaryIns(_, op, left, right, _) => simpleOperand(program, left) and simpleOperand(program, right) and (op in binaries or comparison(op) != '' or op in checkedBinaries or binaryHelpers.has(op) or op.startsWith('U128') or op.startsWith('Decimal') or objectComparison(op) != '' or op in ['StrContains', 'StrContainsChar', 'ListContains', 'MapContains', 'ListIndexOf'])
         CallIns(_, callee, args, writebacks, _) => {
             if (not mirLowersSignature(program, callee)) { return false }
 
@@ -269,16 +444,16 @@ function lowered(program: IrProgram, instruction: Instruction): boolean {
 // one the first backend writes inline (the memory of `koji:unsafe`, the pool, the stacks of the
 // tasks...), nor one of a foreign block that blocks or takes as many arguments as it is given.
 function lowersLibraryCall(program: IrProgram, dest: Option[int], name: string, args: StdArg[]): boolean {
-    if (accessors.has(name)) { return true }
+    if (accessors.has(name) or memoryWidths.has(name) or name in inlineLibrary) { return true }
 
-    for prefix in ['koji_unsafe_', 'koji_pool_', 'koji_memory_', 'koji_element_', 'koji_record_field_', 'koji_list_shared_', 'koji_aes_'] {
+    if (name in inlineLibrary) { return true }
+
+    for prefix in ['koji_unsafe_', 'koji_list_shared_', 'koji_aes_'] {
         if (name.startsWith(prefix)) { return false }
     }
 
-    if (name == 'koji_record_get') { return false }
-
     for each in program.externs {
-        if (each.name == name and (each.blocking or '...' in each.params)) { return false }
+        if (each.name == name and each.blocking) { return false }
     }
 
     for arg in args {
@@ -301,10 +476,10 @@ function mirLowersSignature(program: IrProgram, id: int): boolean {
     immut routine = program.functions[id]
 
     for param in range(routine.params) {
-        if (not word(routine.locals[param].ty)) { return false }
+        if (not oneOrTwo(routine.locals[param].ty)) { return false }
     }
 
-    return word(routine.returns) or routine.returns == VoidTy
+    return oneOrTwo(routine.returns) or routine.returns == VoidTy
 }
 
 // A shift by a constant from 0 to 63 (the others go through the library).
@@ -380,6 +555,9 @@ type Lowering = {
     position: int
     // The locals a `TakeIns` empties, set to none when the function starts (see `step`).
     emptied: boolean[]
+    // For each local of two words, the virtual register of its high word (the low one is the
+    // local's), or -1.
+    highs: int[]
     // For each local, the variant of the record it holds when it is only compared (see
     // `tagOnlyLocals`), or -1.
     tagOnly: int[]
@@ -443,11 +621,18 @@ export function lowerMir(program: IrProgram, id: int, context: MirContext, preem
         if (tagOnly[local] >= 0) { owned[local] = false }
     }
 
-    mut self: Lowering = { program: program, routine: routine, context: context, floats: floats, blocks: [], current: [], panics: [], panicIndex: [:], reads: reads, owned: owned, held: [], live: lastUses(routine), block: 0, position: 0, emptied: emptied, tagOnly: tagOnly, writeback: writeback, outs: [], slots: [], slotsUsed: 0, owners: [], charValue: MImm(0), piece: 0 }
+    mut self: Lowering = { program: program, routine: routine, context: context, floats: floats, blocks: [], current: [], panics: [], panicIndex: [:], reads: reads, owned: owned, held: [], live: lastUses(routine), block: 0, position: 0, emptied: emptied, tagOnly: tagOnly, highs: [], writeback: writeback, outs: [], slots: [], slotsUsed: 0, owners: [], charValue: MImm(0), piece: 0 }
+    // The high words of the locals of two words, each in a virtual register of its own.
+    for local in range(routine.locals.length()) {
+        self.highs.push(if (wideType(routine.locals[local].ty)) { self.temporary() } else { -1 })
+    }
+
     mut params: int[] = []
 
     for param in range(routine.params) {
         params.push(param)
+
+        if (self.highs[param] >= 0) { params.push(self.highs[param]) }
     }
 
     for param in range(routine.params) {
@@ -523,7 +708,7 @@ export function lowerMir(program: IrProgram, id: int, context: MirContext, preem
         self.endPiece(ending)
     }
 
-    return { name: routine.name, params: params, floats: self.floats, blocks: self.ordered(), slots: self.slots, panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { [routine.returns == FloatTy] } }
+    return { name: routine.name, params: params, floats: self.floats, blocks: self.ordered(), slots: self.slots, panics: self.panics, results: if (routine.returns == VoidTy) { [] } else { if (wideType(routine.returns)) { [false, false] } else { [routine.returns == FloatTy] } } }
 }
 
 function Lowering.tagOf(self, operand: Operand): int {
@@ -636,6 +821,81 @@ function Lowering.optionFrom(mut self, dest: int, found: MValue, source: MValue,
     self.endPiece(MJump(done))
     self.startPiece(done)
     self.setResult(dest, target)
+}
+
+// An operation on decimals (by the library) or U128 (inline, but divisions and shifts by a count).
+function Lowering.wideBinary(mut self, dest: int, op: string, left: Operand, right: Operand, line: int) {
+    immut first = self.words(left)
+    immut second = self.words(right)
+
+    if (op.startsWith('U128Compare(')) {
+        immut condition = conditionOf(op['U128Compare('.length()..op.length() - 1])
+
+        if (condition == 'eq' or condition == 'ne') {
+            immut low = self.temporary()
+            immut high = self.temporary()
+            self.current.push(MBinary(low, 'xor', first[0], second[0], -1))
+            self.current.push(MBinary(high, 'xor', first[1], second[1], -1))
+            self.current.push(MBinary(low, 'or', MReg(low), MReg(high), -1))
+            self.current.push(MSet(dest, condition, MReg(low), MImm(0)))
+            return
+        }
+
+        // a > b is b < a, a <= b is b >= a.
+        immut swapped = condition == 'gt' or condition == 'le'
+        immut below = condition == 'lt' or condition == 'gt'
+        self.current.push(MWide([dest], if (below) { 'below' } else { 'aboveEqual' }, if (swapped) { second } else { first }, if (swapped) { first } else { second }))
+        return
+    }
+
+    if (op.startsWith('DecimalCompare(')) {
+        immut condition = conditionOf(op['DecimalCompare('.length()..op.length() - 1])
+        immut order = self.temporary()
+        self.current.push(MCall(MExternal('koji_decimal_compare'), first + second, [order]))
+        self.current.push(MUnary(order, 'sext32', MReg(order), -1))
+        self.current.push(MSet(dest, condition, MReg(order), MImm(0)))
+        return
+    }
+
+    immut dests = self.registersOf(dest)
+
+    match (op) {
+        'U128Add' => self.current.push(MWide(dests, 'add', first, second))
+        'U128Sub' => self.current.push(MWide(dests, 'sub', first, second))
+        'U128Mul' => self.current.push(MWide(dests, 'mul', first, second))
+        other if (other == 'U128And' or other == 'U128Or' or other == 'U128Xor') => {
+            immut operation = match (other) {
+                'U128And' => 'and'
+                'U128Or' => 'or'
+                _ => 'xor'
+            }
+            self.current.push(MBinary(dests[0], operation, first[0], second[0], -1))
+            self.current.push(MBinary(dests[1], operation, first[1], second[1], -1))
+        }
+        // By a count of 0 to 127 (another panics, as the library does).
+        other if (other == 'U128ShiftLeft' or other == 'U128ShiftRight') => {
+            immut wrong = self.panic(line, 'shift of a U128 out of range (0 to 127)')
+            self.current.push(MPanicIf('ne', second[1], MImm(0), wrong))
+            self.current.push(MPanicIf('a', second[0], MImm(127), wrong))
+            self.current.push(MWide(dests, if (other == 'U128ShiftLeft') { 'shl' } else { 'shr' }, first, [second[0]]))
+        }
+        // Decimals, and the divisions of U128: the library, told where the instruction is.
+        other => {
+            immut helper = match (other) {
+                'U128Div' => 'koji_u128_div'
+                'U128Rem' => 'koji_u128_rem'
+                'DecimalAdd' => 'koji_decimal_plus'
+                'DecimalSub' => 'koji_decimal_sub'
+                'DecimalMul' => 'koji_decimal_mul'
+                'DecimalDiv' => 'koji_decimal_div'
+                'DecimalRem' => 'koji_decimal_rem'
+                'DecimalPow' => 'koji_decimal_pow'
+                _ => 'koji_decimal_power'
+            }
+            immut place = self.addressOf(MText(self.location(line)))
+            self.callLibrary(helper, first + second + [place], Some(dest), false)
+        }
+    }
 }
 
 // The value an instruction puts somewhere with a reference of its own: moved when it is read for
@@ -795,6 +1055,18 @@ function Lowering.closeVariable(mut self, variable: Variable) {
 function Lowering.loadItem(mut self, dest: int, at: MAddress) {
     immut ty = self.routine.locals[dest].ty
 
+    // Two words.
+    if (self.highs[dest] >= 0) {
+        self.current.push(MLoad(dest, at, 8))
+        immut after = match (at) {
+            MBase(base, offset) => MBase(base, offset + 8)
+            MIndexed(base, index, scale, offset) => MIndexed(base, index, scale, offset + 8)
+            other => other
+        }
+        self.current.push(MLoad(self.highs[dest], after, 8))
+        return
+    }
+
     if (not self.owned[dest]) {
         immut width = match (ty) {
             BoolTy => 1
@@ -848,7 +1120,13 @@ function wideType(ty: Ty): boolean {
 // A new slot of a word in the frame: its number.
 // The slots live for one instruction only: the next one reuses them.
 function Lowering.slot(mut self): int {
-    if (self.slotsUsed == self.slots.length()) { self.slots.push(8) }
+    return self.sizedSlot(8)
+}
+
+function Lowering.sizedSlot(mut self, bytes: int): int {
+    if (self.slotsUsed == self.slots.length()) { self.slots.push(bytes) }
+
+    if (self.slots[self.slotsUsed] < bytes) { self.slots[self.slotsUsed] = bytes }
 
     self.slotsUsed += 1
     return self.slotsUsed - 1
@@ -1209,6 +1487,53 @@ function Lowering.value(mut self, operand: Operand): MValue {
     }
 }
 
+// The words of an operand: one, or two for a decimal or a U128 (low, high).
+function Lowering.words(mut self, operand: Operand): MValue[] {
+    match (operand) {
+        LocalOp(local) if (self.highs[local] >= 0) => return [MReg(local), MReg(self.highs[local])]
+        GlobalOp(id) if (wideType(self.program.globals[id].ty)) => {
+            immut low = self.temporary()
+            immut high = self.temporary()
+            self.current.push(MLoad(low, MSymbol('.bss', self.context.globals[id]), 8))
+            self.current.push(MLoad(high, MSymbol('.bss', self.context.globals[id] + 8), 8))
+            return [MReg(low), MReg(high)]
+        }
+        DecimalOp(negative, high, low, exponent) => {
+            immut bits = decimalBits(negative, high, low, exponent)
+            mut words = [0, 0]
+
+            for i in range(16) {
+                words[i / 8] = words[i / 8] | (int(bits[i]) << (8 * (i % 8)))
+            }
+
+            return [MImm(words[0]), MImm(words[1])]
+        }
+        _ => return [self.value(operand)]
+    }
+}
+
+// The words of all the operands, one after the other (the arguments of a call).
+function Lowering.allWords(mut self, operands: Operand[]): MValue[] {
+    mut found: MValue[] = []
+
+    for operand in operands {
+        found = found + self.words(operand)
+    }
+
+    return found
+}
+
+// The virtual registers a local is written to: one, or two (low, high).
+function Lowering.registersOf(self, local: int): int[] {
+    return if (self.highs[local] >= 0) { [local, self.highs[local]] } else { [local] }
+}
+
+function Lowering.setWords(mut self, local: int, words: MValue[]) {
+    self.current.push(MMove(local, words[0]))
+
+    if (words.length() > 1) { self.current.push(MMove(self.highs[local], words[1])) }
+}
+
 function Lowering.addressOf(mut self, at: MAddress): MValue {
     immut address = self.temporary()
     self.current.push(MAddressOf(address, at))
@@ -1248,6 +1573,7 @@ function Lowering.setResult(mut self, dest: int, target: int) {
 // sign-extended.
 function Lowering.callLibrary(mut self, name: string, args: MValue[], dest: Option[int], cInt: boolean) {
     match (dest) {
+        Some(local) if (self.highs[local] >= 0) => self.current.push(MCall(MExternal(name), args, self.registersOf(local)))
         Some(local) => {
             immut target = self.resultOf(local)
             self.current.push(MCall(MExternal(name), args, [target]))
@@ -1286,12 +1612,19 @@ function Lowering.operandType(self, operand: Operand): Ty {
         GlobalOp(id) => self.program.globals[id].ty
         StrOp(_) => StrTy
         FloatOp(_) => FloatTy
+        DecimalOp(_, _, _, _) => DecimalTy
         _ => IntTy
     }
 }
 
 function Lowering.instruction(mut self, instruction: Instruction) {
     match (instruction) {
+        CopyIns(LocalPlace(dest), value) if (self.highs[dest] >= 0) => self.setWords(dest, self.words(value))
+        CopyIns(GlobalPlace(id), value) if (wideType(self.program.globals[id].ty)) => {
+            immut words = self.words(value)
+            self.current.push(MStore(MSymbol('.bss', self.context.globals[id]), words[0], 8))
+            self.current.push(MStore(MSymbol('.bss', self.context.globals[id] + 8), words[1], 8))
+        }
         CopyIns(LocalPlace(dest), value) => {
             immut ty = self.routine.locals[dest].ty
 
@@ -1355,6 +1688,34 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             self.current.push(MCall(MExternal('koji_fail'), [place, message], []))
         }
         StdCallIns(dest, name, args) => self.libraryCall(dest, name, args)
+        UnaryIns(dest, op, value, line) if (op in wideUnaries) => {
+            immut words = self.words(value)
+
+            match (op) {
+                'U128Not' => {
+                    self.current.push(MUnary(dest, 'not', words[0], -1))
+                    self.current.push(MUnary(self.highs[dest], 'not', words[1], -1))
+                }
+                // Sign-extended, as C converts an int64_t.
+                'IntToU128' => {
+                    self.current.push(MMove(dest, words[0]))
+                    self.current.push(MBinary(self.highs[dest], 'sar', words[0], MImm(63), -1))
+                }
+                'DecimalToFloat' => self.callLibrary('koji_decimal_to_float', words + [self.addressOf(MText(self.location(line)))], Some(dest), false)
+                'DecimalToInt' => self.callLibrary('koji_decimal_to_int', words + [MImm(3), self.addressOf(MText(self.location(line)))], Some(dest), false)
+                other => {
+                    immut helper = match (other) {
+                        'U128ToStr' => 'koji_u128_to_string'
+                        'DecimalNeg' => 'koji_decimal_neg'
+                        'IntToDecimal' => 'koji_decimal_from_int'
+                        'FloatToDecimal' => 'koji_decimal_from_float'
+                        _ => 'koji_string_from_decimal'
+                    }
+                    self.callLibrary(helper, words, Some(dest), false)
+                }
+            }
+        }
+        BinaryIns(dest, op, left, right, line) if (op.startsWith('U128') or op.startsWith('Decimal')) => self.wideBinary(dest, op, left, right, line)
         FieldGetIns(dest, record, field) => {
             immut base = self.register(self.value(record))
             immut variants = self.program.records[recordOf(self.operandType(record))].variants
@@ -1399,12 +1760,23 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             // The values first (those moved, or retained), then the record, then the fields.
             immut moved = self.movedBy(instruction, self.block, self.position)
             mut values: MValue[] = []
+            mut highs: MValue[] = []
 
             for index in range(fields.length()) {
                 if (index >= types.length() or types[index].ty == VoidTy) {
                     values.push(MImm(0))
+                    highs.push(MImm(0))
                     continue
                 }
+
+                if (wideType(types[index].ty)) {
+                    immut words = self.words(fields[index])
+                    values.push(words[0])
+                    highs.push(words[1])
+                    continue
+                }
+
+                highs.push(MImm(0))
 
                 match (fields[index]) {
                     LocalOp(local) if (local in moved) => values.push(MReg(local))
@@ -1443,6 +1815,11 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                 if (index < fields.length() and types[index].ty != VoidTy) {
                     self.current.push(MStore(MBase(target, 24 + 8 * word), values[index], 8))
                     written[word] = true
+
+                    if (wideType(types[index].ty)) {
+                        self.current.push(MStore(MBase(target, 32 + 8 * word), highs[index], 8))
+                        written[word + 1] = true
+                    }
                 }
 
                 word += if (wideType(types[index].ty)) { 2 } else { 1 }
@@ -1745,7 +2122,13 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             immut item = itemOf(self.routine.locals[dest].ty)
             mut values: MValue[] = []
 
+            // Items of two words take two (one after the other).
             for each in items {
+                if (wideType(item)) {
+                    values = values + self.words(each)
+                    continue
+                }
+
                 immut value = self.value(each)
 
                 if (isManaged(item)) { self.current.push(MRetain(value)) }
@@ -1787,6 +2170,15 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             self.startPiece(next)
             immut slots = self.temporary()
             self.current.push(MLoad(slots, MBase(base, 24), 8))
+
+            // An item of two words: at twice the index.
+            if (self.highs[dest] >= 0) {
+                immut twice = self.temporary()
+                self.current.push(MBinary(twice, 'shl', MReg(at), MImm(1), -1))
+                self.loadItem(dest, MIndexed(slots, twice, 8, 0))
+                return
+            }
+
             self.loadItem(dest, MIndexed(slots, at, 8, 0))
         }
         // Added by the next instruction (see `charAdded`).
@@ -2074,7 +2466,17 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             mut kinds: string[] = []
             immut borrowed = self.context.borrowed[callee]
 
+            // Where the words of each argument start.
+            mut positions: int[] = []
+
             for i in range(args.length()) {
+                positions.push(values.length())
+
+                if (wideType(self.operandType(args[i]))) {
+                    values = values + self.words(args[i])
+                    continue
+                }
+
                 immut value = self.value(args[i])
 
                 match (args[i]) {
@@ -2098,8 +2500,16 @@ function Lowering.instruction(mut self, instruction: Instruction) {
 
             for writeback in writebacks {
                 immut param = writeback.param
-                immut slot = self.slot()
+                immut twoWords = wideType(self.operandType(args[param]))
+                immut slot = self.sizedSlot(if (twoWords) { 16 } else { 8 })
                 backs.push(slot)
+
+                if (twoWords) {
+                    self.current.push(MStore(MSlot(slot, 0), MImm(0), 8))
+                    self.current.push(MStore(MSlot(slot, 8), MImm(0), 8))
+                    values.push(self.addressOf(MSlot(slot, 0)))
+                    continue
+                }
 
                 // From a place inside a variable: taken out of it (and the temporary released).
                 immut temporary = self.givenFromTarget(callee, args, param, writeback.target, self.block, self.position)
@@ -2113,7 +2523,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
 
                     if (self.owned[temporary]) { self.current.push(MRelease(MReg(temporary), kindOf(self.routine.locals[temporary].ty))) }
 
-                    values[param] = MReg(taken)
+                    values[positions[param]] = MReg(taken)
                     self.current.push(MStore(MSlot(slot, 0), MImm(0), 8))
                     values.push(self.addressOf(MSlot(slot, 0)))
                     continue
@@ -2145,7 +2555,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                         _ => {}
                     }
 
-                    if (not alone) { self.current.push(MRetain(values[param])) }
+                    if (not alone) { self.current.push(MRetain(values[positions[param]])) }
                 }
 
                 self.current.push(MStore(MSlot(slot, 0), MImm(0), 8))
@@ -2153,6 +2563,7 @@ function Lowering.instruction(mut self, instruction: Instruction) {
             }
 
             match (dest) {
+                Some(local) if (self.highs[local] >= 0) => self.current.push(MCall(MFunction(callee), values, self.registersOf(local)))
                 Some(local) => {
                     immut target = self.resultOf(local)
                     self.current.push(MCall(MFunction(callee), values, [target]))
@@ -2169,6 +2580,22 @@ function Lowering.instruction(mut self, instruction: Instruction) {
                 immut ty = self.targetType(target)
                 immut back = if (ty == FloatTy) { self.floatTemporary() } else { self.temporary() }
                 self.current.push(MLoad(back, MSlot(backs[i], 0), 8))
+
+                // Two words, into a variable (or set by the library, which copies them).
+                if (wideType(ty) and target.path.length() == 0) {
+                    immut high = self.temporary()
+                    self.current.push(MLoad(high, MSlot(backs[i], 8), 8))
+
+                    match (root) {
+                        LocalPlace(local) => self.setWords(local, [MReg(back), MReg(high)])
+                        GlobalPlace(global) => {
+                            self.current.push(MStore(MSymbol('.bss', self.context.globals[global]), MReg(back), 8))
+                            self.current.push(MStore(MSymbol('.bss', self.context.globals[global] + 8), MReg(high), 8))
+                        }
+                    }
+
+                    continue
+                }
 
                 if (target.path.length() > 0) {
                     immut container: Target = { root: root, path: target.path[0..target.path.length() - 1] }
@@ -2278,6 +2705,12 @@ function Lowering.terminator(mut self, terminator: Terminator): MTerminator {
                 return MReturn([])
             }
 
+            if (wideType(self.routine.returns)) {
+                immut words = self.words(value)
+                self.releaseHeld()
+                return MReturn(words)
+            }
+
             // The result is taken before the locals are released: it may be one of them, which
             // then moves out of the function.
             mut returned = MImm(0)
@@ -2315,6 +2748,8 @@ function Lowering.releaseHeld(mut self) {
         if (not self.writeback[param]) { continue }
 
         self.current.push(MStore(MBase(self.outs[param], 0), MReg(param), 8))
+
+        if (self.highs[param] >= 0) { self.current.push(MStore(MBase(self.outs[param], 8), MReg(self.highs[param]), 8)) }
     }
 
     for local in range(self.routine.locals.length()) {
@@ -2331,6 +2766,15 @@ function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: S
     mut values: MValue[] = []
 
     for arg in args {
+        match (arg) {
+            // A value of two words: both.
+            ValueArg(given) if (wideType(self.operandType(given))) => {
+                values = values + self.words(given)
+                continue
+            }
+            _ => {}
+        }
+
         immut value = match (arg) {
             ValueArg(given) => self.value(given)
             ModeArg(mode) => MImm(mode)
@@ -2343,12 +2787,18 @@ function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: S
         values.push(value)
     }
 
-    // A word of the value (an accessor of the prelude).
+    // A word of the value (an accessor of the prelude), or an address inside it.
     if (accessors.has(name)) {
         match (dest) {
             Some(local) => {
                 immut base = self.register(values[0])
-                self.current.push(MLoad(local, MBase(base, accessors[name]), 8))
+                immut offset = accessors[name]
+
+                if (offset < 0) {
+                    self.current.push(MBinary(local, 'add', MReg(base), MImm(-offset), -1))
+                } else {
+                    self.current.push(MLoad(local, MBase(base, offset), 8))
+                }
             }
             None => {}
         }
@@ -2356,17 +2806,252 @@ function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: S
         return
     }
 
+    // Memory: at an address plus an offset (a constant one in the address).
+    if (memoryWidths.has(name)) {
+        immut base = self.register(values[0])
+        immut at = match (values[1]) {
+            MImm(offset) if (offset >= -2147483648 and offset <= 2147483647) => MBase(base, offset)
+            other => MIndexed(base, self.register(other), 1, 0)
+        }
+        immut width = memoryWidths[name]
+
+        if (name.startsWith('koji_unsafe_write_')) {
+            self.current.push(MStore(at, values[2], width))
+            return
+        }
+
+        match (dest) {
+            Some(local) => self.current.push(MLoad(local, at, width))
+            None => {}
+        }
+
+        return
+    }
+
+    if (name in inlineLibrary) {
+        self.inlineLibrary(dest, name, values)
+        return
+    }
+
     mut symbol = name
     mut cInt = false
+    mut variadic = false
 
     for each in self.program.externs {
         if (each.name == name) {
             symbol = each.symbol
             cInt = each.returns == 'int'
+            variadic = '...' in each.params
         }
     }
 
+    if (variadic) {
+        match (dest) {
+            Some(local) => {
+                immut target = self.resultOf(local)
+                self.current.push(MCall(MVariadic(symbol), values, [target]))
+
+                if (cInt) { self.current.push(MUnary(target, 'sext32', MReg(target), -1)) }
+
+                self.setResult(local, target)
+            }
+            None => self.current.push(MCall(MVariadic(symbol), values, []))
+        }
+
+        return
+    }
+
     self.callLibrary(symbol, values, dest, cInt)
+}
+
+// The functions of `koji:unsafe` and of the pool written inline (see `inlineLibrary`).
+function Lowering.inlineLibrary(mut self, dest: Option[int], name: string, values: MValue[]) {
+    // The words of a U128 or a decimal: made of two, one of them, the product of two low words,
+    // the zeros before the first bit set.
+    if (name in ['koji_unsafe_wide', 'koji_unsafe_decimal_of', 'koji_unsafe_low_word', 'koji_unsafe_high_word', 'koji_unsafe_decimal_low', 'koji_unsafe_decimal_high', 'koji_unsafe_word_product', 'koji_unsafe_leading_zeros']) {
+        immut local = match (dest) {
+            Some(found) => found
+            None => return
+        }
+
+        match (name) {
+            other if (other == 'koji_unsafe_wide' or other == 'koji_unsafe_decimal_of') => self.setWords(local, [values[0], values[1]])
+            other if (other == 'koji_unsafe_low_word' or other == 'koji_unsafe_decimal_low') => self.current.push(MMove(local, values[0]))
+            other if (other == 'koji_unsafe_high_word' or other == 'koji_unsafe_decimal_high') => self.current.push(MMove(local, values[1]))
+            'koji_unsafe_word_product' => self.current.push(MWide(self.registersOf(local), 'product', [values[0]], [values[2]]))
+            _ => self.current.push(MWide([local], 'zeros', values, []))
+        }
+
+        return
+    }
+
+    // The result, into its local (a temporary when there is none).
+    immut result = match (dest) {
+        Some(local) => self.resultOf(local)
+        None => self.temporary()
+    }
+
+    match (name) {
+        'koji_unsafe_offset' => self.current.push(MBinary(result, 'add', values[0], values[1], -1))
+        'koji_unsafe_distance' => self.current.push(MBinary(result, 'sub', values[1], values[0], -1))
+        // The memory of the system, and a string of a copy of bytes.
+        'koji_unsafe_allocate' => self.current.push(MCall(MExternal('malloc'), [values[0]], [result]))
+        'koji_unsafe_free' => self.current.push(MCall(MExternal('free'), [values[0]], []))
+        'koji_unsafe_new_string' => self.current.push(MCall(MExternal('koji_string_from_utf8'), [values[0], values[1]], [result]))
+        'koji_unsafe_set_string_size' => self.current.push(MStore(MBase(self.register(values[0]), 8), values[1], 8))
+        'koji_unsafe_set_list_length' => self.current.push(MStore(MBase(self.register(values[0]), 32), values[1], 8))
+        'koji_pool_heads' => self.current.push(MAddressOf(result, MSymbol('koji_pool', 0)))
+        'koji_pool_is_off' => self.current.push(MLoad(result, MSymbol('koji_pool_off', 0), 1))
+        // A new string of `length` bytes to write, with room for `capacity`: a block of 3 + room / 8
+        // words, the room the larger of the two rounded up to a word.
+        'koji_unsafe_blank_string' => {
+            immut length = self.register(values[0])
+            immut room = self.temporary()
+            immut larger = self.newBlock()
+            immut next = self.newBlock()
+            self.current.push(MMove(room, values[1]))
+            self.endPiece(MBranch('lt', MReg(room), MReg(length), larger, next))
+            self.startPiece(larger)
+            self.current.push(MMove(room, MReg(length)))
+            self.endPiece(MJump(next))
+            self.startPiece(next)
+            self.current.push(MBinary(room, 'add', MReg(room), MImm(7), -1))
+            self.current.push(MBinary(room, 'and', MReg(room), MImm(-8), -1))
+            immut words = self.temporary()
+            self.current.push(MBinary(words, 'shr', MReg(room), MImm(3), -1))
+            self.current.push(MBinary(words, 'add', MReg(words), MImm(3), -1))
+            self.poolTakeAny(result, MReg(words))
+            self.current.push(MStore(MBase(result, 0), MImm(1), 8))
+            self.current.push(MStore(MBase(result, 8), MReg(length), 8))
+            self.current.push(MStore(MBase(result, 16), MReg(room), 8))
+        }
+        other if (other == 'koji_memory_take' or other == 'koji_pool_take') => self.poolTakeAny(result, values[0])
+        // A block back at the head of the list of its size, or koji_pool_free (large, or the pool
+        // off).
+        other if (other == 'koji_memory_give' or other == 'koji_pool_give') => {
+            immut block = self.register(values[0])
+            immut words = self.register(values[1])
+            immut off = self.temporary()
+            immut check = self.newBlock()
+            immut give = self.newBlock()
+            immut free = self.coldBlock()
+            immut done = self.newBlock()
+            self.endPiece(MBranch('a', MReg(words), MImm(16), free, check))
+            self.startPiece(check)
+            self.current.push(MLoad(off, MSymbol('koji_pool_off', 0), 1))
+            self.endPiece(MBranch('ne', MReg(off), MImm(0), free, give))
+            self.startPiece(give)
+            immut heads = self.temporary()
+            immut rest = self.temporary()
+            self.current.push(MAddressOf(heads, MSymbol('koji_pool', 0)))
+            self.current.push(MLoad(rest, MIndexed(heads, words, 8, 0), 8))
+            self.current.push(MStore(MBase(block, 0), MReg(rest), 8))
+            self.current.push(MStore(MIndexed(heads, words, 8, 0), MReg(block), 8))
+            self.endPiece(MJump(done))
+            self.startPiece(free)
+            self.current.push(MCall(MExternal('koji_pool_free'), [MReg(block), MReg(words)], []))
+            self.endPiece(MJump(done))
+            self.startPiece(done)
+        }
+        // What the type of a record says of a field: its variant (the variants of the type + tag *
+        // 48), then the number of its fields, the description of one, or its slot (from the
+        // starts of the variant, or the index).
+        other if (other in ['koji_record_field_count', 'koji_record_field_type', 'koji_record_field_slot', 'koji_record_get']) => {
+            immut record = self.register(values[0])
+            immut kind = self.temporary()
+            immut variants = self.temporary()
+            immut tag = self.temporary()
+            immut variant = self.temporary()
+            self.current.push(MLoad(kind, MBase(record, 8), 8))
+            self.current.push(MLoad(variants, MBase(kind, 16), 8))
+            self.current.push(MLoad(tag, MBase(record, 16), 8))
+            self.current.push(MBinary(tag, 'mul', MReg(tag), MImm(48), -1))
+            self.current.push(MBinary(variant, 'add', MReg(variants), MReg(tag), -1))
+
+            if (other == 'koji_record_field_count') {
+                self.current.push(MLoad(result, MBase(variant, 8), 8))
+            } else {
+                immut index = self.register(values[1])
+
+                if (other == 'koji_record_field_type') {
+                    immut types = self.temporary()
+                    self.current.push(MLoad(types, MBase(variant, 24), 8))
+                    self.current.push(MLoad(result, MIndexed(types, index, 8, 0), 8))
+                } else {
+                    immut starts = self.temporary()
+                    immut word = self.temporary()
+                    immut placed = self.newBlock()
+                    immut next = self.newBlock()
+                    self.current.push(MLoad(starts, MBase(variant, 40), 8))
+                    self.current.push(MMove(word, MReg(index)))
+                    self.endPiece(MBranch('eq', MReg(starts), MImm(0), next, placed))
+                    self.startPiece(placed)
+                    self.current.push(MLoad(word, MIndexed(starts, index, 8, 0), 8))
+                    self.endPiece(MJump(next))
+                    self.startPiece(next)
+                    self.current.push(MAddressOf(result, MIndexed(record, word, 8, 24)))
+                }
+            }
+        }
+        // Whether the items hold references (a function to release them).
+        'koji_element_counted' => {
+            immut element = self.register(values[0])
+            immut release = self.temporary()
+            self.current.push(MLoad(release, MBase(element, 16), 8))
+            self.current.push(MSet(result, 'ne', MReg(release), MImm(0)))
+        }
+        // The function that retains or releases the item in a slot, called when there is one.
+        _ => {
+            immut element = self.register(values[0])
+            immut called = self.temporary()
+            immut call = self.newBlock()
+            immut done = self.newBlock()
+            self.current.push(MLoad(called, MBase(element, if (name == 'koji_element_retain') { 8 } else { 16 }), 8))
+            self.endPiece(MBranch('eq', MReg(called), MImm(0), done, call))
+            self.startPiece(call)
+            self.current.push(MCall(MIndirect(MReg(called)), [values[1]], []))
+            self.endPiece(MJump(done))
+            self.startPiece(done)
+        }
+    }
+
+    match (dest) {
+        Some(local) => self.setResult(local, result)
+        None => {}
+    }
+}
+
+// A block of `words` words (known or not) from the pool into `target`: the head of its list,
+// else koji_pool_refill (for more than 16 words too).
+function Lowering.poolTakeAny(mut self, target: int, words: MValue) {
+    match (words) {
+        MImm(size) if (size <= 16) => {
+            self.poolTake(target, size)
+            return
+        }
+        _ => {}
+    }
+
+    immut size = self.register(words)
+    immut check = self.newBlock()
+    immut taken = self.newBlock()
+    immut refill = self.coldBlock()
+    immut next = self.newBlock()
+    self.endPiece(MBranch('a', MReg(size), MImm(16), refill, check))
+    self.startPiece(check)
+    immut heads = self.temporary()
+    self.current.push(MAddressOf(heads, MSymbol('koji_pool', 0)))
+    self.current.push(MLoad(target, MIndexed(heads, size, 8, 0), 8))
+    self.endPiece(MBranch('eq', MReg(target), MImm(0), refill, taken))
+    self.startPiece(taken)
+    immut rest = self.temporary()
+    self.current.push(MLoad(rest, MBase(target, 0), 8))
+    self.current.push(MStore(MIndexed(heads, size, 8, 0), MReg(rest), 8))
+    self.endPiece(MJump(next))
+    self.startPiece(refill)
+    self.current.push(MCall(MExternal('koji_pool_refill'), [MReg(size)], [target]))
+    self.endPiece(MJump(next))
+    self.startPiece(next)
 }
 
 // The description of the items of a type (KojiElementType of the prelude).
