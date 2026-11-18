@@ -2,6 +2,8 @@
 
 The `path` module works with paths as text: it never accesses the disk. It is written in Koji: `std/path.kj`. To see what exists on the disk, use [`file.exists` and `file.list`](file.md#directories).
 
+On Windows, `\` separates the parts of a path as `/` does, and a path that starts with a drive (`C:\`) or a separator is absolute; `join` puts `/` between its parts, which Windows reads as well.
+
 ## Functions
 
 -   `join(base: string, part: string) -> string`  

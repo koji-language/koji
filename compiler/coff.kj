@@ -39,7 +39,10 @@ export function coffObject(given: byte[], rodata: byte[], givenData: byte[], bss
     }
 
     for each in defined {
-        index[each.name] = count
+        // Relocations go to the global symbols (a function of Koji may have the name of one of
+        // C, `getcwd`, which a relocation names).
+        if (each.global) { index[each.name] = count }
+
         // IMAGE_SYM_CLASS_EXTERNAL for those of others, STATIC for the functions of Koji; a
         // function (0x20) in the code.
         symbol(mut table, mut strings, each.name, each.value, each.section, if (each.global) { 2 } else { 3 }, 0)
@@ -79,6 +82,31 @@ export function coffObject(given: byte[], rodata: byte[], givenData: byte[], bss
         putBytes(mut textRelocations, 4, 2)
     }
 
+    // More than 65535 relocations in a section: IMAGE_SCN_LNK_NRELOC_OVFL, their number in a
+    // first one (counting itself).
+    immut textCount = textRelocations.length() / 10
+    immut dataCount = dataRelocations.length() / 10
+    mut textFlags = 0x60500020
+    mut dataFlags = 0xC0500040
+
+    if (textCount > 0xFFFF) {
+        mut first: byte[] = []
+        putInt32(mut first, textCount + 1)
+        putInt32(mut first, 0)
+        putBytes(mut first, 0, 2)
+        textRelocations = first + textRelocations
+        textFlags = textFlags | 0x01000000
+    }
+
+    if (dataCount > 0xFFFF) {
+        mut first: byte[] = []
+        putInt32(mut first, dataCount + 1)
+        putInt32(mut first, 0)
+        putBytes(mut first, 0, 2)
+        dataRelocations = first + dataRelocations
+        dataFlags = dataFlags | 0x01000000
+    }
+
     // The layout: the header (20 bytes), the headers of the sections (40 each), the contents, the
     // relocations, the symbols, the strings.
     immut headers = 20 + 4 * 40
@@ -99,9 +127,9 @@ export function coffObject(given: byte[], rodata: byte[], givenData: byte[], bss
     putBytes(mut out, 0, 2)
     // Code, executable, readable; initialized data, readable (and writable); zeros. All aligned on
     // 16 bytes.
-    sectionHeader(mut out, '.text', text.length(), textAt, textRelocationsAt, textRelocations.length() / 10, 0x60500020)
+    sectionHeader(mut out, '.text', text.length(), textAt, textRelocationsAt, if (textCount > 0xFFFF) { 0xFFFF } else { textCount }, textFlags)
     sectionHeader(mut out, '.rdata', rodata.length(), rodataAt, 0, 0, 0x40500040)
-    sectionHeader(mut out, '.data', data.length(), dataAt, dataRelocationsAt, dataRelocations.length() / 10, 0xC0500040)
+    sectionHeader(mut out, '.data', data.length(), dataAt, dataRelocationsAt, if (dataCount > 0xFFFF) { 0xFFFF } else { dataCount }, dataFlags)
     sectionHeader(mut out, '.bss', bss, 0, 0, 0, 0xC0500080)
     pad(mut out, textAt)
     out = out + text

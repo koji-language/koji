@@ -1,12 +1,25 @@
 // The `path` module: paths as text, without the disk (see doc/standard-library/path.md). A path is
 // a sequence of parts separated by `/`; repeated separators and `.` after the first part count for
-// nothing (`a//b/./c` is `a/b/c`), and a path that starts with `/` starts at the root.
+// nothing (`a//b/./c` is `a/b/c`), and a path that starts with `/` starts at the root. On Windows,
+// `\` separates parts too, and a path that starts with a drive (`C:\`) starts at a root.
+
+import system
+
+// Whether a char separates parts.
+function separator(c: char): boolean {
+    return c == '/' or (system.os == system.Windows and c == '\\')
+}
+
+// Whether the path ends with a separator.
+function endsWithSeparator(path: string): boolean {
+    return path.endsWith('/') or (system.os == system.Windows and path.endsWith('\\'))
+}
 
 // `base` followed by `part`, with a separator between them; an absolute `part` replaces `base`.
 export function join(base: string, part: string): string {
-    if (part.startsWith('/')) { return part }
+    if (isAbsolute(part)) { return part }
 
-    if (base == '' or base.endsWith('/')) { return base + part }
+    if (base == '' or endsWithSeparator(base)) { return base + part }
 
     return `${base}/${part}`
 }
@@ -16,7 +29,7 @@ export function parent(path: string): Option[string] {
     immut chars = path.chars()
     immut end = trimmedEnd(chars, chars.length())
 
-    if (end == 0 or (end == 1 and chars[0] == '/')) { return None }
+    if (end == 0 or (end == 1 and separator(chars[0]))) { return None }
 
     immut start = partStart(chars, end)
     immut before = trimmedEnd(chars, start)
@@ -31,7 +44,7 @@ export function name(path: string): Option[string] {
     immut chars = path.chars()
     immut end = trimmedEnd(chars, chars.length())
 
-    if (end == 0 or (end == 1 and chars[0] == '/')) { return None }
+    if (end == 0 or (end == 1 and separator(chars[0]))) { return None }
 
     immut start = partStart(chars, end)
     immut last = path[start..end]
@@ -71,7 +84,12 @@ export function extension(path: string): Option[string] {
 
 // Whether `path` starts at the root.
 export function isAbsolute(path: string): boolean {
-    return path.startsWith('/')
+    if (path.startsWith('/')) { return true }
+
+    if (system.os != system.Windows) { return false }
+
+    immut chars = path.chars()
+    return path.startsWith('\\') or (chars.length() >= 3 and chars[1] == ':' and separator(chars[2]))
 }
 
 // The end of `chars[..end]` without the separators and the `.` parts that end it (but the root,
@@ -80,12 +98,12 @@ function trimmedEnd(chars: char[], end: int): int {
     mut at = end
 
     while (at > 0) {
-        if (chars[at - 1] == '/' and at > 1) {
+        if (separator(chars[at - 1]) and at > 1) {
             at -= 1
             continue
         }
 
-        if (chars[at - 1] == '.' and at > 1 and chars[at - 2] == '/') {
+        if (chars[at - 1] == '.' and at > 1 and separator(chars[at - 2])) {
             at -= 1
             continue
         }
@@ -100,7 +118,7 @@ function trimmedEnd(chars: char[], end: int): int {
 function partStart(chars: char[], end: int): int {
     mut at = end
 
-    while (at > 0 and chars[at - 1] != '/') {
+    while (at > 0 and not separator(chars[at - 1])) {
         at -= 1
     }
 

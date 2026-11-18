@@ -55,8 +55,9 @@ export function machObject(arm: boolean, given: byte[], rodata: byte[], givenDat
     mut undefined: string[] = []
     mut known: Set[string] = Set.from([])
 
+    // Relocations go to the global symbols (a function of Koji may have the name of one of C).
     for symbol in defined {
-        known.add(symbol.name)
+        if (symbol.global) { known.add(symbol.name) }
     }
 
     for relocation in relocations {
@@ -89,7 +90,9 @@ export function machObject(arm: boolean, given: byte[], rodata: byte[], givenDat
 
     for i in range(ordered.length()) {
         immut symbol = ordered[i]
-        index[symbol.name] = i
+
+        if (symbol.global or symbol.name.startsWith('lkoji.')) { index[symbol.name] = i }
+
         putInt32(mut table, strings.length())
         append(mut strings, utf8(if (symbol.global) { `_${symbol.name}` } else { symbol.name }))
         strings.push(0)

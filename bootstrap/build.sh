@@ -1,8 +1,9 @@
 #!/bin/sh
 # Builds kojic, the Koji compiler, from the seed: an executable of the compiler for this platform,
-# in bootstrap/seed/kojic-<platform>.gz (linux-x64, linux-arm64). Needs gzip only: the seed builds
-# the runtime library (`kojic library`, the library written in Koji, std/koji/) and the compiler of
-# compiler/ with it, machine code and linking included, without a C compiler.
+# in bootstrap/seed/kojic-<platform>.gz (linux-x64, linux-arm64; windows-x64 for build.cmd). Needs
+# gzip only: the seed builds the runtime library (`kojic library`, the library written in Koji,
+# std/koji/) and the compiler of compiler/ with it, machine code and linking included, without a C
+# compiler.
 #
 #     bootstrap/build.sh          builds build/kojic and build/libkoji_runtime.a
 #     bootstrap/build.sh --seed   then writes the seeds of every platform it can build for again,
@@ -43,11 +44,12 @@ if [ "${1:-}" = "--seed" ]; then
     # Stage 3, the compiler built by itself: the seed of each platform, the same from one
     # generation to the next. The seed names the files of the compiler as they are written here:
     # run from the root.
-    for target in linux-x64 linux-arm64; do
+    for target in linux-x64 linux-arm64 windows-x64; do
         echo "writing the seed for $target"
         case "$target" in
         linux-x64) name=x64 ;;
         linux-arm64) name=arm64 ;;
+        windows-x64) name=windows-x64 ;;
         esac
         KOJI_TARGET=$name build/kojic library -o "build/libkoji-$target.a"
         KOJI_TARGET=$name KOJI_RUNTIME="$PWD/build/libkoji-$target.a" build/kojic build compiler/main.kj -o "build/seed-$target"

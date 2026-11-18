@@ -537,7 +537,12 @@ function writeBytesTo(name: string, bytes: byte[]): Result[void, file.FileError]
 // Whether the native backend generates the code of this platform (an ELF of x86-64 or arm64, for
 // Linux): the default there, the C backend elsewhere.
 function nativeHere(): boolean {
-    return system.os == system.Linux and (system.architecture == system.X64 or system.architecture == system.Arm64)
+    return match (system.os) {
+        Linux => system.architecture == system.X64 or system.architecture == system.Arm64
+        MacOS => system.architecture == system.X64 or system.architecture == system.Arm64
+        Windows => system.architecture == system.X64
+        _ => false
+    }
 }
 
 // The executable of a program, by the backend of the platform.

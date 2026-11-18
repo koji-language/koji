@@ -13,6 +13,14 @@
 immut kernel32 = ['CloseHandle', 'CreateFileA', 'CreatePipe', 'CreateProcessA', 'CreateThread', 'GetExitCodeProcess', 'GetLastError', 'GetModuleFileNameA', 'GetSystemTimePreciseAsFileTime', 'PeekNamedPipe', 'QueryPerformanceCounter', 'QueryPerformanceFrequency', 'ReadFile', 'SetHandleInformation', 'Sleep', 'VirtualAlloc', 'VirtualFree', 'VirtualProtect', 'WaitForSingleObject']
 immut ws2 = ['WSAGetLastError', 'WSAPoll', 'WSAStartup', 'accept', 'bind', 'closesocket', 'connect', 'freeaddrinfo', 'getaddrinfo', 'getsockopt', 'ioctlsocket', 'listen', 'recv', 'send', 'setsockopt', 'socket']
 immut bcrypt = ['BCryptGenRandom']
+// The names of POSIX that the C library of Windows has with an underscore (as oldnames.lib of
+// Microsoft gives them): `getcwd` is `_getcwd`.
+immut underscored = ['access', 'chdir', 'chmod', 'close', 'creat', 'dup', 'dup2', 'fdopen', 'fileno', 'getcwd', 'getpid', 'isatty', 'lseek', 'mkdir', 'open', 'putenv', 'read', 'rmdir', 'strdup', 'umask', 'unlink', 'write']
+
+// The name a function is imported by from its DLL.
+function importedName(name: string): string {
+    return if (name in underscored) { `_${name}` } else { name }
+}
 
 immut imageBase = 0x140000000
 immut sectionAlignment = 0x1000
@@ -164,7 +172,7 @@ export function linkWindows(objects: byte[][]): Result[byte[], string] {
 
     for name in imported {
         nameAt.push(place)
-        place += align(2 + name.length() + 1, 2)
+        place += align(2 + importedName(name).length() + 1, 2)
     }
 
     mut dllNameAt: int[] = []
@@ -335,7 +343,7 @@ export function linkWindows(objects: byte[][]): Result[byte[], string] {
     }
 
     for i in range(imported.length()) {
-        immut name = utf8(imported[i])
+        immut name = utf8(importedName(imported[i]))
 
         for c in range(name.length()) {
             rdata[nameAt[i] + 2 + c] = name[c]
@@ -482,8 +490,15 @@ function parseCoff(bytes: byte[]): Result[CoffInput, string] {
         immut at = number(bytes, header + 20, 4)
         immut flags = number(bytes, header + 36, 4)
         immut contents = if (flags & 0x80 != 0 or at == 0) { [] } else { bytes[at..at + size] }
-        immut relocationsAt = number(bytes, header + 24, 4)
-        immut count = number(bytes, header + 32, 2)
+        mut relocationsAt = number(bytes, header + 24, 4)
+        mut count = number(bytes, header + 32, 2)
+
+        // IMAGE_SCN_LNK_NRELOC_OVFL: their number in the first one, which counts itself.
+        if (flags & 0x01000000 != 0 and count == 0xFFFF) {
+            count = number(bytes, relocationsAt, 4) - 1
+            relocationsAt += 10
+        }
+
         sections.push({ name: nameAt(bytes, header, stringsAt), bytes: contents, size: size, flags: flags, relocationsAt: relocationsAt, relocationCount: count, output: '', at: 0 })
 
         for r in range(count) {

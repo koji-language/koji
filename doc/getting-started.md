@@ -4,7 +4,7 @@ This guide shows how to build Koji, write a first program and run it.
 
 ## Requirements
 
-The Koji compiler, `kojic`, is written in Koji, and compiles programs to machine code (on Linux, x86-64 and arm64; through C elsewhere). Building it needs Linux on x86-64 or arm64 and `gzip`: no C compiler.
+The Koji compiler, `kojic`, is written in Koji, and compiles programs to machine code (on Linux, x86-64 and arm64; through C elsewhere). Building it needs Linux on x86-64 or arm64 and `gzip`, or Windows on x86-64: no C compiler.
 
 ## Building
 
@@ -17,6 +17,8 @@ bootstrap/build.sh
 ```
 
 The compiler is written in Koji, so it needs a compiler to be built: the script starts from an executable of the compiler for your platform (`bootstrap/seed/kojic-<platform>.gz`, the seed), which builds the runtime library and the compiler of `compiler/`, machine code and linking included.
+
+On Windows (x86-64), run `bootstrap\build.cmd` instead: it unpacks the seed for Windows with PowerShell and builds `build\kojic.exe` the same way.
 
 The compiler is created at `build/kojic`, and the runtime library at `build/libkoji_runtime.a`. `kojic` finds the runtime library next to itself; another one can be given in the environment variable `KOJI_RUNTIME`. To call it as `kojic` from anywhere, add `build` to your `PATH`:
 
