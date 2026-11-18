@@ -295,12 +295,12 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
 
     // The machine IR (mir.kj) for the functions it lowers, with KOJI_MIR=1 while it grows.
     // KOJI_MIR=1: the functions the machine IR lowers through it; KOJI_MIR=report also prints
-    // why it does not lower the others.
+    // why it does not lower the others, KOJI_MIR=strict makes one it does not lower an error.
     immut mirMode = match (system.env('KOJI_MIR')) {
         Some(value) => value
         None => ''
     }
-    immut machineIr = mirMode == '1' or mirMode == 'report'
+    immut machineIr = mirMode == '1' or mirMode == 'report' or mirMode == 'strict'
 
     mut mirSeen = 0
 
@@ -332,6 +332,8 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
                     None => {}
                 }
             }
+
+            if (mirMode == 'strict' and not chosen and mirRefusal(program, id) != '') { return Err(`the machine IR does not lower ${program.functions[id].name}: ${mirRefusal(program, id)}`) }
 
             if (mirMode == 'report' and not chosen) { print(`mir: ${program.functions[id].name}: ${mirRefusal(program, id)}`) }
 
@@ -1307,6 +1309,14 @@ function Native.generateMir(mut self, id: int) {
     }
 
     for relocation in emitted.relocations {
+        // The code of the job of a function that blocks (see `trampolineCode`).
+        if (relocation.symbol.startsWith('trampoline:')) {
+            immut name = relocation.symbol['trampoline:'.length()..relocation.symbol.length()]
+            self.trampolineUses.push({ at: 0, symbol: name, kind: 0, addend: 0 })
+            self.trampolineUses.push({ at: start + relocation.at, symbol: name, kind: 1, addend: 0 })
+            continue
+        }
+
         self.relocations.push({ at: start + relocation.at, symbol: relocation.symbol, kind: relocation.kind, addend: relocation.addend })
     }
 

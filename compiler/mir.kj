@@ -21,6 +21,8 @@ export type MAddress = {
     MSymbol(name: string, offset: int)
     // A text of the constants of the object, ended by 0 (the place of a call, for its panics).
     MText(text: string)
+    // The code of a function of the program (its number), for its address.
+    MCode(id: int)
 }
 
 export type MCallee = {
@@ -67,6 +69,15 @@ export type MInstruction = {
     // `aboveEqual` (unsigned comparisons), 1 or 0 in the one of `dests`; `product` (the 128 bits of
     // the product of the low words); `zeros` (the zeros before the first bit set, 128 for none).
     MWide(dests: int[], op: string, left: MValue[], right: MValue[])
+    // An instruction of the processor `koji:unsafe` names: `bswap` (the bytes of a word reversed),
+    // `aesAvailable` (AES-NI, PCLMULQDQ and SSSE3), `aesRound`, `aesLastRound` (of a state and a key
+    // of two words each), `carryless` (the product of two words without carries, two words),
+    // `floatControl` (the controls of the floats, written at the address given), `valgrind` (a
+    // request at the address given, `otherwise` its answer when not under valgrind).
+    MMachine(dests: int[], op: string, args: MValue[])
+    // The arguments of the next call (their positions) that start a value of two words: by the
+    // convention, one that does not fit whole in the registers goes on the stack whole.
+    MPairs(starts: int[])
     // A reference more to the value at the address (none for 0): its first word counts them.
     MRetain(value: MValue)
     // A reference less, the last one freeing the value (koji_<kind>_free; a record by its type),
@@ -104,6 +115,8 @@ export type MFunctionCode = {
     panics: MPanic[]
     // The classes of the results (floats or words), for the return.
     results: boolean[]
+    // The parameters (their positions in `params`) that start a value of two words.
+    pairs: int[]
 }
 
 // The text of a function of the machine IR (`kojic dump mir`).
@@ -152,6 +165,7 @@ function addressText(at: MAddress, code: MFunctionCode): string {
         MSlot(slot, offset) => `[s${slot} + ${offset}]`
         MSymbol(name, offset) => `[${name} + ${offset}]`
         MText(text) => `[text '${text}']`
+        MCode(id) => `[f${id}]`
     }
 }
 
@@ -202,6 +216,22 @@ function instructionText(instruction: MInstruction, code: MFunctionCode): string
             }
 
             `${written.join(', ')} = wide ${op} ${read.join(', ')}`
+        }
+        MPairs(starts) => `pairs ${starts}`
+        MMachine(dests, op, args) => {
+            mut written: string[] = []
+
+            for dest in dests {
+                written.push(registerText(dest, code))
+            }
+
+            mut read: string[] = []
+
+            for value in args {
+                read.push(valueText(value, code))
+            }
+
+            `${written.join(', ')} = machine ${op} ${read.join(', ')}`
         }
         MRetain(value) => `retain ${valueText(value, code)}`
         MRelease(value, kind) => `release ${kind} ${valueText(value, code)}`

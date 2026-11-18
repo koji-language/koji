@@ -74,10 +74,12 @@ type Emitter = {
     panicJumps: int[][]
     // The position (see mirregs.kj) of the instruction being emitted.
     position: int
+    // The arguments of the next call that start a pair (`MPairs`).
+    pairs: int[]
 }
 
 export function emitX64(code: MFunctionCode, allocation: Allocation): Emitted {
-    mut self: Emitter = { code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0 }
+    mut self: Emitter = { code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [] }
     // The frame: the kept registers used, the slots, the spills.
     mut size = 8 * allocation.used.length()
 
@@ -111,8 +113,19 @@ export function emitX64(code: MFunctionCode, allocation: Allocation): Emitted {
     mut stacked: int[] = []
     mut integers = 0
     mut floats = 0
+    // A pair that does not fit whole in the registers goes on the stack whole.
+    mut stackPair = false
 
-    for param in code.params {
+    for i in range(code.params.length()) {
+        immut param = code.params[i]
+
+        if (i in code.pairs) { stackPair = integers > 4 }
+
+        if (stackPair and (i in code.pairs or i - 1 in code.pairs)) {
+            stacked.push(param)
+            continue
+        }
+
         if (code.floats[param] and floats < 8) {
             sources.push(xmm + floats)
             floats += 1
@@ -307,6 +320,8 @@ function Emitter.instruction(mut self, instruction: MInstruction) {
             self.panicIf(code, panic)
         }
         MPreempt => self.preempt()
+        MPairs(starts) => self.pairs = starts
+        MMachine(dests, op, args) => self.machine(dests, op, args)
         MWide(dests, op, left, right) => self.wide(dests, op, left, right)
         // test r, r; jz none; inc qword [r]
         MRetain(value) => {
@@ -375,6 +390,61 @@ function Emitter.wide(mut self, dests: int[], op: string, left: MValue[], right:
     }
 
     self.finish(dests[0], rax)
+
+    if (dests.length() > 1) { self.finish(dests[1], rdx) }
+}
+
+// An instruction of the processor (see `MMachine`), with the registers the allocator gives no
+// value: the result from rax (and rdx).
+function Emitter.machine(mut self, dests: int[], op: string, args: MValue[]) {
+    match (op) {
+        // bswap rax
+        'bswap' => {
+            self.loadValue(rax, args[0])
+            self.bytes([0x48, 0x0F, 0xC8])
+        }
+        // cpuid (leaf 1, which changes rbx: kept around it): AES-NI (bit 25 of ecx), PCLMULQDQ (1)
+        // and SSSE3 (9), all three.
+        'aesAvailable' => {
+            self.bytes([0x53, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x31, 0xC9, 0x0F, 0xA2, 0x5B])
+            self.bytes([0x89, 0xC8, 0x89, 0xC2, 0xC1, 0xEA, 0x19, 0x83, 0xE2, 0x01, 0x89, 0xC1, 0xD1, 0xE9, 0x21, 0xD1, 0xC1, 0xE8, 0x09, 0x21, 0xC8])
+        }
+        // The key in xmm1, the state in xmm0 (movq, pinsrq), aesenc (aesenclast), then the state
+        // back in rax and rdx (movq, pextrq).
+        other if (other == 'aesRound' or other == 'aesLastRound') => {
+            self.loadValue(rax, args[2])
+            self.loadValue(rdx, args[3])
+            self.bytes([0x66, 0x48, 0x0F, 0x6E, 0xC8, 0x66, 0x48, 0x0F, 0x3A, 0x22, 0xCA, 0x01])
+            self.loadValue(rax, args[0])
+            self.loadValue(rdx, args[1])
+            self.bytes([0x66, 0x48, 0x0F, 0x6E, 0xC0, 0x66, 0x48, 0x0F, 0x3A, 0x22, 0xC2, 0x01])
+            self.bytes([0x66, 0x0F, 0x38, if (other == 'aesRound') { 0xDC } else { 0xDD }, 0xC1])
+            self.bytes([0x66, 0x48, 0x0F, 0x7E, 0xC0, 0x66, 0x48, 0x0F, 0x3A, 0x16, 0xC2, 0x01])
+        }
+        // pclmulqdq of the two words (in xmm0 and xmm1): the product in rax and rdx.
+        'carryless' => {
+            self.loadValue(rcx, args[1])
+            self.loadValue(rax, args[0])
+            self.bytes([0x66, 0x48, 0x0F, 0x6E, 0xC0, 0x66, 0x48, 0x0F, 0x6E, 0xC9, 0x66, 0x0F, 0x3A, 0x44, 0xC1, 0x00])
+            self.bytes([0x66, 0x48, 0x0F, 0x7E, 0xC0, 0x66, 0x48, 0x0F, 0x3A, 0x16, 0xC2, 0x01])
+        }
+        // stmxcsr [rcx]; fnstcw [rcx + 4]; mov eax, [rcx]; movzx ecx, word [rcx + 4]; shl rcx, 32;
+        // or rax, rcx
+        'floatControl' => {
+            self.loadValue(rcx, args[0])
+            self.bytes([0x0F, 0xAE, 0x19, 0xD9, 0x79, 0x04, 0x8B, 0x01, 0x0F, 0xB7, 0x49, 0x04, 0x48, 0xC1, 0xE1, 0x20, 0x48, 0x09, 0xC8])
+        }
+        // The address of the request in rax, the answer in rdx, after the rotations of rdi (by 128
+        // bits: nothing) that valgrind recognizes: rol rdi, 3; rol rdi, 13; rol rdi, 61; rol rdi,
+        // 51; xchg rbx, rbx; mov rax, rdx
+        _ => {
+            self.loadValue(rdx, args[1])
+            self.loadValue(rax, args[0])
+            self.bytes([0x48, 0xC1, 0xC7, 3, 0x48, 0xC1, 0xC7, 13, 0x48, 0xC1, 0xC7, 61, 0x48, 0xC1, 0xC7, 51, 0x48, 0x87, 0xDB, 0x48, 0x89, 0xD0])
+        }
+    }
+
+    if (dests.length() > 0) { self.finish(dests[0], rax) }
 
     if (dests.length() > 1) { self.finish(dests[1], rdx) }
 }
@@ -684,11 +754,22 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
     mut stacked: MValue[] = []
     mut integers = 0
     mut floats = 0
+    mut stackPair = false
+    immut pairs = self.pairs
+    self.pairs = []
 
-    for arg in args {
+    for i in range(args.length()) {
+        immut arg = args[i]
         immut float = match (arg) {
             MReg(id) => self.code.floats[id]
             MImm(_) => false
+        }
+
+        if (i in pairs) { stackPair = integers > 4 }
+
+        if (stackPair and (i in pairs or i - 1 in pairs)) {
+            stacked.push(arg)
+            continue
         }
 
         if (float and floats < 8) {
@@ -1120,6 +1201,7 @@ function Emitter.memory(mut self, at: MAddress): Operand {
         }
         MSlot(slot, offset) => OMemory(rbp, -1, 1, self.slots[slot] + offset)
         MSymbol(name, offset) => ORip(name, offset)
+        MCode(id) => OCode(id)
         MText(text) => OText(text)
     }
 }
@@ -1158,6 +1240,8 @@ type Operand = {
     ORegister(register: int)
     OMemory(base: int, index: int, scale: int, displacement: int)
     ORip(symbol: string, addend: int)
+    // The code of a function of the program, [rip + displacement] (a call's use).
+    OCode(id: int)
     OText(text: string)
 }
 
@@ -1192,6 +1276,11 @@ function Emitter.modrm(mut self, opcode: int[], reg: int, rm: Operand, wide: boo
 
     match (rm) {
         ORegister(register) => self.out.push(byte(0xC0 | (reg & 7) << 3 | (register & 7)))
+        OCode(id) => {
+            self.out.push(byte(0x05 | (reg & 7) << 3))
+            self.calls.push({ at: self.out.length(), target: id })
+            self.int32(0)
+        }
         ORip(symbol, addend) => {
             self.out.push(byte(0x05 | (reg & 7) << 3))
             self.relocations.push({ at: self.out.length(), symbol: symbol, kind: 2, addend: addend - 4 - immediate })

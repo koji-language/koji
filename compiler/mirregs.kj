@@ -75,6 +75,12 @@ export function readOf(instruction: MInstruction): int[] {
             valueRegister(right, mut found)
         }
         MPreempt => {}
+        MPairs(_) => {}
+        MMachine(_, _, args) => {
+            for value in args {
+                valueRegister(value, mut found)
+            }
+        }
         MRetain(value) => valueRegister(value, mut found)
         MRelease(value, _) => valueRegister(value, mut found)
         MWide(_, _, left, right) => {
@@ -97,6 +103,7 @@ export function writtenBy(instruction: MInstruction): int[] {
         MSet(dest, _, _, _) => [dest]
         MCall(_, _, results) => results
         MWide(dests, _, _, _) => dests
+        MMachine(dests, _, _) => dests
         _ => []
     }
 }
