@@ -1,39 +1,31 @@
 //! The bootstrap: the compiler written in Koji (`compiler/`) is built from the seed
-//! (`bootstrap/kojic.c.gz`, the C it generated for itself), like `bootstrap/build.sh` does.
+//! (`bootstrap/seed/kojic-<platform>.gz`, an executable of an earlier compiler), like
+//! `bootstrap/build.sh` does.
 
 use std::path::Path;
-use std::process::Command;
 
 #[path = "koji/mod.rs"]
 mod koji;
 
-fn output(command: &mut Command) -> String {
-    let result = command.output().unwrap();
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-    String::from_utf8(result.stdout).unwrap()
-}
-
-/// The compiler written in Koji compiles itself, from the seed: stage 1 is the seed
-/// (`bootstrap/kojic.c.gz`), stage 2 the compiler of `compiler/` built by stage 1, and stage 3
-/// the same compiler built by stage 2. Stage 3 must generate the same C as stage 2 (the fixed
-/// point): the seed written again from stage 2 (`bootstrap/build.sh --seed`) builds the same
-/// compiler. Slow (the C compiler builds the compiler once more): run it with
+/// The compiler written in Koji compiles itself, from the seed: stage 1 is the seed, stage 2 the
+/// compiler of `compiler/` built by stage 1, stage 3 the same compiler built by stage 2, and stage
+/// 4 by stage 3. Stages 3 and 4 must be the same executable, byte for byte (the fixed point): the
+/// seed written again from stage 2 (`bootstrap/build.sh --seed`) is stage 3. Slow: run it with
 /// `cargo test --test bootstrap -- --ignored`.
 #[test]
 #[ignore]
 fn the_compiler_in_koji_compiles_itself() {
     let stage2 = koji::compiler();
+    let library = koji::library();
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bootstrap-stages");
     std::fs::create_dir_all(&directory).unwrap();
-    let c_of = |compiler: &Path| output(Command::new(compiler).args(["dump", "c", "compiler/main.kj"]));
-    let stage2_c = c_of(stage2);
+    let build = |compiler: &Path, output: &Path| {
+        let built = koji::finish(std::process::Command::new(compiler).env("KOJI_RUNTIME", library).args(["build", "compiler/main.kj", "-o"]).arg(output), "");
+        assert_eq!(built.code, Some(0), "{}", built.stderr);
+    };
     let stage3 = directory.join("stage3");
-    let built = Command::new(stage2)
-        .args(["build", "compiler/main.kj", "-o"])
-        .arg(&stage3)
-        .env("KOJI_RUNTIME", koji::RUNTIME)
-        .output()
-        .unwrap();
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    assert!(c_of(&stage3) == stage2_c, "stage 3 generates another C than stage 2");
+    let stage4 = directory.join("stage4");
+    build(stage2, &stage3);
+    build(&stage3, &stage4);
+    assert!(std::fs::read(&stage3).unwrap() == std::fs::read(&stage4).unwrap(), "stage 4 is another executable than stage 3");
 }

@@ -1,55 +1,58 @@
 #!/bin/sh
-# Builds kojic, the Koji compiler, from the seed: the C that the compiler written in Koji
-# (compiler/) generates for itself, in bootstrap/kojic.c.gz. Needs gzip, ar and a C compiler. The
-# runtime, the library written in Koji (std/koji/), is in bootstrap/libkoji.c.gz, the C that the
-# compiler generates for it (`kojic dump library`), which links the compilers of the bootstrap;
-# kojic then builds the library itself (`kojic library`), as build/libkoji_runtime.a.
+# Builds kojic, the Koji compiler, from the seed: an executable of the compiler for this platform,
+# in bootstrap/seed/kojic-<platform>.gz (linux-x64, linux-arm64). Needs gzip only: the seed builds
+# the runtime library (`kojic library`, the library written in Koji, std/koji/) and the compiler of
+# compiler/ with it, machine code and linking included, without a C compiler.
 #
 #     bootstrap/build.sh          builds build/kojic and build/libkoji_runtime.a
-#     bootstrap/build.sh --seed   then writes the seed again, from the compiler just built
+#     bootstrap/build.sh --seed   then writes the seeds of every platform it can build for again,
+#                                 from the compiler built by itself (the fixed point)
 #
-# KOJI_CC chooses the C compiler (default: cc). kojic finds the runtime library next to itself
-# (or where KOJI_RUNTIME says).
+# kojic finds the runtime library next to itself (or where KOJI_RUNTIME says). The seeds are
+# written again only when the compiler of compiler/ needs a newer one to build (see
+# doc/compiler-plan.md, "The seed").
 set -eu
 
 cd "$(dirname "$0")/.."
-cc=${KOJI_CC:-cc}
-mkdir -p build
 
-echo "building the runtime"
-gzip -dc bootstrap/libkoji.c.gz > build/libkoji.c
-# The tasks of the library switch between stacks (std/koji/task.kj), which the shadow stack of
-# x86-64 (CET) forbids: without its mark on the library, no program asks the system for one.
-flags=-O2
-case "$(uname -m)" in
-x86_64 | amd64)
-    if "$cc" -fcf-protection=none -E -x c /dev/null > /dev/null 2>&1; then flags="$flags -fcf-protection=none"; fi
+case "$(uname -s)-$(uname -m)" in
+Linux-x86_64 | Linux-amd64) platform=linux-x64 ;;
+Linux-aarch64 | Linux-arm64) platform=linux-arm64 ;;
+*)
+    echo "no seed for $(uname -s) on $(uname -m)" >&2
+    exit 1
     ;;
 esac
-"$cc" $flags -c -o build/libkoji.o build/libkoji.c
-rm -f build/libkoji_runtime.a
-ar rcs build/libkoji_runtime.a build/libkoji.o
-export KOJI_RUNTIME="$PWD/build/libkoji_runtime.a"
 
-# Stage 1, the seed: built without optimizations, which is faster, since it only builds stage 2.
-echo "building stage 1 from the seed"
-gzip -dc bootstrap/kojic.c.gz > build/stage1.c
-"$cc" -O0 -o build/stage1 build/stage1.c "$KOJI_RUNTIME" -lm -lpthread
+mkdir -p build
 
-# Stage 2, the compiler of compiler/.
+# Stage 1, the seed, and the runtime library it builds.
+echo "unpacking the seed for $platform"
+gzip -dc "bootstrap/seed/kojic-$platform.gz" > build/stage1
+chmod +x build/stage1
+echo "building the runtime with the seed"
+build/stage1 library -o build/libkoji_stage1.a
+
+# Stage 2, the compiler of compiler/, and the runtime library built by it, next to it.
 echo "building kojic from compiler/"
-build/stage1 build compiler/main.kj -o build/kojic
-
-# The runtime library, built by kojic (natively), next to it.
+KOJI_RUNTIME="$PWD/build/libkoji_stage1.a" build/stage1 build compiler/main.kj -o build/kojic
 echo "building the runtime with kojic"
-build/kojic library -o build/libkoji_native.a
-mv build/libkoji_native.a build/libkoji_runtime.a
+build/kojic library -o build/libkoji_runtime.a
 
 if [ "${1:-}" = "--seed" ]; then
-    # The seed names the files of the compiler as they are written here: run from the root.
-    echo "writing the seed"
-    build/kojic dump c compiler/main.kj | gzip -n -9 > bootstrap/kojic.c.gz
-    build/kojic dump library | gzip -n -9 > bootstrap/libkoji.c.gz
+    # Stage 3, the compiler built by itself: the seed of each platform, the same from one
+    # generation to the next. The seed names the files of the compiler as they are written here:
+    # run from the root.
+    for target in linux-x64 linux-arm64; do
+        echo "writing the seed for $target"
+        case "$target" in
+        linux-x64) name=x64 ;;
+        linux-arm64) name=arm64 ;;
+        esac
+        KOJI_TARGET=$name build/kojic library -o "build/libkoji-$target.a"
+        KOJI_TARGET=$name KOJI_RUNTIME="$PWD/build/libkoji-$target.a" build/kojic build compiler/main.kj -o "build/seed-$target"
+        gzip -n -9 < "build/seed-$target" > "bootstrap/seed/kojic-$target.gz"
+    done
 fi
 
 echo "done: build/kojic, with build/libkoji_runtime.a next to it"

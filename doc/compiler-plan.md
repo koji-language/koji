@@ -2,7 +2,7 @@
 
 This document plans the path from the current implementation to a **self-hosted compiler**: a Koji compiler written in Koji that produces native binaries. It records the language decisions already made and the ones still open.
 
-> Status: the compiler is self-hosted (phases 1 to 5 are done): `kojic` is written in Koji and built from a seed in C. The compiler and the interpreter in Rust were removed, the [optimizations](#optimizations) of phase 6 are done, and so is [a runtime in Koji](#a-runtime-in-koji-phase-7) (phase 7): building Koji needs only a C compiler, `gzip` and `ar`. What comes next is in the [roadmap](roadmap.md).
+> Status: the compiler is self-hosted (phases 1 to 5 are done): `kojic` is written in Koji and built from a seed (its own executables). The compiler and the interpreter in Rust were removed, the [optimizations](#optimizations) of phase 6 are done, and so is [a runtime in Koji](#a-runtime-in-koji-phase-7) (phase 7): building Koji needs only a C compiler, `gzip` and `ar`. What comes next is in the [roadmap](roadmap.md).
 
 ---
 
@@ -21,7 +21,7 @@ The compiler, `kojic`, is written in Koji (`compiler/`, one file per stage). `ko
 
 The **runtime** has a C interface (declared in `runtime/prelude.h`) and is compiled once as a static library linked into every program. All of it is written in Koji: the **library** (`std/koji/`, but `koji:core`), whose C is kept in `bootstrap/libkoji.c.gz`: the pool of memory, decimals, numbers, strings and their methods, lists, maps, records, closures, output and panics, and the cryptography and TLS of `https://`. The prelude has the small inline functions that differ from one system to another (`errno`, the path of the executable, sockets, the instructions of AES).
 
-The compiler is built from the **seed** (`bootstrap/kojic.c.gz`), the C it generated for itself: `bootstrap/build.sh` compiles the seed (stage 1), and stage 1 builds the compiler of `compiler/`. The tests (`test/`, run by `cargo test`) build it the same way and run it as a command.
+The compiler is built from the **seed** (`bootstrap/seed/kojic-<platform>.gz`), an executable of the compiler built by itself for each platform of the native backend: `bootstrap/build.sh` unpacks it (stage 1), builds the runtime library with it, and stage 1 builds the compiler of `compiler/`, with no C compiler. The tests (`test/`, run by `cargo test`) build it the same way and run it as a command. (The seed was the C the compiler generated for itself, `bootstrap/kojic.c.gz`, which stays until the C backend goes.)
 
 The compiler was first written in Rust (phases 1 and 2), then in Koji, compared stage by stage with the one in Rust (phase 3), until it compiled itself (phase 4) and the one in Rust was removed (phase 5). The sections below keep the record of those phases.
 
@@ -177,7 +177,7 @@ Notes:
 
 ### The seed (phase 5)
 
-Decided: **a seed in C**. The C that the compiler in Koji generates for itself is committed (compressed, `bootstrap/kojic.c.gz`), and building Koji needs only a C compiler and the runtime: `cc` builds stage 1 from the seed, and stage 1 builds the compiler from `compiler/`. There is then one implementation of the language, the one in Koji, which can use any feature of the language once the seed is regenerated with it (a feature is implemented first, the seed regenerated, and only then can the compiler use it). The runtime stayed in Rust, so building it needed `cargo`, until it moved to Koji (phase 7).
+Decided first: **a seed in C**; then a seed of executables (step 5). The C that the compiler in Koji generates for itself is committed (compressed, `bootstrap/kojic.c.gz`), and building Koji needs only a C compiler and the runtime: `cc` builds stage 1 from the seed, and stage 1 builds the compiler from `compiler/`. There is then one implementation of the language, the one in Koji, which can use any feature of the language once the seed is regenerated with it (a feature is implemented first, the seed regenerated, and only then can the compiler use it). The runtime stayed in Rust, so building it needed `cargo`, until it moved to Koji (phase 7).
 
 Steps:
 
@@ -185,6 +185,7 @@ Steps:
 2.  **The tests use the compiler in Koji**: `test/language.rs` and `test/compiler.rs` compile and run their programs with it, instead of the interpreter in Rust inside the test process. Done: the compiler in Koji is built once (`test/koji/mod.rs`, kept in the target directory while its C and the runtime stay the same), and each test runs it as a command (`kojic run`, `kojic build`, `kojic check`). What `test/compiler.rs` compared with the interpreter is now written in the tests, and the outputs of the examples are in `test/examples/`.
 3.  **The seed**: `bootstrap/kojic.c.gz` and a script that builds `kojic` from it; a test checks that the seed regenerated reaches the fixed point. Done: `bootstrap/build.sh` builds the runtime, stage 1 from the seed (without optimizations: it only builds stage 2) and `build/kojic` from `compiler/`; `--seed` writes the seed again from it. The tests build the compiler the same way (`test/koji/mod.rs`), and the ignored `the_compiler_in_koji_compiles_itself` checks that the compiler built by stage 2 generates the same C as stage 2. The seed is written again when the compiler needs a feature the seed does not compile, and from time to time; it need not follow every change of `compiler/`. It must be written again when the C interface of the runtime changes (a function or a structure the generated code uses): the seed's C, compiled with the new runtime, would not agree with it. Then a compiler built before the change (with the runtime it was built with, from the commit before) compiles the new `compiler/` into a compiler that still runs on the old runtime but generates the new C, and that one writes the seed.
 4.  **The compiler and the interpreter in Rust are removed** (`src/`); what stays in Rust is the runtime and the code that runs the tests. Done: the comparisons of the stages with the compiler in Rust became snapshots (`test/snapshots/`, `test/stages.rs`, written again with `KOJI_UPDATE_SNAPSHOTS=1`), and the C declarations of the runtime moved to `runtime/prelude.h`.
+5.  **A seed of executables**: the compiler built by itself for each platform of the native backend (`bootstrap/seed/kojic-linux-x64.gz`, `kojic-linux-arm64.gz`), which builds the library and the compiler without a C compiler (`bootstrap/build.sh`, in some 11 seconds; the tests build the compiler the same way). Done; the seed in C stays until the C backend goes.
 
 ### Optimizations
 

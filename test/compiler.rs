@@ -2165,7 +2165,7 @@ fn kojic_finds_the_runtime_next_to_it() {
     let missing = build(&directory.join("kojic"));
     assert_eq!(missing.code, Some(1));
     assert!(missing.stderr.contains("the runtime library (libkoji_runtime.a) is not next to kojic"), "{}", missing.stderr);
-    std::fs::copy(koji::RUNTIME, directory.join("libkoji_runtime.a")).unwrap();
+    std::fs::copy(koji::library(), directory.join("libkoji_runtime.a")).unwrap();
     let built = build(&directory.join("kojic"));
     assert_eq!(built.code, Some(0), "{}", built.stderr);
     assert_eq!(String::from_utf8(Command::new(&executable).output().unwrap().stdout).unwrap(), "found it\n");

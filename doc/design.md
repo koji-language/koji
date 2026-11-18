@@ -281,13 +281,15 @@ The cost is speed, and a `float` is there when it matters. 34 digits hold every 
 
 **Alternatives**: an interpreter for `kojic run`, which starts faster but is a second implementation of every feature that must give the same results (Koji had one, in Rust, until the compiler written in Koji replaced it); a native backend (LLVM, Cranelift, or machine code directly), which can come later from the same intermediate representation.
 
-### The compiler is written in Koji, from a seed in C
+### The compiler is written in Koji, from a seed of its own executables
 
-**Decision**: `kojic` is written in Koji (`compiler/`). It is built from the seed, the C it generated for itself (`bootstrap/kojic.c.gz`): a C compiler builds stage 1 from the seed, and stage 1 builds the compiler of `compiler/` (`bootstrap/build.sh`). The seed is written again when the compiler needs a feature the seed does not compile.
+**Decision**: `kojic` is written in Koji (`compiler/`). It is built from the seed, an executable of the compiler for each platform its native backend reaches (`bootstrap/seed/kojic-linux-x64.gz`, `kojic-linux-arm64.gz`, compressed): the seed builds the runtime library (`kojic library`) and, with it, the compiler of `compiler/` (`bootstrap/build.sh`), machine code and linking included, with no C compiler; building Koji needs gzip and the seed of its platform. The seeds are the compiler built by itself (the fixed point: `bootstrap/build.sh --seed` writes them again, the same byte for byte from one generation to the next), all of them from one machine (the native backend builds for each platform). They are written again only when the compiler needs a feature the seed does not compile, as Rust updates its stage 0, so that the history does not grow by megabytes with each change.
+
+**How it came**: the seed was first the C the compiler generated for itself (`bootstrap/kojic.c.gz`), which a C compiler built: one file for every system, but a C compiler to build Koji. Once the native backend and Koji's linker built the compiler and its library on Linux, the seed became executables, and the seed in C stays only while the C backend does.
 
 **Why**: the compiler is the largest Koji program, and writing it in Koji tests the language and shows what it lacks. A seed in C needs only a C compiler to build Koji, on any system, and the compiler can use any feature of the language once the seed is written again with it.
 
-**Alternatives**: keeping the compiler in Rust, a second implementation to maintain along with the one in Koji; a chain of earlier compilers to build from (like Go, which needs an earlier Go), which needs an executable for each system; a seed in the intermediate representation, which would need an interpreter of it.
+**Alternatives**: keeping the compiler in Rust, a second implementation to maintain along with the one in Koji; a seed in C, which needs a C compiler (and so a C backend to write it); a seed in the intermediate representation, which would need an interpreter of it; a chain of releases to build from (like Go, which needs an earlier Go), the seed here being the one release in the repository.
 
 ### A runtime of its own, written in Koji
 
@@ -483,7 +485,7 @@ The value of `Shared` is the one reference of Koji, which its copies share: the 
 
 ### The library of the runtime built by the compiler
 
-**Decision**: the native backend compiles the library of the runtime (`kojic library`): its object alone, in the archive that programs link, with no C compiled. What runtime/prelude.h writes in C for the C backend is Koji in the native library (`koji:prelude`, std/koji/prelude.kj, a module only `kojic library` compiles, so that the C of `kojic dump library` does not define it twice), and machine code the backend writes itself: the switch between the stacks of tasks, where a task starts, the heads of the pool, the descriptions of the items of the built-in types, and the few functions that call through an address (of a description, of the type of a record, of a closure), and the threads of the runtime (see "The threads of the runtime"). The seed of the bootstrap stays C, the compiler and its library (`bootstrap/kojic.c.gz`, `bootstrap/libkoji.c.gz`), so that a system without a compiler of Koji can build one; the compiler it builds then builds the library natively.
+**Decision**: the native backend compiles the library of the runtime (`kojic library`): its object alone, in the archive that programs link, with no C compiled. What runtime/prelude.h writes in C for the C backend is Koji in the native library (`koji:prelude`, std/koji/prelude.kj, a module only `kojic library` compiles, so that the C of `kojic dump library` does not define it twice), and machine code the backend writes itself: the switch between the stacks of tasks, where a task starts, the heads of the pool, the descriptions of the items of the built-in types, and the few functions that call through an address (of a description, of the type of a record, of a closure), and the threads of the runtime (see "The threads of the runtime"). The seed of the bootstrap is the compiler's own executables (see "The compiler is written in Koji"), which build the library natively before the compiler.
 
 **Why**: the library is Koji: building it with the compiler takes the C compiler away from it, as the backend did for programs; the archive is written by the compiler too (see "A linker of Koji's own").
 
