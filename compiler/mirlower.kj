@@ -1,10 +1,9 @@
 // The lowering of the IR to the machine IR (mir.kj): the semantics of Koji decided once for every
-// processor. It grows by the kinds of values and instructions: a function it does not lower yet
-// goes through the first native backend (native.kj), in the same object, by the same convention
-// (`mirLowers`). So far: functions of values of one word (ints, booleans, chars, bytes, floats,
-// and the references of strings, lists, records, maps and closures), control flow, calls of such
-// functions and of the standard library, globals, the operations of scalars (checked as the
-// language says) and of strings, and ranges by 1 or -1.
+// processor. Values are of one word (ints, booleans, chars, bytes, floats, and the references of
+// strings, lists, records, maps and closures) or of two (decimals and U128: a pair of virtual
+// registers); the functions of the library that the C backend writes inline (the memory of
+// `koji:unsafe`, the pool, the accessors) are written inline here too, the instructions of the
+// processor that `koji:unsafe` names as `MMachine`.
 //
 // The references are counted as in the other backends (see "Reference counting" in
 // doc/design.md): a function owns a reference to each managed local but the borrowed ones
@@ -56,12 +55,8 @@ function kindOf(ty: Ty): string {
     }
 }
 
-// Whether the machine IR lowers the function `id` (the others go through native.kj).
-export function mirLowers(program: IrProgram, id: int): boolean {
-    return mirRefusal(program, id) == ''
-}
-
-// Why the machine IR does not lower the function `id` yet ('' when it does): for KOJI_MIR=report.
+// Why the machine IR does not lower the function `id` ('' when it does): the error of the native
+// backend for an instruction it does not know.
 export function mirRefusal(program: IrProgram, id: int): string {
     immut routine = program.functions[id]
 
@@ -430,9 +425,8 @@ function lowered(program: IrProgram, instruction: Instruction): boolean {
     }
 }
 
-// A call of a function of the library that the machine IR makes: of arguments of one word, not
-// one the first backend writes inline (the memory of `koji:unsafe`, the pool, the stacks of the
-// tasks...), nor one of a foreign block that blocks or takes as many arguments as it is given.
+// A call of a function of the library that the machine IR makes: one it writes inline, or a call
+// (a job for one of a foreign block that blocks).
 function lowersLibraryCall(program: IrProgram, dest: Option[int], name: string, args: StdArg[]): boolean {
     if (accessors.has(name) or memoryWidths.has(name) or name in inlineLibrary) { return true }
 
