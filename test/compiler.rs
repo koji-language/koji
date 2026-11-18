@@ -3347,3 +3347,32 @@ fn macos_objects(linker: &str, target: &str, arch: &str, cpu: u8) {
     let binds = Command::new("llvm-objdump").args(["--macho", "--bind"]).arg(&own).output().unwrap();
     assert!(String::from_utf8_lossy(&binds.stdout).contains("libSystem        _kevent"));
 }
+
+#[test]
+fn koji_generates_windows_executables() {
+    // Executables of PE for Windows on x86-64 (KOJI_TARGET=windows-x64: compiler/coff.kj,
+    // compiler/pelink.kj): the native library for Windows and a program linked by Koji's linker.
+    // Where Wine is, the program runs there and prints what it prints on Linux.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("windows");
+    std::fs::create_dir_all(&directory).unwrap();
+    let library = directory.join("libkoji.a");
+    let built = koji::finish(koji::kojic().env("KOJI_TARGET", "windows-x64").arg("library").arg("-o").arg(&library), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let source = "import task\nimport file\nfunction fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\ntask.group((group) => {\n    group.spawn(() => print(file.exists('.')))\n})\nprint(`${fib(20)} ${1.5 + 2.25} ${decimal(1) / 3} ${[3, 1, 2].length()}`)\n";
+    let path = source_file("windows", source);
+    let executable = directory.join("program.exe");
+    let built = koji::finish(koji::kojic().env("KOJI_TARGET", "windows-x64").env("KOJI_RUNTIME", &library).arg("build").arg(&path).arg("-o").arg(&executable), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let bytes = std::fs::read(&executable).unwrap();
+    assert_eq!(&bytes[..2], b"MZ");
+    let header = u32::from_le_bytes(bytes[60..64].try_into().unwrap()) as usize;
+    assert_eq!(&bytes[header..header + 6], &[b'P', b'E', 0, 0, 0x64, 0x86], "not an executable of PE for x86-64");
+    let Some(wine) = ["/usr/lib/wine/wine64", "/usr/bin/wine64"].into_iter().find(|tool| Path::new(tool).exists()) else { return };
+    let prefix = directory.join("prefix");
+    let ran = Command::new(wine).arg(&executable).env_clear().env("PATH", "/usr/bin:/bin").env("HOME", &directory).env("WINEPREFIX", &prefix).env("WINEDEBUG", "-all").current_dir(&directory).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "true\n6765 3.75 0.3333333333333333333333333333333333 3\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(ran.status.code(), Some(0));
+}

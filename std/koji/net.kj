@@ -2,7 +2,8 @@
 // (they call these functions by their names). A socket waits without stopping the other tasks: it
 // does not wait itself (O_NONBLOCK, MSG_DONTWAIT), and when it is not ready its task waits for it
 // (koji:task). What differs from one system to another (the numbers of the options, the records of
-// C) is chosen by `system.os`: Linux, or the BSDs and macOS.
+// C) is chosen by `system.os`: Linux, the BSDs and macOS, or Windows (Winsock: its sockets stay
+// without waiting, and its errors are its own).
 
 import system
 import { Address, CInt, CSize, CVariadic, allocate, free, isNull, nullAddress, offset, read, write } from 'koji:unsafe'
@@ -27,7 +28,54 @@ extern function koji_system_errno(): CInt
 extern function errnoPlace(): Address from '__errno_location'
 extern function errnoPlaceBsd(): Address from '__error'
 extern function koji_task_wait_fd(fd: int, writing: boolean, deadline: int): int
+// Windows (ws2_32, ucrtbase).
+extern function WSAStartup(version: CInt, data: Address): CInt
+extern function WSAGetLastError(): CInt
+extern function closesocket(fd: CInt): CInt
+extern function ioctlsocket(fd: CInt, command: CInt, argument: Address): CInt
+extern function errnoPlaceWindows(): Address from '_errno'
+// Windows: they give an int of C (32 bits), not a size.
+extern function windowsSend(fd: CInt, bytes: Address, size: CInt, flags: CInt): CInt from 'send'
+extern function windowsRecv(fd: CInt, bytes: Address, size: CInt, flags: CInt): CInt from 'recv'
 extern function koji_monotonic_nanoseconds(): int
+
+// Winsock, started before the first socket.
+mut winsockStarted = false
+
+function winsock() {
+    if (system.os == system.Windows) {
+        if (winsockStarted) { return }
+
+        immut data = allocate(512)
+        WSAStartup(0x0202, data)
+        free(data)
+        winsockStarted = true
+    }
+}
+
+// The error of the last call of the sockets (on Windows, Winsock's own).
+function netError(): int {
+    return if (system.os == system.Windows) { WSAGetLastError() } else { koji_system_errno() }
+}
+
+// A socket waits or not (FIONBIO on Windows, O_NONBLOCK elsewhere).
+function setWaiting(fd: int, waiting: boolean) {
+    if (system.os == system.Windows) {
+        immut mode = allocate(8)
+        write(mode, 0, if (waiting) { 0 } else { 1 })
+        ioctlsocket(fd, 0x8004667E, mode)
+        free(mode)
+        return
+    }
+
+    // F_GETFL, F_SETFL.
+    immut flags = fcntl(fd, 3, 0)
+    fcntl(fd, 4, if (waiting) { flags & ~nonBlocking() } else { flags | nonBlocking() })
+}
+
+function closeSocket(fd: int) {
+    if (system.os == system.Windows) { closesocket(fd) } else { close(fd) }
+}
 
 // Whether the system is a BSD (macOS included), whose numbers and records differ from Linux's.
 function bsd(): boolean {
@@ -41,37 +89,40 @@ function bsd(): boolean {
 
 // The numbers of the system.
 function solSocket(): int {
-    return if (bsd()) { 0xFFFF } else { 1 }
+    return if (bsd() or system.os == system.Windows) { 0xFFFF } else { 1 }
 }
 
 function noSignal(): int {
-    return if (bsd()) { 0 } else { 0x4000 }
+    return if (bsd() or system.os == system.Windows) { 0 } else { 0x4000 }
 }
 
+// Windows: none, its sockets never wait.
 function dontWait(): int {
-    return if (bsd()) { 0x80 } else { 0x40 }
+    return if (system.os == system.Windows) { 0 } else { if (bsd()) { 0x80 } else { 0x40 } }
 }
 
 function nonBlocking(): int {
     return if (bsd()) { 4 } else { 0x800 }
 }
 
+// WSAEWOULDBLOCK, which a connection under way gives too, and WSAETIMEDOUT on Windows.
 function wouldBlock(): int {
-    return if (bsd()) { 35 } else { 11 }
+    return if (system.os == system.Windows) { 10035 } else { if (bsd()) { 35 } else { 11 } }
 }
 
 function inProgress(): int {
-    return if (bsd()) { 36 } else { 115 }
+    return if (system.os == system.Windows) { 10035 } else { if (bsd()) { 36 } else { 115 } }
 }
 
 function timedOut(): int {
-    return if (bsd()) { 60 } else { 110 }
+    return if (system.os == system.Windows) { 10060 } else { if (bsd()) { 60 } else { 110 } }
 }
 
 // errno, which a function of C reads after this library's (std/http.kj): its 4 bytes.
 function setErrno(code: int) {
     immut place = match (system.os) {
         Linux => errnoPlace()
+        Windows => errnoPlaceWindows()
         _ => errnoPlaceBsd()
     }
 
@@ -90,6 +141,8 @@ function cInt(address: Address, at: int): int {
 
 // A socket that the programs a program runs do not get (FD_CLOEXEC).
 function private(fd: int): int {
+    if (system.os == system.Windows) { return fd }
+
     // F_SETFD, FD_CLOEXEC
     if (fd >= 0) { fcntl(fd, 2, 1) }
 
@@ -119,6 +172,7 @@ extern function koji_net_connect(host: Address, port: Address, seconds: int, cod
     }
 
     write(hints, 8, 1)
+    winsock()
     immut found = allocate(8)
     write(found, 0, nullAddress())
     immut failure = getaddrinfo(host, port, hints, found)
@@ -141,18 +195,16 @@ extern function koji_net_connect(host: Address, port: Address, seconds: int, cod
         immut fd = private(socket(cInt(address, 4), cInt(address, 8), cInt(address, 12)))
 
         if (fd < 0) {
-            error = koji_system_errno()
+            error = netError()
         } else {
             noPipeSignal(fd)
             // Without waiting: the task waits for the socket to be writable, its connection made.
-            // F_GETFL, F_SETFL.
-            immut flags = fcntl(fd, 3, 0)
-            fcntl(fd, 4, flags | nonBlocking())
-            // The address: after the length (and the name on a BSD).
-            immut place: Address = read(address, if (bsd()) { 32 } else { 24 })
+            setWaiting(fd, false)
+            // The address: after the length (and the name on a BSD and on Windows).
+            immut place: Address = read(address, if (bsd() or system.os == system.Windows) { 32 } else { 24 })
             mut connected = connect(fd, place, cInt(address, 16))
 
-            if (connected != 0 and koji_system_errno() == inProgress()) {
+            if (connected != 0 and netError() == inProgress()) {
                 immut waited = koji_task_wait_fd(fd, true, koji_monotonic_nanoseconds() + seconds * 1000000000)
                 write(option, 0, 0)
                 write(option, 8, 4)
@@ -161,22 +213,24 @@ extern function koji_net_connect(host: Address, port: Address, seconds: int, cod
                     error = if (waited > 0) { timedOut() } else { koji_system_errno() }
                 } else {
                     // SO_ERROR: the outcome of the connection.
-                    immut name = if (bsd()) { 0x1007 } else { 4 }
-                    error = if (getsockopt(fd, solSocket(), name, option, offset(option, 8)) != 0) { koji_system_errno() } else { cInt(option, 0) }
+                    immut name = if (bsd() or system.os == system.Windows) { 0x1007 } else { 4 }
+                    error = if (getsockopt(fd, solSocket(), name, option, offset(option, 8)) != 0) { netError() } else { cInt(option, 0) }
                 }
 
                 connected = if (error == 0) { 0 } else { -1 }
             } else {
-                if (connected != 0) { error = koji_system_errno() }
+                if (connected != 0) { error = netError() }
             }
 
+            // It waits again (MSG_DONTWAIT does not), but on Windows.
             if (connected == 0) {
-                fcntl(fd, 4, flags)
+                if (system.os != system.Windows) { setWaiting(fd, true) }
+
                 result = fd
                 break
             }
 
-            close(fd)
+            closeSocket(fd)
         }
 
         address = read(address, 40)
@@ -192,7 +246,25 @@ extern function koji_net_connect(host: Address, port: Address, seconds: int, cod
 }
 
 extern function koji_net_dns_message(code: int): Address {
+    // Windows has no `gai_strerror` in its DLLs: the code of Winsock.
+    if (system.os == system.Windows) { return windowsDnsMessage(code) }
+
     return gai_strerror(code)
+}
+
+function windowsDnsMessage(code: int): Address {
+    immut text = `the name could not be resolved (error ${code} of Winsock)`
+    immut size = text.length()
+    immut bytes = allocate(size + 1)
+    mut at = 0
+
+    for c in text.chars() {
+        write(bytes, at, byte(c.code() & 0xFF))
+        at += 1
+    }
+
+    write(bytes, size, byte(0))
+    return bytes
 }
 
 // Bytes sent or received, or -1 (errno says why): when the socket is not ready, the task waits for
@@ -200,15 +272,19 @@ extern function koji_net_dns_message(code: int): Address {
 // after which errno is ETIMEDOUT.
 extern function koji_net_send_within(fd: int, bytes: Address, size: int, deadline: int): int {
     while (true) {
-        immut sent = send(fd, bytes, size, noSignal() | dontWait())
+        immut sent = if (system.os == system.Windows) { windowsSend(fd, bytes, size, 0) } else { send(fd, bytes, size, noSignal() | dontWait()) }
 
         if (sent >= 0) { return sent }
 
-        immut error = koji_system_errno()
+        immut error = netError()
 
         if (error == 4) { continue }
 
-        if (error != wouldBlock()) { return sent }
+        if (error != wouldBlock()) {
+            if (system.os == system.Windows) { setErrno(error) }
+
+            return sent
+        }
 
         if (not waited(fd, true, deadline)) { return -1 }
     }
@@ -218,15 +294,19 @@ extern function koji_net_send_within(fd: int, bytes: Address, size: int, deadlin
 
 extern function koji_net_receive_within(fd: int, bytes: Address, size: int, deadline: int): int {
     while (true) {
-        immut got = recv(fd, bytes, size, dontWait())
+        immut got = if (system.os == system.Windows) { windowsRecv(fd, bytes, size, 0) } else { recv(fd, bytes, size, dontWait()) }
 
         if (got >= 0) { return got }
 
-        immut error = koji_system_errno()
+        immut error = netError()
 
         if (error == 4) { continue }
 
-        if (error != wouldBlock()) { return got }
+        if (error != wouldBlock()) {
+            if (system.os == system.Windows) { setErrno(error) }
+
+            return got
+        }
 
         if (not waited(fd, false, deadline)) { return -1 }
     }
@@ -260,10 +340,11 @@ extern function koji_net_receive(fd: int, bytes: Address, size: int): int {
 // A socket that listens on `port` of every IPv4 address of the machine, or -1 (errno in `*code`).
 extern function koji_net_listen(port: int, code: Address): int {
     // AF_INET, SOCK_STREAM
+    winsock()
     immut fd = private(socket(2, 1, 0))
 
     if (fd < 0) {
-        write(code, 0, koji_system_errno())
+        write(code, 0, netError())
         return -1
     }
 
@@ -271,7 +352,7 @@ extern function koji_net_listen(port: int, code: Address): int {
     // the order of the network), the address 0.
     immut on = allocate(8)
     write(on, 0, 1)
-    setsockopt(fd, solSocket(), if (bsd()) { 4 } else { 2 }, on, 4)
+    setsockopt(fd, solSocket(), if (bsd() or system.os == system.Windows) { 4 } else { 2 }, on, 4)
     free(on)
     immut address = allocate(16)
     write(address, 0, 0)
@@ -293,13 +374,13 @@ extern function koji_net_listen(port: int, code: Address): int {
 
     if (bind(fd, address, 16) != 0 or listen(fd, 1024) != 0) {
         free(address)
-        write(code, 0, koji_system_errno())
-        close(fd)
+        write(code, 0, netError())
+        closeSocket(fd)
         return -1
     }
 
     free(address)
-    fcntl(fd, 4, fcntl(fd, 3, 0) | nonBlocking())
+    setWaiting(fd, false)
     return fd
 }
 
@@ -310,16 +391,16 @@ extern function koji_net_accept(listener: int): int {
         immut fd = private(accept(listener, nullAddress(), nullAddress()))
 
         if (fd >= 0) {
-            // The BSDs give it the flags of the socket that listens.
+            // The BSDs give it the flags of the socket that listens (Windows too, which keeps it).
             if (bsd()) {
-                fcntl(fd, 4, fcntl(fd, 3, 0) & ~nonBlocking())
+                setWaiting(fd, true)
                 noPipeSignal(fd)
             }
 
             return fd
         }
 
-        immut error = koji_system_errno()
+        immut error = netError()
 
         if (error == 4) { continue }
 
@@ -332,5 +413,5 @@ extern function koji_net_accept(listener: int): int {
 }
 
 extern function koji_net_close(fd: int) {
-    close(fd)
+    closeSocket(fd)
 }

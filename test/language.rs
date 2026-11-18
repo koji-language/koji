@@ -3215,13 +3215,15 @@ fn list_methods_and_slices() {
 
 #[test]
 fn stdlib_system() {
-    let source = r#"
+    // On Windows (KOJI_TEST_WINDOWS), its command interpreter for `echo`, `true` and `false`.
+    let windows = std::env::var("KOJI_TEST_WINDOWS").is_ok();
+    let template = r#"
         import system
 
         print(system.args(), system.env('KOJI_NOT_SET'))
         print(system.executable() is Some)
 
-        match (system.capture('echo', ['hello', 'koji'])) {
+        match (system.capture(ECHO)) {
             Ok(output) => print(output.status, output.stdout.trim())
             Err(error) => print(error)
         }
@@ -3232,7 +3234,7 @@ fn stdlib_system() {
         }
 
         // `run` uses the terminal: the program's output is not in `output` here.
-        print(system.run('true', []), system.run('false', []))
+        print(system.run(TRUE), system.run(FALSE))
 
         match (system.run('kj-no-such-command', [])) {
             Ok(_) => print('?')
@@ -3245,7 +3247,13 @@ fn stdlib_system() {
 
         print('not printed')
     "#;
-    let (output, result) = execute(source, "", Path::new("test.kj"));
+    let commands = if windows {
+        [("ECHO", "'cmd', ['/c', 'echo hello koji']"), ("TRUE", "'cmd', ['/c', 'exit 0']"), ("FALSE", "'cmd', ['/c', 'exit 1']")]
+    } else {
+        [("ECHO", "'echo', ['hello', 'koji']"), ("TRUE", "'true', []"), ("FALSE", "'false', []")]
+    };
+    let source = commands.iter().fold(template.to_string(), |text, (name, call)| text.replace(name, call));
+    let (output, result) = execute(&source, "", Path::new("test.kj"));
     assert_eq!(result, Err(Failure::Exit(3)));
     assert_eq!(
         output,

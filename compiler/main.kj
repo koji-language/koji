@@ -15,7 +15,9 @@ import { generateNative } from 'native.kj'
 import { inlineSmall, targetPlatform } from 'inline.kj'
 import { machArchive } from 'macho.kj'
 import { machArchiveObjects, linkMach } from 'machlink.kj'
-import { archive, archiveObjects, linkExecutable, sharedSymbols } from 'linker.kj'
+import { archive, archiveNamed, archiveObjects, linkExecutable, sharedSymbols } from 'linker.kj'
+import { coffGlobals } from 'coff.kj'
+import { linkWindows } from 'pelink.kj'
 import { preludeLines } from 'prelude.kj'
 import { serve } from 'lsp.kj'
 import { initModule, addModule, updateModules } from 'packages.kj'
@@ -355,6 +357,13 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
         }
     }
 
+    // For Windows, its linker of PE (pelink.kj), the only one.
+    if (targetPlatform() / 3 == 2) {
+        if (others) { return Err('compile error: libraries of foreign blocks are not linked for Windows yet') }
+
+        return linkWindowsOwn(object, runtime, output)
+    }
+
     if (not others and chosen != 'system' and targetPlatform() / 3 != 1) {
         match (linkOwn(object, runtime, output)) {
             Ok(_) => return Ok()
@@ -415,6 +424,27 @@ function linkMachOwn(object: byte[], runtime: string, output: string): Result[vo
         Ok(_) => Ok()
         Err(error) => Err(`cannot make '${output}' executable: ${ioMessage(error)}`)
     }
+}
+
+function linkWindowsOwn(object: byte[], runtime: string, output: string): Result[void, string] {
+    immut library = match (file.open(runtime, file.Read)) {
+        Ok(opened) => match (opened.readBytes()) {
+            Ok(bytes) => bytes
+            Err(error) => return Err(`cannot read '${runtime}': ${ioMessage(error)}`)
+        }
+        Err(error) => return Err(`cannot read '${runtime}': ${ioMessage(error)}`)
+    }
+    mut objects = [object]
+
+    for member in archiveObjects(library)? {
+        objects.push(member)
+    }
+
+    immut executable = match (linkWindows(objects)) {
+        Ok(bytes) => bytes
+        Err(message) => return Err(`compile error: ${message}`)
+    }
+    return writeBytes(output, executable)
 }
 
 function linkOwn(object: byte[], runtime: string, output: string): Result[void, string] {
@@ -486,6 +516,9 @@ function buildLibrary(output: string): Result[void, string] {
     }
     // An archive of the object, with the table of its symbols (linker.kj).
     // For macOS, an archive of BSD (its linker reads no other).
+    // For Windows, the table of the symbols of its object of COFF.
+    if (targetPlatform() / 3 == 2) { return writeBytes(output, archiveNamed([object], [coffGlobals(object)])) }
+
     return writeBytes(output, if (targetPlatform() / 3 == 1) { machArchive([object]) } else { archive([object]) })
 }
 

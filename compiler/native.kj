@@ -27,6 +27,7 @@ import { allocate } from 'mirregs.kj'
 import { emitX64, x64Registers } from 'x64.kj'
 import { emitA64, a64Registers } from 'a64.kj'
 import { MachSymbol, MachRelocation, machObject } from 'macho.kj'
+import { coffObject } from 'coff.kj'
 import system
 
 immut rsi = 6
@@ -85,9 +86,11 @@ type Native = {
     // The `blocking` functions of foreign blocks called: the places of their jobs' code.
     trampolines: Map[string, int]
     trampolineUses: Relocation[]
-    // Whether the object is for arm64, else x86-64; for macOS (a Mach-O), else Linux (an ELF).
+    // Whether the object is for arm64, else x86-64; for macOS (a Mach-O), Windows (COFF), else
+    // Linux (an ELF).
     arm: boolean
     macos: boolean
+    windows: boolean
     // For each function, the globals it may see (globals.kj).
     seen: Set[int][]
     // For each function, its borrowed parameters, and the globals that never change (borrow.kj):
@@ -105,7 +108,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
 
     mut native: Native = {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:], strings: [], globals: [], records: [],
-        trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program), constants: constantGlobals(program), trampolineStart: 0, arm: targetPlatform() % 3 == 1, macos: targetPlatform() / 3 == 1
+        trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program), constants: constantGlobals(program), trampolineStart: 0, arm: targetPlatform() % 3 == 1, macos: targetPlatform() / 3 == 1, windows: targetPlatform() / 3 == 2
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -193,6 +196,27 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         code.end(MReturn([MImm(0)]), -1)
         native.emitCode(code.code())
         exported.push({ name: 'main', at: mainStart, size: native.code.length() - mainStart, section: 1 })
+
+        // Windows starts a program at its entry, with no arguments: those of C from the C library
+        // (ucrtbase), `main` with them, then `exit` with its result (which writes out the buffers
+        // of C).
+        if (native.windows) {
+            mut entry = builder('koji_windows_start', [], [])
+            immut pointer = entry.register(false)
+            immut argc = entry.register(false)
+            immut argv = entry.register(false)
+            immut result = entry.register(false)
+            entry.add(MCall(MVariadic('_configure_narrow_argv', 1), [MImm(1)], []))
+            entry.add(MCall(MVariadic('_initialize_narrow_environment', 0), [], []))
+            entry.add(MCall(MVariadic('__p___argc', 0), [], [pointer]))
+            entry.add(MLoad(argc, MBase(pointer, 0), 4))
+            entry.add(MCall(MVariadic('__p___argv', 0), [], [pointer]))
+            entry.add(MLoad(argv, MBase(pointer, 0), 8))
+            entry.add(MCall(MExternal('main'), [MReg(argc), MReg(argv)], [result]))
+            entry.add(MCall(MVariadic('exit', 1), [MReg(result)], []))
+            entry.end(MUnreachable, -1)
+            exported.push(native.exportCode(entry))
+        }
     }
 
     // The places of the functions, in the code and in the data.
@@ -211,6 +235,8 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     }
 
     if (native.macos) { return Ok(machOf(native, extras, exported)) }
+
+    if (native.windows) { return Ok(coffOf(native, extras, exported)) }
 
     return Ok(elfObject(native, mainStart, extras, exported))
 }
@@ -253,13 +279,25 @@ function Native.runtimeCode(mut self): Export[] {
     } else {
         // Saves the registers that calls keep, the control words of floating point, and the top of
         // the stack at `save` (rdi); goes on with the stack at `to` (rsi), restoring them from it.
-        exported.push(self.stub('koji_task_switch', [
+        // On Windows, the limits of the stack in the block of the thread (StackBase at gs:8,
+        // StackLimit at gs:16) too: push qword [gs:8]; push qword [gs:16]; ...; pop qword [gs:16];
+        // pop qword [gs:8].
+        immut windowsSwitch = [
+            0x55, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+            0x65, 0xFF, 0x34, 0x25, 0x08, 0x00, 0x00, 0x00, 0x65, 0xFF, 0x34, 0x25, 0x10, 0x00, 0x00, 0x00,
+            0x48, 0x83, 0xEC, 0x08, 0x0F, 0xAE, 0x1C, 0x24, 0xD9, 0x7C, 0x24, 0x04,
+            0x48, 0x89, 0x27, 0x48, 0x89, 0xF4,
+            0x0F, 0xAE, 0x14, 0x24, 0xD9, 0x6C, 0x24, 0x04, 0x48, 0x83, 0xC4, 0x08,
+            0x65, 0x8F, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00, 0x65, 0x8F, 0x04, 0x25, 0x08, 0x00, 0x00, 0x00,
+            0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5B, 0x5D, 0xC3
+        ]
+        exported.push(self.stub('koji_task_switch', if (self.windows) { windowsSwitch } else { [
             0x55, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
             0x48, 0x83, 0xEC, 0x08, 0x0F, 0xAE, 0x1C, 0x24, 0xD9, 0x7C, 0x24, 0x04,
             0x48, 0x89, 0x27, 0x48, 0x89, 0xF4,
             0x0F, 0xAE, 0x14, 0x24, 0xD9, 0x6C, 0x24, 0x04, 0x48, 0x83, 0xC4, 0x08,
             0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5B, 0x5D, 0xC3
-        ]))
+        ] }))
         // A new task: koji_task_main(task), the task in rbx (koji_task_stack_start), on an aligned
         // stack.
         immut entry = self.code.length()
@@ -299,11 +337,11 @@ function Native.runtimeCode(mut self): Export[] {
     immut place = environment.register(false)
     immut value = environment.register(false)
 
-    if (self.macos) {
-        environment.add(MCall(MExternal('_NSGetEnviron'), [], [place]))
-    } else {
-        environment.add(MLoad(place, MGot('environ'), 8))
-    }
+    if (self.macos) { environment.add(MCall(MExternal('_NSGetEnviron'), [], [place])) }
+
+    if (self.windows) { environment.add(MCall(MVariadic('__p__environ', 0), [], [place])) }
+
+    if (not self.macos and not self.windows) { environment.add(MLoad(place, MGot('environ'), 8)) }
 
     environment.add(MLoad(value, MBase(place, 0), 8))
     environment.end(MReturn([MReg(value)]), -1)
@@ -487,7 +525,7 @@ function Native.runtimeCode(mut self): Export[] {
 
 // The function of the C library that gives the address of errno.
 function Native.errnoFunction(self): string {
-    return if (self.macos) { '__error' } else { '__errno_location' }
+    return if (self.macos) { '__error' } else { if (self.windows) { '_errno' } else { '__errno_location' } }
 }
 
 // The bytes of instructions of 4 bytes (arm64), little-endian.
@@ -574,7 +612,7 @@ function Native.threadsCode(mut self): Export[] {
     immut count = helper.register(false)
     helper.add(MLoad(pipe, MBase(helper.params[0], 0), 4))
     helper.add(MAddressOf(address, MSlot(held, 0)))
-    helper.add(MCall(MExternal('read'), [MReg(pipe), MReg(address), MImm(8)], [count]))
+    helper.add(MCall(self.c('read', 3), [MReg(pipe), MReg(address), MImm(8)], [count]))
     helper.end(MBranch('eq', MReg(count), MImm(8), got, short), short)
     helper.end(MBranch('ge', MReg(count), MImm(0), done, failed), failed)
     self.unlessInterrupted(mut helper, taking, done)
@@ -586,7 +624,7 @@ function Native.threadsCode(mut self): Export[] {
     helper.add(MLoad(job, MSlot(held, 0), 8))
     helper.add(MLoad(called, MBase(job, 0), 8))
     helper.add(MCall(MIndirect(MReg(called)), [MReg(job)], []))
-    helper.add(MCall(MExternal(self.errnoFunction()), [], [place]))
+    helper.add(MCall(self.c(self.errnoFunction(), 0), [], [place]))
     helper.add(MLoad(error, MBase(place, 0), 4))
     helper.add(MUnary(error, 'sext32', MReg(error), -1))
     helper.add(MStore(MBase(job, 64), MReg(error), 8))
@@ -597,7 +635,7 @@ function Native.threadsCode(mut self): Export[] {
     helper.add(MStore(MSlot(held, 0), MReg(job), 8))
     helper.add(MLoad(back, MBase(helper.params[0], 24), 4))
     helper.add(MAddressOf(where, MSlot(held, 0)))
-    helper.add(MCall(MExternal('write'), [MReg(back), MReg(where), MImm(8)], [wrote]))
+    helper.add(MCall(self.c('write', 3), [MReg(back), MReg(where), MImm(8)], [wrote]))
     helper.end(MBranch('ge', MReg(wrote), MImm(0), taking, unwritten), unwritten)
     self.unlessInterrupted(mut helper, give, taking)
     helper.block = done
@@ -625,7 +663,7 @@ function Native.threadsCode(mut self): Export[] {
     immut read = ticker.register(false)
     ticker.add(MLoad(wake, MBase(ticker.params[0], 40), 4))
     ticker.add(MAddressOf(buffer, MSlot(oneByte, 0)))
-    ticker.add(MCall(MExternal('read'), [MReg(wake), MReg(buffer), MImm(1)], [read]))
+    ticker.add(MCall(self.c('read', 3), [MReg(wake), MReg(buffer), MImm(1)], [read]))
     ticker.end(MBranch('ge', MReg(read), MImm(0), tick, unread), unread)
     self.unlessInterrupted(mut ticker, tick, stopped)
     ticker.block = sleep
@@ -635,15 +673,27 @@ function Native.threadsCode(mut self): Export[] {
     ticker.add(MStore(MSlot(time, 0), MImm(0), 8))
     ticker.add(MStore(MSlot(time, 8), MImm(10000000), 8))
     ticker.add(MAddressOf(span, MSlot(time, 0)))
-    ticker.add(MCall(MExternal('nanosleep'), [MReg(span), MImm(0)], []))
+
+    if (self.windows) {
+        ticker.add(MCall(MVariadic('Sleep', 1), [MImm(10)], []))
+    } else {
+        ticker.add(MCall(MExternal('nanosleep'), [MReg(span), MImm(0)], []))
+    }
+
     ticker.add(MLoad(still, MBase(ticker.params[0], 32), 8))
     ticker.end(MBranch('eq', MReg(still), MImm(0), tick, raise), raise)
     ticker.add(MStore(MSymbol('koji_preempt_flag', 0), MImm(1), 4))
     ticker.end(MJump(tick), stopped)
     ticker.end(MReturn([MImm(0)]), -1)
     exported.push(self.exportCode(ticker))
-    exported.push(self.addressFunction('koji_helper_code', 'koji_helper'))
-    exported.push(self.addressFunction('koji_ticker_code', 'koji_ticker'))
+    // On Windows, a thread starts by its convention: at an adapter that calls the code of Koji.
+    if (self.windows) {
+        exported.push(self.windowsAdapter('koji_helper_start', 'koji_helper'))
+        exported.push(self.windowsAdapter('koji_ticker_start', 'koji_ticker'))
+    }
+
+    exported.push(self.addressFunction('koji_helper_code', if (self.windows) { 'koji_helper_start' } else { 'koji_helper' }))
+    exported.push(self.addressFunction('koji_ticker_code', if (self.windows) { 'koji_ticker_start' } else { 'koji_ticker' }))
 
     // A job: run here when the task is alone (koji_task_alone), else by a thread that helps while
     // the task waits (koji_task_offload), errno then the job's: its result.
@@ -663,7 +713,7 @@ function Native.threadsCode(mut self): Export[] {
     immut errno = blocking.register(false)
     immut kept = blocking.register(false)
     blocking.add(MCall(MExternal('koji_task_offload'), [MReg(given)], []))
-    blocking.add(MCall(MExternal(self.errnoFunction()), [], [errno]))
+    blocking.add(MCall(self.c(self.errnoFunction(), 0), [], [errno]))
     blocking.add(MLoad(kept, MBase(given, 64), 4))
     blocking.add(MStore(MBase(errno, 0), MReg(kept), 4))
     blocking.end(MJump(finished), finished)
@@ -689,7 +739,7 @@ function Native.threadsCode(mut self): Export[] {
         }
 
         immut value = code.register(false)
-        code.add(MCall(MExternal(name), args, [value]))
+        code.add(MCall(self.job(name, shape[0]), args, [value]))
 
         if (shape[1] == 1) { code.add(MUnary(value, 'sext32', MReg(value), -1)) }
 
@@ -725,11 +775,85 @@ function Native.threadsCode(mut self): Export[] {
     return exported
 }
 
+// A function of C: on Windows, by its convention (as a variadic one, see callForeign of
+// mirlower.kj), under the name of the C library of Windows (`read` is `_read`).
+function Native.c(self, name: string, count: int): MCallee {
+    if (not self.windows) { return MExternal(name) }
+
+    immut renamed = match (name) {
+        'read' => '_read'
+        'write' => '_write'
+        'access' => '_access'
+        'unlink' => '_unlink'
+        'mkdir' => '_mkdir'
+        other => other
+    }
+    return MVariadic(renamed, count)
+}
+
+// The function a job of a call that blocks calls: on Windows, those C has not there are functions of
+// the library (std/koji/windows.kj), and `poll` is WSAPoll.
+function Native.job(self, name: string, count: int): MCallee {
+    if (not self.windows) { return MExternal(name) }
+
+    return match (name) {
+        'getline' => MExternal('koji_windows_getline')
+        'readv' => MExternal('koji_windows_readv')
+        'writev' => MExternal('koji_windows_writev')
+        'opendir' => MExternal('koji_windows_opendir')
+        'readdir' => MExternal('koji_windows_readdir')
+        'waitpid' => MExternal('koji_windows_waitpid')
+        'poll' => MVariadic('WSAPoll', count)
+        other => self.c(other, count)
+    }
+}
+
+// The start of a thread on Windows (its argument in rcx), for the code of Koji (System V, its
+// argument in rdi): rsi, rdi and xmm6 to xmm15, which Windows keeps across calls and the code of
+// Koji does not, saved around the call.
+function Native.windowsAdapter(mut self, name: string, target: string): Export {
+    while (self.code.length() % 16 != 0) {
+        self.code.push(0xCC)
+    }
+
+    immut at = self.code.length()
+    // push rsi; push rdi; sub rsp, 168
+    self.bytes([0x56, 0x57, 0x48, 0x81, 0xEC, 0xA8, 0x00, 0x00, 0x00])
+
+    // movdqu [rsp + 16 * i], xmm(6 + i)
+    for i in range(10) {
+        self.saveXmm(6 + i, 16 * i, 0x7F)
+    }
+
+    // mov rdi, rcx; call target
+    self.bytes([0x48, 0x89, 0xCF, 0xE8])
+    self.relocation(target, plt32, -4)
+    self.int32(0)
+
+    for i in range(10) {
+        self.saveXmm(6 + i, 16 * i, 0x6F)
+    }
+
+    // add rsp, 168; pop rdi; pop rsi; ret
+    self.bytes([0x48, 0x81, 0xC4, 0xA8, 0x00, 0x00, 0x00, 0x5F, 0x5E, 0xC3])
+    return { name: name, at: at, size: self.code.length() - at, section: 1 }
+}
+
+// movdqu [rsp + offset], xmm (opcode 0x7F), or movdqu xmm, [rsp + offset] (0x6F).
+function Native.saveXmm(mut self, register: int, offset: int, opcode: int) {
+    self.code.push(0xF3)
+
+    if (register >= 8) { self.code.push(0x44) }
+
+    self.bytes([0x0F, opcode, 0x84 | (register & 7) << 3, 0x24])
+    self.int32(offset)
+}
+
 // The open block of a call that failed: again (`again`) when errno is EINTR, else `otherwise`.
 function Native.unlessInterrupted(mut self, mut code: MBuilder, again: int, otherwise: int) {
     immut place = code.register(false)
     immut error = code.register(false)
-    code.add(MCall(MExternal(self.errnoFunction()), [], [place]))
+    code.add(MCall(self.c(self.errnoFunction(), 0), [], [place]))
     code.add(MLoad(error, MBase(place, 0), 4))
     code.end(MBranch('eq', MReg(error), MImm(4), again, otherwise), -1)
 }
@@ -1074,7 +1198,7 @@ function Native.trampolineCode(mut self) {
         }
 
         immut result = code.register(declared.returns == 'double')
-        code.add(MCall(MExternal(declared.symbol), args, if (declared.returns == 'void') { [] } else { [result] }))
+        code.add(MCall(self.c(declared.symbol, args.length()), args, if (declared.returns == 'void') { [] } else { [result] }))
 
         match (declared.returns) {
             'int' => code.add(MUnary(result, 'sext32', MReg(result), -1))
@@ -1142,7 +1266,7 @@ function Native.generateMir(mut self, id: int) {
 // relocations, its calls of functions of the program and its texts. Where it starts.
 function Native.emitCode(mut self, given: MFunctionCode): int {
     immut code = reusedLoads(foldedCopies(given))
-    immut emitted = if (self.arm) { emitA64(code, allocate(code, a64Registers), self.macos) } else { emitX64(code, allocate(code, x64Registers)) }
+    immut emitted = if (self.arm) { emitA64(code, allocate(code, a64Registers), self.macos) } else { emitX64(code, allocate(code, x64Registers), self.windows) }
     immut start = self.code.length()
 
     append(mut self.code, emitted.code)
@@ -1327,9 +1451,19 @@ type Symbol = {
     size: int
 }
 
+// The relocatable object of COFF (coff.kj), with the symbols of the one of Mach-O.
+function coffOf(native: Native, extras: int[], exported: Export[]): byte[] {
+    immut symbols = machSymbols(native, extras, exported)
+    return coffObject(native.code, native.rodata, native.data, native.bss, symbols, machRelocations(native))
+}
+
 // The relocatable object of Mach-O (macho.kj) of the code and data: the functions named as in Koji
 // (local), the frees of records, and the symbols it defines for others.
 function machOf(native: Native, extras: int[], exported: Export[]): byte[] {
+    return machObject(native.arm, native.code, native.rodata, native.data, native.bss, machSymbols(native, extras, exported), machRelocations(native))
+}
+
+function machSymbols(native: Native, extras: int[], exported: Export[]): MachSymbol[] {
     mut symbols: MachSymbol[] = []
 
     for id in range(native.starts.length()) {
@@ -1345,6 +1479,10 @@ function machOf(native: Native, extras: int[], exported: Export[]): byte[] {
         symbols.push({ name: each.name, section: each.section, value: each.at, global: true })
     }
 
+    return symbols
+}
+
+function machRelocations(native: Native): MachRelocation[] {
     mut relocations: MachRelocation[] = []
 
     for relocation in native.relocations {
@@ -1355,7 +1493,7 @@ function machOf(native: Native, extras: int[], exported: Export[]): byte[] {
         relocations.push({ section: 3, at: relocation.at, symbol: relocation.symbol, kind: 257, addend: relocation.addend })
     }
 
-    return machObject(native.arm, native.code, native.rodata, native.data, native.bss, symbols, relocations)
+    return relocations
 }
 
 // The relocatable object of ELF64 (x86-64) of the code and data.

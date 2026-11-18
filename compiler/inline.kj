@@ -93,13 +93,14 @@ function inlinable(program: IrProgram, blocks: int, most: int): boolean[] {
 }
 
 // The platform the native backend compiles for (see target.kj): Linux on the processor it runs on, or
-// the one KOJI_TARGET names (`x64`, `arm64`, `macos-x64`, `macos-arm64`): the system times 3 plus the processor.
+// the one KOJI_TARGET names (`x64`, `arm64`, `macos-x64`, `macos-arm64`, `windows-x64`): the system times 3 plus the processor.
 export function targetPlatform(): int {
     return match (system.env('KOJI_TARGET')) {
         Some(name) => match (name) {
             'arm64' => 1
             'macos-x64' => 3
             'macos-arm64' => 4
+            'windows-x64' => 6
             _ => 0
         }
         None => if (system.architecture == system.Arm64) { 1 } else { 0 }
@@ -121,6 +122,79 @@ function forSystem(routine: IrFunction, globals: Platformed, platform: int): IrF
         }
 
         if (folded.goes[block] >= 0) { result.blocks[block] = { instructions: routine.blocks[block].instructions, terminator: GotoT(folded.goes[block]) } }
+    }
+
+    // The comparisons with `system.os` and `system.architecture` and their tags, known: constants
+    // (so that a function that runs before the modules do, `koji_init`, reads nothing of them).
+    for block in range(result.blocks.length()) {
+        if (not folded.reached[block]) { continue }
+
+        mut kept: Instruction[] = []
+
+        for instruction in result.blocks[block].instructions {
+            immut dest = match (instruction) {
+                BinaryIns(id, _, _, _, _) => id
+                UnaryIns(id, _, _, _) => id
+                _ => -1
+            }
+
+            if (dest >= 0 and dest < folded.flags.length()) {
+                match (folded.flags[dest]) {
+                    Some(flag) => {
+                        kept.push(CopyIns(LocalPlace(dest), BoolOp(flag)))
+                        continue
+                    }
+                    None => {}
+                }
+
+                match (folded.numbers[dest]) {
+                    Some(number) => {
+                        kept.push(CopyIns(LocalPlace(dest), IntOp(number)))
+                        continue
+                    }
+                    None => {}
+                }
+            }
+
+            kept.push(instruction)
+        }
+
+        result.blocks[block] = { instructions: kept, terminator: result.blocks[block].terminator }
+    }
+
+    // What they compared and nothing else reads: the global read, the variant made, left out.
+    mut reads: int[] = []
+
+    for local in result.locals {
+        reads.push(0)
+    }
+
+    for each in result.blocks {
+        for instruction in each.instructions {
+            for local in uses(instruction) {
+                reads[local] += 1
+            }
+        }
+
+        for local in terminatorUses(each.terminator) {
+            reads[local] += 1
+        }
+    }
+
+    for block in range(result.blocks.length()) {
+        mut kept: Instruction[] = []
+
+        for instruction in result.blocks[block].instructions {
+            immut unread = match (instruction) {
+                RecordNewIns(dest, _, fields) => fields.length() == 0 and reads[dest] == 0
+                CopyIns(LocalPlace(dest), GlobalOp(id)) => (id == globals.system or id == globals.architecture) and reads[dest] == 0
+                _ => false
+            }
+
+            if (not unread) { kept.push(instruction) }
+        }
+
+        result.blocks[block] = { instructions: kept, terminator: result.blocks[block].terminator }
     }
 
     return result

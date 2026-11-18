@@ -1,0 +1,646 @@
+// The linker of Koji for Windows on x86-64 (see "A linker of Koji's own" in doc/design.md): the
+// executable (PE32+) of the objects of COFF of a program and of its runtime library (coff.kj writes
+// them), linked with the DLLs of the system (the C library, ucrtbase, and kernel32, ws2_32 and
+// bcrypt), without the linker of the system.
+//
+// The executable may be loaded anywhere (its addresses in the data are moved by the loader: the
+// relocations of .reloc). Its sections: .text (the code, then a stub `jmp [rip + entry]` for each
+// function of a DLL), .rdata (the constants, then the tables of the imports), .data (the data, the
+// table of addresses of the DLLs that the loader fills, then the zeros), .reloc. Its entry is
+// `koji_windows_start` (native.kj), for the console.
+
+// The functions of the DLLs the library calls, but those of the C library (ucrtbase).
+immut kernel32 = ['CloseHandle', 'CreateFileA', 'CreatePipe', 'CreateProcessA', 'CreateThread', 'GetExitCodeProcess', 'GetLastError', 'GetModuleFileNameA', 'GetSystemTimePreciseAsFileTime', 'PeekNamedPipe', 'QueryPerformanceCounter', 'QueryPerformanceFrequency', 'ReadFile', 'SetHandleInformation', 'Sleep', 'VirtualAlloc', 'VirtualFree', 'VirtualProtect', 'WaitForSingleObject']
+immut ws2 = ['WSAGetLastError', 'WSAPoll', 'WSAStartup', 'accept', 'bind', 'closesocket', 'connect', 'freeaddrinfo', 'getaddrinfo', 'getsockopt', 'ioctlsocket', 'listen', 'recv', 'send', 'setsockopt', 'socket']
+immut bcrypt = ['BCryptGenRandom']
+
+immut imageBase = 0x140000000
+immut sectionAlignment = 0x1000
+immut fileAlignment = 0x200
+
+type CoffSection = {
+    name: string
+    bytes: byte[]
+    size: int
+    flags: int
+    relocationsAt: int
+    relocationCount: int
+    // Where it goes (`text`, `rdata`, `data`, `bss`, or '' for none), and where in it.
+    output: string
+    at: int
+}
+
+type CoffSymbol = {
+    name: string
+    value: int
+    section: int
+    kind: int
+}
+
+type CoffRelocation = {
+    section: int
+    at: int
+    symbol: int
+    kind: int
+}
+
+type CoffInput = {
+    sections: CoffSection[]
+    // By their indices in the table (the records after a symbol are none).
+    symbols: CoffSymbol[]
+    relocations: CoffRelocation[]
+}
+
+// The DLL of a function of the system.
+function dllOf(name: string): string {
+    if (name in kernel32) { return 'KERNEL32.dll' }
+
+    if (name in ws2) { return 'WS2_32.dll' }
+
+    if (name in bcrypt) { return 'bcrypt.dll' }
+
+    return 'ucrtbase.dll'
+}
+
+export function linkWindows(objects: byte[][]): Result[byte[], string] {
+    mut inputs: CoffInput[] = []
+
+    for object in objects {
+        inputs.push(parseCoff(object)?)
+    }
+
+    // The global symbols each object defines: its index, then the symbol's.
+    mut defined: Map[string, int[]] = [:]
+
+    for object in range(inputs.length()) {
+        immut symbols = inputs[object].symbols
+
+        for index in range(symbols.length()) {
+            immut symbol = symbols[index]
+
+            // IMAGE_SYM_CLASS_EXTERNAL, in a section.
+            if (symbol.kind != 2 or symbol.section <= 0) { continue }
+
+            if (defined.has(symbol.name)) { return Err(`the symbol '${symbol.name}' is defined twice`) }
+
+            defined[symbol.name] = [object, index]
+        }
+    }
+
+    if (not defined.has('koji_windows_start')) { return Err("no 'koji_windows_start' to start") }
+
+    // The functions of the DLLs: those no object defines, by DLL.
+    mut imported: string[] = []
+    mut importIndex: Map[string, int] = [:]
+
+    for input in inputs {
+        for relocation in input.relocations {
+            immut symbol = input.symbols[relocation.symbol]
+
+            if (symbol.section != 0 or symbol.kind != 2 or defined.has(symbol.name) or importIndex.has(symbol.name)) { continue }
+
+            importIndex[symbol.name] = imported.length()
+            imported.push(symbol.name)
+        }
+    }
+
+    mut dlls: string[] = []
+
+    for name in imported {
+        immut dll = dllOf(name)
+
+        if (not (dll in dlls)) { dlls.push(dll) }
+    }
+
+    // The sections of the objects in those of the executable.
+    mut sizes: Map[string, int] = ['text': 0, 'rdata': 0, 'data': 0, 'bss': 0]
+
+    for object in range(inputs.length()) {
+        for index in range(inputs[object].sections.length()) {
+            immut section = inputs[object].sections[index]
+            immut output = match (section.name) {
+                '.text' => 'text'
+                '.rdata' => 'rdata'
+                '.data' => 'data'
+                '.bss' => 'bss'
+                _ => ''
+            }
+
+            if (output == '') {
+                if (section.size > 0) { return Err(`the section '${section.name}'`) }
+
+                continue
+            }
+
+            immut at = align(sizes[output], 16)
+            inputs[object].sections[index].output = output
+            inputs[object].sections[index].at = at
+            sizes[output] = at + section.size
+        }
+    }
+
+    // The tables of the imports, after the constants: a directory entry per DLL (and an empty one),
+    // a table of the names of each DLL (ended by 0), the hints and names, the names of the DLLs. The
+    // table of addresses (as the tables of names, one per DLL) is in the data.
+    immut stubsAt = align(sizes['text'], 16)
+    immut textSize = stubsAt + 6 * imported.length()
+    immut directoryAt = align(sizes['rdata'], 16)
+    mut lookupAt: int[] = []
+    mut place = directoryAt + 20 * (dlls.length() + 1)
+
+    for dll in dlls {
+        lookupAt.push(place)
+        mut count = 1
+
+        for name in imported {
+            if (dllOf(name) == dll) { count += 1 }
+        }
+
+        place += 8 * count
+    }
+
+    // Each name: a hint of 2 bytes, the name, a 0, padded to 2 bytes.
+    mut nameAt: int[] = []
+
+    for name in imported {
+        nameAt.push(place)
+        place += align(2 + name.length() + 1, 2)
+    }
+
+    mut dllNameAt: int[] = []
+
+    for dll in dlls {
+        dllNameAt.push(place)
+        place += dll.length() + 1
+    }
+
+    immut rdataSize = place
+    immut dataAt0 = align(sizes['data'], 16)
+    // The table of addresses: in the order of the tables of names.
+    mut addressAt: int[] = []
+    mut entryOf: int[] = []
+
+    for name in imported {
+        entryOf.push(0)
+    }
+
+    mut cursor = dataAt0
+
+    for dll in dlls {
+        addressAt.push(cursor)
+
+        for i in range(imported.length()) {
+            if (dllOf(imported[i]) == dll) {
+                entryOf[i] = cursor
+                cursor += 8
+            }
+        }
+
+        cursor += 8
+    }
+
+    immut dataSize = cursor
+    immut bssAt0 = align(dataSize, 16)
+    immut dataWithZeros = bssAt0 + sizes['bss']
+    // The places of the sections (relative addresses), each at a page.
+    immut headersSize = align(64 + 4 + 20 + 240 + 40 * 4, fileAlignment)
+    immut textRva = sectionAlignment
+    immut rdataRva = textRva + align(textSize, sectionAlignment)
+    immut dataRva = rdataRva + align(rdataSize, sectionAlignment)
+    immut relocRva = dataRva + align(dataWithZeros, sectionAlignment)
+    immut starts: Map[string, int] = ['text': textRva, 'rdata': rdataRva, 'data': dataRva, 'bss': dataRva + bssAt0]
+
+    // The address (relative) of each symbol of each object.
+    mut addresses: int[][] = []
+
+    for input in inputs {
+        mut each: int[] = []
+
+        for symbol in input.symbols {
+            if (symbol.section > 0 and symbol.section <= input.sections.length()) {
+                immut section = input.sections[symbol.section - 1]
+                each.push(if (section.output == '') { -1 } else { starts[section.output] + section.at + symbol.value })
+            } else {
+                each.push(-1)
+            }
+        }
+
+        addresses.push(each)
+    }
+
+    // The contents.
+    mut text: byte[] = []
+    zeros(mut text, textSize)
+    mut rdata: byte[] = []
+    zeros(mut rdata, rdataSize)
+    mut data: byte[] = []
+    zeros(mut data, dataSize)
+
+    for input in inputs {
+        for section in input.sections {
+            if (section.output == '' or section.output == 'bss') { continue }
+
+            for i in range(section.bytes.length()) {
+                match (section.output) {
+                    'text' => text[section.at + i] = section.bytes[i]
+                    'rdata' => rdata[section.at + i] = section.bytes[i]
+                    _ => data[section.at + i] = section.bytes[i]
+                }
+            }
+        }
+    }
+
+    // The stubs: jmp [rip + entry].
+    for i in range(imported.length()) {
+        immut at = stubsAt + 6 * i
+        text[at] = 0xFF
+        text[at + 1] = 0x25
+        put32(mut text, at + 2, dataRva + entryOf[i] - (textRva + at + 6))
+    }
+
+    // The relocations: the code and the data patched; the addresses of the data, moved by the loader.
+    mut moved: int[] = []
+
+    for object in range(inputs.length()) {
+        immut input = inputs[object]
+
+        for relocation in input.relocations {
+            immut section = input.sections[relocation.section]
+
+            if (section.output == '' or section.output == 'bss') { continue }
+
+            immut symbol = input.symbols[relocation.symbol]
+            mut target = addresses[object][relocation.symbol]
+
+            if (target < 0) {
+                match (defined.get(symbol.name)) {
+                    Some(found) => target = addresses[found[0]][found[1]]
+                    None => {
+                        match (importIndex.get(symbol.name)) {
+                            Some(index) => target = textRva + stubsAt + 6 * index
+                            None => return Err(`undefined symbol '${symbol.name}'`)
+                        }
+                    }
+                }
+            }
+
+            immut rva = starts[section.output] + section.at + relocation.at
+            immut offset = section.at + relocation.at
+
+            match (relocation.kind) {
+                // IMAGE_REL_AMD64_ADDR64: the address, its addend in the word; moved by the loader.
+                1 => {
+                    immut addend = if (section.output == 'data') { word(data, offset) } else { word(rdata, offset) }
+                    immut value = imageBase + target + addend
+
+                    if (section.output == 'data') { putWord(mut data, offset, value) } else { putWordInto(mut rdata, offset, value) }
+
+                    moved.push(rva)
+                }
+                // IMAGE_REL_AMD64_REL32 (and _1 to _5: the bytes of an immediate after the field).
+                kind if (kind >= 4 and kind <= 9) => {
+                    if (section.output != 'text') { return Err('a relocation of 32 bits outside the code') }
+
+                    immut addend = signed32(read32(text, offset))
+                    put32(mut text, offset, target + addend - (rva + 4 + (kind - 4)))
+                }
+                other => return Err(`a relocation of type ${other}`)
+            }
+        }
+    }
+
+    // The tables of the imports.
+    for k in range(dlls.length()) {
+        immut entry = directoryAt + 20 * k
+        // The table of names, no date, no forwarder, the name of the DLL, the table of addresses.
+        put32(mut rdata, entry, rdataRva + lookupAt[k])
+        put32(mut rdata, entry + 12, rdataRva + dllNameAt[k])
+        put32(mut rdata, entry + 16, dataRva + addressAt[k])
+        mut slot = 0
+
+        for i in range(imported.length()) {
+            if (dllOf(imported[i]) != dlls[k]) { continue }
+
+            immut named = rdataRva + nameAt[i]
+            putWordInto(mut rdata, lookupAt[k] + 8 * slot, named)
+            putWord(mut data, addressAt[k] + 8 * slot, named)
+            slot += 1
+        }
+
+        immut dllName = utf8(dlls[k])
+
+        for i in range(dllName.length()) {
+            rdata[dllNameAt[k] + i] = dllName[i]
+        }
+    }
+
+    for i in range(imported.length()) {
+        immut name = utf8(imported[i])
+
+        for c in range(name.length()) {
+            rdata[nameAt[i] + 2 + c] = name[c]
+        }
+    }
+
+    // .reloc: a block per page of the addresses moved (IMAGE_REL_BASED_DIR64), each block a
+    // multiple of 4 bytes.
+    moved.sort()
+    mut reloc: byte[] = []
+    mut index = 0
+
+    while (index < moved.length()) {
+        immut page = moved[index] / 4096 * 4096
+        mut entries: int[] = []
+
+        while (index < moved.length() and moved[index] / 4096 * 4096 == page) {
+            entries.push(moved[index] - page)
+            index += 1
+        }
+
+        if (entries.length() % 2 == 1) { entries.push(-1) }
+
+        putInt32(mut reloc, page)
+        putInt32(mut reloc, 8 + 2 * entries.length())
+
+        for entry in entries {
+            putBytes(mut reloc, if (entry < 0) { 0 } else { 0xA000 | entry }, 2)
+        }
+    }
+
+    // The file: the headers, then each section at a multiple of 512 bytes.
+    immut textFile = headersSize
+    immut rdataFile = textFile + align(textSize, fileAlignment)
+    immut dataFile = rdataFile + align(rdataSize, fileAlignment)
+    immut relocFile = dataFile + align(dataSize, fileAlignment)
+    immut fileEnd = relocFile + align(reloc.length(), fileAlignment)
+    immut imageSize = relocRva + align(reloc.length(), sectionAlignment)
+    immut entry = addresses[defined['koji_windows_start'][0]][defined['koji_windows_start'][1]]
+    mut out: byte[] = []
+    // The header of MS-DOS: MZ, and where the header of PE is.
+    putBytes(mut out, 0x5A4D, 2)
+    zeros(mut out, 58)
+    putInt32(mut out, 64)
+    // PE, then IMAGE_FILE_HEADER: AMD64, 4 sections, no date nor symbols, the optional header,
+    // IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_LARGE_ADDRESS_AWARE.
+    putInt32(mut out, 0x4550)
+    putBytes(mut out, 0x8664, 2)
+    putBytes(mut out, 4, 2)
+    putInt32(mut out, 0)
+    putInt32(mut out, 0)
+    putInt32(mut out, 0)
+    putBytes(mut out, 240, 2)
+    putBytes(mut out, 0x22, 2)
+    // IMAGE_OPTIONAL_HEADER64: PE32+, the version of the linker, the sizes of the code and of the
+    // data, the entry, the base of the code.
+    putBytes(mut out, 0x20B, 2)
+    putBytes(mut out, 14, 2)
+    putInt32(mut out, align(textSize, fileAlignment))
+    putInt32(mut out, align(rdataSize, fileAlignment) + align(dataSize, fileAlignment) + align(reloc.length(), fileAlignment))
+    putInt32(mut out, align(dataWithZeros, fileAlignment) - align(dataSize, fileAlignment))
+    putInt32(mut out, entry)
+    putInt32(mut out, textRva)
+    appendWord(mut out, imageBase)
+    putInt32(mut out, sectionAlignment)
+    putInt32(mut out, fileAlignment)
+    // Windows 6.0 (Vista) and later, the image's version 0, the subsystem's 6.0.
+    putBytes(mut out, 6, 2)
+    putBytes(mut out, 0, 2)
+    putInt32(mut out, 0)
+    putBytes(mut out, 6, 2)
+    putBytes(mut out, 0, 2)
+    putInt32(mut out, 0)
+    putInt32(mut out, imageSize)
+    putInt32(mut out, headersSize)
+    putInt32(mut out, 0)
+    // IMAGE_SUBSYSTEM_WINDOWS_CUI; HIGH_ENTROPY_VA | DYNAMIC_BASE | NX_COMPAT |
+    // TERMINAL_SERVER_AWARE.
+    putBytes(mut out, 3, 2)
+    putBytes(mut out, 0x8160, 2)
+    // The stack (8 MB reserved, as Linux gives, 4 KB committed) and the heap.
+    appendWord(mut out, 0x800000)
+    appendWord(mut out, 0x1000)
+    appendWord(mut out, 0x100000)
+    appendWord(mut out, 0x1000)
+    putInt32(mut out, 0)
+    putInt32(mut out, 16)
+    // The directories: the exports (none), the imports, the resources, the exceptions, the
+    // certificates (none), the relocations, ... the table of addresses (12).
+    for directory in range(16) {
+        match (directory) {
+            1 => {
+                putInt32(mut out, rdataRva + directoryAt)
+                putInt32(mut out, 20 * (dlls.length() + 1))
+            }
+            5 => {
+                putInt32(mut out, if (reloc.length() > 0) { relocRva } else { 0 })
+                putInt32(mut out, reloc.length())
+            }
+            12 => {
+                putInt32(mut out, dataRva + dataAt0)
+                putInt32(mut out, dataSize - dataAt0)
+            }
+            _ => {
+                putInt32(mut out, 0)
+                putInt32(mut out, 0)
+            }
+        }
+    }
+
+    // The headers of the sections: name, size in memory, address, size and place in the file, no
+    // relocations nor line numbers, flags (code, initialized data, readable, writable,
+    // executable, discardable).
+    sectionHeader(mut out, '.text', textSize, textRva, align(textSize, fileAlignment), textFile, 0x60000020)
+    sectionHeader(mut out, '.rdata', rdataSize, rdataRva, align(rdataSize, fileAlignment), rdataFile, 0x40000040)
+    sectionHeader(mut out, '.data', dataWithZeros, dataRva, align(dataSize, fileAlignment), dataFile, 0xC0000040)
+    sectionHeader(mut out, '.reloc', reloc.length(), relocRva, align(reloc.length(), fileAlignment), relocFile, 0x42000040)
+    zeros(mut out, headersSize - out.length())
+    out = out + text
+    zeros(mut out, rdataFile - out.length())
+    out = out + rdata
+    zeros(mut out, dataFile - out.length())
+    out = out + data
+    zeros(mut out, relocFile - out.length())
+    out = out + reloc
+    zeros(mut out, fileEnd - out.length())
+    return Ok(out)
+}
+
+function parseCoff(bytes: byte[]): Result[CoffInput, string] {
+    if (bytes.length() < 20 or number(bytes, 0, 2) != 0x8664) { return Err('not an object of COFF for x86-64') }
+
+    immut sectionCount = number(bytes, 2, 2)
+    immut tableAt = number(bytes, 8, 4)
+    immut symbolCount = number(bytes, 12, 4)
+    immut stringsAt = tableAt + 18 * symbolCount
+    immut headersAt = 20 + number(bytes, 16, 2)
+    mut sections: CoffSection[] = []
+    mut relocations: CoffRelocation[] = []
+
+    for k in range(sectionCount) {
+        immut header = headersAt + 40 * k
+        immut size = number(bytes, header + 16, 4)
+        immut at = number(bytes, header + 20, 4)
+        immut flags = number(bytes, header + 36, 4)
+        immut contents = if (flags & 0x80 != 0 or at == 0) { [] } else { bytes[at..at + size] }
+        immut relocationsAt = number(bytes, header + 24, 4)
+        immut count = number(bytes, header + 32, 2)
+        sections.push({ name: nameAt(bytes, header, stringsAt), bytes: contents, size: size, flags: flags, relocationsAt: relocationsAt, relocationCount: count, output: '', at: 0 })
+
+        for r in range(count) {
+            immut entry = relocationsAt + 10 * r
+            relocations.push({ section: k, at: number(bytes, entry, 4), symbol: number(bytes, entry + 4, 4), kind: number(bytes, entry + 8, 2) })
+        }
+    }
+
+    mut symbols: CoffSymbol[] = []
+    mut k = 0
+
+    while (k < symbolCount) {
+        immut entry = tableAt + 18 * k
+        immut section = number(bytes, entry + 12, 2)
+        symbols.push({ name: nameAt(bytes, entry, stringsAt), value: number(bytes, entry + 8, 4), section: if (section >= 0x8000) { section - 0x10000 } else { section }, kind: int(bytes[entry + 16]) })
+        immut records = int(bytes[entry + 17])
+
+        for r in range(records) {
+            symbols.push({ name: '', value: 0, section: -1, kind: 0 })
+        }
+
+        k += 1 + records
+    }
+
+    return Ok({ sections: sections, symbols: symbols, relocations: relocations })
+}
+
+// A name of a symbol or a section: in place (8 bytes), or in the strings (a symbol: 0 then its
+// place; a section: `/` and its place in decimal).
+function nameAt(bytes: byte[], at: int, stringsAt: int): string {
+    if (number(bytes, at, 4) == 0) { return cString(bytes, stringsAt + number(bytes, at + 4, 4)) }
+
+    if (bytes[at] == 47) {
+        mut place = 0
+
+        for i in range(1, 8) {
+            if (bytes[at + i] >= 48 and bytes[at + i] <= 57) { place = place * 10 + int(bytes[at + i]) - 48 }
+        }
+
+        return cString(bytes, stringsAt + place)
+    }
+
+    mut name = ''
+
+    for i in range(8) {
+        if (bytes[at + i] == 0) { break }
+
+        name += letter(bytes[at + i])
+    }
+
+    return name
+}
+
+function cString(bytes: byte[], at: int): string {
+    mut name = ''
+    mut place = at
+
+    while (place < bytes.length() and bytes[place] != 0) {
+        name += letter(bytes[place])
+        place += 1
+    }
+
+    return name
+}
+
+function letter(value: byte): string {
+    return match (char(int(value))) {
+        Some(c) => string(c)
+        None => '?'
+    }
+}
+
+function sectionHeader(mut out: byte[], name: string, virtualSize: int, rva: int, fileSize: int, at: int, flags: int) {
+    immut bytes = utf8(name)
+
+    for i in range(8) {
+        out.push(if (i < bytes.length()) { bytes[i] } else { 0 })
+    }
+
+    putInt32(mut out, virtualSize)
+    putInt32(mut out, rva)
+    putInt32(mut out, fileSize)
+    putInt32(mut out, if (fileSize > 0) { at } else { 0 })
+    putInt32(mut out, 0)
+    putInt32(mut out, 0)
+    putInt32(mut out, 0)
+    putInt32(mut out, flags)
+}
+
+function zeros(mut out: byte[], count: int) {
+    for i in range(count) {
+        out.push(0)
+    }
+}
+
+function align(value: int, size: int): int {
+    return (value + size - 1) / size * size
+}
+
+function number(bytes: byte[], at: int, size: int): int {
+    mut value = 0
+
+    for i in range(size) {
+        value = value | int(bytes[at + i]) << (8 * i)
+    }
+
+    return value
+}
+
+function signed32(value: int): int {
+    return if (value >= 0x80000000) { value - 0x100000000 } else { value }
+}
+
+function read32(bytes: byte[], at: int): int {
+    return number(bytes, at, 4)
+}
+
+function word(bytes: byte[], at: int): int {
+    return number(bytes, at, 8)
+}
+
+function put32(mut out: byte[], at: int, value: int) {
+    for i in range(4) {
+        out[at + i] = byte((value >> (8 * i)) & 0xFF)
+    }
+}
+
+function putWord(mut out: byte[], at: int, value: int) {
+    for i in range(8) {
+        out[at + i] = byte((value >> (8 * i)) & 0xFF)
+    }
+}
+
+function putWordInto(mut out: byte[], at: int, value: int) {
+    putWord(mut out, at, value)
+}
+
+function appendWord(mut out: byte[], value: int) {
+    putBytes(mut out, value, 8)
+}
+
+function putInt32(mut out: byte[], value: int) {
+    putBytes(mut out, value, 4)
+}
+
+function putBytes(mut out: byte[], value: int, count: int) {
+    for i in range(count) {
+        out.push(byte((value >> (8 * i)) & 0xFF))
+    }
+}
+
+function utf8(text: string): byte[] {
+    mut bytes: byte[] = []
+
+    for c in text.chars() {
+        bytes.push(byte(c.code() & 0xFF))
+    }
+
+    return bytes
+}

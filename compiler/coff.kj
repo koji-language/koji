@@ -1,0 +1,288 @@
+// The relocatable object of COFF (Windows, x86-64) of the code and the data of the native backend
+// (native.kj), the counterpart of its objects of ELF and Mach-O: the sections .text, .rdata (the
+// constants), .data and .bss, the symbols (the sections, the functions of Koji, those defined for
+// others, those of other objects: the functions of the DLLs of Windows and of the library), and the
+// relocations of x86-64. A displacement counts from the end of its field (ELF's addend and 4, in
+// the code), an address of the data has its addend in its word; a relocation to a section is one
+// to the symbol of the section. Names keep no underscore (x86-64).
+
+import { MachSymbol, MachRelocation } from 'macho.kj'
+
+immut sectionNames = ['', '.text', '.rdata', '.data', '.bss']
+immut elfSections = ['', '.text', '.rodata', '.data', '.bss']
+
+// `defined`: the symbols of the object (its section 1 to 4, its place); `relocations`: of the code
+// (section 1) or of the data (3), with a kind of ELF for x86-64.
+export function coffObject(given: byte[], rodata: byte[], givenData: byte[], bss: int, defined: MachSymbol[], relocations: MachRelocation[]): byte[] {
+    mut text = given
+    mut data = givenData
+    // The symbols: the four sections (with their records of definition), those defined, then those
+    // of other objects; their names in the table of strings when longer than 8 bytes.
+    mut strings: byte[] = []
+    mut table: byte[] = []
+    mut index: Map[string, int] = [:]
+    mut count = 0
+
+    for section in range(1, 5) {
+        symbol(mut table, mut strings, sectionNames[section], 0, section, 3, 1)
+        // IMAGE_SYMBOL of its definition: its size, relocations, line numbers, checksum, number,
+        // selection.
+        immut size = [0, given.length(), rodata.length(), givenData.length(), bss][section]
+        putInt32(mut table, size)
+        putBytes(mut table, 0, 2)
+        putBytes(mut table, 0, 2)
+        putInt32(mut table, 0)
+        putBytes(mut table, 0, 2)
+        table.push(0)
+        putBytes(mut table, 0, 3)
+        count += 2
+    }
+
+    for each in defined {
+        index[each.name] = count
+        // IMAGE_SYM_CLASS_EXTERNAL for those of others, STATIC for the functions of Koji; a
+        // function (0x20) in the code.
+        symbol(mut table, mut strings, each.name, each.value, each.section, if (each.global) { 2 } else { 3 }, 0)
+        count += 1
+    }
+
+    for relocation in relocations {
+        if (sectionOf(relocation.symbol) > 0 or index.has(relocation.symbol)) { continue }
+
+        index[relocation.symbol] = count
+        symbol(mut table, mut strings, relocation.symbol, 0, 0, 2, 0)
+        count += 1
+    }
+
+    // The relocations of the code and of the data: the place, the symbol, the type.
+    mut textRelocations: byte[] = []
+    mut dataRelocations: byte[] = []
+
+    for relocation in relocations {
+        immut section = sectionOf(relocation.symbol)
+        // The symbol of a section is the one at 2 * (its number - 1).
+        immut target = if (section > 0) { 2 * (section - 1) } else { index[relocation.symbol] }
+
+        if (relocation.section == 3) {
+            // IMAGE_REL_AMD64_ADDR64: the addend in the word.
+            putWordAt(mut data, relocation.at, relocation.addend)
+            putInt32(mut dataRelocations, relocation.at)
+            putInt32(mut dataRelocations, target)
+            putBytes(mut dataRelocations, 1, 2)
+            continue
+        }
+
+        // IMAGE_REL_AMD64_REL32: S + A - (P + 4), A in the field.
+        putInt32At(mut text, relocation.at, relocation.addend + 4)
+        putInt32(mut textRelocations, relocation.at)
+        putInt32(mut textRelocations, target)
+        putBytes(mut textRelocations, 4, 2)
+    }
+
+    // The layout: the header (20 bytes), the headers of the sections (40 each), the contents, the
+    // relocations, the symbols, the strings.
+    immut headers = 20 + 4 * 40
+    immut textAt = align(headers, 16)
+    immut rodataAt = align(textAt + text.length(), 16)
+    immut dataAt = align(rodataAt + rodata.length(), 16)
+    immut textRelocationsAt = align(dataAt + data.length(), 4)
+    immut dataRelocationsAt = textRelocationsAt + textRelocations.length()
+    immut tableAt = dataRelocationsAt + dataRelocations.length()
+    mut out: byte[] = []
+    // IMAGE_FILE_MACHINE_AMD64, the sections, no date, the symbols, no optional header nor flags.
+    putBytes(mut out, 0x8664, 2)
+    putBytes(mut out, 4, 2)
+    putInt32(mut out, 0)
+    putInt32(mut out, tableAt)
+    putInt32(mut out, count)
+    putBytes(mut out, 0, 2)
+    putBytes(mut out, 0, 2)
+    // Code, executable, readable; initialized data, readable (and writable); zeros. All aligned on
+    // 16 bytes.
+    sectionHeader(mut out, '.text', text.length(), textAt, textRelocationsAt, textRelocations.length() / 10, 0x60500020)
+    sectionHeader(mut out, '.rdata', rodata.length(), rodataAt, 0, 0, 0x40500040)
+    sectionHeader(mut out, '.data', data.length(), dataAt, dataRelocationsAt, dataRelocations.length() / 10, 0xC0500040)
+    sectionHeader(mut out, '.bss', bss, 0, 0, 0, 0xC0500080)
+    pad(mut out, textAt)
+    out = out + text
+    pad(mut out, rodataAt)
+    out = out + rodata
+    pad(mut out, dataAt)
+    out = out + data
+    pad(mut out, textRelocationsAt)
+    out = out + textRelocations + dataRelocations + table
+    // The strings, after their size (which counts itself).
+    putInt32(mut out, strings.length() + 4)
+    return out + strings
+}
+
+// The global symbols an object of COFF defines (IMAGE_SYM_CLASS_EXTERNAL in a section).
+export function coffGlobals(bytes: byte[]): string[] {
+    immut tableAt = number(bytes, 8, 4)
+    immut count = number(bytes, 12, 4)
+    immut stringsAt = tableAt + 18 * count
+    mut found: string[] = []
+    mut k = 0
+
+    while (k < count) {
+        immut entry = tableAt + 18 * k
+
+        if (bytes[entry + 16] == 2 and number(bytes, entry + 12, 2) > 0) {
+            mut name = ''
+
+            if (number(bytes, entry, 4) == 0) {
+                mut at = stringsAt + number(bytes, entry + 4, 4)
+
+                while (bytes[at] != 0) {
+                    name += letter(bytes[at])
+                    at += 1
+                }
+            } else {
+                for i in range(8) {
+                    if (bytes[entry + i] != 0) { name += letter(bytes[entry + i]) }
+                }
+            }
+
+            found.push(name)
+        }
+
+        k += 1 + int(bytes[entry + 17])
+    }
+
+    return found
+}
+
+function letter(value: byte): string {
+    return match (char(int(value))) {
+        Some(c) => string(c)
+        None => '?'
+    }
+}
+
+// A number of `size` bytes at `at`, little-endian.
+function number(bytes: byte[], at: int, size: int): int {
+    mut value = 0
+
+    for i in range(size) {
+        value = value | int(bytes[at + i]) << (8 * i)
+    }
+
+    return value
+}
+
+// The section of ELF a relocation names (1 to 4), or 0 for a symbol.
+function sectionOf(name: string): int {
+    for i in range(1, 5) {
+        if (name == elfSections[i]) { return i }
+    }
+
+    return 0
+}
+
+// An IMAGE_SYMBOL: its name (in place, or 0 and its place in the strings), value, section, type,
+// class, the records after it.
+function symbol(mut table: byte[], mut strings: byte[], name: string, value: int, section: int, kind: int, records: int) {
+    immut bytes = utf8(name)
+
+    if (bytes.length() <= 8) {
+        for i in range(8) {
+            table.push(if (i < bytes.length()) { bytes[i] } else { 0 })
+        }
+    } else {
+        putInt32(mut table, 0)
+        putInt32(mut table, strings.length() + 4)
+        strings = strings + bytes
+        strings.push(0)
+    }
+
+    putInt32(mut table, value)
+    putBytes(mut table, section, 2)
+    putBytes(mut table, if (section == 1 and records == 0) { 0x20 } else { 0 }, 2)
+    table.push(byte(kind))
+    table.push(byte(records))
+}
+
+function sectionHeader(mut out: byte[], name: string, size: int, at: int, relocations: int, count: int, flags: int) {
+    immut bytes = utf8(name)
+
+    for i in range(8) {
+        out.push(if (i < bytes.length()) { bytes[i] } else { 0 })
+    }
+
+    // No virtual size nor address in an object.
+    putInt32(mut out, 0)
+    putInt32(mut out, 0)
+    putInt32(mut out, size)
+    putInt32(mut out, if (flags & 0x80 != 0) { 0 } else { at })
+    putInt32(mut out, relocations)
+    putInt32(mut out, 0)
+    putBytes(mut out, count, 2)
+    putBytes(mut out, 0, 2)
+    putInt32(mut out, flags)
+}
+
+function pad(mut out: byte[], size: int) {
+    while (out.length() < size) {
+        out.push(0)
+    }
+}
+
+function align(number: int, size: int): int {
+    return (number + size - 1) / size * size
+}
+
+function putInt32(mut out: byte[], number: int) {
+    putBytes(mut out, number, 4)
+}
+
+function putBytes(mut out: byte[], number: int, count: int) {
+    for i in range(count) {
+        out.push(byte((number >> (8 * i)) & 0xFF))
+    }
+}
+
+function putInt32At(mut out: byte[], at: int, number: int) {
+    for i in range(4) {
+        out[at + i] = byte((number >> (8 * i)) & 0xFF)
+    }
+}
+
+function putWordAt(mut out: byte[], at: int, number: int) {
+    for i in range(8) {
+        out[at + i] = byte((number >> (8 * i)) & 0xFF)
+    }
+}
+
+// The bytes of a text in UTF-8.
+function utf8(text: string): byte[] {
+    mut bytes: byte[] = []
+
+    for c in text.chars() {
+        immut code = c.code()
+
+        if (code < 0x80) {
+            bytes.push(byte(code))
+            continue
+        }
+
+        if (code < 0x800) {
+            bytes.push(byte(0xC0 | code >> 6))
+            bytes.push(byte(0x80 | (code & 0x3F)))
+            continue
+        }
+
+        if (code < 0x10000) {
+            bytes.push(byte(0xE0 | code >> 12))
+            bytes.push(byte(0x80 | (code >> 6 & 0x3F)))
+            bytes.push(byte(0x80 | (code & 0x3F)))
+            continue
+        }
+
+        bytes.push(byte(0xF0 | code >> 18))
+        bytes.push(byte(0x80 | (code >> 12 & 0x3F)))
+        bytes.push(byte(0x80 | (code >> 6 & 0x3F)))
+        bytes.push(byte(0x80 | (code & 0x3F)))
+    }
+
+    return bytes
+}

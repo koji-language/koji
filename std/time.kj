@@ -12,6 +12,8 @@ import { Address, CInt, allocate, free, read } from 'koji:unsafe'
 extern function clock_gettime(clock: CInt, time: Address): CInt
 extern function koji_task_sleep_until(deadline: int)
 extern function koji_monotonic_nanoseconds(): int
+// Windows (kernel32): the time in hundreds of nanoseconds since 1601-01-01.
+extern function GetSystemTimePreciseAsFileTime(time: Address)
 
 // The seconds from 0000-01-01 to 1970-01-01, the epoch of Unix and of the clock of the system
 // (719,528 days).
@@ -25,6 +27,8 @@ export function now(): decimal {
 
 // A time that only grows, for durations: the difference of two is the time between them.
 export function monotonic(): decimal {
+    if (system.os == system.Windows) { return decimal(koji_monotonic_nanoseconds()) / 1000000000 }
+
     // `CLOCK_MONOTONIC` is 6 on macOS, 1 elsewhere.
     immut id = match (system.os) {
         MacOS => 6
@@ -45,6 +49,15 @@ export function sleep(seconds: decimal) {
 
 // The time of a clock of the system, in seconds.
 function clock(id: int): decimal {
+    // Windows: the time of the system (the realtime clock only), from 1601 to 1970 less.
+    if (system.os == system.Windows) {
+        immut file = allocate(8)
+        GetSystemTimePreciseAsFileTime(file)
+        immut hundreds: int = read(file, 0)
+        free(file)
+        return decimal(hundreds - 116444736000000000) / 10000000
+    }
+
     immut time = allocate(16)
     clock_gettime(id, time)
     immut seconds: int = read(time, 0)

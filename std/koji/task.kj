@@ -13,7 +13,7 @@
 // and the program stops with a panic.
 
 import system
-import { Address, CInt, CSize, allocate, distance, floatControl, isNull, nullAddress, offset, read, switchStacks, taskEntry, valgrind, write } from 'koji:unsafe'
+import { Address, CInt, CSize, allocate, distance, free, floatControl, isNull, nullAddress, offset, read, switchStacks, taskEntry, valgrind, write } from 'koji:unsafe'
 
 extern function mmap(address: Address, size: CSize, protection: CInt, flags: CInt, fd: CInt, at: int): Address
 extern function munmap(address: Address, size: CSize): CInt
@@ -26,6 +26,16 @@ extern function epoll_ctl(poller: CInt, operation: CInt, fd: CInt, event: Addres
 extern function epoll_wait(poller: CInt, events: Address, capacity: CInt, milliseconds: CInt): CInt
 extern function kqueue(): CInt
 extern function kevent(poller: CInt, changes: Address, changeCount: CInt, events: Address, capacity: CInt, timeout: Address): CInt
+// Windows (kernel32).
+extern function VirtualAlloc(address: Address, size: CSize, kind: CInt, protection: CInt): Address
+extern function VirtualProtect(address: Address, size: CSize, protection: CInt, old: Address): CInt
+extern function VirtualFree(address: Address, size: CSize, kind: CInt): CInt
+extern function QueryPerformanceCounter(count: Address): CInt
+extern function QueryPerformanceFrequency(frequency: Address): CInt
+extern function Sleep(milliseconds: CInt)
+extern function WSAPoll(fds: Address, count: CInt, milliseconds: CInt): CInt
+extern function PeekNamedPipe(pipe: Address, buffer: Address, size: CInt, read: Address, available: Address, left: Address): CInt
+extern function windowsHandle(fd: CInt): Address from '_get_osfhandle'
 extern function koji_helpers_start(): int
 extern function koji_helpers_add(): boolean
 extern function koji_helpers_submit(job: Address)
@@ -51,6 +61,25 @@ function tasksSupported(): boolean {
 // Linux, MAP_NORESERVE). Valgrind is told of it (VG_USERREQ__STACK_REGISTER), which keeps the
 // number it gives in the last word of the stack.
 function stackNew(size: int): Address {
+    // Windows: its memory given at once (MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE), the guard
+    // PAGE_NOACCESS.
+    if (system.os == system.Windows) {
+        immut reserved = VirtualAlloc(nullAddress(), size + stackGuard, 0x3000, 4)
+
+        if (isNull(reserved)) { return nullAddress() }
+
+        immut old = allocate(8)
+        immut guarded = VirtualProtect(reserved, stackGuard, 1, old) != 0
+        free(old)
+
+        if (not guarded) {
+            VirtualFree(reserved, 0, 0x8000)
+            return nullAddress()
+        }
+
+        return offset(reserved, stackGuard)
+    }
+
     immut flags = match (system.os) {
         Linux => 2 | 0x20 | 0x4000
         _ => 2 | 0x1000
@@ -72,6 +101,12 @@ function stackNew(size: int): Address {
 }
 
 function stackFree(stack: Address, size: int) {
+    // MEM_RELEASE
+    if (system.os == system.Windows) {
+        VirtualFree(offset(stack, -stackGuard), 0, 0x8000)
+        return
+    }
+
     immut registered: int = read(stack, size - 8)
     valgrind(0x1502, registered, 0, 0)
     munmap(offset(stack, -stackGuard), size + stackGuard)
@@ -84,6 +119,22 @@ function stackStart(stack: Address, size: int, task: int): Address {
     immut top = offset(stack, size - 16)
 
     return match (system.architecture) {
+        // On Windows, the limits of the stack in the block of the thread too (NT_TIB: StackLimit,
+        // StackBase), which the functions of the system check.
+        X64 if (system.os == system.Windows) => {
+            immut sp = offset(top, -88)
+
+            for word in range(11) {
+                write(sp, 8 * word, 0)
+            }
+
+            write(sp, 0, floatControl())
+            write(sp, 8, stack)
+            write(sp, 16, offset(stack, size))
+            write(sp, 56, task)
+            write(sp, 72, taskEntry())
+            sp
+        }
         X64 => {
             // The control words, r15 to r12, rbx (the task), rbp, where it returns.
             immut sp = offset(top, -72)
@@ -122,6 +173,15 @@ immut systemWords = allocate(4096)
 // The nanoseconds of a clock that only grows (CLOCK_MONOTONIC: 1 on Linux, 6 on macOS, 4 on the
 // BSDs), from a `struct timespec` (seconds, nanoseconds).
 extern function koji_monotonic_nanoseconds(): int {
+    // Windows: the counter of performance and its frequency.
+    if (system.os == system.Windows) {
+        QueryPerformanceCounter(systemWords)
+        QueryPerformanceFrequency(offset(systemWords, 8))
+        immut count: int = read(systemWords, 0)
+        immut frequency: int = read(systemWords, 8)
+        return count / frequency * 1000000000 + count % frequency * 1000000000 / frequency
+    }
+
     immut clock = match (system.os) {
         Linux => 1
         MacOS => 6
@@ -140,6 +200,11 @@ extern function koji_sleep_until(deadline: int) {
 
         if (left <= 0) { return }
 
+        if (system.os == system.Windows) {
+            Sleep((left + 999999) / 1000000)
+            continue
+        }
+
         write(systemWords, 0, left / 1000000000)
         write(systemWords, 8, left % 1000000000)
         nanosleep(systemWords, nullAddress())
@@ -155,10 +220,14 @@ extern function koji_poller_new(): int {
         // EPOLL_CLOEXEC
         Linux => epoll_create1(0x80000)
         MacOS => kqueue()
-        Windows => -1
+        // The sockets watched are those of `windowsWatched` (one poller: no handle).
+        Windows => 0
         Other(name) => if (keventSize(name) > 0) { kqueue() } else { -1 }
     }
 }
+
+// Windows: the sockets watched (twice their numbers, and 1 for those to write), until ready.
+mut windowsWatched: int[] = []
 
 // The size of a `struct kevent` of a BSD (FreeBSD has 4 more words), 0 for a system without kqueue.
 function keventSize(name: string): int {
@@ -192,7 +261,13 @@ extern function koji_poller_watch(poller: int, fd: int, writing: boolean): int {
 
             return epoll_ctl(poller, 1, fd, systemWords)
         }
-        Windows => return -1
+        Windows => {
+            immut entry = fd * 2 + (if (writing) { 1 } else { 0 })
+
+            if (not (entry in windowsWatched)) { windowsWatched.push(entry) }
+
+            return 0
+        }
         _ => {
             if (keventSize(systemName()) == 0 and system.os != system.MacOS) { return -1 }
 
@@ -232,7 +307,7 @@ extern function koji_poller_wait(poller: int, milliseconds: int, ready: Address,
 
             return count
         }
-        Windows => return -1
+        Windows => return windowsWait(milliseconds, ready, most)
         _ => {
             immut size = if (system.os == system.MacOS) { 32 } else { keventSize(systemName()) }
 
@@ -791,4 +866,87 @@ function swapTimers(a: int, b: int) {
     immut saved = timers[a]
     timers[a] = timers[b]
     timers[b] = saved
+}
+
+// WSAPoll of the sockets watched (a WSAPOLLFD each: the socket, the events POLLRDNORM or
+// POLLWRNORM, those that came): how many are ready, their numbers at `ready`, which are watched no
+// more. The pipe of the jobs done is no socket: it is looked at (PeekNamedPipe) between waits of
+// 10 ms at most; with nothing else to wait for, a sleep.
+function windowsWait(milliseconds: int, ready: Address, most: int): int {
+    immut deadline = if (milliseconds < 0) { -1 } else { koji_monotonic_nanoseconds() + milliseconds * 1000000 }
+    immut pipeEntry = jobsDone * 2
+
+    while (true) {
+        mut found = 0
+        mut kept: int[] = []
+        mut sockets: int[] = []
+
+        for entry in windowsWatched {
+            if (jobsDone >= 0 and entry == pipeEntry) {
+                if (pipeWaiting(jobsDone) and found < most) {
+                    write(ready, 8 * found, jobsDone)
+                    found += 1
+                } else {
+                    kept.push(entry)
+                }
+            } else {
+                sockets.push(entry)
+            }
+        }
+
+        immut left = if (deadline < 0) { -1 } else { (deadline - koji_monotonic_nanoseconds() + 999999) / 1000000 }
+        immut piped = kept.length() > 0
+        immut span = if (found > 0) { 0 } else { if (piped and (left < 0 or left > 10)) { 10 } else { if (left < 0) { -1 } else { left } } }
+
+        if (sockets.length() > 0) {
+            immut fds = allocate(16 * sockets.length())
+
+            for i in range(sockets.length()) {
+                write(fds, 16 * i, sockets[i] / 2)
+                write(fds, 16 * i + 8, if (sockets[i] % 2 == 1) { 0x10 } else { 0x100 })
+            }
+
+            immut answer = WSAPoll(fds, sockets.length(), span)
+
+            if (answer < 0) {
+                free(fds)
+                return -1
+            }
+
+            for i in range(sockets.length()) {
+                immut events: int = read(fds, 16 * i + 8)
+
+                if ((events >> 16) & 0xFFFF != 0 and found < most) {
+                    write(ready, 8 * found, sockets[i] / 2)
+                    found += 1
+                } else {
+                    kept.push(sockets[i])
+                }
+            }
+
+            free(fds)
+        } else {
+            if (span > 0) { Sleep(span) }
+        }
+
+        windowsWatched = kept
+
+        if (found > 0 or span == 0 and not piped) { return found }
+
+        if (deadline >= 0 and koji_monotonic_nanoseconds() >= deadline) { return 0 }
+
+        if (span < 0) { return 0 }
+    }
+
+    return 0
+}
+
+// Whether bytes wait in a pipe of the C library of Windows.
+function pipeWaiting(fd: int): boolean {
+    immut waiting = allocate(8)
+    write(waiting, 0, 0)
+    PeekNamedPipe(windowsHandle(fd), nullAddress(), 0, nullAddress(), waiting, nullAddress())
+    immut available: int = read(waiting, 0)
+    free(waiting)
+    return available & 0xFFFFFFFF > 0
 }

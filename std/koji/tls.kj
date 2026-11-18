@@ -11,6 +11,7 @@
 // A connection is a handle (an int) for C and std/http.kj: koji_tls_connect on a connected socket,
 // koji_tls_send, koji_tls_receive, koji_tls_close, and the text of a problem.
 
+import system
 import { Address, CInt, CSize, allocate, free, isNull, newString, nullAddress, offset, read, stringBytes, stringSize, write } from 'koji:unsafe'
 import { digest, digestSize, hkdfExpand, hkdfExtract, hmac } from 'koji:sha'
 import { x25519, x25519Base } from 'koji:x25519'
@@ -24,6 +25,8 @@ extern function memset(target: Address, value: CInt, size: CSize): Address
 extern function memcmp(a: Address, b: Address, size: CSize): CInt
 extern function strlen(text: Address): CSize
 extern function getentropy(buffer: Address, size: CSize): CInt
+// Windows (bcrypt): BCRYPT_USE_SYSTEM_PREFERRED_RNG.
+extern function BCryptGenRandom(algorithm: Address, buffer: Address, size: CInt, flags: CInt): CInt
 extern function realloc(block: Address, size: CSize): Address
 extern function koji_net_send(fd: int, bytes: Address, size: int): int
 extern function koji_net_receive(fd: int, bytes: Address, size: int): int
@@ -602,7 +605,9 @@ function randomBytes(out: Address, size: int): boolean {
     while (done < size) {
         immut part = if (size - done > 256) { 256 } else { size - done }
 
-        if (getentropy(offset(out, done), part) != 0) { return false }
+        immut failed = if (system.os == system.Windows) { BCryptGenRandom(nullAddress(), offset(out, done), part, 2) != 0 } else { getentropy(offset(out, done), part) != 0 }
+
+        if (failed) { return false }
 
         done += part
     }

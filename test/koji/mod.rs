@@ -171,5 +171,44 @@ pub fn finish(command: &mut Command, input: &str) -> Finished {
 /// `kojic run <file>` in `directory` (the program's current directory, which also holds its
 /// temporary executable), with `input` as the program's input.
 pub fn run(file: &Path, directory: &Path, input: &str) -> Finished {
+    if std::env::var("KOJI_TEST_WINDOWS").is_ok() {
+        return run_windows(file, directory, input);
+    }
     finish(kojic().arg("run").arg(file).current_dir(directory).env("TMPDIR", directory), input)
+}
+
+/// The runtime library for Windows (`KOJI_TARGET=windows-x64 kojic library`).
+pub fn windows_library() -> &'static Path {
+    static LIBRARY: OnceLock<PathBuf> = OnceLock::new();
+    LIBRARY.get_or_init(|| {
+        let compiler = compiler();
+        let name = format!("libkoji-windows-{}.a", compiler.file_name().unwrap().to_string_lossy());
+        made(&name, |archive| {
+            let built = finish(Command::new(compiler).env("KOJI_TARGET", "windows-x64").arg("library").arg("-o").arg(archive), "");
+            assert_eq!(built.code, Some(0), "kojic library for Windows: {}", built.stderr);
+        })
+    })
+}
+
+/// With KOJI_TEST_WINDOWS: the program built for Windows on x86-64 and run by Wine (in a clean
+/// environment, with a prefix of its own in the target directory, or KOJI_WINEPREFIX).
+fn run_windows(file: &Path, directory: &Path, input: &str) -> Finished {
+    let executable = directory.join("program.exe");
+    let built = finish(
+        Command::new(compiler()).env("KOJI_TARGET", "windows-x64").env("KOJI_RUNTIME", windows_library()).arg("build").arg(file).arg("-o").arg(&executable).current_dir(directory),
+        "",
+    );
+    if built.code != Some(0) {
+        return built;
+    }
+    let prefix = std::env::var("KOJI_WINEPREFIX").map(PathBuf::from).unwrap_or_else(|_| Path::new(env!("CARGO_TARGET_TMPDIR")).join("wine"));
+    let wine = ["/usr/lib/wine/wine64", "wine64", "wine"].into_iter().find(|tool| Path::new(tool).exists()).unwrap_or("wine");
+    let mut command = Command::new(wine);
+    command.arg(&executable).env_clear().env("PATH", "/usr/bin:/bin").env("HOME", directory).env("WINEPREFIX", prefix).env("WINEDEBUG", "-all").current_dir(directory);
+    for name in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
+        if let Ok(value) = std::env::var(name) {
+            command.env(name, value);
+        }
+    }
+    finish(&mut command, input)
 }

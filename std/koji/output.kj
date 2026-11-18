@@ -18,6 +18,10 @@ extern function clearerr(stream: Address)
 // The place of errno (under names of their own: <errno.h> declares them otherwise).
 extern function errnoPlace(): Address from '__errno_location'
 extern function errnoPlaceBsd(): Address from '__error'
+// Windows (ucrtbase), and the library there (koji:windows).
+extern function errnoPlaceWindows(): Address from '_errno'
+extern function windowsFdopen(fd: CInt, mode: Address): Address from '_fdopen'
+extern function koji_windows_writev(fd: CInt, buffers: Address, count: CInt): int
 // With other tasks alive (koji:task), a write that could wait is made by a thread that helps.
 extern function koji_task_alone(): boolean
 extern function koji_task_current(): int
@@ -129,6 +133,16 @@ function written(fd: int, text: string, ending: boolean): int {
     return code
 }
 
+// `writev` of the buffers, by the system (on Windows, a write each).
+function writevNow(fd: int, count: int): int {
+    return if (system.os == system.Windows) { koji_windows_writev(fd, buffers, count) } else { writev(fd, buffers, count) }
+}
+
+// The standard input as a stream of C.
+function inputStream(): Address {
+    return if (system.os == system.Windows) { windowsFdopen(0, readMode) } else { fdopen(0, readMode) }
+}
+
 function writtenNow(fd: int, text: string, ending: boolean): int {
     mut at = stringBytes(text)
     mut size = stringSize(text)
@@ -150,7 +164,7 @@ function writtenNow(fd: int, text: string, ending: boolean): int {
         }
 
         immut alone = koji_task_alone()
-        immut done = if (alone or (size + breakSize <= atomicWrite and koji_output_ready(fd))) { writev(fd, buffers, count) } else { koji_blocking_writev(fd, buffers, count) }
+        immut done = if (alone or (size + breakSize <= atomicWrite and koji_output_ready(fd))) { writevNow(fd, count) } else { koji_blocking_writev(fd, buffers, count) }
 
         if (done < 0) {
             immut code = koji_system_errno()
@@ -195,7 +209,7 @@ extern function koji_read_line(prompt: string, here: Location, status: Address):
         if (code != 0) { end('panic', here, `cannot write output: ${message(code)}`) }
     }
 
-    if (isNull(input)) { input = fdopen(0, readMode) }
+    if (isNull(input)) { input = inputStream() }
 
     // A standard input that is closed is empty, as in Rust.
     if (isNull(input)) {
@@ -232,7 +246,7 @@ extern function koji_read_line(prompt: string, here: Location, status: Address):
 // buffer `input` reads too, as a text (bytes that are not UTF-8 become U+FFFD); `status` becomes 1
 // when nothing is left.
 extern function koji_read_bytes(count: int, here: Location, status: Address): string {
-    if (isNull(input)) { input = fdopen(0, readMode) }
+    if (isNull(input)) { input = inputStream() }
 
     if (isNull(input) or count <= 0) {
         write(status, 0, if (count <= 0) { 0 } else { 1 })
@@ -280,6 +294,7 @@ function isLineEnd(bytes: Address, at: int): boolean {
 extern function koji_system_errno(): CInt {
     immut place = match (system.os) {
         Linux => errnoPlace()
+        Windows => errnoPlaceWindows()
         _ => errnoPlaceBsd()
     }
     mut value = 0

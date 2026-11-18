@@ -34,7 +34,8 @@ export type MCallee = {
     // A function of another object (the runtime library, C), by its name.
     MExternal(name: string)
     // One of C that takes as many arguments as it is given after its `fixed` ones (on x86-64, al
-    // tells how many are in vector registers; on arm64 for macOS, those after go on the stack).
+    // tells how many are in vector registers; on arm64 for macOS, those after go on the stack). On
+    // Windows, every function of C is called as one, by the convention of Windows.
     MVariadic(name: string, fixed: int)
     // The code at the address in a register.
     MIndirect(value: MValue)

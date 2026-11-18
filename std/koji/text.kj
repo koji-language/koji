@@ -12,7 +12,8 @@ extern function memcpy(target: Address, source: Address, size: CSize): Address
 extern function koji_memory_give(block: Address, words: int)
 extern function memcmp(a: Address, b: Address, size: CSize): CInt
 extern function memchr(bytes: Address, value: CInt, size: CSize): Address
-extern function memmem(haystack: Address, haystackSize: CSize, needle: Address, needleSize: CSize): Address
+// `memmem`, by the library (koji:windows: Windows has none).
+extern function koji_find_bytes(haystack: Address, haystackSize: CSize, needle: Address, needleSize: CSize): Address
 
 extern function koji_string_concat(a: string, b: string): string {
     immut sizeA = stringSize(a)
@@ -241,7 +242,7 @@ extern function koji_string_contains_char(haystack: string, c: char): boolean {
 function containsText(haystack: string, needle: string): boolean {
     if (stringSize(needle) == 0) { return true }
 
-    immut found = memmem(stringBytes(haystack), stringSize(haystack), stringBytes(needle), stringSize(needle))
+    immut found = koji_find_bytes(stringBytes(haystack), stringSize(haystack), stringBytes(needle), stringSize(needle))
     return distance(stringBytes(haystack), found) >= 0
 }
 
@@ -835,3 +836,4 @@ extern function koji_string_free(text: Address) {
     immut capacity: int = read(text, 16)
     koji_memory_give(text, 3 + capacity / 8)
 }
+

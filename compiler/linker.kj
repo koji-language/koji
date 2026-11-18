@@ -85,7 +85,6 @@ export function archiveObjects(bytes: byte[]): Result[byte[][], string] {
 // An archive of objects (`ar` of GNU, with the table of the symbols they define that linkers read).
 export function archive(objects: byte[][]): byte[] {
     mut names: string[][] = []
-    mut count = 0
 
     for object in objects {
         immut defined = match (parseObject(object)) {
@@ -93,7 +92,17 @@ export function archive(objects: byte[][]): byte[] {
             Err(_) => []
         }
         names.push(defined)
-        count += defined.length()
+    }
+
+    return archiveNamed(objects, names)
+}
+
+// The same, with the global symbols of each object given (objects of COFF).
+export function archiveNamed(objects: byte[][], names: string[][]): byte[] {
+    mut count = 0
+
+    for each in names {
+        count += each.length()
     }
 
     // The table: the number of symbols, the offset of the member of each (big-endian words of 4

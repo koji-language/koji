@@ -1,0 +1,196 @@
+// What Windows does not give as the C libraries of Unix do, for the library on Windows (`match
+// (system.os)` elsewhere chooses these there, see "Code for one system" in doc/design.md): the
+// writes and reads of several buffers, a line of a stream, the entries of a directory (by
+// _findfirst64 of the C library of Windows), and `memmem`. Each body is empty on the other systems
+// (their branches of Windows are not compiled), so that they need none of these functions.
+
+import system
+import { Address, CInt, CSize, allocate, distance, free, isNull, nullAddress, offset, read, write } from 'koji:unsafe'
+
+// The C library of Windows (ucrtbase).
+extern function windowsWrite(fd: CInt, bytes: Address, size: CInt): CInt from '_write'
+extern function windowsRead(fd: CInt, bytes: Address, size: CInt): CInt from '_read'
+extern function fgetc(stream: Address): CInt
+extern function realloc(memory: Address, size: CSize): Address
+extern function strlen(text: Address): CSize
+extern function memcpy(target: Address, source: Address, size: CSize): Address
+extern function memcmp(a: Address, b: Address, size: CSize): CInt
+extern function memchr(bytes: Address, value: CInt, size: CSize): Address
+extern function memmem(haystack: Address, haystackSize: CSize, needle: Address, needleSize: CSize): Address
+extern function findFirst(pattern: Address, found: Address): int from '_findfirst64'
+extern function findNext(handle: int, found: Address): CInt from '_findnext64'
+extern function findClose(handle: int): CInt from '_findclose'
+// kernel32.
+extern function WaitForSingleObject(handle: Address, milliseconds: CInt): CInt
+extern function GetExitCodeProcess(process: Address, code: Address): CInt
+extern function CloseHandle(handle: Address): CInt
+
+// `writev`: the buffers (an address and a size each) written in turn: the bytes written, or -1
+// when none could be.
+extern function koji_windows_writev(fd: CInt, buffers: Address, count: CInt): int {
+    if (system.os != system.Windows) { return -1 }
+
+    mut total = 0
+
+    for i in range(count) {
+        immut at: Address = read(buffers, 16 * i)
+        immut size: int = read(buffers, 16 * i + 8)
+
+        if (size == 0) { continue }
+
+        immut done = windowsWrite(fd, at, size)
+
+        if (done < 0) { return if (total > 0) { total } else { -1 } }
+
+        total += done
+
+        if (done < size) { return total }
+    }
+
+    return total
+}
+
+// `readv`: into the first buffer that has room (fewer bytes than asked is allowed).
+extern function koji_windows_readv(fd: CInt, buffers: Address, count: CInt): int {
+    if (system.os != system.Windows) { return -1 }
+
+    for i in range(count) {
+        immut at: Address = read(buffers, 16 * i)
+        immut size: int = read(buffers, 16 * i + 8)
+
+        if (size > 0) { return windowsRead(fd, at, size) }
+    }
+
+    return 0
+}
+
+// `getline`: a line of the stream with its line break, in the block at `*line` of `*capacity` bytes
+// (grown by realloc, and ended by 0): its size, or -1 at the end of the stream.
+extern function koji_windows_getline(line: Address, capacity: Address, stream: Address): int {
+    if (system.os != system.Windows) { return -1 }
+
+    mut block: Address = read(line, 0)
+    mut room: int = read(capacity, 0)
+    mut size = 0
+
+    while (true) {
+        immut c = fgetc(stream)
+
+        if (c < 0) { break }
+
+        if (size + 2 > room) {
+            room = if (room < 64) { 128 } else { room * 2 }
+            block = realloc(block, room)
+            write(line, 0, block)
+            write(capacity, 0, room)
+        }
+
+        write(block, size, byte(c & 0xFF))
+        size += 1
+
+        if (c == 10) { break }
+    }
+
+    if (size == 0) { return -1 }
+
+    write(block, size, byte(0))
+    return size
+}
+
+// The entries of a directory: a block of the handle of _findfirst64, whether the entry it found is
+// yet to be given, and that entry (a `struct __finddata64_t`, its name at 40).
+extern function koji_windows_opendir(path: Address): Address {
+    if (system.os != system.Windows) { return nullAddress() }
+
+    // The pattern: the path, then `\\*`.
+    immut length = strlen(path)
+    immut pattern = allocate(length + 3)
+    memcpy(pattern, path, length)
+    write(pattern, length, byte(92))
+    write(pattern, length + 1, byte(42))
+    write(pattern, length + 2, byte(0))
+    immut block = allocate(16 + 304)
+    immut handle = findFirst(pattern, offset(block, 16))
+    free(pattern)
+
+    if (handle == -1) {
+        free(block)
+        return nullAddress()
+    }
+
+    write(block, 0, handle)
+    write(block, 8, 1)
+    return block
+}
+
+// The next entry, or none: its name at 40.
+extern function koji_windows_readdir(directory: Address): Address {
+    if (system.os != system.Windows) { return nullAddress() }
+
+    immut pending: int = read(directory, 8)
+
+    if (pending == 1) {
+        write(directory, 8, 0)
+        return offset(directory, 16)
+    }
+
+    immut handle: int = read(directory, 0)
+
+    if (findNext(handle, offset(directory, 16)) != 0) { return nullAddress() }
+
+    return offset(directory, 16)
+}
+
+extern function koji_windows_closedir(directory: Address): CInt {
+    if (system.os != system.Windows) { return -1 }
+
+    immut handle: int = read(directory, 0)
+    findClose(handle)
+    free(directory)
+    return 0
+}
+
+// `memmem`: the first place of the needle in the haystack, or none (that of the C library, but on
+// Windows).
+extern function koji_find_bytes(haystack: Address, haystackSize: CSize, needle: Address, needleSize: CSize): Address {
+    return if (system.os == system.Windows) { windowsFind(haystack, haystackSize, needle, needleSize) } else { memmem(haystack, haystackSize, needle, needleSize) }
+}
+
+function windowsFind(haystack: Address, haystackSize: CSize, needle: Address, needleSize: CSize): Address {
+    if (needleSize == 0) { return haystack }
+
+    immut first: byte = read(needle, 0)
+    mut at = 0
+
+    while (at + needleSize <= haystackSize) {
+        immut found = memchr(offset(haystack, at), int(first), haystackSize - needleSize - at + 1)
+
+        if (isNull(found)) { return nullAddress() }
+
+        immut place = distance(haystack, found)
+
+        if (memcmp(found, needle, needleSize) == 0) { return found }
+
+        at = place + 1
+    }
+
+    return nullAddress()
+}
+
+// `waitpid` of a process (its handle: see windowsSpawn of std/system.kj): its exit code in the
+// status as `waitpid` gives it (the code in the second byte), the handle closed.
+extern function koji_windows_waitpid(pid: int, status: Address, options: CInt): int {
+    if (system.os != system.Windows) { return -1 }
+
+    immut process = offset(nullAddress(), pid)
+    // INFINITE
+    WaitForSingleObject(process, -1)
+    immut code = allocate(8)
+    write(code, 0, 0)
+    GetExitCodeProcess(process, code)
+    immut exit: int = read(code, 0)
+    free(code)
+    CloseHandle(process)
+    write(status, 0, (exit & 0xFF) << 8)
+    return pid
+}

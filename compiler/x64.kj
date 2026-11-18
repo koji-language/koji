@@ -31,6 +31,8 @@ type Place = {
 }
 
 type Emitter = {
+    // For Windows: the functions of C called by its convention (see `windowsCall`), frames probed.
+    windows: boolean
     code: MFunctionCode
     allocation: Allocation
     out: byte[]
@@ -59,8 +61,8 @@ type Emitter = {
     cold: boolean
 }
 
-export function emitX64(code: MFunctionCode, allocation: Allocation): Emitted {
-    mut self: Emitter = { code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [], tables: [], cold: false, sweep: sweepOf(allocation, x64Registers.free + x64Registers.limited, xmm) }
+export function emitX64(code: MFunctionCode, allocation: Allocation, windows: boolean): Emitted {
+    mut self: Emitter = { windows: windows, code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [], tables: [], cold: false, sweep: sweepOf(allocation, x64Registers.free + x64Registers.limited, xmm) }
     // The frame: the kept registers used, the slots, the spills.
     mut size = 8 * allocation.used.length()
 
@@ -78,9 +80,22 @@ export function emitX64(code: MFunctionCode, allocation: Allocation): Emitted {
     // push rbp; mov rbp, rsp; sub rsp, frame
     self.bytes([0x55, 0x48, 0x89, 0xE5])
 
-    if (self.frame > 0) {
+    // On Windows, a frame of a page or more touches each page in turn (sub rsp, 4096; test [rsp],
+    // rsp), as __chkstk does: the stack grows only through the guard page below it.
+    mut left = self.frame
+
+    if (windows) {
+        while (left >= 4096) {
+            self.bytes([0x48, 0x81, 0xEC])
+            self.int32(4096)
+            self.bytes([0x48, 0x85, 0x24, 0x24])
+            left -= 4096
+        }
+    }
+
+    if (left > 0) {
         self.bytes([0x48, 0x81, 0xEC])
-        self.int32(self.frame)
+        self.int32(left)
     }
 
     for i in range(allocation.used.length()) {
@@ -774,7 +789,65 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
     self.restoreRegisters(saved, size)
 }
 
+// A function of C on Windows (a variadic one of the machine IR: see callForeign of mirlower.kj), by
+// its convention: the first four arguments in rcx, rdx, r8 and r9 or xmm0 to xmm3 by their
+// positions, the others on the stack above 32 bytes the callee may use, the stack aligned on 16
+// bytes; the result in rax or xmm0. Its registers that calls keep are those of System V and more.
+function Emitter.windowsCall(mut self, name: string, args: MValue[], results: int[]) {
+    immut registers = [rcx, rdx, 8, 9]
+    mut sources: MValue[] = []
+    mut destinations: int[] = []
+    immut stacked = if (args.length() > 4) { args.length() - 4 } else { 0 }
+    immut size = (32 + 8 * stacked + 15) / 16 * 16
+    // sub rsp, size
+    self.bytes([0x48, 0x81, 0xEC])
+    self.int32(size)
+
+    for i in range(args.length()) {
+        if (i < 4) {
+            sources.push(args[i])
+            destinations.push(if (self.isFloat(args[i])) { xmm + i } else { registers[i] })
+            continue
+        }
+
+        // mov [rsp + 32 + 8 * (i - 4)], rax (movq rax, xmm0 for a float)
+        if (self.isFloat(args[i])) {
+            self.floatValue(xmm, args[i])
+            self.bytes([0x66, 0x48, 0x0F, 0x7E, 0xC0])
+        } else {
+            self.loadValue(rax, args[i])
+        }
+
+        self.saveAt(rax, 32 + 8 * (i - 4))
+    }
+
+    self.argumentMove(sources, destinations)
+    self.callExternal(name)
+    // add rsp, size
+    self.bytes([0x48, 0x81, 0xC4])
+    self.int32(size)
+
+    for result in results {
+        if (self.code.floats[result]) {
+            self.storeFloat(result, xmm)
+        } else {
+            self.finish(result, rax)
+        }
+    }
+}
+
 function Emitter.callNow(mut self, callee: MCallee, args: MValue[], results: int[]) {
+    if (self.windows) {
+        match (callee) {
+            MVariadic(name, _) => {
+                self.pairs = []
+                self.windowsCall(name, args, results)
+                return
+            }
+            _ => {}
+        }
+    }
+
     // The arguments in the registers of the convention (a parallel move).
     mut sources: MValue[] = []
     mut destinations: int[] = []

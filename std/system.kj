@@ -32,6 +32,17 @@ extern function koji_system_errno(): CInt
 extern function koji_system_environment(): Address
 extern function readlink(path: Address, buffer: Address, size: CSize): int
 extern function executablePathInto(buffer: Address, size: Address): CInt from '_NSGetExecutablePath'
+// Windows (kernel32).
+extern function GetModuleFileNameA(module: Address, buffer: Address, size: CInt): CInt
+extern function CreateProcessA(application: Address, commandLine: Address, processAttributes: Address, threadAttributes: Address, inherit: CInt, flags: CInt, environment: Address, directory: Address, startup: Address, information: Address): CInt
+extern function CreatePipe(reading: Address, writing: Address, attributes: Address, size: CInt): CInt
+extern function SetHandleInformation(handle: Address, mask: CInt, flags: CInt): CInt
+extern function CreateFileA(name: Address, access: CInt, share: CInt, attributes: Address, disposition: CInt, flags: CInt, template: Address): Address
+extern function CloseHandle(handle: Address): CInt
+extern function GetLastError(): CInt
+extern function PeekNamedPipe(pipe: Address, buffer: Address, size: CInt, read: Address, available: Address, left: Address): CInt
+extern function ReadFile(file: Address, buffer: Address, size: CInt, read: Address, overlapped: Address): CInt
+extern function Sleep(milliseconds: CInt)
 // The standard input and output, of the library (std/koji/output.kj): the buffer of `input`.
 extern function koji_read_bytes(count: int, here: Location, status: Address): string
 extern function koji_write(text: string, here: Location)
@@ -187,6 +198,8 @@ type Started = {
 }
 
 function spawn(command: string, args: string[], captured: boolean): Result[Started, SystemError] {
+    if (os == Windows) { return windowsSpawn(command, args, captured) }
+
     if (hasNul(command)) { return Err(Io(command, 'nul byte found in provided data')) }
 
     for arg in args {
@@ -287,8 +300,189 @@ function wait(pid: int): int {
     return (code >> 8) & 0xFF
 }
 
+// Windows: the program by CreateProcessA, its command line made of the arguments quoted as the C
+// library of Windows reads them; captured, its outputs to pipes (their ends that read are not
+// inherited) and its input from NUL. The handle of the process stands for its number.
+function windowsSpawn(command: string, args: string[], captured: boolean): Result[Started, SystemError] {
+    if (hasNul(command)) { return Err(Io(command, 'nul byte found in provided data')) }
+
+    mut line = windowsQuoted(command)
+
+    for arg in args {
+        if (hasNul(arg)) { return Err(Io(command, 'nul byte found in provided data')) }
+
+        line += ' ' + windowsQuoted(arg)
+    }
+
+    // SECURITY_ATTRIBUTES (inherited), STARTUPINFOA, PROCESS_INFORMATION, the ends of two pipes.
+    immut attributes = allocate(24)
+    writeInt32(attributes, 0, 24)
+    write(attributes, 8, 0)
+    writeInt32(attributes, 16, 1)
+    immut startup = allocate(104)
+
+    for word in range(13) {
+        write(startup, 8 * word, 0)
+    }
+
+    writeInt32(startup, 0, 104)
+    immut information = allocate(24)
+    immut ends = allocate(32)
+    mut input = nullAddress()
+
+    if (captured) {
+        CreatePipe(ends, offset(ends, 8), attributes, 0)
+        CreatePipe(offset(ends, 16), offset(ends, 24), attributes, 0)
+        immut stdoutRead: Address = read(ends, 0)
+        immut stderrRead: Address = read(ends, 16)
+        SetHandleInformation(stdoutRead, 1, 0)
+        SetHandleInformation(stderrRead, 1, 0)
+        immut nul = cString('NUL')
+        // GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING.
+        input = CreateFileA(nul, 0x80000000, 3, attributes, 3, 0, nullAddress())
+        free(nul)
+        // STARTF_USESTDHANDLES, and the handles.
+        writeInt32(startup, 60, 0x100)
+        write(startup, 80, input)
+        immut stdoutWrite: Address = read(ends, 8)
+        immut stderrWrite: Address = read(ends, 24)
+        write(startup, 88, stdoutWrite)
+        write(startup, 96, stderrWrite)
+    }
+
+    immut cLine = cString(line)
+    immut made = CreateProcessA(nullAddress(), cLine, nullAddress(), nullAddress(), 1, 0, nullAddress(), nullAddress(), startup, information) != 0
+    immut error = if (made) { 0 } else { GetLastError() }
+    free(cLine)
+    free(startup)
+    free(attributes)
+    mut stdout = -1
+    mut stderr = -1
+
+    if (captured) {
+        immut stdoutWrite: Address = read(ends, 8)
+        immut stderrWrite: Address = read(ends, 24)
+        CloseHandle(stdoutWrite)
+        CloseHandle(stderrWrite)
+        CloseHandle(input)
+        immut stdoutRead: int = read(ends, 0)
+        immut stderrRead: int = read(ends, 16)
+        stdout = stdoutRead
+        stderr = stderrRead
+    }
+
+    free(ends)
+
+    if (not made) {
+        free(information)
+
+        if (captured) {
+            CloseHandle(windowsHandle(stdout))
+            CloseHandle(windowsHandle(stderr))
+        }
+
+        // ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND; ERROR_ACCESS_DENIED.
+        if (error == 2 or error == 3) { return Err(NotFound(command)) }
+
+        if (error == 5) { return Err(PermissionDenied(command)) }
+
+        return Err(Io(command, `os error ${error}`))
+    }
+
+    immut process: int = read(information, 0)
+    immut thread: Address = read(information, 8)
+    CloseHandle(thread)
+    free(information)
+    return Ok({ pid: process, stdout: stdout, stderr: stderr })
+}
+
+function windowsHandle(value: int): Address {
+    return offset(nullAddress(), value)
+}
+
+// An argument as CommandLineToArgvW reads it back: in quotes when it has a space, a tab or a quote
+// (or is empty), its quotes and the backslashes before them escaped.
+function windowsQuoted(arg: string): string {
+    if (arg != '' and not (' ' in arg) and not ('\t' in arg) and not ('"' in arg)) { return arg }
+
+    mut out = '"'
+    mut slashes = 0
+
+    for c in arg.chars() {
+        if (c == '\\') {
+            slashes += 1
+            continue
+        }
+
+        if (c == '"') {
+            out += '\\' * (2 * slashes + 1) + '"'
+        } else {
+            out += '\\' * slashes + string(c)
+        }
+
+        slashes = 0
+    }
+
+    return out + '\\' * (2 * slashes) + '"'
+}
+
+// Windows: what the two pipes give until both end, read as they fill (PeekNamedPipe, then ReadFile
+// of what waits; a sleep of a millisecond when neither has anything).
+function windowsReadBoth(stdout: int, stderr: int): string[] {
+    mut buffers = [allocate(4096), allocate(4096)]
+    mut sizes = [0, 0]
+    mut capacities = [4096, 4096]
+    mut open = [true, true]
+    immut pipes = [stdout, stderr]
+    immut words = allocate(16)
+
+    while (open[0] or open[1]) {
+        mut any = false
+
+        for i in range(2) {
+            if (not open[i]) { continue }
+
+            write(words, 0, 0)
+
+            if (PeekNamedPipe(windowsHandle(pipes[i]), nullAddress(), 0, nullAddress(), words, nullAddress()) == 0) {
+                open[i] = false
+                CloseHandle(windowsHandle(pipes[i]))
+                continue
+            }
+
+            immut available = readInt32(words, 0)
+
+            if (available <= 0) { continue }
+
+            if (capacities[i] - sizes[i] < available) {
+                capacities[i] = capacities[i] * 2 + available
+                buffers[i] = realloc(buffers[i], capacities[i])
+            }
+
+            write(words, 8, 0)
+            ReadFile(windowsHandle(pipes[i]), offset(buffers[i], sizes[i]), available, offset(words, 8), nullAddress())
+            sizes[i] += readInt32(words, 8)
+            any = true
+        }
+
+        if (not any and (open[0] or open[1])) { Sleep(1) }
+    }
+
+    free(words)
+    mut texts: string[] = []
+
+    for i in range(2) {
+        texts.push(textOf(buffers[i], sizes[i]))
+        free(buffers[i])
+    }
+
+    return texts
+}
+
 // What the two pipes give until both end, read as they fill (a program blocks on a full pipe).
 function readBoth(stdout: int, stderr: int): string[] {
+    if (os == Windows) { return windowsReadBoth(stdout, stderr) }
+
     immut fds = allocate(16)
     mut buffers = [allocate(4096), allocate(4096)]
     mut sizes = [0, 0]
@@ -359,6 +553,9 @@ function readBoth(stdout: int, stderr: int): string[] {
 
 // The system, from the name `uname` gives (the first field of its record, on every system).
 function systemNamed(): OperatingSystem {
+    // Windows has no `uname` (the native backend knows the system it compiles for).
+    if (os == Windows) { return Windows }
+
     immut buffer = allocate(4096)
     uname(buffer)
     immut name = cText(buffer)
@@ -391,6 +588,13 @@ function executableInto(buffer: Address, size: int): int {
             free(room)
             return if (failed != 0) { -2 } else { strlen(buffer) }
         }
+        Windows => {
+            immut length = GetModuleFileNameA(nullAddress(), buffer, size)
+
+            if (length <= 0) { return -1 }
+
+            return if (length >= size) { -2 } else { length }
+        }
         _ => return -1
     }
 }
@@ -398,6 +602,8 @@ function executableInto(buffer: Address, size: int): int {
 // The processor, from the name `uname` gives (the fifth field of its record, whose fields have 65
 // bytes on Linux, 256 on macOS).
 function architectureNamed(): Architecture {
+    if (os == Windows) { return X64 }
+
     immut buffer = allocate(4096)
     uname(buffer)
     immut field = match (os) {

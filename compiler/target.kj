@@ -80,6 +80,10 @@ export function platformCondition(platforms: int[]): string {
 export type Folded = {
     reached: boolean[]
     goes: int[]
+    // What is known of each local on the platform: a flag (a comparison with `system.os`), a number
+    // (the tag of its variant).
+    flags: Option[boolean][]
+    numbers: Option[int][]
 }
 
 // The globals `system.os` and `system.architecture` (-1 for none).
@@ -107,8 +111,13 @@ export function foldFor(routine: IrFunction, globals: Platformed, platform: int)
         goes.push(-1)
     }
 
+    mut flags: Option[boolean][] = []
+    mut numbers: Option[int][] = []
+
     if (globals.system >= 0 or globals.architecture >= 0) {
         immut known = facts(routine, globals, platform)
+        flags = known.flags
+        numbers = known.numbers
 
         for block in range(count) {
             match (routine.blocks[block].terminator) {
@@ -150,7 +159,7 @@ export function foldFor(routine: IrFunction, globals: Platformed, platform: int)
         }
     }
 
-    return { reached: reached, goes: goes }
+    return { reached: reached, goes: goes, flags: flags, numbers: numbers }
 }
 
 // Whether the function reads `system.os` or `system.architecture` (only then can its blocks depend on

@@ -1,11 +1,14 @@
 // `koji:start`: the start of a program, in the library of the runtime written in Koji (the `main`
 // of a program calls `koji_init` first).
 
+import system
 import { Address, CInt, nullAddress, read } from 'koji:unsafe'
 
 // The pool (std/koji/memory.kj) and the modules of the library.
 extern function koji_pool_start()
 extern function koji_library_init()
+// Windows (ucrtbase): the mode of a descriptor.
+extern function windowsSetMode(fd: CInt, mode: CInt): CInt from '_setmode'
 
 // The arguments of `main`, for std/system.kj: how many, and their strings of C.
 mut argumentCount = 0
@@ -13,6 +16,15 @@ mut argumentValues = nullAddress()
 
 extern function koji_init(count: CInt, values: Address) {
     koji_pool_start()
+
+    // Windows: the standard streams as bytes (_O_BINARY), as on other systems: no line breaks of two
+    // characters.
+    if (system.os == system.Windows) {
+        for fd in range(3) {
+            windowsSetMode(fd, 0x8000)
+        }
+    }
+
     koji_library_init()
     // Once the modules are ready (their globals have their first values).
     argumentCount = count

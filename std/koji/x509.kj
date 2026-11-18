@@ -34,6 +34,8 @@ extern function readdir(directory: Address): Address
 extern function closedir(directory: Address): CInt
 extern function realloc(block: Address, size: CSize): Address
 extern function time(place: Address): int
+// Windows (ucrtbase): `time` is `_time64` there.
+extern function windowsTime(place: Address): int from '_time64'
 
 // The results of a verification: why a chain is not trusted.
 export immut trusted = 0
@@ -1427,6 +1429,9 @@ function addFile(mut authorities: Authority[], path: string): boolean {
 
 // The certificates of the files of a directory.
 function addDirectory(mut authorities: Authority[], path: string) {
+    // Windows: no directories of certificates (its own are in its store; the list built in serves).
+    if (system.os == system.Windows) { return }
+
     immut cPath = cString(path)
     immut directory = opendir(cPath)
     free(cPath)
@@ -1691,7 +1696,7 @@ export function verifyChain(chain: Certificate[], authorities: Authority[], host
 
 // The seconds since 1970, now.
 export function now(): int {
-    return time(nullAddress())
+    return if (system.os == system.Windows) { windowsTime(nullAddress()) } else { time(nullAddress()) }
 }
 
 // The certificates of the DER at `bytes` one after the other (`size` bytes), each copied.

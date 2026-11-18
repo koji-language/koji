@@ -28,6 +28,14 @@ extern function pthread_create(thread: Address, attributes: Address, start: Addr
 extern function pthread_detach(thread: int): CInt
 extern function systemRead(fd: CInt, bytes: Address, size: CSize): int from 'read'
 extern function systemWrite(fd: CInt, bytes: Address, size: CSize): int from 'write'
+// Windows (ucrtbase, kernel32).
+extern function windowsRead(fd: CInt, bytes: Address, size: CInt): CInt from '_read'
+extern function windowsWrite(fd: CInt, bytes: Address, size: CInt): CInt from '_write'
+extern function windowsPipe(fds: Address, size: CInt, mode: CInt): CInt from '_pipe'
+extern function windowsHandle(fd: CInt): Address from '_get_osfhandle'
+extern function PeekNamedPipe(pipe: Address, buffer: Address, size: CInt, read: Address, available: Address, left: Address): CInt
+extern function CreateThread(attributes: Address, stack: CSize, start: Address, argument: Address, flags: CInt, id: Address): Address
+extern function CloseHandle(handle: Address): CInt
 extern function koji_system_errno(): CInt
 
 // The library written in Koji (by these names, with the types of C).
@@ -382,6 +390,9 @@ extern function koji_decimal_plus(a: decimal, b: decimal, here: Location): decim
 
 // Whether a write to `fd` would not wait (poll: POLLOUT at once).
 extern function koji_output_ready(fd: int): boolean {
+    // Windows: not known (a thread that helps writes, while other tasks run).
+    if (system.os == system.Windows) { return false }
+
     // struct pollfd: the descriptor (4 bytes), the events (2), the events that came (2).
     immut place = koji_pool_take(1)
     write(place, 0, fd & 0xFFFFFFFF | 4 << 32)
@@ -748,7 +759,8 @@ extern function koji_hash_void(slot: Address): int {
 // state: whether the system made it.
 function closedPipe(state: Address, at: int): boolean {
     immut ends = koji_pool_take(1)
-    immut made = pipe(ends) == 0
+    // On Windows, a pipe of the C library, binary and not inherited (_O_BINARY | _O_NOINHERIT).
+    immut made = if (system.os == system.Windows) { windowsPipe(ends, 4096, 0x8080) == 0 } else { pipe(ends) == 0 }
     // Two ints of C.
     immut both: int = read(ends, 0)
     koji_pool_give(ends, 1)
@@ -757,9 +769,13 @@ function closedPipe(state: Address, at: int): boolean {
 
     immut first = both & 0xFFFFFFFF
     immut second = (both >> 32) & 0xFFFFFFFF
+
     // F_SETFD, FD_CLOEXEC
-    fcntl(first, 2, 1)
-    fcntl(second, 2, 1)
+    if (system.os != system.Windows) {
+        fcntl(first, 2, 1)
+        fcntl(second, 2, 1)
+    }
+
     write(state, at * 8, first)
     write(state, at * 8 + 8, second)
     return true
@@ -767,6 +783,15 @@ function closedPipe(state: Address, at: int): boolean {
 
 // A new thread running `code` with the state: whether the system made it.
 function started(code: Address, state: Address): boolean {
+    if (system.os == system.Windows) {
+        immut handle = CreateThread(nullAddress(), 0, code, state, 0, nullAddress())
+
+        if (isNull(handle)) { return false }
+
+        CloseHandle(handle)
+        return true
+    }
+
     immut thread = koji_pool_take(1)
     immut made = pthread_create(thread, nullAddress(), code, state) == 0
 
@@ -784,9 +809,13 @@ function written(fd: int, word: int, size: int) {
     immut place = koji_pool_take(1)
     write(place, 0, word)
 
-    while (systemWrite(fd, place, size) < 0 and koji_system_errno() == 4) {}
+    while (writeNow(fd, place, size) < 0 and koji_system_errno() == 4) {}
 
     koji_pool_give(place, 1)
+}
+
+function writeNow(fd: int, place: Address, size: int): int {
+    return if (system.os == system.Windows) { windowsWrite(fd, place, size) } else { systemWrite(fd, place, size) }
 }
 
 // Makes the pipes of the jobs: the end the jobs done come from, which reads without waiting, or -1.
@@ -796,6 +825,10 @@ extern function koji_helpers_start(): int {
     if (not closedPipe(state, 0) or not closedPipe(state, 2)) { return -1 }
 
     immut done: int = read(state, 16)
+
+    // On Windows, it is read only when it holds a job (see koji_helpers_finished).
+    if (system.os == system.Windows) { return done }
+
     immut nonblocking = if (system.os == system.Linux) { 0x800 } else { 0x4 }
     // F_SETFL, with F_GETFL
     fcntl(done, 4, fcntl(done, 3, 0) | nonblocking)
@@ -816,6 +849,23 @@ extern function koji_helpers_submit(job: Address) {
 // The jobs done (their addresses at `out`, at most `capacity`), without waiting: how many.
 extern function koji_helpers_finished(out: Address, capacity: int): int {
     immut fd: int = read(koji_threads_place(), 16)
+
+    // Windows: the bytes waiting in the pipe first (PeekNamedPipe), which a read then takes.
+    if (system.os == system.Windows) {
+        immut waiting = koji_pool_take(1)
+        write(waiting, 0, 0)
+        PeekNamedPipe(windowsHandle(fd), nullAddress(), 0, nullAddress(), waiting, nullAddress())
+        immut available: int = read(waiting, 0)
+        koji_pool_give(waiting, 1)
+        immut whole = (available & 0xFFFFFFFF) / 8
+        immut most = if (whole < capacity) { whole } else { capacity }
+
+        if (most == 0) { return 0 }
+
+        immut taken = windowsRead(fd, out, most * 8)
+        return if (taken <= 0) { 0 } else { taken / 8 }
+    }
+
     immut got = systemRead(fd, out, capacity * 8)
     return if (got <= 0) { 0 } else { got / 8 }
 }
