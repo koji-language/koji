@@ -18,6 +18,7 @@ import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, M
 import { lastUses, defs, uses, terminatorUses, successors, targetReads } from 'liveness.kj'
 import { borrowedLocals, changes } from 'borrow.kj'
 import { floatWord, decimalBits } from 'constants.kj'
+import { targetPlatform } from 'inline.kj'
 
 // What the lowering needs to know of the object: the offsets of the globals (in .bss), of the
 // string literals and of the descriptions of the records (in .data), the borrowed parameters of
@@ -3011,6 +3012,21 @@ function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: S
 
     if (name in inlineLibrary) {
         self.inlineLibrary(dest, name, values)
+        return
+    }
+
+    // On arm64, the instructions of AES and PMULL as the system tells (getauxval(AT_HWCAP): bits 3
+    // and 4).
+    if (name == 'koji_aes_available' and targetPlatform() == 1) {
+        immut local = match (dest) {
+            Some(found) => found
+            None => return
+        }
+        immut capabilities = self.temporary()
+        self.current.push(MCall(MExternal('getauxval'), [MImm(16)], [capabilities]))
+        self.current.push(MBinary(capabilities, 'shr', MReg(capabilities), MImm(3), -1))
+        self.current.push(MBinary(capabilities, 'and', MReg(capabilities), MImm(3), -1))
+        self.current.push(MSet(local, 'eq', MReg(capabilities), MImm(3)))
         return
     }
 

@@ -12,7 +12,7 @@ import { lower, lowerTests } from 'lower.kj'
 import { IrProgram, programText } from 'ir.kj'
 import { generate } from 'cgen.kj'
 import { generateNative } from 'native.kj'
-import { inlineSmall } from 'inline.kj'
+import { inlineSmall, targetPlatform } from 'inline.kj'
 import { archive, archiveObjects, linkExecutable, sharedSymbols } from 'linker.kj'
 import { preludeLines } from 'prelude.kj'
 import { serve } from 'lsp.kj'
@@ -404,7 +404,7 @@ function linkOwn(object: byte[], runtime: string, output: string): Result[void, 
         mut found = ''
 
         // Those of arm64 (on another system, those of its tools for arm64), or of x86-64.
-        immut directories = if (system.env('KOJI_TARGET') == Some('arm64')) { ['/lib/aarch64-linux-gnu', '/usr/lib/aarch64-linux-gnu', '/usr/aarch64-linux-gnu/lib'] } else { ['/lib/x86_64-linux-gnu', '/usr/lib/x86_64-linux-gnu', '/lib64', '/usr/lib64', '/lib', '/usr/lib'] }
+        immut directories = if (targetPlatform() == 1) { ['/lib/aarch64-linux-gnu', '/usr/lib/aarch64-linux-gnu', '/usr/aarch64-linux-gnu/lib'] } else { ['/lib/x86_64-linux-gnu', '/usr/lib/x86_64-linux-gnu', '/lib64', '/usr/lib64', '/lib', '/usr/lib'] }
 
         for directory in directories {
             if (found == '' and file.exists(path.join(directory, name))) { found = path.join(directory, name) }
@@ -464,10 +464,10 @@ function writeBytesTo(name: string, bytes: byte[]): Result[void, file.FileError]
     return out.writeBytes(bytes)
 }
 
-// Whether the native backend generates the code of this platform (an ELF of x86-64, for Linux): the
-// default there, the C backend elsewhere.
+// Whether the native backend generates the code of this platform (an ELF of x86-64 or arm64, for
+// Linux): the default there, the C backend elsewhere.
 function nativeHere(): boolean {
-    return system.os == system.Linux and system.architecture == system.X64
+    return system.os == system.Linux and (system.architecture == system.X64 or system.architecture == system.Arm64)
 }
 
 // The executable of a program, by the backend of the platform.
