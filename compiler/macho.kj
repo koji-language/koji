@@ -1,0 +1,505 @@
+// The relocatable object of Mach-O (macOS, arm64) of the code and the data of the native backend
+// (native.kj), the counterpart of its object of ELF: the sections __text, __const (the constants),
+// __data and __bss in one segment, the symbols (locals, then those defined for others, then those
+// of other objects), and the relocations of arm64. The names of C (those defined for others and
+// those of other objects) have an underscore before them (`_main`); the functions of Koji keep theirs. A relocation of ELF to a section plus an offset becomes one to a symbol of the linker
+// at that place (`lkoji...`, private to the object), and an offset from a symbol of another object an
+// ARM64_RELOC_ADDEND before the relocation.
+
+// A symbol defined in the object: its section (1 the code, 2 the constants, 3 the data, 4 the
+// zeros), its place in it, whether others may use it.
+export type MachSymbol = {
+    name: string
+    section: int
+    value: int
+    global: boolean
+}
+
+// A relocation of the code (section 1) or of the data (3), with a kind of ELF for AArch64 (257, the
+// address of a word of data), to a symbol or a section of ELF (`.text`, `.rodata`, `.data`, `.bss`)
+// plus an addend.
+export type MachRelocation = {
+    section: int
+    at: int
+    symbol: string
+    kind: int
+    addend: int
+}
+
+immut sectionNames = ['', '.text', '.rodata', '.data', '.bss']
+
+export function machObject(text: byte[], rodata: byte[], given: byte[], bss: int, defined: MachSymbol[], relocations: MachRelocation[]): byte[] {
+    mut data = given
+    // The addresses of the sections (from 0, one after the other).
+    immut rodataAddress = align(text.length(), 16)
+    immut dataAddress = align(rodataAddress + rodata.length(), 16)
+    immut bssAddress = align(dataAddress + data.length(), 16)
+    immut addresses = [0, 0, rodataAddress, dataAddress, bssAddress]
+    // The symbols: those defined, then the private ones a relocation to a section needs, then those
+    // of other objects.
+    mut locals: MachSymbol[] = []
+    mut globals: MachSymbol[] = []
+
+    for symbol in defined {
+        if (symbol.global) {
+            globals.push(symbol)
+        } else {
+            locals.push(symbol)
+        }
+    }
+
+    mut places: Map[string, string] = [:]
+    mut undefined: string[] = []
+    mut known: Set[string] = Set.from([])
+
+    for symbol in defined {
+        known.add(symbol.name)
+    }
+
+    for relocation in relocations {
+        immut section = sectionNumber(relocation.symbol)
+
+        if (section > 0) {
+            immut key = `${section}:${relocation.addend}`
+
+            if (not places.has(key)) {
+                immut name = `lkoji.${section}.${relocation.addend}`
+                places[key] = name
+                locals.push({ name: name, section: section, value: relocation.addend, global: false })
+            }
+
+            continue
+        }
+
+        if (not known.has(relocation.symbol)) {
+            known.add(relocation.symbol)
+            undefined.push(relocation.symbol)
+        }
+    }
+
+    // The table: index of each name.
+    mut index: Map[string, int] = [:]
+    mut strings: byte[] = [0x20, 0]
+    mut table: byte[] = []
+    immut ordered = locals + globals
+
+    for i in range(ordered.length()) {
+        immut symbol = ordered[i]
+        index[symbol.name] = i
+        putInt32(mut table, strings.length())
+        append(mut strings, utf8(if (symbol.global) { `_${symbol.name}` } else { symbol.name }))
+        strings.push(0)
+        // N_SECT (| N_EXT), its section, its address.
+        table.push(byte(if (symbol.global) { 0x0F } else { 0x0E }))
+        table.push(byte(symbol.section))
+        putBytes(mut table, 0, 2)
+        putWord(mut table, addresses[symbol.section] + symbol.value)
+    }
+
+    for i in range(undefined.length()) {
+        index[undefined[i]] = ordered.length() + i
+        putInt32(mut table, strings.length())
+        append(mut strings, utf8(`_${undefined[i]}`))
+        strings.push(0)
+        // N_UNDF | N_EXT
+        table.push(1)
+        table.push(0)
+        putBytes(mut table, 0, 2)
+        putWord(mut table, 0)
+    }
+
+    while (strings.length() % 8 != 0) {
+        strings.push(0)
+    }
+
+    // The relocations of the code and of the data: address, then the symbol (24 bits), pc-relative,
+    // log2 of the size, extern, type.
+    mut textRelocations: byte[] = []
+    mut dataRelocations: byte[] = []
+
+    for relocation in relocations {
+        immut section = sectionNumber(relocation.symbol)
+        immut symbol = if (section > 0) { index[places[`${section}:${relocation.addend}`]] } else { index[relocation.symbol] }
+        immut addend = if (section > 0) { 0 } else { relocation.addend }
+
+        if (relocation.section == 3) {
+            // ARM64_RELOC_UNSIGNED of 8 bytes: the addend in the word itself.
+            putWord8(mut data, relocation.at, addend)
+            putInt32(mut dataRelocations, relocation.at)
+            putInt32(mut dataRelocations, symbol | 3 << 25 | 1 << 27)
+            continue
+        }
+
+        immut kind = match (relocation.kind) {
+            // ARM64_RELOC_BRANCH26
+            283 => 2
+            282 => 2
+            // ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12
+            275 => 3
+            311 => 5
+            312 => 6
+            _ => 4
+        }
+        immut relative = if (kind == 2 or kind == 3 or kind == 5) { 1 } else { 0 }
+
+        // ARM64_RELOC_ADDEND first, for an offset from the symbol.
+        if (addend != 0) {
+            putInt32(mut textRelocations, relocation.at)
+            putInt32(mut textRelocations, (addend & 0xFFFFFF) | 2 << 25 | 10 << 28)
+        }
+
+        putInt32(mut textRelocations, relocation.at)
+        putInt32(mut textRelocations, symbol | relative << 24 | 2 << 25 | 1 << 27 | kind << 28)
+    }
+
+    // The header and the commands: the segment (72 bytes) and its 4 sections (80 each), the
+    // version of the system, the symbols, their kinds.
+    immut commands = 72 + 4 * 80 + 24 + 24 + 80
+    immut contents = align(32 + commands, 16)
+    immut textRelocationsAt = align(contents + dataAddress + data.length(), 8)
+    immut dataRelocationsAt = textRelocationsAt + textRelocations.length()
+    immut tableAt = align(dataRelocationsAt + dataRelocations.length(), 8)
+    immut stringsAt = tableAt + table.length()
+    mut out: byte[] = []
+    // MH_MAGIC_64, CPU_TYPE_ARM64, all subtypes, MH_OBJECT, the commands, no flags.
+    putInt32(mut out, 0xFEEDFACF)
+    putInt32(mut out, 0x0100000C)
+    putInt32(mut out, 0)
+    putInt32(mut out, 1)
+    putInt32(mut out, 4)
+    putInt32(mut out, commands)
+    putInt32(mut out, 0)
+    putInt32(mut out, 0)
+    // LC_SEGMENT_64: no name, from address 0, its contents in the file, all permissions.
+    putInt32(mut out, 0x19)
+    putInt32(mut out, 72 + 4 * 80)
+    putName(mut out, '')
+    putWord(mut out, 0)
+    putWord(mut out, bssAddress + bss)
+    putWord(mut out, contents)
+    putWord(mut out, dataAddress + data.length())
+    putInt32(mut out, 7)
+    putInt32(mut out, 7)
+    putInt32(mut out, 4)
+    putInt32(mut out, 0)
+    // The sections: names, address, size, offset, alignment (log2), relocations, flags.
+    section(mut out, '__text', '__TEXT', 0, text.length(), contents, 4, textRelocationsAt, textRelocations.length() / 8, 0x80000400)
+    section(mut out, '__const', '__TEXT', rodataAddress, rodata.length(), contents + rodataAddress, 4, 0, 0, 0)
+    section(mut out, '__data', '__DATA', dataAddress, data.length(), contents + dataAddress, 4, dataRelocationsAt, dataRelocations.length() / 8, 0)
+    // S_ZEROFILL: nothing in the file.
+    section(mut out, '__bss', '__DATA', bssAddress, bss, 0, 4, 0, 0, 1)
+    // LC_BUILD_VERSION: macOS 11.0, no tools.
+    putInt32(mut out, 0x32)
+    putInt32(mut out, 24)
+    putInt32(mut out, 1)
+    putInt32(mut out, 0x000B0000)
+    putInt32(mut out, 0)
+    putInt32(mut out, 0)
+    // LC_SYMTAB
+    putInt32(mut out, 2)
+    putInt32(mut out, 24)
+    putInt32(mut out, tableAt)
+    putInt32(mut out, ordered.length() + undefined.length())
+    putInt32(mut out, stringsAt)
+    putInt32(mut out, strings.length())
+    // LC_DYSYMTAB: the locals, those defined for others, the others; the rest none.
+    putInt32(mut out, 0xB)
+    putInt32(mut out, 80)
+    putInt32(mut out, 0)
+    putInt32(mut out, locals.length())
+    putInt32(mut out, locals.length())
+    putInt32(mut out, globals.length())
+    putInt32(mut out, ordered.length())
+    putInt32(mut out, undefined.length())
+
+    for word in range(14) {
+        putInt32(mut out, 0)
+    }
+
+    pad(mut out, contents)
+    append(mut out, text)
+    pad(mut out, contents + rodataAddress)
+    append(mut out, rodata)
+    pad(mut out, contents + dataAddress)
+    append(mut out, data)
+    pad(mut out, textRelocationsAt)
+    append(mut out, textRelocations)
+    append(mut out, dataRelocations)
+    pad(mut out, tableAt)
+    append(mut out, table)
+    append(mut out, strings)
+    return out
+}
+
+// The section of ELF a relocation names (1 to 4), or 0 for a symbol.
+function sectionNumber(name: string): int {
+    for i in range(1, 5) {
+        if (name == sectionNames[i]) { return i }
+    }
+
+    return 0
+}
+
+function section(mut out: byte[], name: string, segment: string, address: int, size: int, offset: int, alignment: int, relocations: int, count: int, flags: int) {
+    putName(mut out, name)
+    putName(mut out, segment)
+    putWord(mut out, address)
+    putWord(mut out, size)
+    putInt32(mut out, offset)
+    putInt32(mut out, alignment)
+    putInt32(mut out, relocations)
+    putInt32(mut out, count)
+    putInt32(mut out, flags)
+
+    for word in range(3) {
+        putInt32(mut out, 0)
+    }
+}
+
+// A name of 16 bytes (zeros after it).
+function putName(mut out: byte[], name: string) {
+    immut bytes = utf8(name)
+
+    for i in range(16) {
+        out.push(if (i < bytes.length()) { bytes[i] } else { 0 })
+    }
+}
+
+function pad(mut out: byte[], size: int) {
+    while (out.length() < size) {
+        out.push(0)
+    }
+}
+
+function align(number: int, size: int): int {
+    return (number + size - 1) / size * size
+}
+
+function putInt32(mut out: byte[], number: int) {
+    putBytes(mut out, number, 4)
+}
+
+function putWord(mut out: byte[], number: int) {
+    putBytes(mut out, number, 8)
+}
+
+function putBytes(mut out: byte[], number: int, count: int) {
+    for i in range(count) {
+        out.push(byte((number >> (8 * i)) & 0xFF))
+    }
+}
+
+function putWord8(mut out: byte[], at: int, number: int) {
+    for i in range(8) {
+        out[at + i] = byte((number >> (8 * i)) & 0xFF)
+    }
+}
+
+function append(mut out: byte[], bytes: byte[]) {
+    for each in bytes {
+        out.push(each)
+    }
+}
+
+// The bytes of a text in UTF-8.
+function utf8(text: string): byte[] {
+    mut bytes: byte[] = []
+
+    for c in text.chars() {
+        immut code = c.code()
+
+        if (code < 0x80) {
+            bytes.push(byte(code))
+            continue
+        }
+
+        if (code < 0x800) {
+            bytes.push(byte(0xC0 | code >> 6))
+            bytes.push(byte(0x80 | (code & 0x3F)))
+            continue
+        }
+
+        if (code < 0x10000) {
+            bytes.push(byte(0xE0 | code >> 12))
+            bytes.push(byte(0x80 | (code >> 6 & 0x3F)))
+            bytes.push(byte(0x80 | (code & 0x3F)))
+            continue
+        }
+
+        bytes.push(byte(0xF0 | code >> 18))
+        bytes.push(byte(0x80 | (code >> 12 & 0x3F)))
+        bytes.push(byte(0x80 | (code >> 6 & 0x3F)))
+        bytes.push(byte(0x80 | (code & 0x3F)))
+    }
+
+    return bytes
+}
+
+// An archive of objects of Mach-O, as the linker of macOS reads it: in the format of BSD, its table
+// of contents first (`__.SYMDEF SORTED`: the global symbols, sorted, each with the place of its
+// member), the names of the members after their headers (`#1/` and their length) so that each
+// object starts at a multiple of 8 bytes.
+export function machArchive(objects: byte[][]): byte[] {
+    mut entries: string[] = []
+    mut owners: int[] = []
+
+    for i in range(objects.length()) {
+        for name in machGlobals(objects[i]) {
+            entries.push(name)
+            owners.push(i)
+        }
+    }
+
+    mut order: int[] = []
+
+    for i in range(entries.length()) {
+        order.push(i)
+    }
+
+    order.sortBy((a, b) => entries[a] < entries[b])
+    mut strings: byte[] = []
+    mut starts: int[] = []
+
+    for i in order {
+        starts.push(strings.length())
+        append(mut strings, utf8(entries[i]))
+        strings.push(0)
+    }
+
+    while (strings.length() % 8 != 0) {
+        strings.push(0)
+    }
+
+    // The table's size, then the places of the members (known once the table's is).
+    immut tableName = memberName('__.SYMDEF SORTED', 8)
+    immut tableSize = tableName.length() + 4 + 8 * entries.length() + 4 + strings.length()
+    mut places: int[] = []
+    mut at = 8 + 60 + tableSize
+
+    for i in range(objects.length()) {
+        places.push(at)
+        immut name = memberName(`koji${i}.o`, at + 60)
+        at += 60 + name.length() + objects[i].length()
+
+        while (at % 8 != 0) {
+            at += 1
+        }
+    }
+
+    mut table: byte[] = []
+    append(mut table, tableName)
+    putInt32(mut table, 8 * entries.length())
+
+    for k in range(order.length()) {
+        putInt32(mut table, starts[k])
+        putInt32(mut table, places[owners[order[k]]])
+    }
+
+    putInt32(mut table, strings.length())
+    append(mut table, strings)
+    mut out: byte[] = utf8('!<arch>\n')
+    archiveMember(mut out, '__.SYMDEF SORTED', table, tableName.length())
+
+    for i in range(objects.length()) {
+        immut name = memberName(`koji${i}.o`, out.length() + 60)
+        mut body = name
+        append(mut body, objects[i])
+
+        while ((out.length() + 60 + body.length()) % 8 != 0) {
+            body.push(0)
+        }
+
+        archiveMember(mut out, `koji${i}.o`, body, name.length())
+    }
+
+    return out
+}
+
+// The name of a member after its header (`#1/`), ended by zeros so that what follows starts at a
+// multiple of 8 bytes (`at` is where the name starts).
+function memberName(name: string, at: int): byte[] {
+    mut bytes = utf8(name)
+    bytes.push(0)
+
+    while ((at + bytes.length()) % 8 != 0) {
+        bytes.push(0)
+    }
+
+    return bytes
+}
+
+// A member: its header (the name `#1/` and its length, the date, the owner, the group, the mode,
+// the size, the end), then its contents.
+function archiveMember(mut out: byte[], name: string, body: byte[], nameLength: int) {
+    append(mut out, utf8(spaced(`#1/${nameLength}`, 16)))
+    append(mut out, utf8(spaced('0', 12)))
+    append(mut out, utf8(spaced('0', 6)))
+    append(mut out, utf8(spaced('0', 6)))
+    append(mut out, utf8(spaced('644', 8)))
+    append(mut out, utf8(spaced(string(body.length()), 10)))
+    append(mut out, utf8('`\n'))
+    append(mut out, body)
+}
+
+function spaced(text: string, width: int): string {
+    mut out = text
+
+    while (out.length() < width) {
+        out += ' '
+    }
+
+    return out
+}
+
+// The global symbols an object of Mach-O defines (N_EXT and N_SECT), from its table.
+function machGlobals(bytes: byte[]): string[] {
+    mut found: string[] = []
+    immut count = number(bytes, 16, 4)
+    mut at = 32
+
+    for i in range(count) {
+        immut command = number(bytes, at, 4)
+
+        // LC_SYMTAB: the symbols (16 bytes each) and their names.
+        if (command == 2) {
+            immut symbols = number(bytes, at + 8, 4)
+            immut total = number(bytes, at + 12, 4)
+            immut names = number(bytes, at + 16, 4)
+
+            for k in range(total) {
+                immut entry = symbols + 16 * k
+                immut kind = int(bytes[entry + 4])
+
+                if (kind & 1 == 1 and kind & 0x0E == 0x0E) {
+                    mut name = ''
+                    mut place = names + number(bytes, entry, 4)
+
+                    while (bytes[place] != 0) {
+                        name += match (char(int(bytes[place]))) {
+                            Some(c) => string(c)
+                            None => '?'
+                        }
+                        place += 1
+                    }
+
+                    found.push(name)
+                }
+            }
+        }
+
+        at += number(bytes, at + 4, 4)
+    }
+
+    return found
+}
+
+// A number of `size` bytes at `at`, little-endian.
+function number(bytes: byte[], at: int, size: int): int {
+    mut value = 0
+
+    for i in range(size) {
+        value = value | int(bytes[at + i]) << (8 * i)
+    }
+
+    return value
+}

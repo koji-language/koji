@@ -13,6 +13,7 @@ import { IrProgram, programText } from 'ir.kj'
 import { generate } from 'cgen.kj'
 import { generateNative } from 'native.kj'
 import { inlineSmall, targetPlatform } from 'inline.kj'
+import { machArchive } from 'macho.kj'
 import { archive, archiveObjects, linkExecutable, sharedSymbols } from 'linker.kj'
 import { preludeLines } from 'prelude.kj'
 import { serve } from 'lsp.kj'
@@ -30,6 +31,7 @@ immut usage = [
     '        -o <output>                   the executable (default: the file name without .kj)',
     '        --emit c                      write the generated C instead',
     '        --emit ir                     write the intermediate representation instead',
+    '        --emit object                 write the object file of the native backend instead',
     '        --c                           generate C and compile it with the C compiler (the default',
     '                                      where the native backend is not yet: not Linux on x86-64)',
     '    kojic dump tokens <file.kj>       show the tokens of a file (for comparing compilers)',
@@ -159,7 +161,7 @@ type Build = {
     emit: string
 }
 
-// The options of `kojic build <file.kj> [-o <output>] [--emit c|ir]`.
+// The options of `kojic build <file.kj> [-o <output>] [--emit c|ir|object]`.
 function buildOptions(args: string[]): Build {
     mut source: Option[string] = None
     mut output: Option[string] = None
@@ -188,13 +190,13 @@ function buildOptions(args: string[]): Build {
         }
 
         if (arg == '--emit') {
-            if (i < args.length() and (args[i] == 'c' or args[i] == 'ir')) {
+            if (i < args.length() and (args[i] == 'c' or args[i] == 'ir' or args[i] == 'object')) {
                 emit = args[i]
                 i += 1
                 continue
             }
 
-            printError(`--emit takes 'c' or 'ir'\n\n${usage}`)
+            printError(`--emit takes 'c', 'ir' or 'object'\n\n${usage}`)
 
             system.exit(2)
         }
@@ -342,7 +344,8 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
         if (not (library in ['c', 'm', 'pthread'])) { others = true }
     }
 
-    if (not others and chosen != 'system') {
+    // (Not yet for macOS, whose objects of Mach-O the system's linker links.)
+    if (not others and chosen != 'system' and targetPlatform() / 3 != 1) {
         match (linkOwn(object, runtime, output)) {
             Ok(_) => return Ok()
             Err(message) => {
@@ -449,7 +452,8 @@ function buildLibrary(output: string): Result[void, string] {
         Err(message) => return Err(`compile error: ${message}`)
     }
     // An archive of the object, with the table of its symbols (linker.kj).
-    return writeBytes(output, archive([object]))
+    // For macOS, an archive of BSD (its linker reads no other).
+    return writeBytes(output, if (targetPlatform() / 3 == 1) { machArchive([object]) } else { archive([object]) })
 }
 
 function writeBytes(name: string, bytes: byte[]): Result[void, string] {
@@ -489,6 +493,10 @@ function build(args: string[]) {
         'ir' => writeFile(options.output, text(programText(program)))
         'c' => writeFile(options.output, text(generate(program)))
         'native' => linkNative(program, options.output)
+        'object' => match (generateNative(program)) {
+            Ok(bytes) => writeBytes(options.output, bytes)
+            Err(message) => Err(`compile error: ${message}`)
+        }
         'executable-c' => compileC(text(generate(program)), options.output, program.libraries)
         _ => executable(program, options.output)
     }

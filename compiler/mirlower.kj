@@ -3017,6 +3017,16 @@ function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: S
 
     // On arm64, the instructions of AES and PMULL as the system tells (getauxval(AT_HWCAP): bits 3
     // and 4).
+    // On macOS and arm64 (Apple's processors), they always are.
+    if (name == 'koji_aes_available' and targetPlatform() == 4) {
+        match (dest) {
+            Some(local) => self.current.push(MMove(local, MImm(1)))
+            None => {}
+        }
+
+        return
+    }
+
     if (name == 'koji_aes_available' and targetPlatform() == 1) {
         immut local = match (dest) {
             Some(found) => found
@@ -3121,12 +3131,17 @@ function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: S
     mut symbol = name
     mut cInt = false
     mut variadic = false
+    mut fixed = 0
 
     for each in self.program.externs {
         if (each.name == name) {
             symbol = each.symbol
             cInt = each.returns == 'int'
             variadic = '...' in each.params
+
+            for i in range(each.params.length()) {
+                if (each.params[i] == '...' and fixed == 0) { fixed = i }
+            }
         }
     }
 
@@ -3136,13 +3151,13 @@ function Lowering.libraryCall(mut self, dest: Option[int], name: string, args: S
         match (dest) {
             Some(local) => {
                 immut target = self.resultOf(local)
-                self.current.push(MCall(MVariadic(symbol), values, [target]))
+                self.current.push(MCall(MVariadic(symbol, fixed), values, [target]))
 
                 if (cInt) { self.current.push(MUnary(target, 'sext32', MReg(target), -1)) }
 
                 self.setResult(local, target)
             }
-            None => self.current.push(MCall(MVariadic(symbol), values, []))
+            None => self.current.push(MCall(MVariadic(symbol, fixed), values, []))
         }
 
         return

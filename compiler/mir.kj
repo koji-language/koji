@@ -33,8 +33,9 @@ export type MCallee = {
     MFunction(id: int)
     // A function of another object (the runtime library, C), by its name.
     MExternal(name: string)
-    // One of C that takes as many arguments as it is given (al tells how many in vector registers).
-    MVariadic(name: string)
+    // One of C that takes as many arguments as it is given after its `fixed` ones (on x86-64, al
+    // tells how many are in vector registers; on arm64 for macOS, those after go on the stack).
+    MVariadic(name: string, fixed: int)
     // The code at the address in a register.
     MIndirect(value: MValue)
 }
@@ -204,7 +205,7 @@ function instructionText(instruction: MInstruction, code: MFunctionCode): string
             immut target = match (callee) {
                 MFunction(id) => `f${id}`
                 MExternal(name) => name
-                MVariadic(name) => `${name}...`
+                MVariadic(name, fixed) => `${name}(${fixed}...)`
                 MIndirect(value) => `*${valueText(value, code)}`
             }
             immut prefix = if (written.length() > 0) { `${written.join(', ')} = ` } else { '' }

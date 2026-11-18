@@ -3286,3 +3286,45 @@ fn koji_generates_arm64() {
     assert!(String::from_utf8_lossy(&run.stderr).contains("index 5 out of range (length 3)"), "{}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(run.status.code(), Some(1));
 }
+
+#[test]
+fn koji_generates_macos_objects() {
+    // Objects of Mach-O for macOS on arm64 (compiler/macho.kj, KOJI_TARGET=macos-arm64): the native
+    // library (an archive of BSD) and a program, linked by lld's linker for Mach-O with a libSystem
+    // of the symbols they need, none of Linux. Nothing here runs a program of macOS: the test checks
+    // that the linker of macOS takes them. Only where ld64.lld and llvm-nm are.
+    let linker = ["ld64.lld", "/usr/lib/llvm-18/bin/ld64.lld"].into_iter().find(|tool| Command::new(tool).arg("--version").output().is_ok_and(|o| o.status.success()));
+    let nm = Command::new("llvm-nm").arg("--version").output().is_ok_and(|o| o.status.success());
+    let Some(linker) = linker else { return };
+    if !nm || !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("macos");
+    std::fs::create_dir_all(directory.join("sdk/usr/lib")).unwrap();
+    let library = directory.join("libkoji.a");
+    let built = koji::finish(koji::kojic().env("KOJI_TARGET", "macos-arm64").arg("library").arg("-o").arg(&library), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let source = "import task\nimport file\nfunction fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\ntask.group((group) => {\n    group.spawn(() => print(file.exists('/')))\n})\nprint(`${fib(20)} ${1.5 + 2.25}`)\n";
+    let path = source_file("macos", source);
+    let object = directory.join("macos.o");
+    let built = koji::finish(koji::kojic().env("KOJI_TARGET", "macos-arm64").arg("build").arg(&path).arg("--emit").arg("object").arg("-o").arg(&object), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let bytes = std::fs::read(&object).unwrap();
+    assert_eq!(&bytes[..8], &[0xCF, 0xFA, 0xED, 0xFE, 0x0C, 0x00, 0x00, 0x01], "not an object of Mach-O for arm64");
+    // The symbols they need from libSystem.
+    let symbols = |args: &[&str]| -> std::collections::BTreeSet<String> {
+        let out = Command::new("llvm-nm").args(args).arg(&object).arg(&library).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).lines().filter(|line| !line.ends_with(':') && !line.is_empty()).map(|line| line.split_whitespace().last().unwrap().to_string()).collect()
+    };
+    let defined = symbols(&["-g", "--defined-only"]);
+    let needed: Vec<String> = symbols(&["-u"]).into_iter().filter(|name| !defined.contains(name)).collect();
+    for linux in ["_getauxval", "___errno_location", "_epoll_create1", "_environ"] {
+        assert!(!needed.iter().any(|name| name == linux), "{} is of Linux", linux);
+    }
+    let quoted: Vec<String> = needed.iter().chain(["dyld_stub_binder".to_string()].iter()).map(|name| format!("'{}'", name)).collect();
+    std::fs::write(directory.join("sdk/usr/lib/libSystem.tbd"), format!("--- !tapi-tbd\ntbd-version: 4\ntargets: [ arm64-macos ]\ninstall-name: '/usr/lib/libSystem.B.dylib'\ncurrent-version: 1319\nexports:\n  - targets: [ arm64-macos ]\n    symbols: [ {} ]\n...\n", quoted.join(", "))).unwrap();
+    let executable = directory.join("macos");
+    let linked = Command::new(linker).args(["-arch", "arm64", "-platform_version", "macos", "11.0", "11.0", "-syslibroot"]).arg(directory.join("sdk")).arg("-lSystem").arg("-o").arg(&executable).arg(&object).arg(&library).output().unwrap();
+    assert!(linked.status.success(), "{}", String::from_utf8_lossy(&linked.stderr));
+    assert_eq!(&std::fs::read(&executable).unwrap()[..4], &[0xCF, 0xFA, 0xED, 0xFE]);
+}

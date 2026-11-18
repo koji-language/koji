@@ -25,6 +25,7 @@ import { MBuilder, builder } from 'mircode.kj'
 import { allocate } from 'mirregs.kj'
 import { emitX64, x64Registers } from 'x64.kj'
 import { emitA64, a64Registers } from 'a64.kj'
+import { MachSymbol, MachRelocation, machObject } from 'macho.kj'
 import system
 
 immut rsi = 6
@@ -83,8 +84,9 @@ type Native = {
     // The `blocking` functions of foreign blocks called: the places of their jobs' code.
     trampolines: Map[string, int]
     trampolineUses: Relocation[]
-    // Whether the object is for arm64 (KOJI_TARGET=arm64), else x86-64.
+    // Whether the object is for arm64, else x86-64; for macOS (a Mach-O), else Linux (an ELF).
     arm: boolean
+    macos: boolean
     // For each function, the globals it may see (globals.kj).
     seen: Set[int][]
     // For each function, its borrowed parameters, and the globals that never change (borrow.kj):
@@ -102,7 +104,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
 
     mut native: Native = {
         program: program, code: [], rodata: [], data: [], bss: 0, relocations: [], dataRelocations: [], uses: [], starts: [], texts: [:], strings: [], globals: [], records: [],
-        trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program), constants: constantGlobals(program), trampolineStart: 0, arm: targetPlatform() == 1
+        trampolines: [:], trampolineUses: [], seen: globalsSeen(program), borrowed: borrowedParams(program), constants: constantGlobals(program), trampolineStart: 0, arm: targetPlatform() % 3 == 1, macos: targetPlatform() / 3 == 1
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
@@ -207,6 +209,8 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
         }
     }
 
+    if (native.macos) { return Ok(machOf(native, extras, exported)) }
+
     return Ok(elfObject(native, mainStart, extras, exported))
 }
 
@@ -288,11 +292,18 @@ function Native.runtimeCode(mut self): Export[] {
     switchOff.add(MStore(MSymbol('koji_pool_off', 0), MImm(1), 1))
     switchOff.end(MReturn([]), -1)
     exported.push(self.exportCode(switchOff))
-    // The variable of C `environ`, through the table of the linker.
+    // The variable of C `environ`, through the table of the linker (on macOS, its address from
+    // _NSGetEnviron).
     mut environment = builder('koji_system_environment', [], [false])
     immut place = environment.register(false)
     immut value = environment.register(false)
-    environment.add(MLoad(place, MGot('environ'), 8))
+
+    if (self.macos) {
+        environment.add(MCall(MExternal('_NSGetEnviron'), [], [place]))
+    } else {
+        environment.add(MLoad(place, MGot('environ'), 8))
+    }
+
     environment.add(MLoad(value, MBase(place, 0), 8))
     environment.end(MReturn([MReg(value)]), -1)
     exported.push(self.exportCode(environment))
@@ -473,6 +484,11 @@ function Native.runtimeCode(mut self): Export[] {
     return exported
 }
 
+// The function of the C library that gives the address of errno.
+function Native.errnoFunction(self): string {
+    return if (self.macos) { '__error' } else { '__errno_location' }
+}
+
 // The bytes of instructions of 4 bytes (arm64), little-endian.
 function wordBytes(words: int[]): int[] {
     mut bytes: int[] = []
@@ -569,7 +585,7 @@ function Native.threadsCode(mut self): Export[] {
     helper.add(MLoad(job, MSlot(held, 0), 8))
     helper.add(MLoad(called, MBase(job, 0), 8))
     helper.add(MCall(MIndirect(MReg(called)), [MReg(job)], []))
-    helper.add(MCall(MExternal('__errno_location'), [], [place]))
+    helper.add(MCall(MExternal(self.errnoFunction()), [], [place]))
     helper.add(MLoad(error, MBase(place, 0), 4))
     helper.add(MUnary(error, 'sext32', MReg(error), -1))
     helper.add(MStore(MBase(job, 64), MReg(error), 8))
@@ -646,7 +662,7 @@ function Native.threadsCode(mut self): Export[] {
     immut errno = blocking.register(false)
     immut kept = blocking.register(false)
     blocking.add(MCall(MExternal('koji_task_offload'), [MReg(given)], []))
-    blocking.add(MCall(MExternal('__errno_location'), [], [errno]))
+    blocking.add(MCall(MExternal(self.errnoFunction()), [], [errno]))
     blocking.add(MLoad(kept, MBase(given, 64), 4))
     blocking.add(MStore(MBase(errno, 0), MReg(kept), 4))
     blocking.end(MJump(finished), finished)
@@ -712,7 +728,7 @@ function Native.threadsCode(mut self): Export[] {
 function Native.unlessInterrupted(mut self, mut code: MBuilder, again: int, otherwise: int) {
     immut place = code.register(false)
     immut error = code.register(false)
-    code.add(MCall(MExternal('__errno_location'), [], [place]))
+    code.add(MCall(MExternal(self.errnoFunction()), [], [place]))
     code.add(MLoad(error, MBase(place, 0), 4))
     code.end(MBranch('eq', MReg(error), MImm(4), again, otherwise), -1)
 }
@@ -1124,7 +1140,7 @@ function Native.generateMir(mut self, id: int) {
 // A function of the machine IR, its registers allocated and encoded, put in the object: its code, its
 // relocations, its calls of functions of the program and its texts. Where it starts.
 function Native.emitCode(mut self, code: MFunctionCode): int {
-    immut emitted = if (self.arm) { emitA64(code, allocate(code, a64Registers)) } else { emitX64(code, allocate(code, x64Registers)) }
+    immut emitted = if (self.arm) { emitA64(code, allocate(code, a64Registers), self.macos) } else { emitX64(code, allocate(code, x64Registers)) }
     immut start = self.code.length()
 
     for each in emitted.code {
@@ -1311,6 +1327,37 @@ type Symbol = {
     section: int
     value: int
     size: int
+}
+
+// The relocatable object of Mach-O (macho.kj) of the code and data: the functions named as in Koji
+// (local), the frees of records, and the symbols it defines for others.
+function machOf(native: Native, extras: int[], exported: Export[]): byte[] {
+    mut symbols: MachSymbol[] = []
+
+    for id in range(native.starts.length()) {
+        immut name = native.program.functions[id].name
+        symbols.push({ name: if (name == '') { `koji_f${id}` } else { name }, section: 1, value: native.starts[id], global: false })
+    }
+
+    for i in range(extras.length()) {
+        symbols.push({ name: `free ${native.program.records[i].name}`, section: 1, value: extras[i], global: false })
+    }
+
+    for each in exported {
+        symbols.push({ name: each.name, section: each.section, value: each.at, global: true })
+    }
+
+    mut relocations: MachRelocation[] = []
+
+    for relocation in native.relocations {
+        relocations.push({ section: 1, at: relocation.at, symbol: relocation.symbol, kind: relocation.kind, addend: relocation.addend })
+    }
+
+    for relocation in native.dataRelocations {
+        relocations.push({ section: 3, at: relocation.at, symbol: relocation.symbol, kind: 257, addend: relocation.addend })
+    }
+
+    return machObject(native.code, native.rodata, native.data, native.bss, symbols, relocations)
 }
 
 // The relocatable object of ELF64 (x86-64) of the code and data.

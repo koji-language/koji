@@ -47,6 +47,7 @@ type Place = {
 }
 
 type Emitter = {
+    apple: boolean
     code: MFunctionCode
     allocation: Allocation
     out: byte[]
@@ -69,8 +70,10 @@ type Emitter = {
     tables: int[][]
 }
 
-export function emitA64(code: MFunctionCode, allocation: Allocation): Emitted {
-    mut self: Emitter = { code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [], aligned: [], tables: [] }
+// With `apple`, the convention of macOS: the arguments after the fixed ones of a variadic function on
+// the stack.
+export function emitA64(code: MFunctionCode, allocation: Allocation, apple: boolean): Emitted {
+    mut self: Emitter = { apple: apple, code: code, allocation: allocation, out: [], relocations: [], calls: [], texts: [], slots: [], spills: [], frame: 0, blockAt: [], jumps: [], panicJumps: [], position: 0, pairs: [], aligned: [], tables: [] }
     mut size = 8 * allocation.used.length()
 
     for bytes in code.slots {
@@ -925,7 +928,18 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
         classes.push(self.isFloat(arg))
     }
 
-    immut places = argumentPlaces(args.length(), classes, ids, self.pairs, self.aligned)
+    mut places = argumentPlaces(args.length(), classes, ids, self.pairs, self.aligned)
+
+    // macOS: the variadic arguments on the stack, a word each.
+    match (callee) {
+        MVariadic(_, fixed) if (self.apple) => {
+            for i in range(fixed, args.length()) {
+                places[i] = -1 - 8 * (i - fixed)
+            }
+        }
+        _ => {}
+    }
+
     self.pairs = []
     self.aligned = []
     // The arguments on the stack: stored below it (its size a multiple of 16), then those in the
@@ -974,7 +988,7 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
             self.word32(0x94000000)
         }
         MExternal(name) => self.callExternal(name)
-        MVariadic(name) => self.callExternal(name)
+        MVariadic(name, _) => self.callExternal(name)
         // blr x16
         MIndirect(_) => self.word32(0xD63F0000 | address << 5)
     }

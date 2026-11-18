@@ -833,7 +833,7 @@ function Emitter.call(mut self, callee: MCallee, args: MValue[], results: int[])
         }
         MExternal(name) => self.callExternal(name)
         // mov eax, floats
-        MVariadic(name) => {
+        MVariadic(name, _) => {
             self.bytes([0xB8])
             self.int32(floats)
             self.callExternal(name)

@@ -92,10 +92,14 @@ function inlinable(program: IrProgram, blocks: int, most: int): boolean[] {
 }
 
 // The platform the native backend compiles for (see target.kj): Linux on the processor it runs on, or
-// on the one KOJI_TARGET names (`x64`, `arm64`): the system times 3 plus the processor.
+// the one KOJI_TARGET names (`x64`, `arm64`, `macos-arm64`): the system times 3 plus the processor.
 export function targetPlatform(): int {
     return match (system.env('KOJI_TARGET')) {
-        Some(name) => if (name == 'arm64') { 1 } else { 0 }
+        Some(name) => match (name) {
+            'arm64' => 1
+            'macos-arm64' => 4
+            _ => 0
+        }
         None => if (system.architecture == system.Arm64) { 1 } else { 0 }
     }
 }
