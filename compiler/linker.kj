@@ -1,5 +1,5 @@
 // The linker of Koji (see "A linker of Koji's own" in doc/design.md): the executable of the objects
-// of ELF of a program and of its runtime library, for Linux on x86-64, linked dynamically with the
+// of ELF of a program and of its runtime library, for Linux on x86-64 or arm64, linked dynamically with the
 // C library of the system (its functions resolved by the dynamic loader when the program starts),
 // without the linker of the system. Archives (`kojic library`) are read and written here too.
 //
@@ -7,8 +7,9 @@
 // headers and what the dynamic loader reads; the code; the constants; the data, the table of
 // addresses of the C library and the zeros). Its entry, `_start`, calls `__libc_start_main` with
 // `main`, as the start files of C do. The functions of the shared libraries are called through
-// stubs (`jmp [rip + entry]`) and an entry each in the table of addresses (the GOT), which the
-// dynamic loader fills when the program starts (`BIND_NOW`).
+// stubs (`jmp [rip + entry]`; on arm64 `adrp`, `ldr` and `br`) and an entry each in the table of
+// addresses (the GOT), which the dynamic loader fills when the program starts (`BIND_NOW`). On
+// arm64 the segments are aligned for pages of 64 KB, the largest its systems use.
 
 // A section of an object.
 type InputSection = {
@@ -44,6 +45,8 @@ type InputObject = {
     sections: InputSection[]
     symbols: InputSymbol[]
     relocations: InputRelocation[]
+    // EM_X86_64 (62) or EM_AARCH64 (183).
+    machine: int
 }
 
 // Where a global symbol is defined: its object and its index there.
@@ -53,8 +56,6 @@ type Definition = {
 }
 
 immut base = 0x400000
-immut page = 4096
-immut interpreter = '/lib64/ld-linux-x86-64.so.2'
 
 // The objects of an archive of `ar` (but its tables of symbols and of long names).
 export function archiveObjects(bytes: byte[]): Result[byte[][], string] {
@@ -211,6 +212,22 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
         inputs.push(parseObject(object)?)
     }
 
+    // x86-64 or arm64 (whose segments are aligned for pages of up to 64 KB).
+    immut arm = inputs[0].machine == 183
+
+    for input in inputs {
+        if (input.machine != inputs[0].machine) { return Err('objects of different processors') }
+    }
+
+    immut page = if (arm) { 65536 } else { 4096 }
+    immut interpreter = if (arm) { '/lib/ld-linux-aarch64.so.1' } else { '/lib64/ld-linux-x86-64.so.2' }
+    // The code of the start, the size of a stub; the relocations of an address in data, of an entry
+    // of the table of addresses, for the dynamic loader.
+    immut startSize = if (arm) { 64 } else { 48 }
+    immut stubSize = if (arm) { 16 } else { 8 }
+    immut absolute = if (arm) { 257 } else { 1 }
+    immut entryKind = if (arm) { 1025 } else { 6 }
+
     // The global symbols each object defines (a strong one before a weak one).
     mut defined: Map[string, Definition] = [:]
 
@@ -258,8 +275,8 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
 
     // The sections of the objects in those of the executable, each at its alignment.
     mut sizes: Map[string, int] = ['text': 0, 'rodata': 0, 'data': 0, 'bss': 0]
-    // The code first has `_start` (48 bytes) and the stubs of the external functions (8 each).
-    sizes['text'] = 48 + 8 * externals.length()
+    // The code first has `_start` and the stubs of the external functions.
+    sizes['text'] = startSize + stubSize * externals.length()
 
     for object in range(inputs.length()) {
         for index in range(inputs[object].sections.length()) {
@@ -342,7 +359,7 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
         for relocation in input.relocations {
             immut symbol = input.symbols[relocation.symbol]
 
-            if (relocation.kind == 1 and symbol.section == 0 and externalIndex.has(symbol.name)) { dataExternal += 1 }
+            if (relocation.kind == absolute and symbol.section == 0 and externalIndex.has(symbol.name)) { dataExternal += 1 }
         }
     }
 
@@ -369,7 +386,7 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
         for relocation in inputs[object].relocations {
             immut symbol = inputs[object].symbols[relocation.symbol]
 
-            if (not isGotRelocation(relocation.kind)) { continue }
+            if (not isGotRelocation(relocation.kind, arm)) { continue }
 
             immut key = symbolKey(object, relocation.symbol, symbol, defined)
 
@@ -426,14 +443,14 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
     }
 
     immut gotAddress = base + gotAt
-    immut stubsAt = base + textAt + 48
+    immut stubsAt = base + textAt + startSize
     // The relocations of the dynamic loader: the table of addresses (R_X86_64_GLOB_DAT), then the
     // words of data.
     mut rela: byte[] = []
 
     for i in range(externals.length()) {
         putWord(mut rela, gotAddress + 8 * i)
-        putWord(mut rela, (i + 1) << 32 | 6)
+        putWord(mut rela, (i + 1) << 32 | entryKind)
         putWord(mut rela, 0)
     }
 
@@ -446,6 +463,29 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
     }
 
     // The code of the start, and the stubs.
+    if (arm) {
+        // mov x29, 0; mov x30, 0; mov x5, x0 (rtld_fini); ldr x1, [sp] (argc); add x2, sp, 8 (argv);
+        // mov x6, sp (the end of the stack); mov x3, 0; mov x4, 0; adrp x0, main; add x0, x0,
+        // :lo12:main; bl __libc_start_main; brk 0
+        immut mainAddress = definedAddress('main', inputs, addresses, defined)
+        immut startAt = base + textAt
+        immut words = [0xD280001D, 0xD280001E, 0xAA0003E5, 0xF94003E1, 0x910023E2, 0x910003E6, 0xD2800003, 0xD2800004, adrp(0, startAt + 32, mainAddress), 0x91000000 | (mainAddress & 0xFFF) << 10, 0x94000000 | ((stubsAt - (startAt + 40)) >> 2 & 0x3FFFFFF), 0xD4200000]
+
+        for i in range(words.length()) {
+            patch32(mut text, 4 * i, words[i])
+        }
+
+        // adrp x16, entry; ldr x17, [x16, :lo12:entry]; br x17; nop
+        for i in range(externals.length()) {
+            immut at = startSize + stubSize * i
+            immut entry = gotAddress + 8 * i
+            patch32(mut text, at, adrp(16, base + textAt + at, entry))
+            patch32(mut text, at + 4, 0xF9400211 | ((entry & 0xFFF) >> 3) << 10)
+            patch32(mut text, at + 8, 0xD61F0220)
+            patch32(mut text, at + 12, 0xD503201F)
+        }
+    }
+
     mut start: byte[] = [0x31, 0xED, 0x49, 0x89, 0xD1, 0x5E, 0x48, 0x89, 0xE2, 0x48, 0x83, 0xE4, 0xF0, 0x50, 0x54, 0x45, 0x31, 0xC0, 0x31, 0xC9, 0x48, 0x8D, 0x3D]
     immut mainAddress = definedAddress('main', inputs, addresses, defined)
     putInt32(mut start, mainAddress - (base + textAt + start.length() + 4))
@@ -454,10 +494,12 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
     start.push(0xF4)
 
     for i in range(start.length()) {
-        text[i] = start[i]
+        if (not arm) { text[i] = start[i] }
     }
 
     for i in range(externals.length()) {
+        if (arm) { break }
+
         immut at = 48 + 8 * i
         text[at] = 0xFF
         text[at + 1] = 0x25
@@ -482,13 +524,80 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
             mut target = 0
 
             if (external) {
-                target = stubsAt + 8 * externalIndex[symbol.name]
+                target = stubsAt + stubSize * externalIndex[symbol.name]
             } else {
                 target = if (symbol.section == 0 and symbol.info >> 4 != 0) { definedAddress(symbol.name, inputs, addresses, defined) } else { addresses[object][relocation.symbol] }
             }
 
             mut value = 0
             mut width = 4
+
+            // AArch64: the fields of the instructions.
+            if (arm) {
+                immut address = target + relocation.addend
+                mut instruction = match (section.output) {
+                    'text' => read32(text, offsetIn)
+                    'rodata' => read32(rodata, offsetIn)
+                    _ => read32(data, offsetIn)
+                }
+
+                match (relocation.kind) {
+                    // R_AARCH64_ABS64
+                    257 => {
+                        width = 8
+
+                        if (external) {
+                            putWord(mut rela, place)
+                            putWord(mut rela, (externalIndex[symbol.name] + 1) << 32 | 257)
+                            putWord(mut rela, relocation.addend)
+                            value = 0
+                        } else {
+                            value = address
+                        }
+                    }
+                    // R_AARCH64_PREL32, R_AARCH64_PREL64
+                    261 => value = address - place
+                    260 => {
+                        width = 8
+                        value = address - place
+                    }
+                    // R_AARCH64_CALL26, R_AARCH64_JUMP26
+                    kind if (kind == 283 or kind == 282) => {
+                        immut distance = address - place
+
+                        if (distance < -134217728 or distance >= 134217728) { return Err(`a branch out of range in '${section.name}'`) }
+
+                        value = instruction | (distance >> 2 & 0x3FFFFFF)
+                    }
+                    // R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_ADR_GOT_PAGE
+                    kind if (kind == 275 or kind == 311) => {
+                        immut pointed = if (kind == 311) { gotAddress + 8 * (if (external) { externalIndex[symbol.name] } else { localGot[symbolKey(object, relocation.symbol, symbol, defined)] }) } else { address }
+                        value = adrp(instruction & 31, place, pointed) | (instruction & 0x9F00001F)
+                    }
+                    // R_AARCH64_ADD_ABS_LO12_NC
+                    277 => value = instruction | (address & 0xFFF) << 10
+                    // R_AARCH64_LDST8, 16, 32, 64 and 128_ABS_LO12_NC: the offset scaled by the size.
+                    278 => value = instruction | (address & 0xFFF) << 10
+                    284 => value = instruction | ((address & 0xFFF) >> 1) << 10
+                    285 => value = instruction | ((address & 0xFFF) >> 2) << 10
+                    286 => value = instruction | ((address & 0xFFF) >> 3) << 10
+                    299 => value = instruction | ((address & 0xFFF) >> 4) << 10
+                    // R_AARCH64_LD64_GOT_LO12_NC
+                    312 => {
+                        immut entry = gotAddress + 8 * (if (external) { externalIndex[symbol.name] } else { localGot[symbolKey(object, relocation.symbol, symbol, defined)] })
+                        value = instruction | ((entry & 0xFFF) >> 3) << 10
+                    }
+                    other => return Err(`a relocation of type ${other} in '${section.name}'`)
+                }
+
+                match (section.output) {
+                    'text' => if (width == 8) { patchWord(mut text, offsetIn, value) } else { patch32(mut text, offsetIn, value) }
+                    'rodata' => if (width == 8) { patchWord(mut rodata, offsetIn, value) } else { patch32(mut rodata, offsetIn, value) }
+                    _ => if (width == 8) { patchWord(mut data, offsetIn, value) } else { patch32(mut data, offsetIn, value) }
+                }
+
+                continue
+            }
 
             match (relocation.kind) {
                 // R_X86_64_64
@@ -511,7 +620,7 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
                 10 => value = target + relocation.addend
                 11 => value = target + relocation.addend
                 // R_X86_64_GOTPCREL and its relaxable forms: the entry of the symbol.
-                kind if (isGotRelocation(kind)) => {
+                kind if (isGotRelocation(kind, false)) => {
                     immut entry = if (external) { externalIndex[symbol.name] } else { localGot[symbolKey(object, relocation.symbol, symbol, defined)] }
                     value = gotAddress + 8 * entry + relocation.addend - place
                 }
@@ -597,7 +706,7 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
 
     mut header: byte[] = []
     putBytes(mut header, 2, 2)
-    putBytes(mut header, 62, 2)
+    putBytes(mut header, if (arm) { 183 } else { 62 }, 2)
     putInt32(mut header, 1)
     putWord(mut header, base + textAt)
     putWord(mut header, 64)
@@ -617,10 +726,10 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
     mut programs: byte[] = []
     programHeader(mut programs, 6, 4, 64, 56 * headerCount, 8)
     programHeader(mut programs, 3, 4, interpAt, interpreter.length() + 1, 1)
-    loadHeader(mut programs, 4, 0, firstEnd, firstEnd)
-    loadHeader(mut programs, 5, textAt, sizes['text'], sizes['text'])
-    loadHeader(mut programs, 4, rodataAt, sizes['rodata'] + 1, sizes['rodata'] + 1)
-    loadHeader(mut programs, 6, dataAt, dataEnd - dataAt, bssEnd - dataAt)
+    loadHeader(mut programs, 4, 0, firstEnd, firstEnd, page)
+    loadHeader(mut programs, 5, textAt, sizes['text'], sizes['text'], page)
+    loadHeader(mut programs, 4, rodataAt, sizes['rodata'] + 1, sizes['rodata'] + 1, page)
+    loadHeader(mut programs, 6, dataAt, dataEnd - dataAt, bssEnd - dataAt, page)
     programHeader(mut programs, 2, 6, dynamicAt, dynamic.length(), 8)
     // PT_GNU_STACK: a stack that does not execute.
     mut stack: byte[] = []
@@ -700,9 +809,29 @@ export function linkExecutable(objects: byte[][], libraries: string[], provided:
     return Ok(out)
 }
 
-function isGotRelocation(kind: int): boolean {
+function isGotRelocation(kind: int, arm: boolean): boolean {
+    // R_AARCH64_ADR_GOT_PAGE, R_AARCH64_LD64_GOT_LO12_NC
+    if (arm) { return kind == 311 or kind == 312 }
+
     // R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX
     return kind == 9 or kind == 41 or kind == 42
+}
+
+// adrp register, the page of `target` from that of `place`.
+function adrp(register: int, place: int, target: int): int {
+    immut pages = ((target >> 12) - (place >> 12)) & 0x1FFFFF
+    return 0x90000000 | (pages & 3) << 29 | (pages >> 2) << 5 | register
+}
+
+// The instruction (4 bytes, little-endian) at `at`.
+function read32(bytes: byte[], at: int): int {
+    mut number = 0
+
+    for i in range(4) {
+        number = number | int(bytes[at + i]) << (8 * i)
+    }
+
+    return number
 }
 
 // A key for the defined symbol a relocation names (its global name, or the object and the index
@@ -762,7 +891,7 @@ function programHeader(mut out: byte[], kind: int, flags: int, offset: int, size
 }
 
 // PT_LOAD, its pages readable (4), writable (2), executable (1).
-function loadHeader(mut out: byte[], flags: int, offset: int, size: int, memory: int) {
+function loadHeader(mut out: byte[], flags: int, offset: int, size: int, memory: int, page: int) {
     putInt32(mut out, 1)
     putInt32(mut out, flags)
     putWord(mut out, offset)
@@ -825,7 +954,7 @@ function parseObject(bytes: byte[]): Result[InputObject, string] {
         if (header[1] == 9) { return Err('relocations without addends') }
     }
 
-    return Ok({ sections: sections, symbols: symbols, relocations: relocations })
+    return Ok({ sections: sections, symbols: symbols, relocations: relocations, machine: readNumber(bytes, 18, 2) })
 }
 
 // A number of `size` bytes at `at`, little-endian (8 bytes: a word, signed).

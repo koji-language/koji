@@ -331,14 +331,18 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
         None => return Err('compile error: the runtime library (libkoji_runtime.a) is not next to kojic: set KOJI_RUNTIME to its path')
     }
 
-    // Koji's linker (linker.kj), for a program without libraries of foreign blocks; the system's
+    // Koji's linker (linker.kj), for a program without libraries of foreign blocks but the C ones; the system's
     // when it cannot link the objects (KOJI_LINKER=koji to see why), or with KOJI_LINKER=system.
     immut chosen = variable('KOJI_LINKER', '')
 
-    // (Not yet for arm64, which the system's linker for it links: KOJI_CC.)
-    immut arm = system.env('KOJI_TARGET') == Some('arm64')
+    // The libraries it links always (the C library, its mathematics and its threads) may be named.
+    mut others = false
 
-    if (program.libraries.length() == 0 and chosen != 'system' and not arm) {
+    for library in program.libraries {
+        if (not (library in ['c', 'm', 'pthread'])) { others = true }
+    }
+
+    if (not others and chosen != 'system') {
         match (linkOwn(object, runtime, output)) {
             Ok(_) => return Ok()
             Err(message) => {
@@ -399,7 +403,10 @@ function linkOwn(object: byte[], runtime: string, output: string): Result[void, 
     for name in ['libc.so.6', 'libm.so.6', 'libpthread.so.0'] {
         mut found = ''
 
-        for directory in ['/lib/x86_64-linux-gnu', '/usr/lib/x86_64-linux-gnu', '/lib64', '/usr/lib64', '/lib', '/usr/lib'] {
+        // Those of arm64 (on another system, those of its tools for arm64), or of x86-64.
+        immut directories = if (system.env('KOJI_TARGET') == Some('arm64')) { ['/lib/aarch64-linux-gnu', '/usr/lib/aarch64-linux-gnu', '/usr/aarch64-linux-gnu/lib'] } else { ['/lib/x86_64-linux-gnu', '/usr/lib/x86_64-linux-gnu', '/lib64', '/usr/lib64', '/lib', '/usr/lib'] }
+
+        for directory in directories {
             if (found == '' and file.exists(path.join(directory, name))) { found = path.join(directory, name) }
         }
 

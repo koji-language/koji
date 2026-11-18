@@ -3263,11 +3263,11 @@ fn the_machine_ir_counts_references() {
 #[test]
 fn koji_generates_arm64() {
     // The emitter of arm64 (compiler/a64.kj, KOJI_TARGET=arm64): a program of ints, floats, strings,
-    // records, lists, maps, closures, tasks and a panic, linked by the system's linker for arm64 with
-    // the native library for arm64, run under qemu: the same output as on x86-64. Only where
-    // qemu-aarch64 and aarch64-linux-gnu-gcc (its linker) are.
-    let tools = ["qemu-aarch64", "aarch64-linux-gnu-gcc"];
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) || !tools.iter().all(|tool| Command::new(tool).arg("--version").output().is_ok_and(|o| o.status.success())) {
+    // records, lists, maps, closures, tasks and a panic, linked by Koji's linker with the native
+    // library for arm64, run under qemu: the same output as on x86-64. Only where qemu-aarch64 and
+    // the C library of arm64 (/usr/aarch64-linux-gnu, with qemu's -L) are.
+    let qemu = Command::new("qemu-aarch64").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) || !qemu || !Path::new("/usr/aarch64-linux-gnu/lib/libc.so.6").exists() {
         return;
     }
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("arm64");
@@ -3279,7 +3279,7 @@ fn koji_generates_arm64() {
     let source = "type Shape = {\n    Circle(radius: float)\n    Rect(w: int, h: int, name: string)\n}\nfunction area(s: Shape): string {\n    return match (s) {\n        Circle(r) => string(r * r)\n        Rect(w, h, name) => `${name}:${w * h}`\n    }\n}\nfunction fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\nfunction adder(n: int): (int) => int {\n    return (x) => x + n\n}\nmut counts: Map[string, int] = [:]\nfor word in ['a', 'b', 'a'] {\n    match (counts.get(word)) {\n        Some(n) => counts[word] = n + 1\n        None => counts[word] = 1\n    }\n}\nmut text = ''\nfor i in range(5) {\n    text += string(i)\n}\nimmut shapes = [Circle(float(1.5)), Rect(2, 3, 'r')]\nfor s in shapes {\n    print(area(s))\n}\nprint(`${fib(20)} ${counts} ${text} ${adder(3)(4)} ${1.25 + 2.5}`)\nimport task\nmut order: int[] = []\ntask.group((group) => {\n    for i in range(3) {\n        group.spawn(() => order.push(i))\n    }\n})\nprint(order.length())\nprint([3, 1, 2][5])\n";
     let path = source_file("arm64", source);
     let executable = directory.join("arm64");
-    let built = koji::finish(koji::kojic().env("KOJI_TARGET", "arm64").env("KOJI_LINKER", "system").env("KOJI_CC", "aarch64-linux-gnu-gcc").env("KOJI_RUNTIME", &runtime).arg("build").arg(&path).arg("--native").arg("-o").arg(&executable), "");
+    let built = koji::finish(koji::kojic().env("KOJI_TARGET", "arm64").env("KOJI_LINKER", "koji").env("KOJI_RUNTIME", &runtime).arg("build").arg(&path).arg("--native").arg("-o").arg(&executable), "");
     assert_eq!(built.code, Some(0), "{}", built.stderr);
     let run = Command::new("qemu-aarch64").args(["-L", "/usr/aarch64-linux-gnu"]).arg(&executable).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), "0x1.2p1\nr:6\n6765 ['a': 2, 'b': 1] 01234 7 3.75\n3\n");
