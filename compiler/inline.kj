@@ -223,6 +223,9 @@ export function simplify(given: IrFunction): IrFunction {
     routine = deadCopies(routine)
 
     routine = propagated(propagated(routine))
+    // Again, for what propagating the copies made known.
+    routine = threaded(retargeted(knownThreaded(routine)))
+    routine = deadCopies(retargeted(routine))
 
     // How many times each local is written and read.
     mut writes: int[] = []
@@ -416,34 +419,61 @@ function deadCopies(given: IrFunction): IrFunction {
 // branch, or a copy of it, or a constant copied): the edge goes to a block of its own with those
 // copies, which goes where that branch would (`a or b` of functions inlined: `t = a; branch a, x,
 // y` then `y: u = t; branch t, ...`). The copies left unread go afterwards (`threaded`).
-function knownThreaded(given: IrFunction): IrFunction {
+// The jumps to an empty block that only jumps go where it goes; a branch on a copy just made, on
+// what it copies (the copy is left to `deadCopies`).
+function retargeted(given: IrFunction): IrFunction {
     mut routine = given
-    immut count = routine.blocks.length()
 
-    // First, the jumps to an empty block that only jumps go where it goes.
-    for block in range(count) {
-        immut retarget = (target: int) => {
-            mut place = target
-            mut steps = 0
+    for block in range(routine.blocks.length()) {
+        immut instructions = routine.blocks[block].instructions
 
-            while (steps < 8 and routine.blocks[place].instructions.length() == 0) {
-                match (routine.blocks[place].terminator) {
-                    GotoT(next) if (next != place) => place = next
-                    _ => break
+        if (instructions.length() > 0) {
+            match (routine.blocks[block].terminator) {
+                BranchT(LocalOp(condition), thenBlock, elseBlock) => {
+                    match (instructions[instructions.length() - 1]) {
+                        CopyIns(LocalPlace(dest), LocalOp(source)) if (dest == condition and source != condition) => {
+                            routine.blocks[block] = { instructions: instructions, terminator: BranchT(LocalOp(source), thenBlock, elseBlock) }
+                        }
+                        _ => {}
+                    }
                 }
-
-                steps += 1
+                _ => {}
             }
-
-            place
         }
+
         immut ending = match (routine.blocks[block].terminator) {
-            GotoT(next) => GotoT(retarget(next))
-            BranchT(condition, thenBlock, elseBlock) => BranchT(condition, retarget(thenBlock), retarget(elseBlock))
+            GotoT(next) => GotoT(throughEmpty(routine.blocks, next))
+            BranchT(condition, thenBlock, elseBlock) => BranchT(condition, throughEmpty(routine.blocks, thenBlock), throughEmpty(routine.blocks, elseBlock))
             other => other
         }
-        routine.blocks[block] = { instructions: routine.blocks[block].instructions, terminator: ending }
+
+        if (ending != routine.blocks[block].terminator) { routine.blocks[block] = { instructions: routine.blocks[block].instructions, terminator: ending } }
     }
+
+    return routine
+}
+
+// Where a jump to `target` ends up through empty blocks that only jump (8 at most).
+function throughEmpty(blocks: IrBlock[], target: int): int {
+    mut place = target
+    mut steps = 0
+
+    while (steps < 8 and blocks[place].instructions.length() == 0) {
+        match (blocks[place].terminator) {
+            GotoT(next) if (next != place) => place = next
+            _ => break
+        }
+
+        steps += 1
+    }
+
+    return place
+}
+
+function knownThreaded(given: IrFunction): IrFunction {
+    // First, the jumps through empty blocks.
+    mut routine = retargeted(given)
+    immut count = routine.blocks.length()
 
     for block in range(count) {
         immut ending = routine.blocks[block].terminator

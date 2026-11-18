@@ -6,7 +6,7 @@
 // first. When none is free, the range of those it could take that ends last is spilled to a slot
 // of the frame (this one, if it ends after them all).
 
-import { MValue, MAddress, MInstruction, MTerminator, MBlock, MFunctionCode } from 'mir.kj'
+import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MFunctionCode } from 'mir.kj'
 import { addBit, hasBit, bitMembers, liveness } from 'bits.kj'
 
 // The registers of a processor for the allocator (their numbers for its emitter).
@@ -16,6 +16,9 @@ export type RegisterSet = {
     free: int[]
     // Of floats (calls keep none).
     floats: int[]
+    // Of words that calls do not keep, which the emitter uses itself for some instructions (see
+    // `clobbers`): only for the ranges without one of them.
+    limited: int[]
 }
 
 export type Allocation = {
@@ -270,6 +273,7 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
     }
 
     mut calls: int[] = []
+    mut clobbered: int[] = []
 
     for block in range(blocks) {
         immut start = blockStarts[block]
@@ -292,6 +296,8 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
                 MCall(_, _, _) if (not (block < code.cold.length() and code.cold[block])) => calls.push(at)
                 _ => {}
             }
+
+            if (clobbers(instructions[index])) { clobbered.push(at) }
         }
 
         for id in terminatorReads(code.blocks[block].terminator) {
@@ -370,19 +376,10 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
         }
     }
 
-    // For each position, how many calls are before it (whether a range has one inside).
-    mut callsBefore: int[] = [0]
-    mut seen = 0
-    mut nextCall = 0
-
-    for at in range(position) {
-        if (nextCall < calls.length() and calls[nextCall] == at) {
-            seen += 1
-            nextCall += 1
-        }
-
-        callsBefore.push(seen)
-    }
+    // For each position, how many calls are before it (whether a range has one inside), and how
+    // many instructions that use the limited registers.
+    immut callsBefore = countsBefore(calls, position)
+    immut clobbersBefore = countsBefore(clobbered, position)
 
     // The ranges by their starts.
     mut order: int[] = []
@@ -417,7 +414,8 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
             // A call strictly inside the range (a call reads its arguments before and writes its
         // results after).
         immut crossing = callsBefore[last[id]] > callsBefore[first[id] + 1]
-        immut candidates = if (code.floats[id]) { if (crossing) { [] } else { set.floats } } else { if (crossing) { set.kept } else { set.free + set.kept } }
+        immut limited = if (clobbersBefore[last[id] + 1] > clobbersBefore[first[id]]) { [] } else { set.limited }
+        immut candidates = if (code.floats[id]) { if (crossing) { [] } else { set.floats } } else { if (crossing) { set.kept } else { set.free + limited + set.kept } }
         mut chosen = -1
         immut hint = hints[id]
 
@@ -481,6 +479,38 @@ export function allocate(code: MFunctionCode, set: RegisterSet): Allocation {
     }
 
     return { registers: registers, spills: spills, spillCount: spillCount, used: used, first: first, last: last, blockStarts: blockStarts }
+}
+
+// For each position up to `end`, how many of the positions (in order) are before it.
+function countsBefore(positions: int[], end: int): int[] {
+    mut counts: int[] = [0]
+    mut seen = 0
+    mut next = 0
+
+    for at in range(end) {
+        if (next < positions.length() and positions[next] == at) {
+            seen += 1
+            next += 1
+        }
+
+        counts.push(seen)
+    }
+
+    return counts
+}
+
+// Whether the emitter uses the limited registers for an instruction (on x86-64, rdx and r11: a
+// division, the arithmetic of 128 bits and the instructions of the processor, a call with two
+// results or through an address), so that no range across or at it may have them.
+function clobbers(instruction: MInstruction): boolean {
+    return match (instruction) {
+        MBinary(_, op, _, _, _) => op == 'div' or op == 'rem'
+        MWide(_, _, _, _) => true
+        MMachine(_, _, _) => true
+        MCall(MIndirect(_), _, _) => true
+        MCall(_, _, results) => results.length() > 1
+        _ => false
+    }
 }
 
 // Whether `a` is used less than `b` for the length of its range (a / la < b / lb).

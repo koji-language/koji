@@ -27,7 +27,7 @@ immut sc = 8
 immut address = 16
 immut offsetRegister = 17
 
-export immut a64Registers: RegisterSet = { kept: [19, 20, 21, 22, 23, 24, 25, 26, 27, 28], free: [2, 3, 4, 5, 6, 7, 11, 12, 13, 14, 15], floats: [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63] }
+export immut a64Registers: RegisterSet = { kept: [19, 20, 21, 22, 23, 24, 25, 26, 27, 28], free: [2, 3, 4, 5, 6, 7, 11, 12, 13, 14, 15], floats: [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63], limited: [] }
 
 // The relocations of ELF for AArch64.
 immut call26 = 283
