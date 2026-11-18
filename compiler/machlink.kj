@@ -1,0 +1,914 @@
+// The linker of Koji for macOS on arm64 (see "A linker of Koji's own" in doc/design.md): the executable
+// of Mach-O of the objects of a program and of its runtime library (macho.kj writes them), linked
+// with libSystem, without the linker of the system.
+//
+// The executable is position-independent, as macOS asks of arm64: __PAGEZERO, then __TEXT (the
+// headers, the code, the stubs, the constants), __DATA (the table of addresses of libSystem, the
+// data, the zeros) and __LINKEDIT, each at a multiple of 16 KB. The functions of libSystem are called
+// through stubs (`adrp`, `ldr`, `br`) and an entry each in the table of addresses, which the dynamic
+// loader fills when the program starts (the opcodes of binding of LC_DYLD_INFO_ONLY), and the
+// addresses in the data are moved by it to where the program is loaded (its opcodes of rebasing).
+// Its entry is `_main` (LC_MAIN). An ad-hoc signature closes it (a CodeDirectory: the SHA-256 of each
+// page of 4 KB), which macOS asks of every program on arm64.
+
+type MachSection = {
+    name: string
+    segment: string
+    address: int
+    size: int
+    bytes: byte[]
+    flags: int
+    // Where it goes: `text`, `const`, `data`, `bss` (or '' for none), and where in it.
+    output: string
+    at: int
+}
+
+type MachInputSymbol = {
+    name: string
+    kind: int
+    section: int
+    value: int
+}
+
+type MachInputRelocation = {
+    section: int
+    at: int
+    symbol: int
+    relative: boolean
+    length: int
+    external: boolean
+    kind: int
+    addend: int
+}
+
+type MachInput = {
+    sections: MachSection[]
+    symbols: MachInputSymbol[]
+    relocations: MachInputRelocation[]
+}
+
+immut base = 0x100000000
+immut page = 16384
+
+// The objects of an archive of BSD (machArchive of macho.kj): their bytes.
+export function machArchiveObjects(bytes: byte[]): Result[byte[][], string] {
+    if (bytes.length() < 8 or text(bytes, 0, 8) != '!<arch>\n') { return Err('not an archive') }
+
+    mut objects: byte[][] = []
+    mut at = 8
+
+    while (at + 60 <= bytes.length()) {
+        immut name = text(bytes, at, 16).trim()
+        immut size = match (int(text(bytes, at + 48, 10).trim())) {
+            Ok(number) => number
+            Err(_) => return Err('a member of the archive without a size')
+        }
+        mut start = at + 60
+        mut length = size
+        mut member = name
+
+        if (name.startsWith('#1/')) {
+            immut extra = match (int(name[3..name.length()])) {
+                Ok(number) => number
+                Err(_) => 0
+            }
+            member = text(bytes, start, extra)
+            start += extra
+            length -= extra
+        }
+
+        if (not member.startsWith('__.SYMDEF')) { objects.push(bytes[start..start + length]) }
+
+        at = at + 60 + size + size % 2
+    }
+
+    return Ok(objects)
+}
+
+export function linkMach(objects: byte[][]): Result[byte[], string] {
+    mut inputs: MachInput[] = []
+
+    for object in objects {
+        inputs.push(parseMach(object)?)
+    }
+
+    // The global symbols each object defines.
+    mut defined: Map[string, int[]] = [:]
+
+    for object in range(inputs.length()) {
+        immut symbols = inputs[object].symbols
+
+        for index in range(symbols.length()) {
+            immut symbol = symbols[index]
+
+            // N_SECT | N_EXT
+            if (symbol.kind & 0x0F != 0x0F) { continue }
+
+            if (defined.has(symbol.name)) { return Err(`the symbol '${symbol.name}' is defined twice`) }
+
+            defined[symbol.name] = [object, index]
+        }
+    }
+
+    if (not defined.has('_main')) { return Err("no '_main' to start") }
+
+    // The symbols of libSystem: those no object defines; the table of addresses has an entry for
+    // each one called or read through it.
+    mut externals: string[] = []
+    mut externalIndex: Map[string, int] = [:]
+
+    for input in inputs {
+        for relocation in input.relocations {
+            if (not relocation.external) { continue }
+
+            immut symbol = input.symbols[relocation.symbol]
+
+            if (symbol.kind & 0x0E != 0 or defined.has(symbol.name) or externalIndex.has(symbol.name)) { continue }
+
+            externalIndex[symbol.name] = externals.length()
+            externals.push(symbol.name)
+        }
+    }
+
+    // The sections of the objects in those of the executable.
+    mut sizes: Map[string, int] = ['text': 0, 'const': 0, 'data': 0, 'bss': 0]
+
+    for object in range(inputs.length()) {
+        for index in range(inputs[object].sections.length()) {
+            immut section = inputs[object].sections[index]
+            immut output = match (section.name) {
+                '__text' => 'text'
+                '__const' => 'const'
+                '__data' => 'data'
+                '__bss' => 'bss'
+                _ => ''
+            }
+
+            if (output == '') {
+                if (section.size > 0) { return Err(`the section '${section.name}' of '${section.segment}'`) }
+
+                continue
+            }
+
+            immut at = align(sizes[output], 16)
+            inputs[object].sections[index].output = output
+            inputs[object].sections[index].at = at
+            sizes[output] = at + section.size
+        }
+    }
+
+    // The layout: the headers, the code, the stubs (12 bytes each), the constants; the table of
+    // addresses, the data, the zeros.
+    immut headerSpace = 4096
+    immut textAt = headerSpace
+    immut stubsAt = align(textAt + sizes['text'], 16)
+    immut constAt = align(stubsAt + 12 * externals.length(), 16)
+    immut textEnd = align(constAt + sizes['const'], page)
+    immut gotAt = textEnd
+    immut dataAt = align(gotAt + 8 * externals.length(), 16)
+    immut bssAt = align(dataAt + sizes['data'], 16)
+    immut dataFileEnd = align(bssAt, page)
+    immut dataEnd = align(bssAt + sizes['bss'], page)
+    immut starts: Map[string, int] = ['text': textAt, 'const': constAt, 'data': dataAt, 'bss': bssAt]
+
+    // The address (from the start of the file, as loaded at `base`) of each symbol of each object.
+    mut addresses: int[][] = []
+
+    for input in inputs {
+        mut each: int[] = []
+
+        for symbol in input.symbols {
+            if (symbol.kind & 0x0E == 0x0E and symbol.section > 0) {
+                immut section = input.sections[symbol.section - 1]
+                each.push(starts[section.output] + section.at + symbol.value - section.address)
+            } else {
+                each.push(-1)
+            }
+        }
+
+        addresses.push(each)
+    }
+
+    // The contents: the code (with the stubs and the constants), and the data.
+    mut code: byte[] = []
+    zeros(mut code, textEnd - textAt)
+    mut data: byte[] = []
+    zeros(mut data, dataFileEnd - gotAt)
+
+    for input in inputs {
+        for section in input.sections {
+            if (section.output == '' or section.output == 'bss') { continue }
+
+            immut at = starts[section.output] + section.at
+
+            for i in range(section.bytes.length()) {
+                if (section.output == 'data') {
+                    data[at - gotAt + i] = section.bytes[i]
+                } else {
+                    code[at - textAt + i] = section.bytes[i]
+                }
+            }
+        }
+    }
+
+    // The stubs: adrp x16, entry; ldr x16, [x16, :lo12:entry]; br x16
+    for i in range(externals.length()) {
+        immut at = stubsAt + 12 * i
+        immut entry = gotAt + 8 * i
+        put32(mut code, at - textAt, adrp(16, at, entry))
+        put32(mut code, at - textAt + 4, 0xF9400210 | ((entry & 0xFFF) >> 3) << 10)
+        put32(mut code, at - textAt + 8, 0xD61F0200)
+    }
+
+    // The relocations: the code patched, the words of the data to move (rebase) or to fill with an
+    // address of libSystem (bind).
+    mut rebases: int[] = []
+    mut binds: int[][] = []
+
+    for object in range(inputs.length()) {
+        immut input = inputs[object]
+
+        for relocation in input.relocations {
+            immut section = input.sections[relocation.section]
+
+            if (section.output == '' or section.output == 'bss') { continue }
+
+            if (not relocation.external) { return Err('a relocation without a symbol') }
+
+            immut place = starts[section.output] + section.at + relocation.at
+            immut symbol = input.symbols[relocation.symbol]
+            mut external = -1
+            mut target = addresses[object][relocation.symbol]
+
+            if (target < 0) {
+                match (defined.get(symbol.name)) {
+                    Some(found) => target = addresses[found[0]][found[1]]
+                    None => external = externalIndex[symbol.name]
+                }
+            }
+
+            // The word of data: its addend in it.
+            if (relocation.kind == 0) {
+                immut addend = word(data, place - gotAt)
+
+                if (external >= 0) {
+                    binds.push([place, external, addend])
+                    patchWord(mut data, place - gotAt, 0)
+                } else {
+                    rebases.push(place)
+                    patchWord(mut data, place - gotAt, base + target + addend)
+                }
+
+                continue
+            }
+
+            immut instruction = read32(code, place - textAt)
+            immut address = target + relocation.addend
+            mut value = 0
+
+            match (relocation.kind) {
+                // ARM64_RELOC_BRANCH26: to the stub of a function of libSystem.
+                2 => {
+                    immut destination = if (external >= 0) { stubsAt + 12 * external } else { address }
+                    value = instruction | ((destination - place) >> 2 & 0x3FFFFFF)
+                }
+                // ARM64_RELOC_PAGE21
+                3 => value = adrp(instruction & 31, place, if (external >= 0) { gotAt + 8 * external } else { address })
+                // ARM64_RELOC_PAGEOFF12: the low 12 bits, scaled by the size of the access.
+                4 => value = instruction | (lowBits(instruction, address & 0xFFF)) << 10
+                // ARM64_RELOC_GOT_LOAD_PAGE21, GOT_LOAD_PAGEOFF12: the entry of the symbol.
+                5 => {
+                    if (external < 0) { return Err(`an entry of the table of addresses for '${symbol.name}', which is defined`) }
+
+                    value = adrp(instruction & 31, place, gotAt + 8 * external)
+                }
+                6 => {
+                    if (external < 0) { return Err(`an entry of the table of addresses for '${symbol.name}', which is defined`) }
+
+                    value = instruction | (((gotAt + 8 * external) & 0xFFF) >> 3) << 10
+                }
+                other => return Err(`a relocation of type ${other}`)
+            }
+
+            put32(mut code, place - textAt, value)
+        }
+    }
+
+    // The entries of the table of addresses: bound when the program starts.
+    for i in range(externals.length()) {
+        binds.push([gotAt + 8 * i, i, 0])
+    }
+
+    // __LINKEDIT: the opcodes of rebasing and of binding, the symbols, their names, the signature.
+    immut dataSegment = 2
+    mut rebase: byte[] = [0x11]
+
+    for place in rebases {
+        // REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB, REBASE_OPCODE_DO_REBASE_IMM_TIMES 1
+        rebase.push(byte(0x20 | dataSegment))
+        uleb(mut rebase, place - gotAt)
+        rebase.push(0x51)
+    }
+
+    rebase.push(0)
+    pad8(mut rebase)
+    mut bind: byte[] = []
+
+    for each in binds {
+        // BIND_OPCODE_SET_DYLIB_ORDINAL_IMM 1, SET_SYMBOL_TRAILING_FLAGS_IMM (the name),
+        // SET_TYPE_IMM pointer, SET_ADDEND_SLEB, SET_SEGMENT_AND_OFFSET_ULEB, DO_BIND.
+        bind.push(0x11)
+        bind.push(0x40)
+        append(mut bind, utf8(externals[each[1]]))
+        bind.push(0)
+        bind.push(0x51)
+
+        if (each[2] != 0) {
+            bind.push(0x60)
+            sleb(mut bind, each[2])
+        }
+
+        bind.push(byte(0x70 | dataSegment))
+        uleb(mut bind, each[0] - gotAt)
+        bind.push(0x90)
+    }
+
+    bind.push(0)
+    pad8(mut bind)
+    // The symbols for debuggers: the functions and data of the objects, then _main for others.
+    mut symtab: byte[] = []
+    mut strtab: byte[] = [0x20, 0]
+    mut locals = 0
+
+    for pass in [0, 1] {
+        for object in range(inputs.length()) {
+            immut input = inputs[object]
+
+            for index in range(input.symbols.length()) {
+                immut symbol = input.symbols[index]
+                immut global = symbol.kind & 1 == 1
+
+                if (symbol.kind & 0x0E != 0x0E or symbol.name.startsWith('lkoji.') or (pass == 0) == global) { continue }
+
+                immut section = input.sections[symbol.section - 1]
+                putInt32(mut symtab, strtab.length())
+                append(mut strtab, utf8(symbol.name))
+                strtab.push(0)
+                symtab.push(byte(symbol.kind))
+                symtab.push(byte(match (section.output) {
+                    'text' => 1
+                    'const' => 3
+                    'data' => 5
+                    _ => 6
+                }))
+                putBytes(mut symtab, 0, 2)
+                putWord(mut symtab, base + addresses[object][index])
+
+                if (pass == 0) { locals += 1 }
+            }
+        }
+    }
+
+    immut globals = symtab.length() / 16 - locals
+    mut undefined = 0
+
+    for name in externals {
+        putInt32(mut symtab, strtab.length())
+        append(mut strtab, utf8(name))
+        strtab.push(0)
+        // N_UNDF | N_EXT, from the first library (the ordinal in the high byte of n_desc).
+        symtab.push(1)
+        symtab.push(0)
+        putBytes(mut symtab, 0x100, 2)
+        putWord(mut symtab, 0)
+        undefined += 1
+    }
+
+    pad8(mut strtab)
+    immut linkedit = dataFileEnd
+    immut rebaseAt = linkedit
+    immut bindAt = rebaseAt + rebase.length()
+    immut symtabAt = bindAt + bind.length()
+    immut strtabAt = symtabAt + symtab.length()
+    immut signatureAt = align(strtabAt + strtab.length(), 16)
+    immut identifier = utf8('koji')
+    immut pages = (signatureAt + 4095) / 4096
+    immut signatureSize = 20 + 88 + identifier.length() + 1 + 32 * pages
+    immut linkeditEnd = signatureAt + signatureSize
+
+    // The headers.
+    immut mainAddress = addresses[defined['_main'][0]][defined['_main'][1]]
+    mut commands: byte[] = []
+    mut count = 0
+    // __PAGEZERO, __TEXT (its sections: the code, the stubs, the constants), __DATA, __LINKEDIT.
+    segment(mut commands, '__PAGEZERO', 0, base, 0, 0, 0, 0, [])
+    segment(mut commands, '__TEXT', base, textEnd, 0, textEnd, 5, 5, [
+        sectionHeader('__text', '__TEXT', base + textAt, sizes['text'], textAt, 4, 0x80000400),
+        sectionHeader('__stubs', '__TEXT', base + stubsAt, 12 * externals.length(), stubsAt, 2, 0x80000400),
+        sectionHeader('__const', '__TEXT', base + constAt, sizes['const'], constAt, 4, 0)
+    ])
+    segment(mut commands, '__DATA', base + gotAt, dataEnd - gotAt, gotAt, dataFileEnd - gotAt, 3, 3, [
+        sectionHeader('__got', '__DATA', base + gotAt, 8 * externals.length(), gotAt, 3, 0),
+        sectionHeader('__data', '__DATA', base + dataAt, sizes['data'], dataAt, 4, 0),
+        sectionHeader('__bss', '__DATA', base + bssAt, sizes['bss'], 0, 4, 1)
+    ])
+    segment(mut commands, '__LINKEDIT', base + linkedit, align(linkeditEnd - linkedit, page), linkedit, linkeditEnd - linkedit, 1, 1, [])
+    count += 4
+    // LC_DYLD_INFO_ONLY: rebase, bind; no weak, lazy or exported symbols.
+    putInt32(mut commands, 0x80000022)
+    putInt32(mut commands, 48)
+
+    for value in [rebaseAt, rebase.length(), bindAt, bind.length(), 0, 0, 0, 0, 0, 0] {
+        putInt32(mut commands, value)
+    }
+
+    // LC_SYMTAB, LC_DYSYMTAB
+    putInt32(mut commands, 2)
+    putInt32(mut commands, 24)
+
+    for value in [symtabAt, symtab.length() / 16, strtabAt, strtab.length()] {
+        putInt32(mut commands, value)
+    }
+
+    putInt32(mut commands, 0xB)
+    putInt32(mut commands, 80)
+
+    for value in [0, locals, locals, globals, locals + globals, undefined, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] {
+        putInt32(mut commands, value)
+    }
+
+    // LC_LOAD_DYLINKER
+    loadPath(mut commands, 0xE, 12, '/usr/lib/dyld', [])
+    // LC_UUID (of the contents), LC_BUILD_VERSION (macOS 11.0), LC_MAIN (its offset, the default
+    // stack), LC_LOAD_DYLIB (libSystem), LC_CODE_SIGNATURE.
+    putInt32(mut commands, 0x1B)
+    putInt32(mut commands, 24)
+    immut digest = sha256(code + data)
+
+    for i in range(16) {
+        commands.push(digest[i])
+    }
+
+    putInt32(mut commands, 0x32)
+    putInt32(mut commands, 24)
+    putInt32(mut commands, 1)
+    putInt32(mut commands, 0x000B0000)
+    putInt32(mut commands, 0x000B0000)
+    putInt32(mut commands, 0)
+    putInt32(mut commands, 0x80000028)
+    putInt32(mut commands, 24)
+    putWord(mut commands, mainAddress)
+    putWord(mut commands, 0)
+    loadPath(mut commands, 0xC, 24, '/usr/lib/libSystem.B.dylib', [2, 0x05276403, 0x00010000])
+    putInt32(mut commands, 0x1D)
+    putInt32(mut commands, 16)
+    putInt32(mut commands, signatureAt)
+    putInt32(mut commands, signatureSize)
+    count += 9
+
+    if (32 + commands.length() > headerSpace) { return Err('too many load commands') }
+
+    // The file: the header (MH_MAGIC_64, arm64, MH_EXECUTE, MH_NOUNDEFS | MH_DYLDLINK |
+    // MH_TWOLEVEL | MH_PIE), the commands, the contents, __LINKEDIT, then the signature.
+    mut out: byte[] = []
+
+    for value in [0xFEEDFACF, 0x0100000C, 0, 2, count, commands.length(), 0x200085, 0] {
+        putInt32(mut out, value)
+    }
+
+    append(mut out, commands)
+    zeros(mut out, textAt - out.length())
+    append(mut out, code)
+    append(mut out, data)
+    append(mut out, rebase)
+    append(mut out, bind)
+    append(mut out, symtab)
+    append(mut out, strtab)
+    zeros(mut out, signatureAt - out.length())
+    append(mut out, signature(out, identifier, pages, signatureAt, textEnd))
+    return Ok(out)
+}
+
+// The ad-hoc signature (a SuperBlob of one CodeDirectory, big-endian): the hash of each page of 4 KB of
+// the file before it, the executable segment being __TEXT (the main program's).
+function signature(file: byte[], identifier: byte[], pages: int, limit: int, textEnd: int): byte[] {
+    immut directoryLength = 88 + identifier.length() + 1 + 32 * pages
+    mut out: byte[] = []
+    // CSMAGIC_EMBEDDED_SIGNATURE, its length, one blob: CSSLOT_CODEDIRECTORY at 20.
+    for value in [0xFADE0CC0, 20 + directoryLength, 1, 0, 20] {
+        bigEndian(mut out, value, 4)
+    }
+
+    // CSMAGIC_CODEDIRECTORY, its length, version 0x20400, CS_ADHOC | CS_LINKER_SIGNED, the place of
+    // the hashes and of the identifier, no special slots, the pages, the limit.
+    for value in [0xFADE0C02, directoryLength, 0x20400, 0x20002, 88 + identifier.length() + 1, 88, 0, pages, limit] {
+        bigEndian(mut out, value, 4)
+    }
+
+    // SHA-256 (32 bytes, type 2), no platform, pages of 2^12 bytes; then no scatter, team, spare,
+    // limit of 64 bits; the executable segment from 0, its size, CS_EXECSEG_MAIN_BINARY.
+    for value in [32, 2, 0, 12] {
+        out.push(byte(value))
+    }
+    bigEndian(mut out, 0, 4)
+    bigEndian(mut out, 0, 4)
+    bigEndian(mut out, 0, 4)
+    bigEndian(mut out, 0, 4)
+    bigEndian(mut out, 0, 8)
+    bigEndian(mut out, 0, 8)
+    bigEndian(mut out, textEnd, 8)
+    bigEndian(mut out, 1, 8)
+    append(mut out, identifier)
+    out.push(0)
+
+    for i in range(pages) {
+        immut end = if (4096 * (i + 1) < limit) { 4096 * (i + 1) } else { limit }
+        append(mut out, sha256(file[4096 * i..end]))
+    }
+
+    return out
+}
+
+function parseMach(bytes: byte[]): Result[MachInput, string] {
+    if (bytes.length() < 32 or number(bytes, 0, 4) != 0xFEEDFACF) { return Err('not an object of Mach-O of 64 bits') }
+
+    if (number(bytes, 4, 4) != 0x0100000C) { return Err('not an object of arm64') }
+
+    if (number(bytes, 12, 4) != 1) { return Err('not a relocatable object') }
+
+    immut count = number(bytes, 16, 4)
+    mut sections: MachSection[] = []
+    mut symbols: MachInputSymbol[] = []
+    mut relocations: MachInputRelocation[] = []
+    mut places: int[][] = []
+    mut at = 32
+
+    for i in range(count) {
+        immut command = number(bytes, at, 4)
+
+        // LC_SEGMENT_64: its sections.
+        if (command == 0x19) {
+            immut total = number(bytes, at + 64, 4)
+
+            for k in range(total) {
+                immut header = at + 72 + 80 * k
+                immut size = number(bytes, header + 40, 8)
+                immut offset = number(bytes, header + 48, 4)
+                immut flags = number(bytes, header + 64, 4)
+                immut content = if (flags & 0xFF == 1) { [] } else { bytes[offset..offset + size] }
+                sections.push({ name: cString(bytes, header, 16), segment: cString(bytes, header + 16, 16), address: number(bytes, header + 32, 8), size: size, bytes: content, flags: flags, output: '', at: 0 })
+                places.push([number(bytes, header + 56, 4), number(bytes, header + 60, 4)])
+            }
+        }
+
+        // LC_SYMTAB
+        if (command == 2) {
+            immut table = number(bytes, at + 8, 4)
+            immut total = number(bytes, at + 12, 4)
+            immut names = number(bytes, at + 16, 4)
+
+            for k in range(total) {
+                immut entry = table + 16 * k
+                symbols.push({ name: cString(bytes, names + number(bytes, entry, 4), 4096), kind: int(bytes[entry + 4]), section: int(bytes[entry + 5]), value: number(bytes, entry + 8, 8) })
+            }
+        }
+
+        at += number(bytes, at + 4, 4)
+    }
+
+    // The relocations of each section, an ARM64_RELOC_ADDEND giving the next one its addend.
+    for index in range(places.length()) {
+        mut addend = 0
+
+        for k in range(places[index][1]) {
+            immut entry = places[index][0] + 8 * k
+            immut info = number(bytes, entry + 4, 4)
+            immut kind = info >> 28 & 0xF
+            immut symbol = info & 0xFFFFFF
+
+            if (kind == 10) {
+                addend = if (symbol >= 0x800000) { symbol - 0x1000000 } else { symbol }
+                continue
+            }
+
+            relocations.push({ section: index, at: number(bytes, entry, 4), symbol: symbol, relative: info >> 24 & 1 == 1, length: info >> 25 & 3, external: info >> 27 & 1 == 1, kind: kind, addend: addend })
+            addend = 0
+        }
+    }
+
+    return Ok({ sections: sections, symbols: symbols, relocations: relocations })
+}
+
+// The low 12 bits of an address as the instruction takes them: as they are for an add, scaled by
+// the size of the access for a load or a store.
+function lowBits(instruction: int, low: int): int {
+    // Loads and stores with an unsigned offset: the size in bits 30 and 31 (and 23 for 16 bytes of
+    // a register of floats).
+    if (instruction & 0x3B000000 == 0x39000000) {
+        mut scale = instruction >> 30 & 3
+
+        if (instruction & 0x04000000 != 0 and instruction & 0x00800000 != 0) { scale = 4 }
+
+        return low >> scale
+    }
+
+    return low
+}
+
+// adrp register, the page of `target` from that of `place` (4 KB pages).
+function adrp(register: int, place: int, target: int): int {
+    immut pages = ((target >> 12) - (place >> 12)) & 0x1FFFFF
+    return 0x90000000 | (pages & 3) << 29 | (pages >> 2) << 5 | register
+}
+
+function segment(mut out: byte[], name: string, address: int, size: int, offset: int, fileSize: int, maximum: int, initial: int, sections: byte[][]) {
+    putInt32(mut out, 0x19)
+    putInt32(mut out, 72 + 80 * sections.length())
+    putName(mut out, name)
+    putWord(mut out, address)
+    putWord(mut out, size)
+    putWord(mut out, offset)
+    putWord(mut out, fileSize)
+    putInt32(mut out, maximum)
+    putInt32(mut out, initial)
+    putInt32(mut out, sections.length())
+    putInt32(mut out, 0)
+
+    for each in sections {
+        append(mut out, each)
+    }
+}
+
+function sectionHeader(name: string, segmentName: string, address: int, size: int, offset: int, alignment: int, flags: int): byte[] {
+    mut out: byte[] = []
+    putName(mut out, name)
+    putName(mut out, segmentName)
+    putWord(mut out, address)
+    putWord(mut out, size)
+    putInt32(mut out, offset)
+    putInt32(mut out, alignment)
+
+    for value in [0, 0, flags, 0, 0, 0] {
+        putInt32(mut out, value)
+    }
+
+    return out
+}
+
+// A command that names a path (LC_LOAD_DYLINKER, LC_LOAD_DYLIB): the path after `start` bytes (its
+// words before it), the size a multiple of 8.
+function loadPath(mut out: byte[], command: int, start: int, path: string, words: int[]) {
+    immut bytes = utf8(path)
+    immut size = align(start + bytes.length() + 1, 8)
+    putInt32(mut out, command)
+    putInt32(mut out, size)
+    putInt32(mut out, start)
+
+    for value in words {
+        putInt32(mut out, value)
+    }
+
+    append(mut out, bytes)
+    zeros(mut out, size - start - bytes.length())
+}
+
+// SHA-256 (FIPS 180-4).
+immut roundConstants = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+]
+
+export function sha256(message: byte[]): byte[] {
+    mut state = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+    mut padded = message
+    padded.push(0x80)
+
+    while (padded.length() % 64 != 56) {
+        padded.push(0)
+    }
+
+    bigEndian(mut padded, 8 * message.length(), 8)
+    mut words: int[] = []
+
+    for i in range(64) {
+        words.push(0)
+    }
+
+    for block in range(padded.length() / 64) {
+        for i in range(16) {
+            immut at = 64 * block + 4 * i
+            words[i] = int(padded[at]) << 24 | int(padded[at + 1]) << 16 | int(padded[at + 2]) << 8 | int(padded[at + 3])
+        }
+
+        for i in range(16, 64) {
+            immut low = words[i - 15]
+            immut high = words[i - 2]
+            immut s0 = rotate(low, 7) ^ rotate(low, 18) ^ (low >> 3)
+            immut s1 = rotate(high, 17) ^ rotate(high, 19) ^ (high >> 10)
+            words[i] = (words[i - 16] + s0 + words[i - 7] + s1) & 0xFFFFFFFF
+        }
+
+        mut a = state[0]
+        mut b = state[1]
+        mut c = state[2]
+        mut d = state[3]
+        mut e = state[4]
+        mut f = state[5]
+        mut g = state[6]
+        mut h = state[7]
+
+        for i in range(64) {
+            immut s1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25)
+            immut choice = (e & f) ^ (~e & 0xFFFFFFFF & g)
+            immut first = (h + s1 + choice + roundConstants[i] + words[i]) & 0xFFFFFFFF
+            immut s0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22)
+            immut majority = (a & b) ^ (a & c) ^ (b & c)
+            immut second = (s0 + majority) & 0xFFFFFFFF
+            h = g
+            g = f
+            f = e
+            e = (d + first) & 0xFFFFFFFF
+            d = c
+            c = b
+            b = a
+            a = (first + second) & 0xFFFFFFFF
+        }
+
+        for i in range(8) {
+            state[i] = (state[i] + [a, b, c, d, e, f, g, h][i]) & 0xFFFFFFFF
+        }
+    }
+
+    mut digest: byte[] = []
+
+    for value in state {
+        bigEndian(mut digest, value, 4)
+    }
+
+    return digest
+}
+
+function rotate(value: int, count: int): int {
+    return (value >> count | value << (32 - count)) & 0xFFFFFFFF
+}
+
+function uleb(mut out: byte[], given: int) {
+    mut value = given
+
+    while (true) {
+        immut low = value & 0x7F
+        value = value >> 7
+
+        if (value == 0) {
+            out.push(byte(low))
+            return
+        }
+
+        out.push(byte(low | 0x80))
+    }
+}
+
+function sleb(mut out: byte[], given: int) {
+    mut value = given
+
+    while (true) {
+        immut low = value & 0x7F
+        value = value >> 7
+
+        if ((value == 0 and low & 0x40 == 0) or (value == -1 and low & 0x40 != 0)) {
+            out.push(byte(low))
+            return
+        }
+
+        out.push(byte(low | 0x80))
+    }
+}
+
+function pad8(mut out: byte[]) {
+    while (out.length() % 8 != 0) {
+        out.push(0)
+    }
+}
+
+function zeros(mut out: byte[], count: int) {
+    for i in range(count) {
+        out.push(0)
+    }
+}
+
+function align(value: int, size: int): int {
+    return (value + size - 1) / size * size
+}
+
+function bigEndian(mut out: byte[], value: int, count: int) {
+    mut i = count - 1
+
+    while (i >= 0) {
+        out.push(byte((value >> (8 * i)) & 0xFF))
+        i -= 1
+    }
+}
+
+function putInt32(mut out: byte[], value: int) {
+    putBytes(mut out, value, 4)
+}
+
+function putWord(mut out: byte[], value: int) {
+    putBytes(mut out, value, 8)
+}
+
+function patchWord(mut out: byte[], at: int, value: int) {
+    for i in range(8) {
+        out[at + i] = byte((value >> (8 * i)) & 0xFF)
+    }
+}
+
+function putBytes(mut out: byte[], value: int, count: int) {
+    for i in range(count) {
+        out.push(byte((value >> (8 * i)) & 0xFF))
+    }
+}
+
+function put32(mut out: byte[], at: int, value: int) {
+    for i in range(4) {
+        out[at + i] = byte((value >> (8 * i)) & 0xFF)
+    }
+}
+
+function read32(bytes: byte[], at: int): int {
+    return number(bytes, at, 4)
+}
+
+function word(bytes: byte[], at: int): int {
+    return number(bytes, at, 8)
+}
+
+function number(bytes: byte[], at: int, size: int): int {
+    mut value = 0
+
+    for i in range(size) {
+        value = value | int(bytes[at + i]) << (8 * i)
+    }
+
+    return value
+}
+
+function putName(mut out: byte[], name: string) {
+    immut bytes = utf8(name)
+
+    for i in range(16) {
+        out.push(if (i < bytes.length()) { bytes[i] } else { 0 })
+    }
+}
+
+function append(mut out: byte[], bytes: byte[]) {
+    for each in bytes {
+        out.push(each)
+    }
+}
+
+// A text of bytes ended by 0 (or by `limit` bytes).
+function cString(bytes: byte[], at: int, limit: int): string {
+    mut end = at
+
+    while (end < bytes.length() and end < at + limit and bytes[end] != 0) {
+        end += 1
+    }
+
+    return text(bytes, at, end - at)
+}
+
+function text(bytes: byte[], at: int, size: int): string {
+    mut out = ''
+
+    for i in range(at, at + size) {
+        out += match (char(int(bytes[i]))) {
+            Some(c) => string(c)
+            None => '?'
+        }
+    }
+
+    return out
+}
+
+function utf8(text: string): byte[] {
+    mut out: byte[] = []
+
+    for c in text.chars() {
+        immut code = c.code()
+
+        if (code < 0x80) {
+            out.push(byte(code))
+        } else {
+            out.push(byte(0x3F))
+        }
+    }
+
+    return out
+}

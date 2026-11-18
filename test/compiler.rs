@@ -3327,4 +3327,17 @@ fn koji_generates_macos_objects() {
     let linked = Command::new(linker).args(["-arch", "arm64", "-platform_version", "macos", "11.0", "11.0", "-syslibroot"]).arg(directory.join("sdk")).arg("-lSystem").arg("-o").arg(&executable).arg(&object).arg(&library).output().unwrap();
     assert!(linked.status.success(), "{}", String::from_utf8_lossy(&linked.stderr));
     assert_eq!(&std::fs::read(&executable).unwrap()[..4], &[0xCF, 0xFA, 0xED, 0xFE]);
+    // Koji's linker of Mach-O (compiler/machlink.kj): an executable that llvm-objdump reads, with its
+    // entry, its binding to libSystem and its signature.
+    let own = directory.join("macos-own");
+    let built = koji::finish(koji::kojic().env("KOJI_TARGET", "macos-arm64").env("KOJI_LINKER", "koji").env("KOJI_RUNTIME", &library).arg("build").arg(&path).arg("--native").arg("-o").arg(&own), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let commands = Command::new("llvm-objdump").args(["--macho", "-p"]).arg(&own).output().unwrap();
+    assert!(commands.status.success(), "{}", String::from_utf8_lossy(&commands.stderr));
+    let text = String::from_utf8_lossy(&commands.stdout);
+    for command in ["LC_MAIN", "LC_DYLD_INFO_ONLY", "LC_LOAD_DYLINKER", "LC_CODE_SIGNATURE", "/usr/lib/libSystem.B.dylib"] {
+        assert!(text.contains(command), "no {} in the executable", command);
+    }
+    let binds = Command::new("llvm-objdump").args(["--macho", "--bind"]).arg(&own).output().unwrap();
+    assert!(String::from_utf8_lossy(&binds.stdout).contains("libSystem        _kevent"));
 }

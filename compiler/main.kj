@@ -14,6 +14,7 @@ import { generate } from 'cgen.kj'
 import { generateNative } from 'native.kj'
 import { inlineSmall, targetPlatform } from 'inline.kj'
 import { machArchive } from 'macho.kj'
+import { machArchiveObjects, linkMach } from 'machlink.kj'
 import { archive, archiveObjects, linkExecutable, sharedSymbols } from 'linker.kj'
 import { preludeLines } from 'prelude.kj'
 import { serve } from 'lsp.kj'
@@ -344,7 +345,16 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
         if (not (library in ['c', 'm', 'pthread'])) { others = true }
     }
 
-    // (Not yet for macOS, whose objects of Mach-O the system's linker links.)
+    // For macOS, its linker of Mach-O (machlink.kj).
+    if (not others and chosen != 'system' and targetPlatform() / 3 == 1) {
+        match (linkMachOwn(object, runtime, output)) {
+            Ok(_) => return Ok()
+            Err(message) => {
+                if (chosen == 'koji') { return Err(`compile error: ${message}`) }
+            }
+        }
+    }
+
     if (not others and chosen != 'system' and targetPlatform() / 3 != 1) {
         match (linkOwn(object, runtime, output)) {
             Ok(_) => return Ok()
@@ -384,6 +394,29 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
 // The executable of the object of a program and of the runtime library, by Koji's linker, with the
 // libraries of C of the system: the C library and its mathematics (and its threads, on systems
 // where they are a library of their own).
+// A program for macOS by Koji's linker of Mach-O: the object and those of the archive of the runtime.
+function linkMachOwn(object: byte[], runtime: string, output: string): Result[void, string] {
+    immut library = match (file.open(runtime, file.Read)) {
+        Ok(opened) => match (opened.readBytes()) {
+            Ok(bytes) => bytes
+            Err(error) => return Err(`cannot read '${runtime}': ${ioMessage(error)}`)
+        }
+        Err(error) => return Err(`cannot read '${runtime}': ${ioMessage(error)}`)
+    }
+    mut objects = [object]
+
+    for member in machArchiveObjects(library)? {
+        objects.push(member)
+    }
+
+    immut executable = linkMach(objects)?
+    writeBytes(output, executable)?
+    return match (file.setPermissions(output, 0x1ED)) {
+        Ok(_) => Ok()
+        Err(error) => Err(`cannot make '${output}' executable: ${ioMessage(error)}`)
+    }
+}
+
 function linkOwn(object: byte[], runtime: string, output: string): Result[void, string] {
     immut library = match (file.open(runtime, file.Read)) {
         Ok(opened) => match (opened.readBytes()) {
