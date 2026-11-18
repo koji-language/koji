@@ -257,11 +257,50 @@ export function foldedCopies(code: MFunctionCode): MFunctionCode {
                 }
             }
 
+            // A copy only the next instruction reads: that one reads what it copies.
+            if (index + 1 < instructions.length()) {
+                match (instructions[index]) {
+                    MMove(temporary, MReg(source)) if (temporary != source and reads[temporary] == 1 and writes[temporary] == 1 and code.floats[temporary] == code.floats[source] and temporary in readOf(instructions[index + 1]) and not (source in writtenBy(instructions[index + 1]))) => {
+                        match (reading(instructions[index + 1], temporary, source)) {
+                            Some(rewritten) => {
+                                kept.push(rewritten)
+                                index += 2
+                                changed = true
+                                continue
+                            }
+                            None => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             kept.push(instructions[index])
             index += 1
         }
 
-        blocks.push({ instructions: kept, terminator: block.terminator })
+        // A copy only the branch after it reads.
+        mut ending = block.terminator
+
+        if (kept.length() > 0) {
+            match (kept[kept.length() - 1]) {
+                MMove(temporary, MReg(source)) if (temporary != source and reads[temporary] == 1 and writes[temporary] == 1 and code.floats[temporary] == code.floats[source]) => {
+                    match (ending) {
+                        MBranch(condition, left, right, thenBlock, elseBlock) if (left == MReg(temporary) or right == MReg(temporary)) => {
+                            immut first = if (left == MReg(temporary)) { MReg(source) } else { left }
+                            immut second = if (right == MReg(temporary)) { MReg(source) } else { right }
+                            ending = MBranch(condition, first, second, thenBlock, elseBlock)
+                            kept = kept[0..kept.length() - 1]
+                            changed = true
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        blocks.push({ instructions: kept, terminator: ending })
     }
 
     if (not changed) { return code }
@@ -278,6 +317,29 @@ function writing(instruction: MInstruction, temporary: int, dest: int): Option[M
         MBinary(written, op, left, right, check) if (written == temporary) => Some(MBinary(dest, op, left, right, check))
         MUnary(written, op, value, check) if (written == temporary) => Some(MUnary(dest, op, value, check))
         MSet(written, condition, left, right) if (written == temporary) => Some(MSet(dest, condition, left, right))
+        _ => None
+    }
+}
+
+// The instruction reading `source` where it reads `temporary` (for the instructions that read
+// values and addresses plainly), or none.
+function reading(instruction: MInstruction, temporary: int, source: int): Option[MInstruction] {
+    immut value = (given: MValue) => if (given == MReg(temporary)) { MReg(source) } else { given }
+    immut address = (at: MAddress) => match (at) {
+        MBase(base, offset) => MBase(if (base == temporary) { source } else { base }, offset)
+        MIndexed(base, index, scale, offset) => MIndexed(if (base == temporary) { source } else { base }, if (index == temporary) { source } else { index }, scale, offset)
+        other => other
+    }
+
+    return match (instruction) {
+        MMove(dest, given) => Some(MMove(dest, value(given)))
+        MLoad(dest, at, width) => Some(MLoad(dest, address(at), width))
+        MStore(at, given, width) => Some(MStore(address(at), value(given), width))
+        MAddressOf(dest, at) => Some(MAddressOf(dest, address(at)))
+        MBinary(dest, op, left, right, check) => Some(MBinary(dest, op, value(left), value(right), check))
+        MUnary(dest, op, given, check) => Some(MUnary(dest, op, value(given), check))
+        MSet(dest, condition, left, right) => Some(MSet(dest, condition, value(left), value(right)))
+        MPanicIf(condition, left, right, panic) => Some(MPanicIf(condition, value(left), value(right), panic))
         _ => None
     }
 }
