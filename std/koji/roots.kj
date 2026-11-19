@@ -1,6 +1,6 @@
 // The certificate authorities of Mozilla's list (118 of them), built into the library written in
-// Koji for the systems that have none: written by bootstrap/roots.rs (do not edit). For each, the
-// size of its subject in 2 bytes, its subject, the size of its key in 2 bytes and its key
+// Koji for the systems that have none: written by bootstrap/tables/roots.kj (do not edit). For each,
+// the size of its subject in 2 bytes, its subject, the size of its key in 2 bytes and its key
 // (SubjectPublicKeyInfo), in DER, all in base64 (see std/koji/x509.kj).
 //
 // COMODO ECC Certification Authority

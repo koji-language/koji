@@ -1,0 +1,172 @@
+// Writes std/koji/roots.kj, the certificate authorities built into the library written in Koji (used
+// when the system has none), from Mozilla's list as curl extracts it (`cacert.pem`, also in the
+// Python package `certifi`):
+//
+//     build/kojic run bootstrap/tables/roots.kj cacert.pem > std/koji/roots.kj
+//
+// Of each certificate only what a chain is verified with: its subject and its public key (the
+// SubjectPublicKeyInfo), both in DER. The module holds them as one text of base64: for each
+// authority, the size of the subject in 2 bytes (big-endian), the subject, the size of the key in 2
+// bytes, the key.
+
+import file
+import system
+
+immut digits = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+// The bytes of base64 text (the white space skipped).
+function unbase64(text: string): byte[] {
+    mut out: byte[] = []
+    mut bits = 0
+    mut count = 0
+
+    for c in text.chars() {
+        immut value = match (digits.indexOf(string(c))) {
+            Some(found) => found
+            None => continue
+        }
+        bits = (bits << 6 | value) & 0xFFFFFF
+        count += 6
+
+        if (count >= 8) {
+            count -= 8
+            out.push(byte((bits >> count) & 0xFF))
+        }
+    }
+
+    return out
+}
+
+function base64(bytes: byte[]): string {
+    mut out = ''
+    mut at = 0
+
+    while (at < bytes.length()) {
+        immut size = if (bytes.length() - at < 3) { bytes.length() - at } else { 3 }
+        mut n = int(bytes[at]) << 16
+
+        if (size > 1) { n = n | int(bytes[at + 1]) << 8 }
+
+        if (size > 2) { n = n | int(bytes[at + 2]) }
+
+        for i in range(4) {
+            if (i <= size) {
+                immut digit = n >> (18 - 6 * i) & 63
+                out += digits[digit..digit + 1]
+            } else {
+                out += '='
+            }
+        }
+
+        at += 3
+    }
+
+    return out
+}
+
+// Where the contents of the element of DER at `at` start, and where it ends.
+type Element = {
+    contents: int
+    end: int
+}
+
+function element(der: byte[], at: int): Element {
+    immut first = int(der[at + 1])
+
+    if (first < 0x80) { return { contents: at + 2, end: at + 2 + first } }
+
+    immut count = first & 0x7F
+    mut length = 0
+
+    for i in range(count) {
+        length = length << 8 | int(der[at + 2 + i])
+    }
+
+    return { contents: at + 2 + count, end: at + 2 + count + length }
+}
+
+// The size of `part` in 2 bytes, then `part`.
+function sized(mut blob: byte[], part: byte[]) {
+    blob.push(byte(part.length() >> 8))
+    blob.push(byte(part.length() & 0xFF))
+    blob = blob + part
+}
+
+// The subject and the SubjectPublicKeyInfo of a certificate, in DER.
+function addSubjectAndKey(mut blob: byte[], der: byte[]) {
+    immut tbs = element(der, 0).contents
+    mut at = element(der, tbs).contents
+
+    // [0] version, then the serial number, the algorithm, the issuer and the validity.
+    if (der[at] == 0xA0) { at = element(der, at).end }
+
+    for _ in range(4) {
+        at = element(der, at).end
+    }
+
+    immut subjectEnd = element(der, at).end
+    immut keyEnd = element(der, subjectEnd).end
+    sized(mut blob, der[at..subjectEnd])
+    sized(mut blob, der[subjectEnd..keyEnd])
+}
+
+immut args = system.args()
+
+if (args.length() != 1) {
+    printError('usage: roots.kj cacert.pem')
+    system.exit(2)
+}
+
+immut text = match (file.open(args[0], file.Read)) {
+    Ok(opened) => match (opened.read()) {
+        Ok(read) => read
+        Err(error) => panic(`cannot read ${args[0]}: ${error}`)
+    }
+    Err(error) => panic(`cannot read ${args[0]}: ${error}`)
+}
+
+mut blob: byte[] = []
+mut labels: string[] = []
+mut label = ''
+mut pem = ''
+mut inside = false
+
+for line in text.split('\n') {
+    if (line.startsWith('# Label: ')) {
+        label = line[9..]
+
+        if (label.startsWith('"') and label.endsWith('"') and label.length() >= 2) { label = label[1..label.length() - 1] }
+
+        continue
+    }
+
+    if (line == '-----BEGIN CERTIFICATE-----') {
+        pem = ''
+        inside = true
+        continue
+    }
+
+    if (line == '-----END CERTIFICATE-----') {
+        addSubjectAndKey(mut blob, unbase64(pem))
+        labels.push(label)
+        label = ''
+        inside = false
+        continue
+    }
+
+    if (inside) { pem += line }
+}
+
+print(`// The certificate authorities of Mozilla's list (${labels.length()} of them), built into the library written in`)
+print('// Koji for the systems that have none: written by bootstrap/tables/roots.kj (do not edit). For each,')
+print('// the size of its subject in 2 bytes, its subject, the size of its key in 2 bytes and its key')
+print('// (SubjectPublicKeyInfo), in DER, all in base64 (see std/koji/x509.kj).')
+print('//')
+
+for each in labels {
+    print(`// ${each}`)
+}
+
+print('')
+print(`export immut rootCount = ${labels.length()}`)
+print(`export immut roots = '${base64(blob)}'`)

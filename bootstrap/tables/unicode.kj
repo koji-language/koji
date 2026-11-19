@@ -1,0 +1,315 @@
+// Writes std/koji/unicode.kj, the tables of Unicode of the library written in Koji, from the files
+// of the Unicode Character Database (UnicodeData.txt, DerivedCoreProperties.txt and
+// SpecialCasing.txt, of https://www.unicode.org/Public/<version>/ucd/) in a directory:
+//
+//     build/kojic run bootstrap/tables/unicode.kj 17.0.0 ucd/ > std/koji/unicode.kj
+//
+// The methods of strings give what the methods of `char` of Rust gave when the runtime was in Rust
+// (the tables were first written from them): `isAlpha` is Alphabetic, `isDigit`... Numeric the
+// general categories Nd, Nl and No, `upper` and `lower` the mappings of SpecialCasing.txt without
+// conditions or else those of UnicodeData.txt, and the final sigma of `lower` reads Cased and
+// Case_Ignorable. The tables are texts of hexadecimal digits in records of a fixed width, which a
+// binary search reads in place: a program that does not use them pays nothing to start.
+
+import file
+import system
+
+immut last = 0x10FFFF
+
+function readFile(path: string): string {
+    return match (file.open(path, file.Read)) {
+        Ok(opened) => match (opened.read()) {
+            Ok(text) => text
+            Err(error) => panic(`cannot read ${path}: ${error}`)
+        }
+        Err(error) => panic(`cannot read ${path}: ${error}`)
+    }
+}
+
+function hexValue(text: string): int {
+    mut value = 0
+
+    for c in text.trim().chars() {
+        immut digit = match ('0123456789ABCDEF'.indexOf(string(c).upper())) {
+            Some(found) => found
+            None => panic(`not a hexadecimal number: ${text}`)
+        }
+        value = value * 16 + digit
+    }
+
+    return value
+}
+
+function hex(value: int, width: int): string {
+    immut digits = '0123456789abcdef'
+    mut text = ''
+    mut rest = value
+
+    for _ in range(width) {
+        immut digit = rest & 15
+        text = digits[digit..digit + 1] + text
+        rest = rest >> 4
+    }
+
+    return text
+}
+
+// Whether a code point is a character (not a surrogate).
+function isCharacter(code: int): boolean {
+    return code < 0xD800 or code > 0xDFFF
+}
+
+// The code points of the properties of DerivedCoreProperties.txt named.
+function properties(text: string, name: string): boolean[] {
+    mut found: boolean[] = []
+
+    for _ in range(last + 1) {
+        found.push(false)
+    }
+
+    for line in text.split('\n') {
+        immut data = line.split('#')[0]
+        immut fields = data.split(';')
+
+        if (fields.length() < 2 or fields[1].trim() != name) { continue }
+
+        immut points = fields[0].trim().split('..')
+        immut first = hexValue(points[0])
+        immut end = if (points.length() > 1) { hexValue(points[1]) } else { first }
+
+        for code in range(first, end + 1) {
+            found[code] = true
+        }
+    }
+
+    return found
+}
+
+// A table of ranges of code points: `start` and `end` (inclusive), 6 digits each.
+function ranges(test: boolean[]): string {
+    mut out = ''
+    mut start = -1
+    mut end = 0
+
+    for code in range(last + 1) {
+        if (isCharacter(code) and test[code]) {
+            if (start < 0) { start = code }
+
+            end = code
+            continue
+        }
+
+        if (start >= 0) {
+            out += hex(start, 6) + hex(end, 6)
+            start = -1
+        }
+    }
+
+    if (start >= 0) { out += hex(start, 6) + hex(end, 6) }
+
+    return out
+}
+
+// A run of characters mapped to one other each.
+type Run = {
+    start: int
+    end: int
+    stride: int
+    first: int
+}
+
+// The mappings of one character to one other: runs of `start` and `end` (6 digits each), a stride
+// (1 digit: 1 or 2) and the character of `start` (6 digits); the others follow it.
+function single(map: Map[int, int[]]): string {
+    mut runs: Run[] = []
+    // The last character mapped to several: a run does not pass over it (the runs and the multiple
+    // mappings do not overlap).
+    mut barrier = -1
+
+    for code in range(last + 1) {
+        immut mapped = match (map.get(code)) {
+            Some(found) => found
+            None => continue
+        }
+
+        if (mapped.length() > 1) { barrier = code }
+
+        if (mapped.length() != 1 or mapped[0] == code) { continue }
+
+        immut target = mapped[0]
+
+        if (runs.length() > 0) {
+            immut run = runs[runs.length() - 1]
+
+            if (barrier < 0 or barrier < run.end) {
+                immut fitsOne = code == run.end + 1 and target - code == run.first - run.start
+                immut fitsTwo = code == run.end + 2 and target - code == run.first - run.start
+                immut fitsStride = code == run.end + run.stride and target - code == run.first - run.start
+
+                if ((run.start == run.end and (fitsOne or fitsTwo)) or (run.start != run.end and fitsStride)) {
+                    immut stride = if (run.start == run.end) { code - run.end } else { run.stride }
+                    runs[runs.length() - 1] = { start: run.start, end: code, stride: stride, first: run.first }
+                    continue
+                }
+            }
+        }
+
+        runs.push({ start: code, end: code, stride: 1, first: target })
+    }
+
+    mut out = ''
+
+    for run in runs {
+        out += hex(run.start, 6) + hex(run.end, 6) + string(run.stride) + hex(run.first, 6)
+    }
+
+    return out
+}
+
+// The mappings of one character to two or three: the character (6 digits), their number (1 digit)
+// and three characters (6 digits each, 0 after the last).
+function multiple(map: Map[int, int[]]): string {
+    mut out = ''
+
+    for code in range(last + 1) {
+        immut mapped = match (map.get(code)) {
+            Some(found) => found
+            None => continue
+        }
+
+        if (mapped.length() < 2) { continue }
+
+        assert(mapped.length() <= 3)
+        out += hex(code, 6) + string(mapped.length())
+
+        for i in range(3) {
+            out += hex(if (i < mapped.length()) { mapped[i] } else { 0 }, 6)
+        }
+    }
+
+    return out
+}
+
+// The mappings of UnicodeData.txt (its field `field`: 12 upper, 13 lower), replaced by those of
+// SpecialCasing.txt without conditions (its field `special`: 3 upper, 1 lower).
+function mappings(data: string, specials: string, field: int, special: int): Map[int, int[]] {
+    mut map: Map[int, int[]] = [:]
+
+    for line in data.split('\n') {
+        immut fields = line.split(';')
+
+        if (fields.length() < 14 or fields[field] == '') { continue }
+
+        map[hexValue(fields[0])] = [hexValue(fields[field])]
+    }
+
+    for line in specials.split('\n') {
+        immut fields = line.split('#')[0].split(';')
+
+        // The conditions are a fifth field, before the comment.
+        if (fields.length() < 5 or fields[4].trim() != '') { continue }
+
+        mut targets: int[] = []
+
+        for each in fields[special].trim().split(' ') {
+            if (each != '') { targets.push(hexValue(each)) }
+        }
+
+        map[hexValue(fields[0])] = targets
+    }
+
+    return map
+}
+
+// The code points of the general categories Nd, Nl and No (a range of UnicodeData.txt is its first
+// and its last line).
+function numeric(data: string): boolean[] {
+    mut found: boolean[] = []
+
+    for _ in range(last + 1) {
+        found.push(false)
+    }
+
+    mut first = -1
+
+    for line in data.split('\n') {
+        immut fields = line.split(';')
+
+        if (fields.length() < 3) { continue }
+
+        immut code = hexValue(fields[0])
+
+        if (fields[1].endsWith(', First>')) {
+            first = code
+            continue
+        }
+
+        immut start = if (fields[1].endsWith(', Last>')) { first } else { code }
+
+        if (fields[2] == 'Nd' or fields[2] == 'Nl' or fields[2] == 'No') {
+            for each in range(start, code + 1) {
+                found[each] = true
+            }
+        }
+    }
+
+    return found
+}
+
+immut args = system.args()
+
+if (args.length() != 2) {
+    printError('usage: unicode.kj <version> <directory of the UCD>')
+    system.exit(2)
+}
+
+immut version = args[0]
+immut directory = args[1]
+immut data = readFile(`${directory}/UnicodeData.txt`)
+immut derived = readFile(`${directory}/DerivedCoreProperties.txt`)
+immut specials = readFile(`${directory}/SpecialCasing.txt`)
+immut casedProperty = properties(derived, 'Cased')
+immut ignorable = properties(derived, 'Case_Ignorable')
+// Cased, but not Case_Ignorable: a character both is skipped by the final sigma.
+mut cased: boolean[] = []
+
+for code in range(last + 1) {
+    cased.push(casedProperty[code] and not ignorable[code])
+}
+
+immut lower = mappings(data, specials, 13, 1)
+immut upper = mappings(data, specials, 12, 3)
+
+print(`// The tables of Unicode ${version} of the library written in Koji, as Rust had them: written by`)
+print('// bootstrap/tables/unicode.kj (do not edit). Texts of hexadecimal digits in records of a fixed')
+print('// width (see std/koji/text.kj).')
+print('')
+print('// Alphabetic.')
+print(`export immut alphabetic = '${ranges(properties(derived, 'Alphabetic'))}'`)
+print('')
+print('// Numeric (the general categories Nd, Nl and No).')
+print(`export immut numeric = '${ranges(numeric(data))}'`)
+print('')
+print('// Lowercase.')
+print(`export immut lowercase = '${ranges(properties(derived, 'Lowercase'))}'`)
+print('')
+print('// Uppercase.')
+print(`export immut uppercase = '${ranges(properties(derived, 'Uppercase'))}'`)
+print('')
+print('// Cased, for the final sigma (when not ignorable).')
+print(`export immut cased = '${ranges(cased)}'`)
+print('')
+print('// Case_Ignorable, for the final sigma.')
+print(`export immut ignorable = '${ranges(ignorable)}'`)
+print('')
+print('// The lower case of a character, when it is one character.')
+print(`export immut lowerSingle = '${single(lower)}'`)
+print('')
+print('// The lower case of a character, when it is two or three.')
+print(`export immut lowerMultiple = '${multiple(lower)}'`)
+print('')
+print('// The upper case of a character, when it is one character.')
+print(`export immut upperSingle = '${single(upper)}'`)
+print('')
+print('// The upper case of a character, when it is two or three.')
+print(`export immut upperMultiple = '${multiple(upper)}'`)

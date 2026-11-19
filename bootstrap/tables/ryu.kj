@@ -1,0 +1,171 @@
+// Writes std/koji/ryu.kj, the tables of powers of 5 with which the library written in Koji finds
+// the shortest decimal of a float (Ulf Adams' Ryu, in std/koji/decimal.kj):
+//
+//     build/kojic run bootstrap/tables/ryu.kj > std/koji/ryu.kj
+//
+// `powersOfFive[i]` is 5^i in its first 125 bits, for i below 326; `inversePowersOfFive[i]` is
+// 2^(bits of 5^i - 1 + 125) / 5^i + 1, for i below 342. Each is a record of 32 hexadecimal
+// digits: its high 64 bits, then its low 64.
+
+// A natural number, in words of 32 bits from the lowest.
+type Big = {
+    words: int[]
+}
+
+function times(number: Big, factor: int): Big {
+    mut words: int[] = []
+    mut carry = 0
+
+    for word in number.words {
+        immut product = word * factor + carry
+        words.push(product & 0xFFFFFFFF)
+        carry = product >> 32
+    }
+
+    if (carry > 0) { words.push(carry) }
+
+    return { words: words }
+}
+
+function plusOne(number: Big): Big {
+    mut words = number.words
+    mut i = 0
+
+    while (true) {
+        if (i == words.length()) {
+            words.push(1)
+            break
+        }
+
+        words[i] = words[i] + 1
+
+        if (words[i] <= 0xFFFFFFFF) { break }
+
+        words[i] = 0
+        i += 1
+    }
+
+    return { words: words }
+}
+
+function bits(number: Big): int {
+    immut top = number.words.length() - 1
+    mut size = 0
+
+    while ((number.words[top] >> size) > 0) {
+        size += 1
+    }
+
+    return top * 32 + size
+}
+
+function bit(number: Big, index: int): boolean {
+    if (index < 0 or index / 32 >= number.words.length()) { return false }
+
+    return (number.words[index / 32] >> (index % 32)) & 1 == 1
+}
+
+function atLeast(a: Big, b: Big): boolean {
+    immut length = if (a.words.length() > b.words.length()) { a.words.length() } else { b.words.length() }
+    mut i = length - 1
+
+    while (i >= 0) {
+        immut x = if (i < a.words.length()) { a.words[i] } else { 0 }
+        immut y = if (i < b.words.length()) { b.words[i] } else { 0 }
+
+        if (x != y) { return x > y }
+
+        i -= 1
+    }
+
+    return true
+}
+
+function minus(a: Big, b: Big): Big {
+    mut words: int[] = []
+    mut borrow = 0
+
+    for i in range(a.words.length()) {
+        mut difference = a.words[i] - (if (i < b.words.length()) { b.words[i] } else { 0 }) - borrow
+        borrow = 0
+
+        if (difference < 0) {
+            difference += 1 << 32
+            borrow = 1
+        }
+
+        words.push(difference)
+    }
+
+    while (words.length() > 1 and words[words.length() - 1] == 0) {
+        words.pop()
+    }
+
+    return { words: words }
+}
+
+// 2^power / number, rounded down: a division bit by bit.
+function dividePowerOfTwo(number: Big, power: int): Big {
+    mut remainder: Big = { words: [0] }
+    mut quotient: Big = { words: [0] }
+    mut at = power
+
+    while (at >= 0) {
+        remainder = times(remainder, 2)
+
+        if (at == power) { remainder.words[0] = remainder.words[0] | 1 }
+
+        quotient = times(quotient, 2)
+
+        if (atLeast(remainder, number)) {
+            remainder = minus(remainder, number)
+            quotient.words[0] = quotient.words[0] | 1
+        }
+
+        at -= 1
+    }
+
+    return quotient
+}
+
+// The 128 bits of `number` from bit `offset` (below 0: zeros first), as 32 hexadecimal digits.
+function record(number: Big, offset: int): string {
+    immut digits = '0123456789abcdef'
+    mut text = ''
+    mut nibble = 31
+
+    while (nibble >= 0) {
+        mut value = 0
+
+        for i in range(4) {
+            if (bit(number, offset + nibble * 4 + i)) { value = value | (1 << i) }
+        }
+
+        text += digits[value..value + 1]
+        nibble -= 1
+    }
+
+    return text
+}
+
+mut powers = ''
+mut inverses = ''
+mut five: Big = { words: [1] }
+
+for i in range(342) {
+    immut size = bits(five)
+
+    if (i < 326) { powers += record(five, size - 125) }
+
+    inverses += record(plusOne(dividePowerOfTwo(five, size - 1 + 125)), 0)
+    five = times(five, 5)
+}
+
+print('// The tables of powers of 5 of Ryu (std/koji/decimal.kj): written by bootstrap/tables/ryu.kj (do')
+print('// not edit). Records of 32 hexadecimal digits, the high 64 bits of a number of 128 bits first.')
+print('')
+print('// 5^i in its first 125 bits, for i below 326.')
+print(`export immut powersOfFive = '${powers}'`)
+print('')
+print('// 2^(bits of 5^i - 1 + 125) / 5^i + 1, for i below 342.')
+print(`export immut inversePowersOfFive = '${inverses}'`)
