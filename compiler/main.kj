@@ -20,8 +20,11 @@ import { linkWindows } from 'pelink.kj'
 import { serve } from 'lsp.kj'
 import { initModule, addModule, updateModules } from 'packages.kj'
 
+// The version of Koji: of the language, its standard library and this compiler.
+immut version = '0.1.0'
+
 immut usage = [
-    'kojic - the Koji programming language (the compiler written in Koji)',
+    `kojic ${version} - the Koji programming language (the compiler written in Koji)`,
     '',
     'Usage:',
     '    kojic run <file.kj> [arguments]   check, compile and run a program',
@@ -41,6 +44,7 @@ immut usage = [
     '    kojic init <module>               make a koji.mod for the module (github.com/ana/agenda)',
     '    kojic add <module>[@version]      require a module, at its latest version or the one given',
     '    kojic update [module]             require the latest versions of the modules (or of one)',
+    '    kojic version                     show the version of Koji',
     '    kojic help                        show this message',
     '',
     'To build an executable, kojic needs the runtime library (libkoji_runtime.a): next to kojic,',
@@ -907,6 +911,11 @@ if (command == 'check' and args.length() == 2) {
             system.exit(1)
         }
     }
+}
+
+if (args.length() == 1 and command in ['version', '--version', '-V']) {
+    print(`kojic ${version}`)
+    system.exit(0)
 }
 
 if (args.length() == 1 and command in ['help', '--help', '-h']) {

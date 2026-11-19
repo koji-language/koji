@@ -1,0 +1,71 @@
+# Builds Koji from the seed and runs its tests (written in Koji) on each push and pull request,
+# and packs the release of each platform (bootstrap/package.sh) as an artifact. Linux on x86-64 is
+# the platform the tests must pass on; the others are run on their own systems as they become
+# supported (their failures are reported, but do not fail the run).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install valgrind (the tests run the built programs under it) and Wine
+        run: sudo apt-get update && sudo apt-get install -y valgrind wine64
+      - name: Build kojic from the seed
+        run: sh bootstrap/build.sh
+      - name: Test
+        run: build/kojic test test/*.kj
+      - name: Test the programs built for Windows, under Wine
+        run: KOJI_TEST_WINDOWS=1 build/kojic test test/cases.kj test/language.kj
+      - name: Pack the release of each platform
+        run: sh bootstrap/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koji-packages
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+
+  other-platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+          - name: macos-arm64
+            os: macos-14
+          - name: macos-x64
+            os: macos-13
+    name: ${{ matrix.name }} (experimental)
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build kojic from the seed
+        run: sh bootstrap/build.sh
+      - name: Run an example
+        run: build/kojic run examples/hello.kj
+      - name: Test
+        run: build/kojic test test/*.kj
+
+  windows-x64:
+    name: windows-x64 (experimental)
+    runs-on: windows-2022
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build kojic from the seed
+        shell: cmd
+        run: bootstrap\build.cmd
+      - name: Run an example
+        shell: cmd
+        run: build\kojic.exe run examples\hello.kj
+      - name: Test the programs of the cases
+        shell: bash
+        run: build/kojic.exe test test/cases.kj
