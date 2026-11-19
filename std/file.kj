@@ -21,6 +21,7 @@ extern function koji_blocking_access(path: Address, mode: CInt): CInt
 extern function koji_blocking_unlink(path: Address): CInt
 extern function koji_blocking_mkdir(path: Address, mode: CInt): CInt
 extern function chmod(path: Address, mode: CInt): CInt
+extern function rmdir(path: Address): CInt
 // Windows (ucrtbase), and the library there (koji:windows).
 extern function windowsFileno(file: Address): CInt from '_fileno'
 extern function windowsChmod(path: Address, mode: CInt): CInt from '_chmod'
@@ -271,6 +272,20 @@ export function remove(path: string): Result[void, FileError] {
 
     immut cPath = cString(path)
     immut removed = koji_blocking_unlink(cPath) == 0
+    immut code = koji_system_errno()
+    free(cPath)
+
+    if (not removed) { return Err(failure(path, code)) }
+
+    return Ok()
+}
+
+// Removes the directory at `path`, which must be empty.
+export function removeDir(path: string): Result[void, FileError] {
+    if (hasNul(path)) { return Err(invalidPath(path)) }
+
+    immut cPath = cString(path)
+    immut removed = rmdir(cPath) == 0
     immut code = koji_system_errno()
     free(cPath)
 

@@ -10,7 +10,7 @@
 // `koji_windows_start` (native.kj), for the console.
 
 // The functions of the DLLs the library calls, but those of the C library (ucrtbase).
-immut kernel32 = ['CloseHandle', 'CreateFileA', 'CreatePipe', 'CreateProcessA', 'CreateThread', 'GetExitCodeProcess', 'GetLastError', 'GetModuleFileNameA', 'GetSystemTimePreciseAsFileTime', 'PeekNamedPipe', 'QueryPerformanceCounter', 'QueryPerformanceFrequency', 'ReadFile', 'SetHandleInformation', 'Sleep', 'VirtualAlloc', 'VirtualFree', 'VirtualProtect', 'WaitForSingleObject']
+immut kernel32 = ['CloseHandle', 'CreateFileA', 'CreatePipe', 'CreateProcessA', 'CreateThread', 'GetExitCodeProcess', 'GetLastError', 'GetModuleFileNameA', 'GetSystemTimePreciseAsFileTime', 'PeekNamedPipe', 'QueryPerformanceCounter', 'QueryPerformanceFrequency', 'ReadFile', 'SetHandleInformation', 'Sleep', 'VirtualAlloc', 'VirtualFree', 'VirtualProtect', 'WaitForSingleObject', 'WriteFile']
 immut ws2 = ['WSAGetLastError', 'WSAPoll', 'WSAStartup', 'accept', 'bind', 'closesocket', 'connect', 'freeaddrinfo', 'getaddrinfo', 'getsockopt', 'ioctlsocket', 'listen', 'recv', 'send', 'setsockopt', 'socket']
 immut bcrypt = ['BCryptGenRandom']
 // The names of POSIX that the C library of Windows has with an underscore (as oldnames.lib of
