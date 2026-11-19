@@ -9,7 +9,7 @@
 // with a `blocking` one run one at a time, and the `blocking` ones on a thread that helps
 // (koji:task) while other tasks are alive.
 
-import { Param, TypeExpr, ForeignHandle, ForeignFunction } from 'parser.kj'
+import { TypeExpr, ForeignHandle, ForeignFunction } from 'parser.kj'
 
 // The module of a block: its text, and the names it gives the module of the block.
 export type ForeignModule = {

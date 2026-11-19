@@ -6,7 +6,7 @@
 // first. When none is free, the range of those it could take that ends last is spilled to a slot
 // of the frame (this one, if it ends after them all).
 
-import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MFunctionCode } from 'mir.kj'
+import { MValue, MAddress, MInstruction, MTerminator, MFunctionCode } from 'mir.kj'
 import { addBit, removeBit, hasBit, bitMembers, liveness } from 'bits.kj'
 
 // The registers of a processor for the allocator (their numbers for its emitter).

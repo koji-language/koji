@@ -1,5 +1,5 @@
-// Inlining for the native backend (native.kj): a call of a small function (as `smallFunctions` finds them,
-// those that C inlines: `Lexer.at`, `Parser.current`) is replaced by the blocks of the function, its
+// Inlining for the native backend (native.kj): a call of a small function (`inlinable` finds them:
+// `Lexer.at`, `Parser.current`) is replaced by the blocks of the function, its
 // locals new locals of the caller. A parameter the function never changes is its argument itself
 // (a local, a constant, or a global that never changes), with no reference of its own: the caller
 // reads it where the function did, so it stays alive until then (liveness.kj), and a value changed
@@ -10,7 +10,7 @@
 // function of the same file is inlined (the messages of its panics name the file of the function
 // generated).
 
-import { Ty, Operand, Place, Step, Target, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrProgram, isManaged } from 'ir.kj'
+import { Ty, Operand, Place, Step, Target, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrFunction, IrProgram, isManaged } from 'ir.kj'
 import { changes, constantGlobals } from 'borrow.kj'
 import { uses, terminatorUses, successors } from 'liveness.kj'
 import { addBit, removeBit, hasBit, liveness } from 'bits.kj'
@@ -30,8 +30,7 @@ type Names = {
 immut inlinedBlocks = 8
 immut inlinedSize = 40
 
-// The functions small enough to inline (with limits of their own): they
-// call no others but small ones, so a recursive function is never one of them.
+// The functions small enough to inline: they call no others but small ones, so a recursive function is never one of them.
 function inlinable(program: IrProgram, blocks: int, most: int): boolean[] {
     mut sizes: int[] = []
 

@@ -13,7 +13,7 @@
 // changes or is released (`self.chars.length()` in `Lexer.advance(mut self)`, once `Lexer.has` is
 // inlined there).
 
-import { Ty, Operand, Place, Target, Instruction, IrFunction, IrProgram, isManaged } from 'ir.kj'
+import { Operand, Place, Target, Instruction, IrFunction, IrProgram, isManaged } from 'ir.kj'
 import { lastUses, uses, terminatorUses } from 'liveness.kj'
 
 // For each function, which of its parameters are borrowed.

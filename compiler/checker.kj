@@ -3,8 +3,8 @@
 
 import file
 import system
-import { Node, NodeKind, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Part, Entry, ObjectEntry, ParsedFile, Span, parseFrom, annotated } from 'parser.kj'
-import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, MethodSignature, NamedParts, unconstrained, equatable, orderable, constraintName, isNumeric, mixesFloatAndDecimal, containsUnknown, anyUnknown, fillUnknown, substitute, substituteAll, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, substituteFields, variantsOf, findField } from 'types.kj'
+import { Node, Pattern, TypeExpr, TypeDef, Param, TypeParam, Field, Arm, Entry, ObjectEntry, Span, parseFrom, annotated } from 'parser.kj'
+import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, unconstrained, equatable, orderable, constraintName, isNumeric, mixesFloatAndDecimal, containsUnknown, anyUnknown, fillUnknown, substitute, signatureParams, assignable, join, namedParts, display, displayAll, fieldsOf, variantsOf, findField } from 'types.kj'
 import { decimalLiteral } from 'decimal.kj'
 import { foreignModule } from 'foreign.kj'
 import { isPackagePath, packageFile, foreignAllowed, preparePackages } from 'packages.kj'

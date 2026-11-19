@@ -5,7 +5,7 @@
 // which shows a value when it is printed or turned into text), may run where the code does not
 // say: those that call closures, or call the runtime, may see the globals of all of them.
 
-import { Operand, Place, Target, Step, StdArg, Instruction, IrFunction, IrProgram } from 'ir.kj'
+import { Operand, Place, Target, Instruction, IrProgram } from 'ir.kj'
 
 // For each function, the globals it may see.
 export function globalsSeen(program: IrProgram): Set[int][] {

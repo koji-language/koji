@@ -13,7 +13,7 @@
 // reference at each point is known (`held`): only those are released, and a local held where
 // paths meet is set to none at the end of the paths where it is not.
 
-import { Ty, Operand, Place, Target, Step, Instruction, Terminator, IrFunction, IrProgram, StdArg, isManaged, itemOf, tyText } from 'ir.kj'
+import { Ty, Operand, Place, Target, Instruction, Terminator, IrFunction, IrProgram, StdArg, isManaged, itemOf, tyText } from 'ir.kj'
 import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
 import { lastUses, defs, uses, terminatorUses, successors, targetReads } from 'liveness.kj'
 import { addBit, removeBit, hasBit, bitMembers } from 'bits.kj'
@@ -225,17 +225,6 @@ function wideLowered(program: IrProgram, routine: IrFunction, instruction: Instr
         MapRemoveIns(_, _, _, _) => true
         _ => false
     }
-}
-
-// The `mut` parameters of a function (each given the address where its final value goes).
-function mutCount(routine: IrFunction): int {
-    mut count = 0
-
-    for writeback in routine.writeback {
-        if (writeback) { count += 1 }
-    }
-
-    return count
 }
 
 // A variable, or a place inside one (its steps of simple operands).
@@ -782,13 +771,6 @@ function Lowering.operandInSlot(mut self, operand: Operand): MValue {
         self.current.push(MStore(MSlot(slot, 8 * i), words[i], 8))
     }
 
-    return self.addressOf(MSlot(slot, 0))
-}
-
-// A value in a new slot of the frame: its address (for the library, which takes items and keys so).
-function Lowering.inSlot(mut self, value: MValue): MValue {
-    immut slot = self.slot()
-    self.current.push(MStore(MSlot(slot, 0), value, 8))
     return self.addressOf(MSlot(slot, 0))
 }
 

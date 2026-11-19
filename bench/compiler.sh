@@ -9,7 +9,7 @@ set -eu
 cd "$(dirname "$0")/.."
 kojic=${1:-build/kojic}
 
-for stage in "check" "dump ir" "dump c"; do
+for stage in "check" "dump ir" "dump inlined"; do
     best=""
     for run in 1 2 3 4 5; do
         start=$(date +%s.%N)

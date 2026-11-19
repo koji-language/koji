@@ -11,7 +11,7 @@
 // may still be on the stack: the local is then an alias of the temporary, if it is given no other
 // value and does not escape. The temporary releases the fields; the alias releases nothing.
 
-import { Operand, Place, Target, Step, StdArg, Instruction, Terminator, IrFunction, IrProgram } from 'ir.kj'
+import { Operand, Place, Target, Instruction, IrFunction, IrProgram } from 'ir.kj'
 
 // What a function does with its locals: those that escape by themselves, and those it gives to
 // parameters of the functions it calls (they escape when the parameter does).

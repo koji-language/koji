@@ -1,9 +1,9 @@
 // Lowering, in the Koji compiler: from the checked syntax tree to the IR, with a message for what
 // `kojic build` does not support yet.
 
-import { Node, NodeKind, Pattern, TypeExpr, Param, TypeParam, Arm, Part, Entry, ObjectEntry, isTestName } from 'parser.kj'
-import { Type, TypeKind, TypeInfo, FieldType, VariantInfo, substitute, display } from 'types.kj'
-import { MethodRef, TryWrap, LoadedModule, Tables, Program, coreStringMethods, libraryModules, parentDir, resolvePath, foreignPrefix, foreignPath } from 'checker.kj'
+import { Node, Pattern, TypeExpr, Param, Arm, Entry, ObjectEntry, isTestName } from 'parser.kj'
+import { Type, TypeInfo, FieldType, substitute, display } from 'types.kj'
+import { MethodRef, LoadedModule, Tables, Program, coreStringMethods, libraryModules, parentDir, resolvePath, foreignPrefix, foreignPath } from 'checker.kj'
 import { IrExtern, IrForC, IrTest, Ty, Operand, Place, Step, Target, IrField, IrVariant, IrRecord, StdArg, Writeback, MapEntry, Instruction, Terminator, IrBlock, IrLocal, IrFunction, IrGlobal, IrProgram, isManaged, itemOf, tyText, tysText } from 'ir.kj'
 import { decimalLiteral } from 'decimal.kj'
 import { foreignModule } from 'foreign.kj'
@@ -220,7 +220,7 @@ type Lowerer = {
     // The functions C calls by their names (`extern function name(...) { ... }`).
     forC: IrForC[]
     // The top-level `immut` ints whose value is known while compiling (`immut limit = 1 << 49`):
-    // their uses are the value, which the C compiler folds.
+    // their uses are the value, folded where it is known.
     constants: Map[int, int]
     table: TypeInfo[]
     tables: Tables
@@ -1106,8 +1106,7 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
                 mut types: string[] = []
 
                 for param in params {
-                    // An address is a `const void *` for C, as the functions of its library that
-                    // only read memory declare it (`memcmp`): declared otherwise, gcc warns.
+                    // The types of C of the parameters, as the C library declares them.
                     immut written = cTypeOf(param.annotation)
                     types.push(if (written == 'KojiString *') { 'const KojiString *' } else { constOf(written) })
                 }
@@ -4178,20 +4177,6 @@ function Lowerer.std(mut self, mut builder: Builder, call: Node, runner: string,
 
 function Lowerer.stdValue(mut self, mut builder: Builder, args: Node[], index: int, ty: Ty): Result[StdArg, string] {
     return Ok(ValueArg(self.valueOf(mut builder, args[index], ty)?))
-}
-
-// A number given to the standard library as a decimal: an int or a float is converted.
-function Lowerer.decimalArg(mut self, mut builder: Builder, arg: Node): Result[Operand, string] {
-    if (self.typeIn(builder, arg)? == FloatTy) {
-        immut value = self.value(mut builder, arg)?
-        return Ok(self.unary(mut builder, 'FloatToDecimal', value, DecimalTy))
-    }
-
-    return self.valueOf(mut builder, arg, DecimalTy)
-}
-
-function Lowerer.stdResult(mut self, builder: Builder, call: Node): Result[StdArg, string] {
-    return Ok(RecordArg(self.recordOf(builder, call)?))
 }
 
 function position(names: string[], name: string): int {

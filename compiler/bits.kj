@@ -1,17 +1,6 @@
 // Sets of small integers as bits (64 a word), and liveness over the blocks of a function with them:
 // the analyses of the IR after inlining (inline.kj) and of the machine IR (mirlower.kj, mirregs.kj).
 
-// A set of `count` members, none in it.
-export function emptyBits(count: int): int[] {
-    mut set: int[] = []
-
-    for word in range((count + 63) / 64) {
-        set.push(0)
-    }
-
-    return set
-}
-
 export function addBit(mut set: int[], member: int) {
     set[member / 64] = set[member / 64] | (1 << (member % 64))
 }

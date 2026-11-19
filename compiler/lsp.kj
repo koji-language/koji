@@ -8,8 +8,8 @@ import file
 import json
 import path
 import system
-import { Node, NodeKind, Span, Param, Arm, Pattern, Part, parse } from 'parser.kj'
-import { Checked, Program, checkText } from 'checker.kj'
+import { Node, Span, Param, Pattern, parse } from 'parser.kj'
+import { checkText } from 'checker.kj'
 import { display } from 'types.kj'
 
 // The text of each open file, by its URI.

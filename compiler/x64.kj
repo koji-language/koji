@@ -11,7 +11,7 @@
 // with two results or through an address). The frame: rbp, the registers kept that the function uses, its
 // slots, then the slots of the spilled values, its size a multiple of 16.
 
-import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode, EmittedRelocation, EmittedUse, EmittedText, Emitted } from 'mir.kj'
+import { MValue, MAddress, MCallee, MInstruction, MTerminator, MFunctionCode, EmittedRelocation, EmittedUse, EmittedText, Emitted } from 'mir.kj'
 import { RegisterSet, Allocation, positionOf, LiveSweep, sweepOf, liveAt } from 'mirregs.kj'
 
 immut rax = 0
@@ -542,10 +542,6 @@ function Emitter.finish(mut self, dest: int, register: int) {
         }
         InFrame(offset) => self.storeRegister(register, offset)
     }
-}
-
-function Emitter.storeTo(mut self, dest: int, register: int) {
-    self.finish(dest, register)
 }
 
 function Emitter.binary(mut self, dest: int, op: string, left: MValue, right: MValue, check: int) {

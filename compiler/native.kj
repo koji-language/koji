@@ -14,7 +14,7 @@
 // other parameters.
 
 import { reusedLoads, foldedCopies } from 'mirloads.kj'
-import { Ty, Operand, IrFunction, IrProgram, IrExtern, IrForC } from 'ir.kj'
+import { Ty, Operand, IrProgram, IrExtern, IrForC } from 'ir.kj'
 import { globalsSeen } from 'globals.kj'
 import { borrowedParams, constantGlobals } from 'borrow.kj'
 import { inlineSmall, targetPlatform } from 'inline.kj'

@@ -2,7 +2,7 @@
 // over the blocks of a function). A value read for the last time can be moved instead of copied
 // (see `CopyIns`, `RecordNewIns` and `StrConcat` in mirlower.kj).
 
-import { Operand, Place, Target, Step, StdArg, Instruction, Terminator, IrFunction } from 'ir.kj'
+import { Operand, Place, Target, Instruction, Terminator, IrFunction } from 'ir.kj'
 
 // For each block, and each instruction in it, the locals it reads that are not read after it (by a
 // later one, by the terminator or by another block).

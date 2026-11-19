@@ -5,7 +5,7 @@
 // one way, and the blocks the others led to are not reached. The native backend keeps the blocks of
 // the platform it compiles for (inline.kj).
 
-import { Operand, Place, Instruction, Terminator, IrFunction, IrProgram } from 'ir.kj'
+import { Operand, IrFunction, IrProgram } from 'ir.kj'
 import { changes } from 'borrow.kj'
 import { successors } from 'liveness.kj'
 

@@ -11,7 +11,7 @@
 // (`a64Registers`). The frame: x29 and x30 at x29, then below it the registers kept that the
 // function uses, its slots and the slots of the spilled values, its size a multiple of 16.
 
-import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode, EmittedRelocation, EmittedUse, EmittedText, Emitted } from 'mir.kj'
+import { MValue, MAddress, MCallee, MInstruction, MTerminator, MFunctionCode, EmittedRelocation, EmittedUse, EmittedText, Emitted } from 'mir.kj'
 import { RegisterSet, Allocation, positionOf, LiveSweep, sweepOf, liveAt } from 'mirregs.kj'
 
 // The registers: x0 to x30, then the floats from 32 (d0 is 32). 31 is the stack pointer or the zero
@@ -19,7 +19,6 @@ import { RegisterSet, Allocation, positionOf, LiveSweep, sweepOf, liveAt } from 
 immut v = 32
 immut zero = 31
 immut fp = 29
-immut lr = 30
 // The registers of the emitter: values, an address, an offset.
 immut sa = 9
 immut sb = 10

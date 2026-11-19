@@ -2,7 +2,7 @@
 // from the IR: the functions that free records, the jobs of `blocking` functions, the functions C
 // calls by their names, and where a program or the library starts. Any emitter encodes them.
 
-import { MValue, MAddress, MCallee, MInstruction, MTerminator, MBlock, MPanic, MFunctionCode } from 'mir.kj'
+import { MInstruction, MTerminator, MBlock, MFunctionCode } from 'mir.kj'
 
 export type MBuilder = {
     name: string
