@@ -1,13 +1,14 @@
 //! The cryptography of the library written in Koji (std/koji/sha.kj, chacha.kj, x25519.kj, bignum.kj,
-//! ecc.kj, rsa.kj, aes.kj), which TLS is made of: a program of C linked with the runtime calls its
-//! functions by their names, on the vectors of the standards (FIPS 180-4, RFC 4231, RFC 5869, RFC
+//! ecc.kj, rsa.kj, aes.kj), which TLS is made of: a program of C linked with the runtime library
+//! (built by the compiler) calls its functions by their names (the C compiler builds these tests
+//! only; where there is none, they are skipped), on the vectors of the standards (FIPS 180-4, RFC 4231, RFC 5869, RFC
 //! 8439, RFC 7748, the test cases of GCM) and on keys, signatures and certificates made by OpenSSL.
 
 use std::path::Path;
 use std::process::Command;
 
-/// The runtime library, as the other tests link it.
-const RUNTIME: &str = env!("KOJI_RUNTIME_LIB");
+#[path = "koji/mod.rs"]
+mod koji;
 
 /// The libraries a program needs from the system besides the C library.
 const SYSTEM_LIBRARIES: &[&str] = &["-lm", "-lpthread"];
@@ -25,7 +26,7 @@ fn run_c_with(name: &str, source: &str, arguments: &[&str]) -> String {
     let program = directory.join(name);
     std::fs::write(&file, source).unwrap();
     let cc = std::env::var("KOJI_CC").unwrap_or_else(|_| "cc".to_string());
-    let built = Command::new(cc).arg("-O2").arg("-o").arg(&program).arg(&file).arg(RUNTIME).args(SYSTEM_LIBRARIES).output().unwrap();
+    let built = Command::new(cc).arg("-O2").arg("-o").arg(&program).arg(&file).arg(koji::library()).args(SYSTEM_LIBRARIES).output().unwrap();
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let output = Command::new(&program).args(arguments).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));

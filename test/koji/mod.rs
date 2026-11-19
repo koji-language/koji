@@ -11,9 +11,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
-/// The runtime library built from its C (bootstrap/libkoji.c.gz), for the programs of the C backend.
-pub const RUNTIME: &str = env!("KOJI_RUNTIME_LIB");
-
 /// The libraries a program needs from the system besides the C library.
 const SYSTEM_LIBRARIES: &[&str] = &["-lm"];
 

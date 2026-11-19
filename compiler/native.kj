@@ -1,6 +1,5 @@
 // The native backend: the machine code of x86-64 for the IR, in an object file of ELF (Linux), which
-// Koji's linker (or the system's) links with the runtime library, without a C compiler. It does
-// what the C backend does (cgen.kj), with the same functions of the runtime. Each function goes
+// Koji's linker (or the system's) links with the runtime library, without a C compiler. Each function goes
 // through the machine IR (see "A machine IR between the IR and the processors" in doc/design.md):
 // lowered (mirlower.kj), its registers allocated (mirregs.kj), encoded (x64.kj); this file lays out
 // the object: the data of the program (its strings, its globals, the descriptions of its records),
@@ -10,9 +9,9 @@
 //
 // Functions follow the convention of System V (integers and addresses in rdi, rsi, rdx, rcx,
 // r8 and r9, floats in xmm0 to xmm7, a decimal or a U128 in two registers, the rest on the stack),
-// so the runtime calls closures as the C backend makes them. A `mut` parameter is a value given
+// as the runtime calls closures. A `mut` parameter is a value given
 // with its own reference, and the address where the function writes its last value, after the
-// other parameters (as in the C backend).
+// other parameters.
 
 import { reusedLoads, foldedCopies } from 'mirloads.kj'
 import { Ty, Operand, IrFunction, IrProgram, IrExtern, IrForC } from 'ir.kj'
@@ -112,7 +111,7 @@ export function generateNative(given: IrProgram): Result[byte[], string] {
     }
 
     // The strings of the program: blocks of strings that are never freed (their count of
-    // references starts at 2^62, as in the C backend).
+    // references starts at 2^62).
     for text in program.strings {
         native.alignData(8)
         native.strings.push(native.data.length())
@@ -250,8 +249,7 @@ type Export = {
     section: int
 }
 
-// The part of the runtime that the native library writes as machine code and data itself (the C of
-// runtime/prelude.h for the C backend): the switch between the stacks of tasks and where a new task
+// The part of the runtime that the native library writes as machine code and data itself: the switch between the stacks of tasks and where a new task
 // starts (code of the processor); the heads of the pool and whether it is off, and the test `kojic
 // test` runs; the descriptions of the items of each built-in type (their functions in
 // koji:prelude); the functions that call through the address of another (of a description, a
@@ -566,8 +564,7 @@ function Native.loadFunction(mut self, name: string, at: MAddress, width: int): 
 }
 
 // The threads of the runtime (see "The threads of the runtime" in doc/design.md), code that runs no
-// Koji: the threads that help with the calls that block, each taking jobs (KojiJob of
-// runtime/prelude.h: its code, 6 arguments, its result, errno, the task that waits, done) from a pipe
+// Koji: the threads that help with the calls that block, each taking jobs (a KojiJob: its code, 6 arguments, its result, errno, the task that waits, done) from a pipe
 // and giving them back through another; the thread that ticks for preemption; the job of each call
 // that blocks of the library, and running a job (on this thread when the task is alone). Their
 // state, which koji:prelude starts and stops: the pipes of the jobs, whether the clock ticks, the
@@ -1177,7 +1174,7 @@ function Native.recordFunctions(mut self): int[] {
 }
 
 // The code of the jobs of the `blocking` functions called: it calls the function of the library
-// with the arguments of the job (koji_run_ of cgen.kj), and keeps its result in the job.
+// with the arguments of the job, and keeps its result in the job.
 function Native.trampolineCode(mut self) {
     for use in self.trampolineUses {
         if (self.trampolines.has(use.symbol)) { continue }

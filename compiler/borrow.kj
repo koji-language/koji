@@ -1,12 +1,12 @@
 // Borrowed parameters: a parameter whose value the function only reads is borrowed from the caller,
 // which keeps it alive during the call, so the function neither retains nor releases it. Only the
 // value of a global could die during the call (the function may change the global): the caller
-// keeps a reference of its own to a global it passes (see `CallIns` in cgen.kj).
+// keeps a reference of its own to a global it passes (see `CallIns` in mirlower.kj).
 //
 // A local is borrowed the same way when it is only given values read from something that stays
 // as it is during the call (a borrowed parameter, such a local, or a global that never changes):
 // a field, an item of a list, or the value itself. What it was read from keeps the value alive
-// (see `FieldGetIns`, `ListGetIns` and `CopyIns` in cgen.kj).
+// (see `FieldGetIns`, `ListGetIns` and `CopyIns` in mirlower.kj).
 //
 // A local read from another local for a short while is borrowed too: given one value, read from
 // a local (of its own, or a `mut` parameter), and read only in the same block, before that local

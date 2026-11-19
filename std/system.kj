@@ -25,7 +25,7 @@ extern function readv(fd: CInt, buffers: Address, count: CInt): int
 extern function koji_blocking_poll(fds: Address, count: CSize, timeout: CInt): CInt
 extern function realloc(memory: Address, size: CSize): Address
 
-// What the system gives in different ways: small inline functions of the prelude (runtime/prelude.h).
+// What the system gives in different ways: small inline functions of the prelude (koji:prelude).
 extern function koji_system_argument_count(): int
 extern function koji_system_argument(index: int): Address
 extern function koji_system_errno(): CInt

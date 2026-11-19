@@ -1,5 +1,5 @@
-// `koji:prelude`: the part of the runtime that runtime/prelude.h writes in C for the C backend, in
-// Koji for the library the native backend builds (`kojic library`, which alone has this module):
+// `koji:prelude`: the core of the runtime, for the library the native backend builds
+// (`kojic library`, which alone has this module):
 // the pool, records made and read, lists and maps read, the arithmetic the generated code leaves
 // to the runtime, and the functions of the descriptions of the items of each built-in type (the
 // descriptions themselves, and the functions that call through the address of another, are

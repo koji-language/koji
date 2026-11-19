@@ -18,7 +18,7 @@ immut stdlibModules: string[] = []
 export immut coreStringMethods = ['trim', 'split', 'replace', 'startsWith', 'endsWith', 'indexOf', 'chars']
 
 // The internal modules (std/koji/): `koji:core`, compiled with the programs that use it, and those
-// of the library of the runtime written in Koji, compiled once (`kojic dump library`) and linked
+// of the library of the runtime written in Koji, compiled once (`kojic library`) and linked
 // into every program.
 immut internalModules = ['koji:aes', 'koji:bignum', 'koji:chacha', 'koji:closure', 'koji:core', 'koji:decimal', 'koji:ecc', 'koji:list', 'koji:map', 'koji:memory', 'koji:net', 'koji:numbers', 'koji:output', 'koji:prelude', 'koji:record', 'koji:roots', 'koji:rsa', 'koji:ryu', 'koji:sha', 'koji:start', 'koji:task', 'koji:text', 'koji:tls', 'koji:unicode', 'koji:windows', 'koji:x25519', 'koji:x509']
 export immut libraryModules = ['koji:aes', 'koji:bignum', 'koji:chacha', 'koji:closure', 'koji:decimal', 'koji:ecc', 'koji:list', 'koji:map', 'koji:memory', 'koji:net', 'koji:numbers', 'koji:output', 'koji:prelude', 'koji:record', 'koji:roots', 'koji:rsa', 'koji:ryu', 'koji:sha', 'koji:start', 'koji:task', 'koji:text', 'koji:tls', 'koji:unicode', 'koji:windows', 'koji:x25519', 'koji:x509']
@@ -6059,14 +6059,11 @@ function Checker.missingPattern(self, types: Type[], rows: Pattern[][]): Option[
 
 // Checks the file at `path` and every module it imports.
 // The library of the runtime written in Koji: its modules, imported by a module of its own.
-// The library of the runtime: for the native backend (`kojic library`), with `koji:prelude`, the part
-// of runtime/prelude.h that the C backend keeps in C (`kojic dump library` leaves it out).
-export function checkLibrary(native: boolean): Result[Program, string] {
+// The library of the runtime (`kojic library`), with `koji:prelude`.
+export function checkLibrary(): Result[Program, string] {
     mut lines: string[] = []
 
     for i in range(libraryModules.length()) {
-        if (libraryModules[i] == 'koji:prelude' and not native) { continue }
-
         lines.push(`import library${i} from '${libraryModules[i]}'`)
     }
 

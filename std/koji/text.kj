@@ -1,6 +1,6 @@
 // `koji:text`: the strings of the runtime, in the library of the runtime written in Koji (C calls
 // these functions by their names). A string is immutable text with a count of references, laid
-// out for C (runtime/prelude.h): the count, the length in bytes, the bytes its block holds, then
+// out for C (koji:prelude): the count, the length in bytes, the bytes its block holds, then
 // the UTF-8 bytes. A function gives a new reference to the string it returns; it reads the strings
 // it is given, but those it takes (`take`: the caller gives its reference).
 
@@ -815,7 +815,7 @@ function hexAt(digits: Address, at: int, count: int): int {
 }
 
 // The block of a string: 3 words (its count of references, its size and the bytes its block holds,
-// a multiple of 8), then its bytes, from the pool for a short one (runtime/prelude.h makes them).
+// a multiple of 8), then its bytes, from the pool for a short one.
 
 // A new string of the bytes `bytes[..size]` (bytes that are not UTF-8 become U+FFFD).
 extern function koji_string_new(bytes: Address, size: CSize): string {

@@ -148,22 +148,6 @@ fn intermediate_representation() {
     check_snapshot("ir", [files("examples"), files("test/checker"), cases("test/ir/cases.txt")].concat());
 }
 
-/// `compiler/prelude.kj` as it must be: the lines of `runtime/prelude.h`, the declarations of the
-/// runtime that start every C file the compiler generates.
-fn prelude_in_koji() -> String {
-    let prelude = std::fs::read_to_string("runtime/prelude.h").unwrap();
-    let mut text = String::from(
-        "// The start of every C file the compiler generates: the lines of runtime/prelude.h, the\n\
-         // declarations of the runtime. Generated: test/stages.rs checks that it is up to date, and\n\
-         // rewrites it when run with KOJI_UPDATE_PRELUDE=1.\n\nexport immut preludeLines = [\n",
-    );
-    for line in prelude.lines() {
-        text.push_str(&format!("    '{}',\n", line.replace('\\', "\\\\").replace('\'', "\\'")));
-    }
-    text.push_str("]\n");
-    text
-}
-
 /// `compiler/stdlib.kj` as it must be: the sources of the modules of the standard library written
 /// in Koji (`std/*.kj`), which the compiler carries.
 fn stdlib_in_koji() -> String {
@@ -215,38 +199,4 @@ fn the_standard_library_is_up_to_date() {
     }
     let found = std::fs::read_to_string("compiler/stdlib.kj").unwrap_or_default();
     assert!(found == expected, "compiler/stdlib.kj is out of date: run the tests with KOJI_UPDATE_STDLIB=1");
-}
-
-#[test]
-fn the_c_prelude_is_up_to_date() {
-    let expected = prelude_in_koji();
-    if std::env::var("KOJI_UPDATE_PRELUDE").is_ok() {
-        std::fs::write("compiler/prelude.kj", &expected).unwrap();
-    }
-    let found = std::fs::read_to_string("compiler/prelude.kj").unwrap_or_default();
-    assert!(found == expected, "compiler/prelude.kj is out of date: run the tests with KOJI_UPDATE_PRELUDE=1");
-}
-
-/// The library of the runtime written in Koji (std/koji/, but `koji:core`): bootstrap/libkoji.c.gz
-/// is the C that the compiler generates for it, which build.rs compiles into the runtime library.
-#[test]
-fn the_library_written_in_koji_is_up_to_date() {
-    let generated = koji::finish(&mut koji::kojic().args(["dump", "library"]), "");
-    assert_eq!(generated.code, Some(0), "{}", generated.stderr);
-    let expected = generated.stdout;
-    if std::env::var("KOJI_UPDATE_LIBRARY").is_ok() {
-        let mut gzip = std::process::Command::new("gzip")
-            .args(["-n", "-9"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        use std::io::Write;
-        gzip.stdin.take().unwrap().write_all(expected.as_bytes()).unwrap();
-        let packed = gzip.wait_with_output().unwrap();
-        std::fs::write("bootstrap/libkoji.c.gz", packed.stdout).unwrap();
-    }
-    let unpacked = std::process::Command::new("gzip").args(["-dc", "bootstrap/libkoji.c.gz"]).output().unwrap();
-    let found = String::from_utf8_lossy(&unpacked.stdout);
-    assert!(found == expected, "bootstrap/libkoji.c.gz is out of date: run the tests with KOJI_UPDATE_LIBRARY=1 (and then the tests again)");
 }

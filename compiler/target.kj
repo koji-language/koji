@@ -3,77 +3,16 @@
 // the processor) is known. For a platform, the values that come from those globals (their variants,
 // comparisons of them with a variant, and what they decide) are folded, so each branch on them goes
 // one way, and the blocks the others led to are not reached. The native backend keeps the blocks of
-// the platform it compiles for (inline.kj); the C backend, whose output builds on every platform,
-// keeps all of them, each under a condition of the preprocessor for the platforms that reach it
-// (cgen.kj).
+// the platform it compiles for (inline.kj).
 
 import { Operand, Place, Instruction, Terminator, IrFunction, IrProgram } from 'ir.kj'
 import { changes } from 'borrow.kj'
 import { successors } from 'liveness.kj'
 
 // The systems and the processors: the variants of `OperatingSystem` (Linux, MacOS, Windows, Other)
-// and of `Architecture` (X64, Arm64, OtherArchitecture), in order, with the conditions of the
-// preprocessor of C for each. A platform is one of each: `system * architectureCount +
-// architecture`.
-immut systemConditions = ['defined(__linux__)', 'defined(__APPLE__)', 'defined(_WIN32)', '!defined(__linux__) && !defined(__APPLE__) && !defined(_WIN32)']
-immut architectureConditions = ['defined(__x86_64__)', 'defined(__aarch64__)', '!defined(__x86_64__) && !defined(__aarch64__)']
-immut systemCount = 4
+// and of `Architecture` (X64, Arm64, OtherArchitecture), in order. A platform is one of each:
+// `system * architectureCount + architecture`.
 immut architectureCount = 3
-export immut platformCount = 12
-
-// The condition of the preprocessor for some platforms (all of them: none needed), as short as the
-// platforms let it: a processor that every system has, a system with every processor.
-export function platformCondition(platforms: int[]): string {
-    mut terms: string[] = []
-    mut left: boolean[] = []
-
-    for platform in range(platformCount) {
-        left.push(platform in platforms)
-    }
-
-    for architecture in range(architectureCount) {
-        mut everywhere = true
-
-        for system in range(systemCount) {
-            if (not left[system * architectureCount + architecture]) { everywhere = false }
-        }
-
-        if (everywhere) {
-            terms.push(architectureConditions[architecture])
-
-            for system in range(systemCount) {
-                left[system * architectureCount + architecture] = false
-            }
-        }
-    }
-
-    for system in range(systemCount) {
-        mut present: int[] = []
-
-        for architecture in range(architectureCount) {
-            if (left[system * architectureCount + architecture]) { present.push(architecture) }
-        }
-
-        if (present.length() == architectureCount) {
-            terms.push(systemConditions[system])
-            continue
-        }
-
-        for architecture in present {
-            terms.push(`(${systemConditions[system]}) && (${architectureConditions[architecture]})`)
-        }
-    }
-
-    if (terms.length() == 1) { return terms[0] }
-
-    mut parts: string[] = []
-
-    for term in terms {
-        parts.push(`(${term})`)
-    }
-
-    return parts.join(' || ')
-}
 
 // A function on one system: the blocks it reaches, and where each block goes when the system decides
 // it (-1 when it does not).

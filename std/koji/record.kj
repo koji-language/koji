@@ -1,7 +1,7 @@
 // `koji:record`: the records (the values of declared types: objects and the variants of sum types,
 // `Option` and `Result` among them), in the library of the runtime written in Koji (C calls these
 // functions by their names). A record is 3 words, its count of references, its type (a
-// `KojiRecordType`) and its variant, then the words of its fields (runtime/prelude.h, which makes
+// `KojiRecordType`) and its variant, then the words of its fields (the generated code makes
 // records, sets and reads their fields and counts their references inline). Two variables share a
 // record until one of them changes it.
 

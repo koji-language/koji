@@ -7,8 +7,7 @@ import { cString, cText, hasNul, isUtf8, textOf } from 'koji:core'
 
 // The C library. A file is opened with `fopen` (which takes no variadic arguments, unlike
 // `open`), then read and written through its descriptor, without the buffers of `FILE`. The calls
-// that may wait are made by a thread that helps while other tasks run (`koji_blocking_*` of
-// runtime/prelude.h).
+// that may wait are made by a thread that helps while other tasks run (`koji_blocking_*`).
 extern function koji_blocking_fopen(path: Address, mode: Address): Address
 extern function fclose(file: Address): CInt
 extern function fileno(file: Address): CInt
@@ -357,7 +356,7 @@ function isDirectory(path: string): boolean {
     return reachable(`${path}/.`)
 }
 
-// `access(path, F_OK)`, by a thread that helps while other tasks run (runtime/prelude.h).
+// `access(path, F_OK)`, by a thread that helps while other tasks run (koji:prelude).
 function reachable(path: string): boolean {
     immut cPath = cString(path)
     immut found = koji_blocking_access(cPath, 0) == 0

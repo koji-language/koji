@@ -6,7 +6,7 @@
 // `koji_pool_give`); an empty list gets a chunk of blocks of its size from the system here, at once.
 // Larger blocks come from the system and go back to it.
 //
-// The heads of the lists are `koji_pool` (runtime/prelude.h), whose word 17 holds the chunks taken,
+// The heads of the lists are `koji_pool` (koji:prelude), whose word 17 holds the chunks taken,
 // each holding the one before in its first word (they are never given back: their blocks are in the
 // lists). These functions run before the modules of the library are (`koji_pool_start` first), so
 // the module has no top-level variables. With `KOJI_POOL=0` in the environment, every block comes
@@ -19,7 +19,7 @@ extern function realloc(block: Address, size: CSize): Address
 extern function memcpy(target: Address, source: Address, size: CSize): Address
 extern function getenv(name: Address): Address
 extern function abort(): Never
-// The heads of the lists, and whether the pool is off (runtime/prelude.h).
+// The heads of the lists, and whether the pool is off (koji:prelude).
 extern function koji_pool_heads(): Address
 extern function koji_pool_is_off(): boolean
 extern function koji_pool_switch_off()

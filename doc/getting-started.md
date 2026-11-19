@@ -4,7 +4,7 @@ This guide shows how to build Koji, write a first program and run it.
 
 ## Requirements
 
-The Koji compiler, `kojic`, is written in Koji, and compiles programs to machine code (on Linux, x86-64 and arm64; through C elsewhere). Building it needs Linux on x86-64 or arm64 and `gzip`, or Windows on x86-64: no C compiler.
+The Koji compiler, `kojic`, is written in Koji, and compiles programs to machine code (Linux on x86-64 and arm64, macOS on x86-64 and arm64, Windows on x86-64). Building it needs Linux on x86-64 or arm64 and `gzip`, or Windows on x86-64: no C compiler.
 
 ## Building
 

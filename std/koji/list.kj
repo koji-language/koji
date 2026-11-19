@@ -1,5 +1,5 @@
 // `koji:list`: lists, in the library of the runtime written in Koji (C calls these functions by
-// their names). A list is a block of 6 words (runtime/prelude.h): its count of references, the type
+// their names). A list is a block of 6 words (koji:prelude): its count of references, the type
 // of its items (a `KojiElementType`, whose functions retain, release, show, compare and hash an
 // item), the words of an item (1, or 2 for a decimal), the address of the items, their number, and
 // the words that the block of the items holds. Two variables share a list until one of them changes
@@ -8,7 +8,7 @@
 import { Address, CInt, CSize, Location, Never, U128, blankString, distance, lowWord, nullAddress, offset, panicAt, read, stringBytes, stringSize, wide, write } from 'koji:unsafe'
 import { mixed } from 'koji:text'
 
-// The blocks of the pool, and the functions of the type of the items (runtime/prelude.h).
+// The blocks of the pool, and the functions of the type of the items (koji:prelude).
 extern function koji_memory_take(words: int): Address
 extern function koji_memory_give(block: Address, words: int)
 extern function koji_memory_resize(block: Address, words: int, newWords: int): Address
@@ -422,7 +422,7 @@ extern function koji_list_repr(list: Address): string {
 
 // `items.join(separator)`, for a list of strings: their size first, then their bytes. A slot holds
 // the address of a string, whose size is its second word and whose bytes follow its third
-// (runtime/prelude.h); the list keeps them alive.
+// (koji:prelude); the list keeps them alive.
 extern function koji_list_join(list: Address, separator: string): string {
     immut length = lengthOf(list)
     immut gap = stringSize(separator)

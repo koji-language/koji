@@ -1,6 +1,6 @@
 // Which locals each instruction reads for the last time (liveness, by the usual backward analysis
 // over the blocks of a function). A value read for the last time can be moved instead of copied
-// (see `CopyIns`, `RecordNewIns` and `StrConcat` in cgen.kj).
+// (see `CopyIns`, `RecordNewIns` and `StrConcat` in mirlower.kj).
 
 import { Operand, Place, Target, Step, StdArg, Instruction, Terminator, IrFunction } from 'ir.kj'
 

@@ -1,6 +1,6 @@
 // Which globals each function may read or change, itself or through the functions it calls (so a
 // call can take the value of a global the function never sees: `items.add(x)` at the top level of
-// a program, where `items` is a global, changes the list in place instead of a copy; see cgen.kj
+// a program, where `items` is a global, changes the list in place instead of a copy; see mirlower.kj
 // and native.kj). A function called through a closure, or by the runtime (a `display` method,
 // which shows a value when it is printed or turned into text), may run where the code does not
 // say: those that call closures, or call the runtime, may see the globals of all of them.

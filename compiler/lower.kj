@@ -4284,7 +4284,7 @@ function Lowerer.stdCall(mut self, mut builder: Builder, call: Node, module: str
             runner = 'koji_unsafe_wide_to_float'
             arguments = [self.stdValue(mut builder, args, 0, U128Ty)?]
         }
-        // Instructions of the processor: each backend writes them (runtime/prelude.h for C).
+        // Instructions of the processor: the backend writes them.
         'koji:unsafe.switchStacks' => {
             runner = 'koji_unsafe_switch_stacks'
             arguments = [self.stdValue(mut builder, args, 0, IntTy)?, self.stdValue(mut builder, args, 1, IntTy)?]

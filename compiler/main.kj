@@ -10,7 +10,6 @@ import parser from 'parser.kj'
 import { dumpTypes, check, checkLibrary, Program } from 'checker.kj'
 import { lower, lowerTests } from 'lower.kj'
 import { IrProgram, programText } from 'ir.kj'
-import { generate } from 'cgen.kj'
 import { generateNative } from 'native.kj'
 import { inlineSmall, targetPlatform } from 'inline.kj'
 import { machArchive } from 'macho.kj'
@@ -18,7 +17,6 @@ import { machArchiveObjects, linkMach } from 'machlink.kj'
 import { archive, archiveNamed, archiveObjects, linkExecutable, sharedSymbols } from 'linker.kj'
 import { coffGlobals } from 'coff.kj'
 import { linkWindows } from 'pelink.kj'
-import { preludeLines } from 'prelude.kj'
 import { serve } from 'lsp.kj'
 import { initModule, addModule, updateModules } from 'packages.kj'
 
@@ -32,18 +30,13 @@ immut usage = [
     '    kojic lsp                         a language server for editors (on stdin and stdout)',
     '    kojic build <file.kj> [options]   compile a program to an executable',
     '        -o <output>                   the executable (default: the file name without .kj)',
-    '        --emit c                      write the generated C instead',
     '        --emit ir                     write the intermediate representation instead',
     '        --emit object                 write the object file of the native backend instead',
-    '        --c                           generate C and compile it with the C compiler (the default',
-    '                                      where the native backend is not yet: not Linux on x86-64)',
     '    kojic dump tokens <file.kj>       show the tokens of a file (for comparing compilers)',
     '    kojic dump ast <file.kj>          show the syntax tree of a file',
     '    kojic dump types <file.kj>        show what the checker finds (types, moves...)',
     '    kojic dump ir <file.kj>           show the intermediate representation',
     '    kojic dump inlined <file.kj>      the same, as the native backend gets it (inlined)',
-    '    kojic dump c <file.kj>            show the generated C',
-    '    kojic dump library                show the C of the library of the runtime written in Koji',
     '    kojic dump inlined library        its IR, as the native backend gets it',
     '    kojic init <module>               make a koji.mod for the module (github.com/ana/agenda)',
     '    kojic add <module>[@version]      require a module, at its latest version or the one given',
@@ -51,7 +44,8 @@ immut usage = [
     '    kojic help                        show this message',
     '',
     'To build an executable, kojic needs the runtime library (libkoji_runtime.a): next to kojic,',
-    'or where the environment variable KOJI_RUNTIME says. KOJI_CC names the C compiler (default: cc).'
+    'or where the environment variable KOJI_RUNTIME says. KOJI_TARGET compiles for another platform',
+    '(x64, arm64, macos-x64, macos-arm64, windows-x64).'
 ].join('\n')
 
 // The text of a system error (the one of the runtime).
@@ -119,14 +113,6 @@ function dumpStage(stage: string, name: string) {
 
             return
         }
-        'c' => {
-            match (lowered(name)) {
-                Ok(program) => print(generate(program).join('\n'))
-                Err(message) => print(`error: ${message.split('\n')[0]}`)
-            }
-
-            return
-        }
         _ => {}
     }
 
@@ -181,25 +167,20 @@ function buildOptions(args: string[]): Build {
             continue
         }
 
-        // The native backend (compiler/native.kj, the default where it is) or the C backend.
+        // The native backend (compiler/native.kj): the only one (as before, for scripts).
         if (arg == '--native') {
             emit = 'native'
             continue
         }
 
-        if (arg == '--c') {
-            emit = 'executable-c'
-            continue
-        }
-
         if (arg == '--emit') {
-            if (i < args.length() and (args[i] == 'c' or args[i] == 'ir' or args[i] == 'object')) {
+            if (i < args.length() and (args[i] == 'ir' or args[i] == 'object')) {
                 emit = args[i]
                 i += 1
                 continue
             }
 
-            printError(`--emit takes 'c', 'ir' or 'object'\n\n${usage}`)
+            printError(`--emit takes 'ir' or 'object'\n\n${usage}`)
 
             system.exit(2)
         }
@@ -228,7 +209,6 @@ function buildOptions(args: string[]): Build {
     immut chosen = match (output) {
         Some(chosen) => chosen
         None => match (emit) {
-            'c' => `${stem}.c`
             'ir' => `${stem}.ir`
             _ => stem
         }
@@ -285,42 +265,6 @@ function runtimeLibrary(): Option[string] {
             if (file.exists(library)) { Some(library) } else { None }
         }
         None => None
-    }
-}
-
-// Compiles the C of a program to `output` with the system's C compiler, linked with the runtime.
-function compileC(source: string, output: string, libraries: string[]): Result[void, string] {
-    immut runtime = match (runtimeLibrary()) {
-        Some(runtime) => runtime
-        None => return Err('compile error: the runtime library (libkoji_runtime.a) is not next to kojic: set KOJI_RUNTIME to its path')
-    }
-    // A file of its own in the temporary directory, removed after.
-    immut c = temporary('.c')
-    writeFile(c, source)?
-    immut compiler = variable('KOJI_CC', 'cc')
-    mut args = ['-O2', '-o', output, c, runtime]
-
-    // The libraries of the foreign blocks, then those of the system.
-    for library in libraries {
-        args.push(`-l${library}`)
-    }
-
-    for library in systemLibraries() {
-        args.push(library)
-    }
-
-    immut result = system.capture(compiler, args)
-    file.remove(c)
-
-    return match (result) {
-        Ok(run) => {
-            if (run.status == 0) {
-                Ok()
-            } else {
-                Err(`compile error: the C compiler '${compiler}' failed:\n${run.stderr.trim()}`)
-            }
-        }
-        Err(_) => Err(`compile error: cannot run the C compiler '${compiler}' (set KOJI_CC to choose another one)`)
     }
 }
 
@@ -508,7 +452,7 @@ function linkOwn(object: byte[], runtime: string, output: string): Result[void, 
 }
 
 function buildLibrary(output: string): Result[void, string] {
-    immut checked = checkLibrary(true)?
+    immut checked = checkLibrary()?
     immut lowered = lower(checked)?
     immut object = match (generateNative(lowered)) {
         Ok(bytes) => bytes
@@ -534,8 +478,7 @@ function writeBytesTo(name: string, bytes: byte[]): Result[void, file.FileError]
     return out.writeBytes(bytes)
 }
 
-// Whether the native backend generates the code of this platform (an ELF of x86-64 or arm64, for
-// Linux): the default there, the C backend elsewhere.
+// Whether the native backend generates the code of this platform.
 function nativeHere(): boolean {
     return match (system.os) {
         Linux => system.architecture == system.X64 or system.architecture == system.Arm64
@@ -547,7 +490,9 @@ function nativeHere(): boolean {
 
 // The executable of a program, by the backend of the platform.
 function executable(program: IrProgram, output: string): Result[void, string] {
-    return if (nativeHere()) { linkNative(program, output) } else { compileC(text(generate(program)), output, program.libraries) }
+    if (not nativeHere()) { return Err('compile error: Koji builds executables for Linux, macOS and Windows on x86-64 and arm64 (Windows on x86-64 only): set KOJI_TARGET to one of them') }
+
+    return linkNative(program, output)
 }
 
 // `kojic build`: the executable, the C or the IR of a program.
@@ -562,13 +507,11 @@ function build(args: string[]) {
     }
     immut result = match (options.emit) {
         'ir' => writeFile(options.output, text(programText(program)))
-        'c' => writeFile(options.output, text(generate(program)))
         'native' => linkNative(program, options.output)
         'object' => match (generateNative(program)) {
             Ok(bytes) => writeBytes(options.output, bytes)
             Err(message) => Err(`compile error: ${message}`)
         }
-        'executable-c' => compileC(text(generate(program)), options.output, program.libraries)
         _ => executable(program, options.output)
     }
 
@@ -854,7 +797,7 @@ if (command == 'library' and args.length() == 3 and args[1] == '-o') {
 
 // The IR of std/koji/ as the native backend gets it (`kojic library`).
 if (command == 'dump' and args.length() == 3 and args[1] == 'inlined' and args[2] == 'library') {
-    match (checkLibrary(true)) {
+    match (checkLibrary()) {
         Ok(program) => match (lower(program)) {
             Ok(lowered) => print(programText(inlineSmall(lowered)).join('\n'))
             Err(message) => printError(message)
@@ -865,29 +808,7 @@ if (command == 'dump' and args.length() == 3 and args[1] == 'inlined' and args[2
     system.exit(0)
 }
 
-// The C of std/koji/ (but `koji:core`), which bootstrap/build.sh and build.rs compile into the
-// runtime library.
-if (command == 'dump' and args.length() == 2 and args[1] == 'library') {
-    match (checkLibrary(false)) {
-        Ok(program) => {
-            match (lower(program)) {
-                Ok(lowered) => print(generate(lowered).join('\n'))
-                Err(message) => {
-                    printError(message)
-                    system.exit(1)
-                }
-            }
-        }
-        Err(message) => {
-            printError(message)
-            system.exit(1)
-        }
-    }
-
-    system.exit(0)
-}
-
-if (command == 'dump' and args.length() == 3 and args[1] in ['tokens', 'ast', 'types', 'ir', 'inlined', 'c']) {
+if (command == 'dump' and args.length() == 3 and args[1] in ['tokens', 'ast', 'types', 'ir', 'inlined']) {
     dumpStage(args[1], args[2])
     system.exit(0)
 }

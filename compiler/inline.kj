@@ -1,4 +1,4 @@
-// Inlining for the native backend (native.kj): a call of a small function (as cgen.kj finds them,
+// Inlining for the native backend (native.kj): a call of a small function (as `smallFunctions` finds them,
 // those that C inlines: `Lexer.at`, `Parser.current`) is replaced by the blocks of the function, its
 // locals new locals of the caller. A parameter the function never changes is its argument itself
 // (a local, a constant, or a global that never changes), with no reference of its own: the caller
@@ -30,7 +30,7 @@ type Names = {
 immut inlinedBlocks = 8
 immut inlinedSize = 40
 
-// The functions small enough to inline (as `smallFunctions` of cgen.kj, with other limits): they
+// The functions small enough to inline (with limits of their own): they
 // call no others but small ones, so a recursive function is never one of them.
 function inlinable(program: IrProgram, blocks: int, most: int): boolean[] {
     mut sizes: int[] = []

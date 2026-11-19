@@ -8,7 +8,7 @@ import { Address, CInt, allocate, free, read } from 'koji:unsafe'
 
 // `int clock_gettime(clockid_t clock, struct timespec *time)`: a `timespec` is two 8-byte words,
 // seconds and nanoseconds. The waits of tasks (koji:task) and the monotonic clock in nanoseconds
-// (runtime/prelude.h).
+// (koji:prelude).
 extern function clock_gettime(clock: CInt, time: Address): CInt
 extern function koji_task_sleep_until(deadline: int)
 extern function koji_monotonic_nanoseconds(): int

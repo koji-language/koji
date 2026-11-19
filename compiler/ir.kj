@@ -213,7 +213,7 @@ export type IrProgram = {
     libraries: string[]
     // The functions C calls by their names, with the C types of their values.
     forC: IrForC[]
-    // The library of the runtime written in Koji (`kojic dump library`): no `main`, but
+    // The library of the runtime written in Koji (`kojic library`): no `main`, but
     // `koji_library_init`, which the runtime calls first.
     library: boolean
     // `kojic test`: the tests of the main file (the program runs the one its last argument names).

@@ -1,8 +1,8 @@
 // The lowering of the IR to the machine IR (mir.kj): the semantics of Koji decided once for every
 // processor. Values are of one word (ints, booleans, chars, bytes, floats, and the references of
 // strings, lists, records, maps and closures) or of two (decimals and U128: a pair of virtual
-// registers); the functions of the library that the C backend writes inline (the memory of
-// `koji:unsafe`, the pool, the accessors) are written inline here too, the instructions of the
+// registers); the functions of the library that are best inline (the memory of
+// `koji:unsafe`, the pool, the accessors) are written inline here, the instructions of the
 // processor that `koji:unsafe` names as `MMachine`.
 //
 // The references are counted as in the other backends (see "Reference counting" in

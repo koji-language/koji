@@ -1,5 +1,5 @@
 // Escape analysis: a record built in a function and never seen outside it is put on the stack of
-// the function (see `RecordNewIns` in cgen.kj), without taking memory from the pool nor counting
+// the function (see `RecordNewIns` in mirlower.kj), without taking memory from the pool nor counting
 // its references; its fields are released when it is built again and when the function returns.
 //
 // A local escapes when its value may be kept by someone else: copied, stored in a list, a record

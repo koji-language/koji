@@ -2,7 +2,7 @@
 name = "koji"
 version = "0.1.0"
 edition = "2021"
-description = "The tests of Koji: they build the compiler written in Koji (compiler/) from the seed (bootstrap/) and run it. build.rs builds the runtime (runtime/)."
+description = "The tests of Koji: they build the compiler written in Koji (compiler/) from the seed (bootstrap/) and run it."
 autobins = false
 autolib = false
 

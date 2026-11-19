@@ -1,5 +1,5 @@
 // `koji:task`: the tasks of a program, in the library of the runtime written in Koji (std/task.kj,
-// the sockets of runtime/prelude.h and so koji:tls call these functions by their names). A task
+// the sockets of the runtime and so koji:tls call these functions by their names). A task
 // runs a function on a stack of its own, on the one thread of the program: it runs until it waits
 // (to be woken by another task, for a time, a socket or a job of a thread that helps) or has run
 // long enough (`koji_task_preempt`), and then the next task that is ready runs. No task runs while
@@ -346,7 +346,7 @@ immut stackSize = 1048576
 immut keptStacks = 16
 // The sockets that one wait of the poller can find ready, at most.
 immut readyCapacity = 64
-// The threads that help with the calls that block, at most (runtime/prelude.h), and where a job
+// The threads that help with the calls that block, at most (koji:prelude), and where a job
 // has the task that waits for it and whether it is done.
 immut maxHelpers = 16
 immut jobTask = 72
@@ -468,7 +468,7 @@ extern function koji_task_spawn(work: () => void): int {
     return id
 }
 
-// Where a new task starts, on its stack (koji_task_entry of runtime/prelude.h): it runs its work,
+// Where a new task starts, on its stack (koji_task_entry): it runs its work,
 // then the next task, and its stack is never used again.
 extern function koji_task_main(id: int) {
     reap()
@@ -606,7 +606,7 @@ extern function koji_task_alone(): boolean {
     return alive <= 1
 }
 
-// Runs a job (runtime/prelude.h) on a thread that helps, while the other tasks run: it returns when
+// Runs a job (koji:prelude) on a thread that helps, while the other tasks run: it returns when
 // the job is done.
 extern function koji_task_offload(job: Address) {
     start()

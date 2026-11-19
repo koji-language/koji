@@ -33,14 +33,10 @@ fn has_valgrind() -> bool {
 }
 
 /// Builds `path` to `executable` with the compiler written in Koji: by its default backend (native on
-/// Linux and x86-64), or the C backend with KOJI_TEST_C set (the tests then check it).
+/// Linux and x86-64).
 fn build(path: &Path, executable: &Path) {
     let mut command = koji::kojic();
     command.arg("build");
-    // The native backend is the default; KOJI_TEST_C runs the tests with the C backend.
-    if std::env::var("KOJI_TEST_C").is_ok() {
-        command.arg("--c");
-    }
     let built = koji::finish(command.arg(path).arg("-o").arg(executable), "");
     assert_eq!(built.code, Some(0), "{} does not compile: {}", path.display(), built.stderr);
 }
@@ -2761,8 +2757,8 @@ printError(`${late < 0.1}`)
 #[test]
 fn the_native_library_runs_programs() {
     // The runtime library built natively (`kojic library`, see "The library of the runtime built by
-    // the compiler" in doc/design.md): programs of both backends linked with it do what they do with
-    // the library built from C.
+    // the compiler" in doc/design.md), given by its path: a program linked with it does what it does
+    // with the one next to the compiler.
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler");
     std::fs::create_dir_all(&directory).unwrap();
     let library = directory.join("libkoji_native.a");
@@ -2772,21 +2768,16 @@ fn the_native_library_runs_programs() {
     let path = source_file("native_library", source);
     let expected = compile_and_run(&path);
     assert!(expected.success, "{}", expected.error);
-    for native in [false, true] {
-        let executable = path.with_extension(if native { "native-library-native" } else { "native-library-c" });
-        let mut command = koji::kojic();
-        command.env("KOJI_RUNTIME", &library).arg("build");
-        command.arg(if native { "--native" } else { "--c" });
-        let built = koji::finish(command.arg(&path).arg("-o").arg(&executable), "");
-        assert_eq!(built.code, Some(0), "{}", built.stderr);
-        let run = if has_valgrind() {
-            Command::new("valgrind").env("KOJI_POOL", "0").args(["-q", "--error-exitcode=99"]).arg(&executable).output().unwrap()
-        } else {
-            Command::new(&executable).output().unwrap()
-        };
-        assert_eq!(String::from_utf8_lossy(&run.stdout), expected.output, "native backend: {}", native);
-        assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
-    }
+    let executable = path.with_extension("native-library");
+    let built = koji::finish(koji::kojic().env("KOJI_RUNTIME", &library).arg("build").arg(&path).arg("-o").arg(&executable), "");
+    assert_eq!(built.code, Some(0), "{}", built.stderr);
+    let run = if has_valgrind() {
+        Command::new("valgrind").env("KOJI_POOL", "0").args(["-q", "--error-exitcode=99"]).arg(&executable).output().unwrap()
+    } else {
+        Command::new(&executable).output().unwrap()
+    };
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected.output);
+    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
 }
 
 #[test]
@@ -3037,52 +3028,6 @@ match (cli.parseArgs(todo, ['lst'])) {
 "#,
         "hello ana x1 loud=false []\nhello ana x2 loud=true ['bia', 'caio']\noi ana x3 loud=false []\nhello -ana x1 loud=false []\ngreet: unknown option '--lod' (did you mean '--loud'?)\ngreet: missing <name>\ngreet: '--times' needs an integer, found 'x'\ngreet: '--times' needs a value (<n>)\ngreet 1.0.0\nGreets someone.\nadd: ['buy', 'milk'] high\ntodo: unknown command 'lst' (did you mean 'list'?)\n",
     );
-}
-
-#[test]
-fn the_native_backend_agrees_with_the_c_backend() {
-    // Programs in what the native backend supports yet: the same output, the same panics.
-    let programs = [
-        (
-            "native_numbers",
-            "function fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\n\nimmut limit = 20\nmut total = 0\n\nfor i in range(limit) {\n    total += fib(i)\n}\n\nfor i in range(10, 0, -3) {\n    total = total * 2 - i\n}\n\nprint(total)\nprint(-7 % 3)\nprint(7 / -2)\nprint((6 & 3) | 8)\nprint(10 / 3 > 2 and true)\nprint('x' == 'y' or not false)\n",
-        ),
-        (
-            "native_strings",
-            "function describe(n: int): string {\n    mut text = ''\n    for i in range(n) {\n        text = text + `${i},`\n    }\n    if (text == '0,1,2,') { return 'three' }\n    return text\n}\n\nmut names = 'a'\nnames = names + 'b'\nprint(describe(3))\nprint(describe(5))\nprint(names < 'ac')\nprint(`${names}: ${names.length()}`)\n",
-        ),
-        ("native_overflow", "function grow(n: int): int {\n    return n * 3037000500\n}\n\nprint(grow(1))\nprint(grow(3037000500))\n"),
-        ("native_division", "function divide(a: int, b: int): int {\n    return a / b\n}\n\nprint(divide(9, 2))\nprint(divide(9, 0))\n"),
-    ];
-    for (name, source) in programs {
-        let path = source_file(name, source);
-        let c = path.with_extension("c-backend");
-        let built = koji::finish(koji::kojic().arg("build").arg("--c").arg(&path).arg("-o").arg(&c), "");
-        assert_eq!(built.code, Some(0), "{}: {}", name, built.stderr);
-        let native = path.with_extension("native");
-        let built = koji::finish(koji::kojic().arg("build").arg("--native").arg(&path).arg("-o").arg(&native), "");
-        assert_eq!(built.code, Some(0), "{}: {}", name, built.stderr);
-        let expected = Command::new(&c).output().unwrap();
-        let found = if has_valgrind() {
-            Command::new("valgrind").env("KOJI_POOL", "0").args(["-q", "--error-exitcode=99"]).arg(&native).output().unwrap()
-        } else {
-            Command::new(&native).output().unwrap()
-        };
-        assert_eq!(String::from_utf8_lossy(&found.stdout), String::from_utf8_lossy(&expected.stdout), "{}", name);
-        assert_eq!(String::from_utf8_lossy(&found.stderr), String::from_utf8_lossy(&expected.stderr), "{}", name);
-        assert_eq!(found.status.code(), expected.status.code(), "{}", name);
-    }
-    // The compiler itself, in machine code: it generates the same C as the compiler built by C.
-    let native = Path::new(env!("CARGO_TARGET_TMPDIR")).join("compiler").join("kojic-native");
-    let built = koji::finish(koji::kojic().arg("build").arg("--native").arg("compiler/main.kj").arg("-o").arg(&native), "");
-    assert_eq!(built.code, Some(0), "{}", built.stderr);
-    let program = source_file("native_compiled", "type Shape = {\n    Circle(radius: float)\n    Dot\n}\n\nimmut shapes: Shape[] = [Circle(float(2)), Dot]\nprint(shapes)\n");
-    let expected = koji::finish(koji::kojic().arg("dump").arg("c").arg(&program), "");
-    let mut by_native = Command::new(&native);
-    by_native.env("KOJI_RUNTIME", koji::RUNTIME).arg("dump").arg("c").arg(&program);
-    let found = koji::finish(&mut by_native, "");
-    assert_eq!(found.code, Some(0), "{}", found.stderr);
-    assert!(found.stdout == expected.stdout, "the compiler in machine code generates other C");
 }
 
 #[test]
