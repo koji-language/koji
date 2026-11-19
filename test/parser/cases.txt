@@ -1,0 +1,40 @@
+// Syntax errors (and a few tricky constructs) for the parser (test/stages.kj): each one is a file,
+// separated by a line with four dashes.
+----
+immut x = 1 @ 2
+----
+break
+----
+while (true) { continue }
+continue
+----
+return 1
+----
+interface A {}
+----
+function f() { export immut x = 1 }
+----
+var x = 1
+----
+const x = 1
+----
+let x = 1
+----
+x: int = 1
+----
+immut x = match (y) {
+ 0 => 1
+ -1 => 2
+}
+----
+"unterminated
+----
+immut x = 'a' # comment?
+----
+for mut x in [1] { x += 1 }
+----
+immut x = 9223372036854775808
+----
+immut x = match (y) { -9223372036854775808 => 1 }
+----
+immut x = match (y) { -1e400 => 2 }

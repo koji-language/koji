@@ -1,0 +1,736 @@
+// The commands of the compiler (`kojic build`, `check`, `test`, `lsp`, `library`, the packages)
+// and what test/cases/ cannot show alone: servers, pipes, foreign functions, the platforms Koji
+// builds for and its own linker.
+
+import file
+import path
+import system
+import task
+import time
+import { Listener, acceptConnection, closeSocket, compiler, exchange, finish, hasValgrind, kojic, lastLine, listenLocally, readFile, receive, removeAll, root, runBuilt, scratch, send, trimEnd, writeFile } from 'koji.kj'
+
+// A command of the compiler in `directory`, with variables of the environment.
+function kojicWith(directory: string, args: string[], variables: Map[string, string]): system.Output {
+    mut command = compiler(args, directory)
+
+    for name in variables.keys() {
+        command.environment[name] = variables[name]
+    }
+
+    return finish(command)
+}
+
+// `source` written as `name` in a directory of its own, and built there (with variables of the
+// environment): the path of the executable.
+function built(name: string, source: string, variables: Map[string, string]): string {
+    immut directory = scratch(name)
+    writeFile(path.join(directory, `${name}.kj`), source)
+    immut output = kojicWith(directory, ['build', `${name}.kj`, '-o', name], variables)
+    assert(output.status == 0, `${name} does not compile: ${output.stderr}`)
+    return path.join(directory, name)
+}
+
+// test/programs/<name>.kj, built in a directory of its own: the path of the executable.
+function builtFile(name: string): string {
+    return built(name, readFile(`test/programs/${name}.kj`), [:])
+}
+
+// Whether a command can run here (`--version` succeeds).
+function available(program: string): boolean {
+    return match (system.capture(program, ['--version'])) {
+        Ok(output) => output.status == 0
+        Err(_) => false
+    }
+}
+
+function readBytes(source: string): byte[] {
+    return match (file.open(source, file.Read)) {
+        Ok(opened) => match (opened.readBytes()) {
+            Ok(bytes) => bytes
+            Err(error) => panic(`${source}: ${error}`)
+        }
+        Err(error) => panic(`${source}: ${error}`)
+    }
+}
+
+function copyFile(source: string, target: string) {
+    match (file.open(target, file.Write)) {
+        Ok(opened) => match (opened.writeBytes(readBytes(source))) {
+            Ok(_) => {}
+            Err(error) => panic(`${target}: ${error}`)
+        }
+        Err(error) => panic(`${target}: ${error}`)
+    }
+}
+
+// Runs an executable built for valgrind with more options of its own (or alone without it).
+function underValgrind(executable: string, options: string[]): system.Output {
+    if (not hasValgrind) { return finish(system.command(executable, [])) }
+
+    immut output = finish(system.command('valgrind', ['-q', '--error-exitcode=99'] + options + [executable]))
+    assert(output.status != 99, `memory errors:\n${output.stderr}`)
+    return output
+}
+
+immut onLinuxX64 = system.os == system.Linux and system.architecture == system.X64
+
+// Each example prints what `test/examples/<example>.txt` holds (without input).
+test 'examples_that_compile' {
+    match (file.list('examples')) {
+        Ok(names) => {
+            for name in names {
+                if (not name.endsWith('.kj')) { continue }
+
+                immut example = name[0..name.length() - 3]
+                immut directory = scratch(example)
+                immut executable = path.join(directory, example)
+                immut output = kojicWith(root, ['build', path.join('examples', name), '-o', executable], [:])
+                assert(output.status == 0, `${name}: ${output.stderr}`)
+                immut ran = finish(system.command(executable, []))
+                assert(ran.status == 0, `${example}: ${ran.stderr}`)
+                assert(ran.stdout == readFile(`test/examples/${example}.txt`), example)
+            }
+        }
+        Err(error) => panic(`examples: ${error}`)
+    }
+}
+
+// As `bootstrap/build.sh` leaves them: kojic and libkoji_runtime.a in the same directory, and no
+// KOJI_RUNTIME.
+test 'kojic_finds_the_runtime_next_to_it' {
+    immut directory = scratch('next-to-kojic')
+    immut copy = path.join(directory, 'kojic')
+    copyFile(kojic, copy)
+    match (file.setPermissions(copy, 0x1ED)) {
+        Ok(_) => {}
+        Err(error) => panic(`${error}`)
+    }
+    writeFile(path.join(directory, 'main.kj'), 'print(\'found it\')\n')
+
+    function build(): system.Output {
+        mut command = system.command(copy, ['build', 'main.kj', '-o', 'main'])
+        command.directory = directory
+        command.cleared = true
+        command.environment['PATH'] = '/usr/bin:/bin'
+        return finish(command)
+    }
+
+    immut missing = build()
+    assert(missing.status == 1)
+    assert('the runtime library (libkoji_runtime.a) is not next to kojic' in missing.stderr, missing.stderr)
+    immut next = match (path.parent(kojic)) {
+        Some(found) => found
+        None => '.'
+    }
+    copyFile(path.join(next, 'libkoji_runtime.a'), path.join(directory, 'libkoji_runtime.a'))
+    immut found = build()
+    assert(found.status == 0, found.stderr)
+    assert(finish(system.command(path.join(directory, 'main'), [])).stdout == 'found it\n')
+}
+
+test 'errors_are_reported_before_compiling' {
+    immut directory = scratch('type-error')
+    writeFile(path.join(directory, 'type_error.kj'), 'immut n: int = \'text\'\n')
+    immut output = kojicWith(directory, ['build', 'type_error.kj', '-o', 'type_error'], [:])
+    assert(output.status == 1)
+    assert(output.stderr.startsWith('type error: '), output.stderr)
+}
+
+test 'assert_shows_the_condition_and_the_two_sides' {
+    immut passes = finish(system.command(built('assert_passes', 'immut values = [3, 4]\nassert(values.length() == 2)\nassert(values[0] < values[1], \'in order\')\nprint(\'ok\')\n', [:]), []))
+    assert(passes.stdout == 'ok\n' and passes.status == 0, passes.stderr)
+    immut directory = scratch('assert-fails')
+    writeFile(path.join(directory, 'assert_fails.kj'), 'immut names = [\'ana\', \'bia\']\nassert(names[0] + \'!\' == names[1], \'the same\')\n')
+    immut failed = kojicWith(directory, ['run', 'assert_fails.kj'], [:])
+    assert(failed.status == 1)
+    assert(failed.stderr == 'panic: assert_fails.kj:2: assertion failed: names[0] + \'!\' == names[1] (the same)\n  left:  \'ana!\'\n  right: \'bia\'\n', failed.stderr)
+    immut condition = runBuilt(built('assert_condition', 'immut n = 3\nassert(n > 2 and n % 2 == 0)\n', [:]), true)
+    assert(condition.status != 0)
+    assert(lastLine(condition.stderr).endsWith('assert_condition.kj:2: assertion failed: n > 2 and n % 2 == 0'), condition.stderr)
+}
+
+// `kojic test`: the tests of each file in a process of their own, the output of a failing one,
+// files without tests left out, and the exit code 1 when a test fails.
+test 'kojic_test_runs_each_test_alone' {
+    immut directory = scratch('kojic-test')
+    writeFile(path.join(directory, 'math.kj'), 'mut calls = 0\n\nfunction gcd(a: int, b: int): int {\n    calls += 1\n    return if (b == 0) { a } else { gcd(b, a % b) }\n}\n\ntest \'gcd\' {\n    assert(gcd(12, 18) == 6)\n}\n\ntest \'each test starts again\' {\n    assert(calls == 0)\n}\n\ntest \'a wrong result\' {\n    print(\'computing\')\n    assert(gcd(4, 6) == 3, \'on purpose\')\n}\n\ntest \'a panic\' {\n    immut items = [1]\n    print(items[2])\n}\n')
+    writeFile(path.join(directory, 'sub/plain.kj'), 'print(\'no tests\')\n')
+    writeFile(path.join(directory, 'sub/top.kj'), 'print(\'top level\')\n\ntest \'it\\\'s fine\' {\n    assert(true)\n}\n')
+    immut finished = kojicWith(directory, ['test'], [:])
+    assert(finished.status == 1, finished.stderr)
+    immut report = trimEnd(finished.stdout)
+    immut at = report.length() - (report.split(' (')[report.split(' (').length() - 1]).length() - 2
+    assert(report.endsWith(' s)'), finished.stdout)
+    assert(report[0..at] == 'ok    ./math.kj: gcd\nok    ./math.kj: each test starts again\nFAIL  ./math.kj: a wrong result\n    panic: ./math.kj:18: assertion failed: gcd(4, 6) == 3 (on purpose)\n      left:  2\n      right: 3\n    output:\n        computing\nFAIL  ./math.kj: a panic\n    panic: ./math.kj:23: index 2 out of range (length 1)\nok    ./sub/top.kj: it\'s fine\n\n3 passed, 2 failed', report)
+    // A file without tests, and a program run by `kojic run`, which leaves its tests out.
+    immut none = kojicWith(directory, ['test', 'sub/plain.kj'], [:])
+    assert(none.status == 0 and none.stdout.startsWith('\nno tests found'), none.stdout)
+    assert(kojicWith(directory, ['run', 'sub/top.kj'], [:]).stdout == 'top level\n')
+}
+
+// What `kojic check` prints on its standard error output for `source` as `name`.kj.
+function checked(name: string, source: string): system.Output {
+    immut directory = scratch(name)
+    writeFile(path.join(directory, `${name}.kj`), source)
+    return kojicWith(directory, ['check', `${name}.kj`], [:])
+}
+
+// A compile error gives the column, then the line with the part at fault marked (the tabs of the
+// line kept, so that the marks fall under it).
+test 'errors_show_the_column_and_the_line' {
+    immut types = checked('column_type', 'function greet(name: string): string {\n    return name\n}\n\nprint(greet(42))\n').stderr
+    assert(types == 'type error: column_type.kj:5:13: argument 1 of \'greet\' must be string, found int\n    5 | print(greet(42))\n      |             ^^\n', types)
+    immut tabs = checked('column_tabs', 'function f() {\n\tif (true) {\n\t\timmut s: string = 4\n\t}\n}\n').stderr
+    assert(tabs == 'type error: column_tabs.kj:3:21: cannot assign a value of type int to \'s\' of type string\n    3 | \t\timmut s: string = 4\n      | \t\t                  ^\n', tabs)
+    immut syntax = checked('column_syntax', 'immut x = (1 +\nprint(x)\n').stderr
+    assert(syntax == 'syntax error: column_syntax.kj:3:1: expected \')\', found the end of the file\n    3 | \n      | ^\n', syntax)
+}
+
+// The check goes on after an error, statement by statement: every error is reported, and a variable
+// whose declaration failed is declared all the same (with its written type, or unknown), so that
+// its uses are not errors too.
+test 'several_errors_are_reported' {
+    immut output = checked('several_errors', 'immut a: int = \'one\'\nimmut b = a + 1\nimmut c = missing * 2\nprint(c.upper(), b)\n\nfunction f(): string {\n    return 3\n}\n')
+    assert(output.status == 1)
+    assert(output.stderr == 'type error: several_errors.kj:1:16: cannot assign a value of type string to \'a\' of type int\n    1 | immut a: int = \'one\'\n      |                ^^^^^\n\ntype error: several_errors.kj:3:11: undefined variable \'missing\'\n    3 | immut c = missing * 2\n      |           ^^^^^^^\n\ntype error: several_errors.kj:7:12: returning int, but the function returns string\n    7 |     return 3\n      |            ^\n\n3 errors\n', output.stderr)
+}
+
+// A message of the protocol of the language server: its length, then its body.
+function message(body: string): string {
+    return `Content-Length: ${body.length()}\r\n\r\n${body}`
+}
+
+// The bodies of the messages of the language server, in order.
+function messages(text: string): string[] {
+    mut found: string[] = []
+    mut rest = text
+
+    while (rest.startsWith('Content-Length: ')) {
+        immut header = rest.split('\r\n\r\n')[0]
+        immut length = match (int(header[16..].trim())) {
+            Ok(count) => count
+            Err(_) => panic(header)
+        }
+        immut start = header.length() + 4
+        found.push(rest[start..start + length])
+        rest = rest[start + length..]
+    }
+
+    return found
+}
+
+// `kojic lsp`: the language server answers on the standard output with the errors of a file, the
+// type under the cursor and the declaration of a name.
+test 'the_language_server' {
+    immut directory = scratch('lsp')
+    immut uri = `file://${path.join(directory, 'main.kj')}`
+
+    function request(id: int, method: string, line: int, character: int): string {
+        return message(`{"jsonrpc":"2.0","id":${id},"method":"textDocument/${method}","params":{"textDocument":{"uri":"${uri}"},"position":{"line":${line},"character":${character}}}}`)
+    }
+
+    immut text = '"function twice(n: int): int {\\n    return n * 2\\n}\\n\\nimmut count = twice(3)\\nimmut wrong: string = count\\n"'
+    mut server = compiler(['lsp'], directory)
+    // The type of `count` in its declaration, and where `twice` and `n` are declared.
+    server.input = message('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')
+        + message(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"${uri}","text":${text}}}}`)
+        + request(2, 'hover', 4, 7) + request(3, 'definition', 4, 15) + request(4, 'definition', 1, 11)
+        + message('{"jsonrpc":"2.0","id":5,"method":"shutdown"}') + message('{"jsonrpc":"2.0","method":"exit"}')
+    immut output = finish(server)
+    assert(output.status == 0, output.stderr)
+    immut answers = messages(output.stdout)
+    assert(answers.length() == 6, output.stdout)
+    assert('"hoverProvider":true' in answers[0], answers[0])
+    assert(answers[1] == `{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"${uri}","diagnostics":[{"range":{"start":{"line":5,"character":22},"end":{"line":5,"character":27}},"severity":1,"source":"kojic","message":"type error: cannot assign a value of type int to 'wrong' of type string"}]}}`, answers[1])
+    assert('"value":"```koji\\ncount: int\\n```"' in answers[2], answers[2])
+    assert('"range":{"start":{"line":0,"character":0}' in answers[3], answers[3])
+    assert('"range":{"start":{"line":0,"character":0}' in answers[4], answers[4])
+    assert(answers[5] == '{"jsonrpc":"2.0","id":5,"result":null}', answers[5])
+}
+
+test 'requests_in_tasks_are_sent_at_the_same_time' {
+    // A server that answers each request after 0.3 seconds, several at once.
+    immut server = listenLocally()
+    immut port = server.port
+    immut executable = built('task_requests', `import http
+import task
+import time
+
+immut start = time.monotonic()
+immut bodies = task.all([
+    () => http.get('http://127.0.0.1:${port}/a'),
+    () => http.get('http://127.0.0.1:${port}/b'),
+    () => http.get('http://127.0.0.1:${port}/c'),
+    () => http.get('http://127.0.0.1:${port}/d'),
+])
+for each in bodies {
+    match (each) {
+        Ok(response) => print(response.body)
+        Err(error) => print(error)
+    }
+}
+print(time.monotonic() - start < 0.9)
+`, [:])
+    immut results = task.all([
+        () => {
+            task.group((answers) => {
+                for _ in range(4) {
+                    immut fd = acceptConnection(server)
+                    answers.spawn(() => {
+                        immut request = receive(fd)
+                        immut parts = request.split(' ')
+                        immut body = `path ${if (parts.length() > 1) { parts[1] } else { '' }}`
+                        time.sleep(0.3)
+                        send(fd, `HTTP/1.1 200 OK\r\nContent-Length: ${body.length()}\r\nConnection: close\r\n\r\n${body}`)
+                        closeSocket(fd)
+                    })
+                }
+            })
+            closeSocket(server.fd)
+            return ''
+        },
+        () => finish(system.command(executable, [])).stdout,
+    ])
+    assert(results[1] == 'path /a\npath /b\npath /c\npath /d\ntrue\n', results[1])
+}
+
+test 'a_server_answers_requests_in_tasks' {
+    // A free port, given to the server; `/quit` ends it.
+    immut free = listenLocally()
+    immut port = free.port
+    closeSocket(free.fd)
+    immut executable = builtFile('server')
+    immut results = task.all([
+        () => finish(system.command(executable, [string(port)])).stdout,
+        () => {
+            immut echo = exchange(port, 'POST /echo?q=a%20b+c HTTP/1.1\r\nHost: here\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello')
+            assert(echo.startsWith('HTTP/1.1 201 Created\r\n'), echo)
+            assert('content-type: application/json\r\n' in echo, echo)
+            assert(echo.endsWith('{"method": "POST", "body": "hello", "q": "Some(\'a b c\')", "host": "Some(\'here\')"}'), echo)
+            // Two requests on one connection, the second sent before the first is answered; the
+            // second asks to close it.
+            immut two = exchange(port, 'GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\nConnection: close\r\n\r\n')
+            assert(two.split('HTTP/1.1 404 Not Found').length() == 3, two)
+            assert(two.endsWith('no /b'), two)
+            immut chunked = exchange(port, 'POST /echo HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n')
+            assert('"body": "hello world"' in chunked, chunked)
+            // What is not HTTP, a length and chunks at once (how requests are smuggled), another
+            // version.
+            assert(exchange(port, 'GARBAGE\r\n\r\n').startsWith('HTTP/1.1 400 Bad Request\r\n'))
+            assert(exchange(port, 'GET / HTTP/1.1\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n').startsWith('HTTP/1.1 400 '))
+            assert(exchange(port, 'GET / HTTP/2.0\r\n\r\n').startsWith('HTTP/1.1 505 '))
+            // A header of the handler cannot add another one; the handler closes the connection.
+            immut closed = exchange(port, 'GET /close HTTP/1.1\r\n\r\n')
+            assert('x-custom: one  two\r\n' in closed and 'connection: close\r\n' in closed, closed)
+            assert(exchange(port, 'HEAD /x HTTP/1.1\r\nConnection: close\r\n\r\n').endsWith('content-length: 5\r\nconnection: close\r\n\r\n'))
+            // A second server cannot listen on the same port.
+            immut second = finish(system.command(executable, [string(port)]))
+            assert(second.stdout.startsWith(`Err(CannotListen(${port}, `), second.stdout)
+            // Ten slow requests at once, and one that computes for long, from a program of Koji (whose
+            // requests wait as tasks), which ends the server.
+            immut client = finish(system.command(builtFile('server_client'), [string(port)]))
+            assert(client.stdout == '10 slow slow true\nno /quick true\n', client.stdout + client.stderr)
+            return ''
+        },
+    ])
+}
+
+test 'printing_to_a_full_pipe_lets_the_other_tasks_run' {
+    immut executable = builtFile('task_print')
+    // The pipe is read only after a second: the tasks that print wait for it, and the one that
+    // sleeps wakes on time.
+    immut ran = finish(system.command('sh', ['-c', `'${executable}' | (sleep 1; cat)`]))
+    assert(ran.stderr == 'true\n', ran.stderr)
+    immut lines = trimEnd(ran.stdout).split('\n')
+    assert(lines.length() == 2003, string(lines.length()))
+    mut numbered = 0
+    mut long = 0
+
+    for line in lines {
+        if (line.startsWith('line ') and line.endsWith('x' * 90) and line.length() == 6 + line[5..].split(' ')[0].length() + 90) { numbered += 1 }
+
+        if (line == 'a' * 10000) { long += 1 }
+    }
+
+    assert(numbered == 2000 and long == 3)
+}
+
+// The runtime library built natively (`kojic library`, see "The library of the runtime built by the
+// compiler" in doc/design.md), given by its path: a program linked with it does what it does with
+// the one next to the compiler.
+test 'the_native_library_runs_programs' {
+    immut directory = scratch('native-library')
+    immut library = path.join(directory, 'libkoji_native.a')
+    immut made = kojicWith(directory, ['library', '-o', library], [:])
+    assert(made.status == 0, made.stderr)
+    immut source = 'import task\nimport time\n\ntype Shape = {\n    Circle(radius: decimal)\n    Square(side: decimal)\n}\n\nfunction area(shape: Shape): decimal {\n    return match (shape) {\n        Circle(radius) => 3.14 * radius * radius\n        Square(side) => side * side\n    }\n}\n\nmut counts: Map[string, int] = [:]\n\nfor word in \'a b a c b a\'.split(\' \') {\n    counts[word] = match (counts.get(word)) {\n        Some(count) => count + 1\n        None => 1\n    }\n}\n\nprint(counts)\nprint(area(Circle(1.5)) + area(Square(2.0)))\nprint(\'Héllo\'.upper().chars())\nmut results: int[] = []\n\ntask.group((group) => {\n    for i in range(3) {\n        group.spawn(() => {\n            time.sleep(0.01 * (3 - i))\n            results.push(i)\n        })\n    }\n})\n\nprint(results.length())\nprint(`${1 / 3} ${7 % 3} ${\'x\'.length()}`)\n'
+    immut expected = runBuilt(built('native_library', source, [:]), true)
+    assert(expected.status == 0, expected.stderr)
+    immut ran = runBuilt(built('native_library_given', source, ['KOJI_RUNTIME': library]), true)
+    assert(ran.stdout == expected.stdout, ran.stdout)
+    assert(ran.status == 0, ran.stderr)
+}
+
+// A condition on `system.os` is decided when the program is compiled: the branch of another system
+// is not compiled, so a function of C it calls need not exist here (kqueue is not on Linux), nor
+// the function of Koji that only it calls.
+test 'code_for_one_system' {
+    immut source = 'import system\n\nforeign \'c\' {\n    function kqueue(): CInt\n    function epoll_create1(flags: CInt): CInt\n}\n\nfunction poller(): int {\n    return match (system.os) {\n        Linux => epoll_create1(0)\n        MacOS => kqueue()\n        _ => -1\n    }\n}\n\nmatch (system.os) {\n    Linux => print(\'linux\')\n    MacOS => print(\'macos\')\n    Other(name) => print(name)\n    _ => print(\'another\')\n}\n\nif (system.os != system.Windows) { print(poller() >= 0) }\n\nprint(match (system.architecture) {\n    X64 => \'x64\'\n    Arm64 => \'arm64\'\n    OtherArchitecture(name) => name\n})\n'
+    immut here = match (system.os) {
+        Linux => 'linux'
+        MacOS => 'macos'
+        _ => return
+    }
+    immut processor = match (system.architecture) {
+        X64 => 'x64'
+        Arm64 => 'arm64'
+        _ => return
+    }
+    immut ran = runBuilt(built('one_system', source, [:]), true)
+    assert(ran.stdout == `${here}\ntrue\n${processor}\n` and ran.status == 0, ran.stdout + ran.stderr)
+}
+
+test 'foreign_functions_of_the_libraries_of_the_system' {
+    immut directory = scratch('foreign')
+    immut written = path.join(directory, 'foreign.txt')
+    immut source = `import task
+import time
+
+foreign 'c' {
+    type Stream = handle(fclose)
+
+    function strlen(text: string): CSize
+    function getenv(name: string): Option[string]
+    function abs(value: CInt): CInt
+    function strtol(text: string, end: int, base: CInt): CLong
+    function fopen(path: string, mode: string): Option[Stream]
+    function fputs(text: string, stream: Stream): CInt
+    function getentropy(mut buffer: byte[], size: CSize): CInt
+    function size(text: string): CSize from 'strlen'
+    blocking function usleep(microseconds: CInt): CInt
+}
+
+foreign 'm' {
+    function cbrt(value: float): float
+}
+
+print(strlen('héllo'))
+print(size('abc'))
+print(getenv('KOJI_FOREIGN_TEST'))
+print(getenv('KOJI_NOT_SET_ANYWHERE'))
+print(abs(-42))
+print(strtol('ff', 0, 16))
+print(cbrt(float(64)) > float(3.99))
+mut bytes: byte[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+print(getentropy(mut bytes, 16))
+print(bytes != [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+// The stream is closed (its text written) when it is dropped.
+match (fopen('${written}', 'w')) {
+    Some(stream) => fputs('written by Koji\\n', stream)
+    None => -1
+}
+
+// Blocking functions wait on a thread that helps, one at a time, while the other tasks go on.
+immut ticks = task.shared(0)
+immut start = time.monotonic()
+task.group((tasks) => {
+    tasks.spawn(() => {
+        for i in range(10) {
+            time.sleep(0.01)
+            ticks.update((n) => n + 1)
+        }
+    })
+    tasks.spawn(() => usleep(100000))
+    tasks.spawn(() => usleep(100000))
+})
+print(ticks.get())
+print(time.monotonic() - start >= 0.2)
+print(abs(3000000000))
+`
+    immut executable = built('foreign', source, [:])
+    mut command = system.command(executable, [])
+    command.environment['KOJI_FOREIGN_TEST'] = 'yes'
+    immut ran = finish(command)
+    assert(ran.stdout == '6\n3\nSome(\'yes\')\nNone\n42\n255\ntrue\n0\ntrue\n10\ntrue\n', ran.stdout)
+    assert(ran.stderr.endsWith(':54: argument 1 (\'value\') of \'abs\' must be from -2147483648 to 2147483647, found 3000000000\n'), ran.stderr)
+    assert(readFile(written) == 'written by Koji\n')
+    // What a foreign function cannot take.
+    immut wrong = checked('foreign_wrong', 'foreign \'c\' {\n    function qsort(items: int[], count: CSize)\n}\n')
+    assert('foreign_wrong.kj:1: parameter \'items\' of the foreign function \'qsort\' cannot be int[]' in wrong.stderr, wrong.stderr)
+}
+
+// Runs `git` in `directory` (a test of packages makes its repositories).
+function git(directory: string, args: string[]) {
+    mut command = system.command('git', ['-c', 'user.name=koji', '-c', 'user.email=koji@localhost', '-c', 'init.defaultBranch=main'] + args)
+    command.directory = directory
+    immut output = finish(command)
+    assert(output.status == 0, `git ${args}: ${output.stderr}`)
+}
+
+// A version of a repository of a module: its tag, and the files it writes.
+type Version = {
+    tag: string
+    names: string[]
+    texts: string[]
+}
+
+// A repository of a module, with a commit and a tag for each version.
+function repository(repositories: string, module: string, versions: Version[]) {
+    immut directory = path.join(repositories, if (module.endsWith('/v2')) { module[0..module.length() - 3] } else { module })
+
+    if (not file.exists(path.join(directory, '.git'))) {
+        match (file.createDir(directory)) {
+            Ok(_) => {}
+            Err(error) => panic(`${error}`)
+        }
+        git(directory, ['init', '-q'])
+    }
+
+    for version in versions {
+        for i in range(version.names.length()) {
+            writeFile(path.join(directory, version.names[i]), version.texts[i])
+        }
+
+        git(directory, ['add', '-A'])
+        git(directory, ['commit', '-qm', version.tag])
+        git(directory, ['tag', version.tag])
+    }
+}
+
+test 'packages_from_repositories_of_git_at_the_versions_mvs_chooses' {
+    immut base = scratch('packages')
+    immut repositories = path.join(base, 'repositories')
+    repository(repositories, 'github.com/bia/greet', [
+        { tag: 'v1.0.0', names: ['koji.mod', 'greet.kj'], texts: ['module github.com/bia/greet\n', 'export function hello(name: string): string {\n    return `hello, ${name}`\n}\n'] },
+        { tag: 'v1.1.0', names: ['greet.kj', 'text.kj'], texts: ['import { upper } from \'text.kj\'\n\nexport function hello(name: string): string {\n    return `hello, ${upper(name)}`\n}\n', 'export function upper(name: string): string {\n    return name.upper()\n}\n'] },
+    ])
+    repository(repositories, 'github.com/bia/greet/v2', [{ tag: 'v2.0.0', names: ['koji.mod', 'greet.kj'], texts: ['module github.com/bia/greet/v2\n', 'export function hello(name: string): string {\n    return `HELLO ${name}`\n}\n'] }])
+    repository(repositories, 'github.com/caio/helper', [{ tag: 'v1.0.0', names: ['koji.mod', 'helper.kj'], texts: ['module github.com/caio/helper\n\nrequire github.com/bia/greet v1.1.0\n', 'import { hello } from \'github.com/bia/greet\'\n\nexport function twice(name: string): string {\n    return `${hello(name)} / ${hello(name)}`\n}\n'] }])
+    repository(repositories, 'github.com/dan/native', [{ tag: 'v1.0.0', names: ['koji.mod', 'native.kj'], texts: ['module github.com/dan/native\n', 'foreign \'c\' {\n    function abs(value: CInt): CInt\n}\n\nexport function positive(value: int): int {\n    return abs(value)\n}\n'] }])
+    immut app = path.join(base, 'app')
+    writeFile(path.join(app, 'main.kj'), 'import { hello } from \'github.com/bia/greet\'\nimport greet2 from \'github.com/bia/greet/v2\'\nimport { twice } from \'github.com/caio/helper\'\nimport { upper } from \'github.com/bia/greet/text\'\n\nprint(hello(\'ana\'))\nprint(greet2.hello(\'ana\'))\nprint(twice(\'bia\'))\nprint(upper(\'x\'))\n')
+
+    function packages(args: string[]): system.Output {
+        return kojicWith(app, args, ['KOJI_GIT_URL': `file://${repositories}/`, 'KOJI_CACHE': path.join(base, 'cache')])
+    }
+
+    // Without a koji.mod, a package cannot be imported.
+    assert('this program has no koji.mod: make one with \'kojic init <path of the module>\'' in packages(['check', 'main.kj']).stderr)
+    assert(packages(['init', 'github.com/ana/app']).stdout == 'made koji.mod for the module github.com/ana/app\n')
+    assert(packages(['add', 'github.com/bia/greet@v1.0.0']).stdout == 'added github.com/bia/greet v1.0.0\n')
+    assert(packages(['add', 'github.com/bia/greet/v2']).stdout == 'added github.com/bia/greet/v2 v2.0.0\n')
+    assert(packages(['add', 'github.com/caio/helper']).stdout == 'added github.com/caio/helper v1.0.0\n')
+    // The program asks for greet v1.0.0, helper for v1.1.0: the program builds with v1.1.0.
+    immut ran = packages(['run', 'main.kj'])
+    assert(ran.stdout == 'hello, ANA\nHELLO ana\nhello, BIA / hello, BIA\nX\n', ran.stderr)
+    immut sums = readFile(path.join(app, 'koji.sum'))
+    assert(trimEnd(sums).split('\n').length() == 4, sums)
+    assert('github.com/bia/greet v1.1.0 sha256:' in sums)
+    // A copy changed in the cache is refused.
+    immut copy = path.join(base, 'cache/packages/github.com/bia/greet@v1.1.0/greet.kj')
+    writeFile(copy, readFile(copy) + '// changed\n')
+    assert('the files of github.com/bia/greet v1.1.0 are not those of koji.sum' in packages(['run', 'main.kj']).stderr)
+    removeAll(path.join(base, 'cache/packages/github.com/bia/greet@v1.1.0'))
+    assert(packages(['run', 'main.kj']).stdout == 'hello, ANA\nHELLO ana\nhello, BIA / hello, BIA\nX\n')
+    // A module with foreign functions needs leave.
+    packages(['add', 'github.com/dan/native'])
+    writeFile(path.join(app, 'native.kj'), 'import { positive } from \'github.com/dan/native\'\nprint(positive(-5))\n')
+    assert('if you trust it, allow it in koji.mod with \'allow foreign github.com/dan/native\'' in packages(['run', 'native.kj']).stderr)
+    writeFile(path.join(app, 'koji.mod'), readFile(path.join(app, 'koji.mod')) + 'allow foreign github.com/dan/native\n')
+    assert(packages(['run', 'native.kj']).stdout == '5\n')
+    // A module that koji.mod does not require, and a version of another major version.
+    writeFile(path.join(app, 'missing.kj'), 'import x from \'github.com/zed/none\'\n')
+    assert('\'github.com/zed/none\' is not a module that koji.mod requires: add it with \'kojic add github.com/zed/none\'' in packages(['check', 'missing.kj']).stderr)
+    assert('v2.0.0 is a major version of its own: its path ends with \'/v2\'' in packages(['add', 'github.com/bia/greet@v2.0.0']).stderr)
+    // A new version, then `update`.
+    repository(repositories, 'github.com/caio/helper', [{ tag: 'v1.0.1', names: ['helper.kj'], texts: ['export function twice(name: string): string {\n    return \'v1.0.1\'\n}\n'] }])
+    immut updated = packages(['update']).stdout
+    assert('github.com/bia/greet v1.0.0 -> v1.1.0' in updated and 'github.com/caio/helper v1.0.0 -> v1.0.1' in updated, updated)
+    assert(packages(['run', 'main.kj']).stdout.endsWith('v1.0.1\nX\n'))
+}
+
+// Koji's linker (compiler/linker.kj), without the linker of the system (KOJI_LINKER=koji makes a
+// failure an error instead of a fallback): an executable of the program and of the native library,
+// linked dynamically with the C library, that runs (under valgrind), with tasks, files and the
+// threads of the runtime.
+test 'koji_links_executables_itself' {
+    if (not onLinuxX64) { return }
+
+    immut source = 'import file\nimport task\nimport time\n\nmut results: int[] = []\n\ntask.group((group) => {\n    for i in range(3) {\n        group.spawn(() => {\n            time.sleep(0.01 * (3 - i))\n            results.push(i)\n        })\n    }\n\n    group.spawn(() => {\n        print(file.exists(\'/\'))\n    })\n})\n\nprint(results)\nprint(`${7 / 2} ${\'héllo\'.upper()}`)\n'
+    immut ran = runBuilt(built('own_linker', source, ['KOJI_LINKER': 'koji']), true)
+    assert(ran.stdout == 'true\n[2, 1, 0]\n3 HÉLLO\n', ran.stdout)
+    assert(ran.status == 0, ran.stderr)
+}
+
+// The machine IR (compiler/mir.kj): functions of ints, booleans and chars (recursion, loops, ranges,
+// six arguments, checked arithmetic), their registers allocated by linear scan.
+test 'the_machine_ir_compiles_functions' {
+    immut source = 'function fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\nfunction collatz(start: int): int {\n    mut n = start\n    mut steps = 0\n    while (n != 1) {\n        if (n % 2 == 0) { n = n / 2 } else { n = 3 * n + 1 }\n        steps += 1\n    }\n    return steps\n}\nfunction sumTo(limit: int): int {\n    mut total = 0\n    for i in range(limit) { total += i * i % 7 }\n    for i in range(limit, 0, -1) { total -= i % 3 }\n    return total\n}\nfunction isLetter(c: char): boolean { return c >= \'a\' and c <= \'z\' or c >= \'A\' and c <= \'Z\' }\nfunction mix(a: int, b: int, c: int, d: int, e: int, f: int): int { return (a - b) * c + d / e - f }\nprint(string(fib(25)))\nprint(string(collatz(27)))\nprint(string(sumTo(1000)))\nprint(string(isLetter(\'q\')) + string(isLetter(\'3\')))\nprint(string(mix(9, 4, 3, 100, 7, 2)))\n'
+    immut ran = underValgrind(built('machine_ir', source, [:]), [])
+    assert(ran.stdout == '75025\n111\n1001\ntruefalse\n27\n', ran.stdout)
+    assert(ran.status == 0, ran.stderr)
+}
+
+// Floats in the machine IR: in xmm registers, checked as the language says (a result that is not
+// finite, a division by zero), arguments of both classes moved in parallel (here in a cycle of xmm
+// registers: a call with its arguments rotated).
+test 'the_machine_ir_compiles_floats' {
+    immut source = 'function series(n: int, x: float): float {\n    if (n == 0) { return float(1) }\n    return float(1) + x * series(n - 1, x) / float(n)\n}\nfunction horner(n: int, x: float, a: float, b: float, c: float, d: float): float {\n    if (n == 0) { return a }\n    immut inner = horner(n - 1, x, b, c, d, a)\n    return inner * x + -b\n}\nfunction signs(n: int, x: float): int {\n    if (n == 0) { return 0 }\n    mut s = 0\n    if (x < float(0)) { s = -1 }\n    if (x >= float(1)) { s = 1 }\n    return s + signs(n - 1, x - float(0.5))\n}\nfunction mixed(n: int, x: float): float {\n    if (n <= 0) { return x % float(7) }\n    immut t = int(x * float(10))\n    return mixed(n - 1, x ** float(1.01) + float(t % 3))\n}\nprint(string(series(20, float(1))))\nprint(string(horner(6, float(0.5), float(1), float(2), float(3), float(4))))\nprint(string(signs(10, float(2.2))))\nprint(string(mixed(5, float(1.5))))\n'
+    immut ran = underValgrind(built('machine_ir_floats', source, [:]), [])
+    assert(ran.stdout == '0x1.0d837220475dep0\n-0x1.33p2\n-2\n0x1.88065f96266c9p0\n', ran.stdout)
+    assert(ran.status == 0, ran.stderr)
+}
+
+// Strings in the machine IR: references moved at their last reads (`text = text + more` adds in
+// place), released when a variable is given another value and when the function returns, retained
+// when shared; library calls; `mut` parameters given their references.
+test 'the_machine_ir_counts_references' {
+    immut source = 'mut log = \'start\'\n\nfunction greet(name: string, times: int): string {\n    mut text = \'\'\n\n    for i in range(times) {\n        text = text + name + string(i)\n    }\n\n    return text\n}\n\nfunction pick(a: string, b: string, first: boolean): string {\n    if (first) { return a }\n\n    return b\n}\n\nfunction longer(a: string, b: string): boolean {\n    return a.length() > b.length()\n}\n\nfunction note(text: string) {\n    log = log + \',\' + text\n}\n\nfunction compare(a: string, b: string): string {\n    if (a < b) { return \'less\' }\n\n    if (a == b) { return \'equal\' }\n\n    return \'greater\'\n}\n\nimmut g = greet(\'ab\', 4)\nprint(g)\nprint(pick(\'x\', \'y\', false))\nprint(string(longer(g, \'zz\')))\nnote(\'one\')\nnote(g)\nprint(log)\nprint(compare(\'a\', \'b\') + compare(\'b\', \'b\') + compare(\'c\', \'b\'))\nprint(string(2.5) + string(true) + string(\'é\'.length()))\nmut s = \'q\'\ns = s + s\ns = s + \'w\'\nprint(s)\nprint(string(\'ab\' in \'xaby\'))\n\nmut total = 0\nmut names = \'g\'\n\nfunction bump(mut n: int, by: int): int {\n    n += by\n    return n * 2\n}\n\nfunction grow(mut text: string, more: string) {\n    text = text + more\n}\n\nfunction swap(mut a: string, mut b: string): string {\n    immut t = a\n    a = b\n    b = t\n    return a\n}\n\nfunction same(mut text: string): string {\n    text = text + \'!\'\n    return text\n}\n\nfunction scale(mut x: float, k: float) {\n    x = x * k\n}\n\nmut n = 1\nimmut r = bump(mut n, 5)\nprint(`${n} ${r}`)\nmut t = \'ab\'\ngrow(mut t, \'cd\')\ngrow(mut t, t)\nprint(t)\nmut p = \'p\'\nmut q = \'q\'\nprint(swap(mut p, mut q) + p + q)\nprint(same(mut t) + t)\ngrow(mut names, \'h\')\nprint(names)\nbump(mut total, 3)\nprint(string(total))\nmut f = float(1.5)\nscale(mut f, float(4))\nprint(string(f))\n'
+    immut ran = underValgrind(built('machine_ir_references', source, [:]), ['--leak-check=full', '--errors-for-leak-kinds=definite'])
+    assert(ran.stdout == 'ab0ab1ab2ab3\ny\ntrue\nstart,one,ab0ab1ab2ab3\nlessequalgreater\n2.5true1\nqqw\ntrue\n6 12\nabcdabcd\nqqp\nabcdabcd!abcdabcd!\ngh\n3\n0x1.8p2\n', ran.stdout)
+    assert(ran.status == 0, ran.stderr)
+}
+
+// The emitter of arm64 (compiler/a64.kj, KOJI_TARGET=arm64): a program of ints, floats, strings,
+// records, lists, maps, closures, tasks and a panic, linked by Koji's linker with the native library
+// for arm64, run under qemu: the same output as on x86-64. Only where qemu-aarch64 and the C library
+// of arm64 (/usr/aarch64-linux-gnu, with qemu's -L) are.
+test 'koji_generates_arm64' {
+    if (not onLinuxX64 or not available('qemu-aarch64') or not file.exists('/usr/aarch64-linux-gnu/lib/libc.so.6')) { return }
+
+    immut directory = scratch('arm64')
+    // The native library for arm64, built by kojic itself.
+    immut runtime = path.join(directory, 'libkoji.a')
+    immut library = kojicWith(directory, ['library', '-o', runtime], ['KOJI_TARGET': 'arm64'])
+    assert(library.status == 0, library.stderr)
+    immut source = 'type Shape = {\n    Circle(radius: float)\n    Rect(w: int, h: int, name: string)\n}\nfunction area(s: Shape): string {\n    return match (s) {\n        Circle(r) => string(r * r)\n        Rect(w, h, name) => `${name}:${w * h}`\n    }\n}\nfunction fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\nfunction adder(n: int): (int) => int {\n    return (x) => x + n\n}\nmut counts: Map[string, int] = [:]\nfor word in [\'a\', \'b\', \'a\'] {\n    match (counts.get(word)) {\n        Some(n) => counts[word] = n + 1\n        None => counts[word] = 1\n    }\n}\nmut text = \'\'\nfor i in range(5) {\n    text += string(i)\n}\nimmut shapes = [Circle(float(1.5)), Rect(2, 3, \'r\')]\nfor s in shapes {\n    print(area(s))\n}\nprint(`${fib(20)} ${counts} ${text} ${adder(3)(4)} ${1.25 + 2.5}`)\nimport task\nmut order: int[] = []\ntask.group((group) => {\n    for i in range(3) {\n        group.spawn(() => order.push(i))\n    }\n})\nprint(order.length())\nprint([3, 1, 2][5])\n'
+    immut executable = built('arm64', source, ['KOJI_TARGET': 'arm64', 'KOJI_LINKER': 'koji', 'KOJI_RUNTIME': runtime])
+    immut ran = finish(system.command('qemu-aarch64', ['-L', '/usr/aarch64-linux-gnu', executable]))
+    assert(ran.stdout == '0x1.2p1\nr:6\n6765 [\'a\': 2, \'b\': 1] 01234 7 3.75\n3\n', ran.stdout)
+    assert('index 5 out of range (length 3)' in ran.stderr, ran.stderr)
+    assert(ran.status == 1)
+}
+
+// The names of the symbols llvm-nm lists of the object and the library, with its options.
+function symbols(object: string, library: string, options: string[]): string[] {
+    immut listed = finish(system.command('llvm-nm', options + [object, library]))
+    mut found: string[] = []
+
+    for line in listed.stdout.split('\n') {
+        if (line == '' or line.endsWith(':')) { continue }
+
+        immut words = line.split(' ')
+        immut name = words[words.length() - 1]
+
+        if (not (name in found)) { found.push(name) }
+    }
+
+    return found
+}
+
+function macosObjects(linker: string, target: string, arch: string, cpu: int) {
+    immut directory = scratch(target)
+    immut library = path.join(directory, 'libkoji.a')
+    immut made = kojicWith(directory, ['library', '-o', library], ['KOJI_TARGET': target])
+    assert(made.status == 0, made.stderr)
+    immut source = 'import task\nimport file\nfunction fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\ntask.group((group) => {\n    group.spawn(() => print(file.exists(\'/\')))\n})\nprint(`${fib(20)} ${1.5 + 2.25}`)\n'
+    writeFile(path.join(directory, 'macos.kj'), source)
+    immut object = path.join(directory, 'macos.o')
+    immut emitted = kojicWith(directory, ['build', 'macos.kj', '--emit', 'object', '-o', object], ['KOJI_TARGET': target])
+    assert(emitted.status == 0, emitted.stderr)
+    immut bytes = readBytes(object)
+    assert(bytes[0..8] == [0xCF, 0xFA, 0xED, 0xFE, byte(cpu), 0x00, 0x00, 0x01], `not an object of Mach-O for ${arch}`)
+    // The symbols they need from libSystem.
+    immut defined = symbols(object, library, ['-g', '--defined-only'])
+    mut needed: string[] = []
+
+    for name in symbols(object, library, ['-u']) {
+        if (not (name in defined)) { needed.push(name) }
+    }
+
+    for linux in ['_getauxval', '___errno_location', '_epoll_create1', '_environ'] {
+        assert(not (linux in needed), `${linux} is of Linux`)
+    }
+
+    mut quoted: string[] = []
+
+    for name in needed + ['dyld_stub_binder'] {
+        quoted.push(`'${name}'`)
+    }
+
+    writeFile(path.join(directory, 'sdk/usr/lib/libSystem.tbd'), `--- !tapi-tbd\ntbd-version: 4\ntargets: [ ${arch}-macos ]\ninstall-name: '/usr/lib/libSystem.B.dylib'\ncurrent-version: 1319\nexports:\n  - targets: [ ${arch}-macos ]\n    symbols: [ ${quoted.join(', ')} ]\n...\n`)
+    immut executable = path.join(directory, 'macos')
+    immut linked = finish(system.command(linker, ['-arch', arch, '-platform_version', 'macos', '11.0', '11.0', '-syslibroot', path.join(directory, 'sdk'), '-lSystem', '-o', executable, object, library]))
+    assert(linked.status == 0, linked.stderr)
+    assert(readBytes(executable)[0..4] == [0xCF, 0xFA, 0xED, 0xFE])
+    // Koji's linker of Mach-O (compiler/machlink.kj): an executable that llvm-objdump reads, with
+    // its entry, its binding to libSystem and its signature.
+    immut own = path.join(directory, 'macos-own')
+    immut ownBuilt = kojicWith(directory, ['build', 'macos.kj', '--native', '-o', own], ['KOJI_TARGET': target, 'KOJI_LINKER': 'koji', 'KOJI_RUNTIME': library])
+    assert(ownBuilt.status == 0, ownBuilt.stderr)
+    immut commands = finish(system.command('llvm-objdump', ['--macho', '-p', own]))
+    assert(commands.status == 0, commands.stderr)
+
+    for command in ['LC_MAIN', 'LC_DYLD_INFO_ONLY', 'LC_LOAD_DYLINKER', 'LC_CODE_SIGNATURE', '/usr/lib/libSystem.B.dylib'] {
+        assert(command in commands.stdout, `no ${command} in the executable`)
+    }
+
+    immut binds = finish(system.command('llvm-objdump', ['--macho', '--bind', own]))
+    assert('libSystem        _kevent' in binds.stdout, binds.stdout)
+}
+
+// Objects of Mach-O for macOS on arm64 and on x86-64 (compiler/macho.kj, KOJI_TARGET=macos-arm64 and
+// macos-x64): the native library (an archive of BSD) and a program, linked by lld's linker for
+// Mach-O with a libSystem of the symbols they need, none of Linux. Nothing here runs a program of
+// macOS: the test checks that the linker of macOS takes them. Only where ld64.lld and llvm-nm are.
+test 'koji_generates_macos_objects' {
+    mut linker = ''
+
+    for tool in ['ld64.lld', '/usr/lib/llvm-18/bin/ld64.lld'] {
+        if (linker == '' and available(tool)) { linker = tool }
+    }
+
+    if (linker == '' or not available('llvm-nm') or not onLinuxX64) { return }
+
+    macosObjects(linker, 'macos-arm64', 'arm64', 0x0C)
+    macosObjects(linker, 'macos-x64', 'x86_64', 0x07)
+}
+
+// Executables of PE for Windows on x86-64 (KOJI_TARGET=windows-x64: compiler/coff.kj,
+// compiler/pelink.kj): the native library for Windows and a program linked by Koji's linker. Where
+// Wine is, the program runs there and prints what it prints on Linux.
+test 'koji_generates_windows_executables' {
+    if (not onLinuxX64) { return }
+
+    immut directory = scratch('windows')
+    immut library = path.join(directory, 'libkoji.a')
+    immut made = kojicWith(directory, ['library', '-o', library], ['KOJI_TARGET': 'windows-x64'])
+    assert(made.status == 0, made.stderr)
+    writeFile(path.join(directory, 'windows.kj'), 'import task\nimport file\nfunction fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\ntask.group((group) => {\n    group.spawn(() => print(file.exists(\'.\')))\n})\nprint(`${fib(20)} ${1.5 + 2.25} ${decimal(1) / 3} ${[3, 1, 2].length()}`)\n')
+    immut executable = path.join(directory, 'program.exe')
+    immut linked = kojicWith(directory, ['build', 'windows.kj', '-o', executable], ['KOJI_TARGET': 'windows-x64', 'KOJI_RUNTIME': library])
+    assert(linked.status == 0, linked.stderr)
+    immut bytes = readBytes(executable)
+    assert(bytes[0..2] == [0x4D, 0x5A])
+    immut header = int(bytes[60]) | int(bytes[61]) << 8 | int(bytes[62]) << 16 | int(bytes[63]) << 24
+    assert(bytes[header..header + 6] == [0x50, 0x45, 0, 0, 0x64, 0x86], 'not an executable of PE for x86-64')
+    mut wine = ''
+
+    for tool in ['/usr/lib/wine/wine64', '/usr/bin/wine64'] {
+        if (wine == '' and file.exists(tool)) { wine = tool }
+    }
+
+    if (wine == '') { return }
+
+    mut command = system.command(wine, [executable])
+    command.directory = directory
+    command.cleared = true
+    command.environment['PATH'] = '/usr/bin:/bin'
+    command.environment['HOME'] = directory
+    command.environment['WINEPREFIX'] = path.join(directory, 'prefix')
+    command.environment['WINEDEBUG'] = '-all'
+    immut ran = finish(command)
+    assert(ran.stdout == 'true\n6765 3.75 0.3333333333333333333333333333333333 3\n', ran.stderr)
+    assert(ran.status == 0)
+}

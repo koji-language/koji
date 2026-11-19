@@ -5,5 +5,4 @@
 *.so
 *.dll
 build/
-target/
 node_modules/

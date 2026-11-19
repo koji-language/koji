@@ -39,6 +39,7 @@ This document outlines the planned features and milestones for the Koji programm
 -   [x] A parser of the command line (`cli`), with the help made from the declarations
 -   [x] Foreign functions: `foreign` blocks with safe types and handles
 -   [x] Generating machine code without a C compiler (Linux on x86-64 and on arm64: the code, the runtime library and the linking; macOS on arm64 and x86-64 written and linked, not yet run there; Windows on x86-64, run under Wine; the C backend retired)
+-   [x] Koji alone builds and tests Koji: the test suite and the generators of the tables of the library are written in Koji (no Rust, no C compiler)
 -   [ ] WebAssembly (WASM) compilation
 -   [ ] Editor support (syntax highlighting, LSP integration)
 -   [ ] Runtime optimizations

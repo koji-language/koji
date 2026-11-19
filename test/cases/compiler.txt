@@ -1,0 +1,1846 @@
+// Programs built by `kojic build` and run (under valgrind when it is installed, without the pool;
+// test/cases.kj): each case is a program (after `---- source`) and what it must print (`---- output`),
+// and, for one that must panic, the end of the last line of its standard error output (`---- panic`).
+// `---- without valgrind` runs it alone (a program that measures its time).
+
+==== arithmetic
+---- source
+immut half: decimal = 1
+print(1 + 2 * 3, 7 / 2, -7 / 2, -7 % 3, 2 ** 10, 0 ** 0)
+print(half / 2, 7 / 2.0, 2.0 ** 0.5, 5.5 % 2, 1e20, 0.1 + 0.2, -half)
+print(6 & 3, 6 | 3, 6 ^ 3, 1 << 4, -16 >> 2, ~0)
+print(1 < 2, 2.5 >= 2, 3 == 3.0, 1 != 1)
+---- output
+7 3 -3 -1 1024 1
+0.5 3.5 1.414213562373095048801688724209698 1.5 100000000000000000000 0.3 -1
+2 7 5 16 -4 -1
+true true true false
+==== strings_and_interpolation
+---- source
+immut name = 'Koji'
+mut text = ''
+
+for i in range(3) {
+    text += string(i)
+}
+
+print(`Hello, ${name}! ${1 + 1} ${2.0} ${true}`)
+print(text, 'ab' * 3, 3 * 'c', 'a' < 'b', text == '012', name != 'Koji')
+print('quote \' and backslash \\ and ünicode')
+print()
+print('a', 1, 2.5, false)
+---- output
+Hello, Koji! 2 2 true
+012 ababab ccc true true false
+quote ' and backslash \ and ünicode
+
+a 1 2.5 false
+==== functions_and_globals
+---- source
+mut calls = 0
+
+function factorial(n: int): int {
+    calls += 1
+
+    if (n <= 1) { return 1 }
+
+    return n * factorial(n - 1)
+}
+
+function greet(name: string): string {
+    return `Hello, ${name}!`
+}
+
+function half(x: decimal): decimal {
+    return x / 2
+}
+
+function show(label: string, value: int) {
+    print(label, value)
+}
+
+print(factorial(10), calls)
+print(greet('World'), half(3))
+show('answer', 42)
+---- output
+3628800 10
+Hello, World! 1.5
+answer 42
+==== control_flow
+---- source
+mut n = 10
+
+while (n > 0 and n % 7 != 0) {
+    n -= 1
+}
+
+immut label = if (n == 7) { 'seven' } else { 'other' }
+print(n, label, not true or false)
+
+for i in range(10, 0, -3) {
+    if (i == 4) { continue }
+
+    print(i)
+}
+
+mut found = -1
+
+for i in range(100) {
+    if (i * i > 50) {
+        found = i
+        break
+    }
+}
+
+print(found)
+---- output
+7 seven false
+10
+7
+1
+8
+==== arms_that_leave
+---- source
+function next(r: Result[int, string]): Result[int, string] {
+    immut n = match (r) {
+        Ok(n) => n
+        Err(message) => {
+            immut text = `bad ${message}`
+            return Err(text)
+        }
+    }
+    return Ok(n + 1)
+}
+
+function first(items: string[]): string {
+    immut item = match (items.length()) {
+        0 => return 'none'
+        _ => items[0]
+    }
+    return item
+}
+
+print(next(Ok(1)), next(Err('e')), first([]), first(['a']))
+mut total = 0
+
+for i in range(5) {
+    immut value = match (i) {
+        3 => break
+        1 => continue
+        other => other * 10
+    }
+    total += value
+}
+
+print(total)
+---- output
+Ok(2) Err('bad e') none a
+20
+==== mut_arguments_see_the_other_arguments
+---- source
+type Counter = { n: int, log: string[] }
+
+function Counter.bump(mut self): int {
+    self.n += 1
+    return self.n
+}
+
+function Counter.note(mut self, value: int): string {
+    self.log.push(`${value} at ${self.n}`)
+    return `noted ${value}`
+}
+
+function add(mut items: int[], value: int) {
+    items.push(value)
+}
+
+function grow(mut items: int[]): int {
+    items.push(0)
+    return items.length()
+}
+
+mut counter: Counter = { n: 0, log: [] }
+print(counter.note(counter.bump()), counter.n, counter.log)
+mut items = [1]
+add(mut items, grow(mut items))
+print(items)
+---- output
+noted 1 1 ['1 at 1']
+[1, 0, 2]
+==== mut_parameters_change_values_in_place
+---- source
+type Tables = { types: Map[int, int] }
+type Checker = { tables: Tables, calls: int }
+
+function Checker.record(mut self, id: int) {
+    self.tables.types[id] = id * 2
+    self.calls += 1
+}
+
+function grow(mut items: int[], count: int) {
+    for i in range(count) {
+        items.push(i)
+    }
+}
+
+function run(): string {
+    mut checker: Checker = { tables: { types: [:] }, calls: 0 }
+
+    for i in range(3000) {
+        checker.record(i)
+    }
+
+    mut items: int[] = []
+
+    for i in range(30) {
+        grow(mut items, 100)
+    }
+
+    return `${checker.tables.types.length()} ${checker.calls} ${items.length()}`
+}
+
+print(run())
+---- output
+3000 3000 3000
+==== decimals_in_records_lists_and_maps
+---- source
+type Item = { name: string, price: decimal, count: int, tax: decimal }
+type Shape = { Circle(r: decimal) Square(side: decimal, label: string) }
+immut a: Item = { name: 'pen', price: 1.25, count: 3, tax: 0.07 }
+mut items: Item[] = [a, { name: 'ink', price: 10.5, count: 1, tax: 0.2 }]
+items[0].price += 0.75
+items.push({ name: 'cap', price: 0.05, count: 9, tax: 0 })
+mut total: decimal = 0
+for item in items {
+    total += item.price * item.count * (1 + item.tax)
+}
+print(items, total)
+immut shapes = [Circle(1.5), Square(2, 's')]
+print(shapes, shapes[1] == Square(2.00, 's'))
+mut ds: decimal[] = [3, 1.5, 2.25]
+ds.sort()
+ds.insert(1, 9.75)
+print(ds, ds.pop(), ds.removeAt(0), ds, 2.25 in ds, ds.indexOf(9.75))
+immut m: Map[decimal, decimal] = [1.5: 2.5, 3: 4]
+print(m, m[1.50], m.keys(), m.values())
+mut s = Set.from(ds)
+s.add(1.5)
+print(s, ds[0..1], ds + ds)
+immut f = (x: decimal) => x * 2
+print(f(1.25), [decimal(1), 2].length())
+mut w = ds
+w.sortBy((x: decimal, y: decimal) => x > y)
+print(w)
+---- output
+[{ name: 'pen', price: 2, count: 3, tax: 0.07 }, { name: 'ink', price: 10.5, count: 1, tax: 0.2 }, { name: 'cap', price: 0.05, count: 9, tax: 0 }] 19.47
+[Circle(1.5), Square(2, 's')] true
+[1.5, 9.75, 2.25, 3] Some(3) Some(1.5) [9.75, 2.25] true Some(0)
+[1.5: 2.5, 3: 4] 2.5 [1.5, 3] [2.5, 4]
+Set([9.75, 2.25, 1.5]) [9.75] [9.75, 2.25, 9.75, 2.25]
+2.5 2
+[9.75, 2.25]
+==== borrowed_parameters
+---- source
+mut names: string[] = ['a', 'b']
+
+function reset() {
+    names = ['x']
+}
+
+function show(items: string[]): string {
+    reset()
+    return items.join(',')
+}
+
+function longest(words: string[], fallback: string): string {
+    mut best = fallback
+
+    for word in words {
+        if (word.length() > best.length()) { best = word }
+    }
+
+    return best
+}
+
+print(show(names), names)
+print(longest(['ab', 'abc'], ''), longest([], 'none'))
+---- output
+a,b ['x']
+abc none
+==== borrowed_fields
+---- source
+type Inner = { words: string[] }
+type Outer = { inner: Inner, name: string }
+
+mut current: Outer = { inner: { words: ['a', 'b'] }, name: 'first' }
+
+function reset() {
+    current = { inner: { words: [] }, name: 'second' }
+}
+
+function words(outer: Outer): string[] {
+    immut list = outer.inner.words
+    reset()
+    mut more = list
+    more.push(outer.name)
+    return [list.join(','), more.join(',')]
+}
+
+function last(outer: Outer): string {
+    immut list = outer.inner.words
+    return list[list.length() - 1]
+}
+
+print(words(current), current.name)
+print(last({ inner: { words: ['x', 'y'] }, name: 'z' }))
+---- output
+['a,b', 'a,b,first'] second
+y
+==== records_on_the_stack #1
+---- source
+type Point = { name: string, tags: string[] }
+type Shape = {
+    Dot(name: string)
+    Line(from: string, to: string)
+}
+
+mut kept: Point[] = []
+
+function describe(point: Point): string {
+    return `${point.name}:${point.tags.join('+')}`
+}
+
+function keep(point: Point) {
+    kept.push(point)
+}
+
+function deeper(point: Point): string {
+    return describe(point)
+}
+
+mut texts: string[] = []
+
+for i in range(3) {
+    immut point: Point = { name: `p${i}`, tags: [string(i), 'x'] }
+    texts.push(deeper(point))
+    immut other: Point = { name: `k${i}`, tags: [] }
+    keep(other)
+    immut shape = Line(`a${i}`, 'b')
+
+    if (shape == Line('a1', 'b')) { texts.push('found') }
+}
+
+print(texts, kept.length(), kept[2].name)
+---- output
+['p0:0+x', 'p1:1+x', 'found', 'p2:2+x'] 3 k2
+==== records_on_the_stack #2
+---- source
+type P = { name: string }
+
+mut saved: P[] = []
+
+function same(p: P): P {
+    return p
+}
+
+function later(p: P): () => string {
+    return () => p.name
+}
+
+function store(p: P) {
+    saved.push(p)
+}
+
+function relay(p: P) {
+    store(p)
+}
+
+function depth(p: P, n: int): int {
+    if (n == 0) { return p.name.length() }
+
+    immut inner: P = { name: p.name + '!' }
+    return depth(inner, n - 1)
+}
+
+function run(): string[] {
+    immut a: P = { name: 'a' }
+    immut b = same(a)
+    immut c: P = { name: 'c' }
+    immut f = later(c)
+    immut d: P = { name: 'd' }
+    relay(d)
+    immut e: P = { name: 'e' }
+    return [b.name, f(), string(depth(e, 3))]
+}
+
+print(run(), saved)
+---- output
+['a', 'c', '4'] [{ name: 'd' }]
+==== pushes_and_comparisons_inline
+---- source
+type Token = {
+    Word(text: string)
+    Number(value: int, exact: boolean)
+    Mark(c: char)
+    Amount(value: decimal)
+    End
+}
+
+mut flags: boolean[] = []
+mut letters: char[] = []
+mut amounts: decimal[] = []
+mut words: string[] = []
+
+for i in range(10) {
+    flags.push(i % 3 == 0)
+    letters.push('a')
+    amounts.push(1.5)
+    words.push(string(i))
+}
+
+immut before = words
+words.push('x')
+
+function kind(token: Token): string {
+    if (token == Word('if')) { return 'if' }
+    if (token != Number(1, true)) { if (token == Mark('+')) { return 'plus' } }
+    if (token == Amount(2.50)) { return 'amount' }
+    if (token == End) { return 'end' }
+    return 'other'
+}
+
+print(flags, letters.length(), amounts[9], words.length(), before.length(), flags == [true, false, false, true, false, false, true, false, false, true])
+print(kind(Word('if')), kind(Word('of')), kind(Number(1, true)), kind(Mark('+')), kind(Amount(2.5)), kind(End))
+---- output
+[true, false, false, true, false, false, true, false, false, true] 10 1.5 11 10 true
+if other other plus amount end
+==== chars_appended
+---- source
+mut text = ''
+mut copies: string[] = []
+
+for c in 'aé€😀b' {
+    text += string(c)
+    copies.push(text)
+}
+
+immut kept = text
+text += string('!')
+mut other = kept
+other += string('?')
+print(text, kept, other, copies, text.length())
+---- output
+aé€😀b! aé€😀b aé€😀b? ['a', 'aé', 'aé€', 'aé€😀', 'aé€😀b'] 6
+==== values_released_at_their_last_use
+---- source
+type Table = { ids: Map[string, int], names: string[] }
+
+function Table.add(mut self, name: string): int {
+    match (self.ids.get(name)) {
+        Some(id) => return id
+        None => {}
+    }
+
+    self.names.push(name)
+    immut id = self.names.length() - 1
+    self.ids[name] = id
+    return id
+}
+
+mut table: Table = { ids: [:], names: [] }
+mut found: int[] = []
+
+for name in ['a', 'b', 'a', 'c'] {
+    found.push(table.add(name))
+}
+
+immut before = table
+table.add('d')
+print(found, table.names, before.names, before.ids.length(), table.ids['d'])
+---- output
+[0, 1, 0, 2] ['a', 'b', 'c', 'd'] ['a', 'b', 'c'] 3 3
+==== borrowed_items_and_globals
+---- source
+immut fixed = ['x', 'y']
+mut changing = ['a', 'b']
+
+function joined(words: string[]): string {
+    mut text = ''
+
+    for word in words {
+        changing = ['c']
+        text += word
+    }
+
+    immut first = words[0]
+    changing = ['q']
+    return text + first
+}
+
+function fromGlobal(): string {
+    immut item = changing[0]
+    changing = ['z']
+    immut copy = fixed
+    return item + copy[1] + fixed[0]
+}
+
+print(joined(changing), changing, fromGlobal(), changing, joined(fixed))
+---- output
+aba ['q'] qyx ['z'] xyx
+==== items_set_in_place #1
+---- source
+mut words = ['a', 'b', 'c']
+immut before = words
+words[1] = 'x'
+words[2] = words[0] + '!'
+mut flags = [false, false]
+flags[1] = true
+mut amounts: decimal[] = [1.5, 2.5]
+amounts[0] = 9.25
+mut grid = [[1, 2], [3, 4]]
+immut row = grid[0]
+grid[0][1] = 7
+mut names: string[] = []
+for i in range(3) {
+    names.push(string(i))
+    names[i] = names[i] + '?'
+}
+print(words, before, flags, amounts, grid, row, names)
+---- output
+['a', 'x', 'a!'] ['a', 'b', 'c'] [false, true] [9.25, 2.5] [[1, 7], [3, 4]] [1, 2] ['0?', '1?', '2?']
+==== items_set_in_place #2
+---- source
+mut words = ['a']
+words[5] = 'z'
+---- panic
+index 5 out of range (length 1)
+==== values_moved_at_their_last_use
+---- source
+function build(count: int): string {
+    mut text = ''
+
+    for i in range(count) {
+        text += string(i % 10)
+    }
+
+    return text
+}
+
+function pair(first: string): string[] {
+    immut second = first + '!'
+    return [first, second]
+}
+
+mut text = build(5)
+immut copy = text
+text += 'x'
+immut again = text
+text += 'y'
+print(text, copy, again, build(12).length())
+print(pair('a'), text + text)
+
+mut names: string[] = []
+
+for name in ['ana', 'bia'] {
+    mut shout = name
+    shout += '!'
+    names.push(shout)
+}
+
+print(names)
+---- output
+01234xy 01234 01234x 12
+['a', 'a!'] 01234xy01234xy
+['ana!', 'bia!']
+==== fields_written_in_place
+---- source
+type Node = { name: string, next: Option[Node], items: string[] }
+
+function named(name: string): Node {
+    immut items = [name]
+    return { name: name, next: None, items: items }
+}
+
+mut r = named('a')
+r.next = Some(r)
+mut copy = r
+copy.name = 'b' + copy.name
+r.items.push('y')
+mut nodes: Map[string, Node] = [:]
+immut key = 'key'
+nodes[key] = r
+nodes[key].name = key
+print(r)
+print(copy)
+print(nodes)
+---- output
+{ name: 'a', next: Some({ name: 'a', next: None, items: ['a'] }), items: ['a', 'y'] }
+{ name: 'ba', next: Some({ name: 'a', next: None, items: ['a'] }), items: ['a'] }
+['key': { name: 'key', next: Some({ name: 'a', next: None, items: ['a'] }), items: ['a', 'y'] }]
+==== compound_assignments #1
+---- source
+mut x = 12
+x &= 10
+x |= 5
+x ^= 3
+x <<= 2
+x >>= 1
+mut items = [1, 2]
+items[0] |= 6
+mut total = 7.5
+total -= 1
+total *= 2
+total /= 4
+total **= 2
+total %= 3
+print(x, items, total)
+---- output
+28 [7, 2] 1.5625
+==== compound_assignments #2
+---- source
+mut x = 1
+x <<= 64
+---- panic
+invalid shift amount 64
+==== nested_functions_ranges_sets_and_module_variants #1
+---- source
+import json
+
+function make(): int[] {
+    mut x = 1
+
+    function twice(n: int): int {
+        return n * 2 + x
+    }
+
+    x = 5
+    return [twice(1), twice(x)]
+}
+
+mut seen = Set.from([])
+seen.add('x')
+print(make(), range(3), range(5, 0, -2), seen)
+print(json.stringify(json.Array([json.Int(1), json.Null, json.Bool(true)])))
+---- output
+[3, 11] [0, 1, 2] [5, 3, 1] Set(['x'])
+[1,null,true]
+==== nested_functions_ranges_sets_and_module_variants #2
+---- source
+print(range(0, 5, 0))
+---- panic
+range() step cannot be 0
+==== panics #1
+---- source
+print(1)
+print(10 / (5 - 5))
+---- output
+1
+---- panic
+division by zero
+==== panics #2
+---- source
+immut big = 9223372036854775807
+print(big + 1)
+---- panic
+integer overflow
+==== panics #3
+---- source
+immut small = -9223372036854775807 - 1
+print(-small)
+---- panic
+integer overflow
+==== panics #4
+---- source
+print(float(1e308) * float(10))
+---- panic
+float overflow
+==== panics #5
+---- source
+print(1 << 64)
+---- panic
+invalid shift amount 64
+==== panics #6
+---- source
+print(2 ** -1)
+---- panic
+negative exponent with int operands; use a decimal base
+==== panics #7
+---- source
+print((-8.0) ** 0.5)
+---- panic
+-8 ** 0.5 is not a real number (use math.pow to handle it)
+==== panics #8
+---- source
+for i in range(0, 10, 0) { print(i) }
+---- panic
+range() step cannot be 0
+==== panics #9
+---- source
+function divide(a: int, b: int): int {
+    return a / b
+}
+
+print(divide(1, 0))
+---- panic
+division by zero
+==== lists
+---- source
+mut numbers = [3, 1, 2]
+numbers.push(5)
+numbers.insert(0, 10)
+print(numbers, numbers.length(), numbers[1])
+
+immut copy = numbers
+numbers[0] = 99
+numbers.sort()
+print(numbers, copy, copy == [10, 3, 1, 2, 5], copy != numbers, 3 in copy, 7 in copy)
+
+mut grid: int[][] = [[1, 2], [3]]
+immut row = grid[1]
+grid[1].push(4)
+grid[0][1] += 18
+print(grid, row, grid[1][1])
+
+mut names = []
+names.push('Ana')
+names.push('Bia')
+names.sort()
+print(names, names.join(', '), `${names}`, 'ab' in 'cab', string(['it\'s']))
+
+immut floats: decimal[] = [1, 2.5]
+print(floats, floats + [3], [1, 2.5], numbers[1..3], numbers[..2], numbers[3..])
+
+mut empty: string[] = []
+print(empty, empty.length(), [[1], []], 'koji'.length())
+---- output
+[10, 3, 1, 2, 5] 5 3
+[1, 2, 3, 5, 99] [10, 3, 1, 2, 5] true true true false
+[[1, 20], [3, 4]] [3] 4
+['Ana', 'Bia'] Ana, Bia ['Ana', 'Bia'] true ['it\'s']
+[1, 2.5] [1, 2.5, 3] [1, 2.5] [2, 3] [1, 2] [5, 99]
+[] 0 [[1], []] 4
+==== lists_in_functions_and_loops
+---- source
+mut log: string[] = []
+
+function total(items: int[]): int {
+    mut sum = 0
+
+    for item in items {
+        sum += item
+    }
+
+    return sum
+}
+
+function doubled(items: int[]): int[] {
+    mut result: int[] = []
+
+    for item in items {
+        result.push(item * 2)
+    }
+
+    log.push('doubled')
+    return result
+}
+
+mut numbers = [1, 2, 3]
+
+for n in numbers {
+    // The loop goes through the list as it was.
+    numbers.push(n * 10)
+
+    if (n == 2) { break }
+}
+
+print(numbers, total(numbers), doubled(numbers), log)
+---- output
+[1, 2, 3, 10, 20] 36 [2, 4, 6, 20, 40] ['doubled']
+==== list_panics #1
+---- source
+immut items = [1, 2]
+print(items[2])
+---- panic
+index 2 out of range (length 2)
+==== list_panics #2
+---- source
+mut items = [1]
+items[-1] = 0
+---- panic
+index -1 out of range (length 1)
+==== list_panics #3
+---- source
+mut items = [1]
+items.insert(3, 0)
+---- panic
+index 3 out of range (length 1)
+==== list_panics #4
+---- source
+immut items = [1, 2]
+print(items[1..5])
+---- panic
+slice 1..5 out of range (length 2)
+==== methods_and_display
+---- source
+type Point = {
+x: decimal
+y: decimal
+}
+
+type Account = {
+owner: string
+history: int[]
+}
+
+function Point.origin(): Point {
+return { x: 0, y: 0 }
+}
+
+function Point.move(mut self, dx: decimal, dy: decimal) {
+self.x += dx
+self.y += dy
+}
+
+function Point.length(self): decimal {
+return (self.x ** 2 + self.y ** 2) ** 0.5
+}
+
+function Point.display(self): string {
+return `(${self.x}, ${self.y})`
+}
+
+function Account.deposit(mut self, amount: int): int {
+self.history.push(amount)
+return self.history.length()
+}
+
+function reset(mut counter: int, mut names: string[]) {
+counter = 0
+names.push('reset')
+}
+
+mut origin = Point.origin()
+immut saved = origin
+origin.move(3, 4)
+print(origin, saved, origin.length(), origin.debug(), 'it\'s'.debug(), [origin])
+print(`at ${origin}`, string(origin), origin.display())
+
+mut points = [Point.origin(), Point.origin()]
+points[1].move(1, 1)
+print(points[1], points[0])
+
+mut account: Account = { owner: 'Ana', history: [] }
+print(account.deposit(10), account.deposit(5), account)
+
+mut count = 7
+mut log = ['start']
+reset(mut count, mut log)
+print(count, log)
+---- output
+(3, 4) (0, 0) 5 { x: 3, y: 4 } 'it\'s' [{ x: 3, y: 4 }]
+at (3, 4) (3, 4) (3, 4)
+(1, 1) (0, 0)
+1 2 { owner: 'Ana', history: [10, 5] }
+0 ['start', 'reset']
+==== many_keys
+---- source
+mut squares: Map[int, int] = [:]
+mut names: Map[string, int] = [:]
+
+for i in range(2000) {
+    squares[i * 4294967296] = i * i
+    names[`n${i}`] = i
+}
+
+immut copy = squares
+
+for i in range(0, 2000, 2) {
+    squares.remove(i * 4294967296)
+    names.remove(`n${i}`)
+}
+
+mut total = 0
+
+for i in range(2000) {
+    match (squares.get(i * 4294967296)) {
+        Some(value) => total += value
+        None => {}
+    }
+}
+
+print(squares.length(), copy.length(), names.length(), total)
+print(names['n1999'], 'n1998' in names, copy[1998 * 4294967296], names.keys()[..3])
+---- output
+1000 2000 1000 1333333000
+1999 false 3992004 ['n1', 'n3', 'n5']
+==== closures
+---- source
+type Person = {
+name: string
+age: int
+}
+
+mut calls = 0
+
+function makeAdder(amount: int): (int) => int {
+return (x: int) => x + amount
+}
+
+function makeGreeter(greeting: string, names: string[]): () => string {
+immut count = names.length()
+return (): string => {
+calls += 1
+`${greeting}, ${names.join(' and ')} (${count})`
+}
+}
+
+function apply(f: (int) => int, value: int): int {
+return f(value)
+}
+
+function double(n: int): int {
+return n * 2
+}
+
+function compose(f: (int) => int, g: (int) => int): (int) => int {
+return (x: int) => g(f(x))
+}
+
+immut addFive = makeAdder(5)
+mut names = ['Ana', 'Bia']
+immut greet = makeGreeter('Hello', names)
+names.push('Caio')
+print(addFive(1), apply(addFive, 10), apply(double, 4), makeAdder(1)(1))
+print(greet(), greet(), calls, names)
+print(compose(double, addFive)(3), compose(addFive, double)(3))
+
+immut operations: ((int) => int)[] = [double, addFive, (n: int) => n * n]
+
+for operation in operations {
+print(operation(3))
+}
+
+mut people: Person[] = [{ name: 'Bia', age: 30 }, { name: 'Ana', age: 30 }, { name: 'Caio', age: 20 }]
+people.sortBy((a: Person, b: Person) => a.age < b.age)
+print(people)
+
+mut words = ['pear', 'fig', 'apple']
+words.sortBy((a: string, b: string) => a.length() < b.length())
+print(words)
+
+function check(n: int): Result[int, int] {
+if (n < 0) { return Err(n) }
+
+return Ok(n)
+}
+
+function parse(n: int): Result[int, string] {
+return check(n).mapErr((e: int) => `bad: ${e}`)
+}
+
+print(parse(12), parse(-1), double, (x: int) => x)
+
+function run() {
+mut total = 10
+immut show = (): int => total
+total = 20
+print(show(), total)
+}
+
+run()
+---- output
+6 15 8 2
+Hello, Ana and Bia (2) Hello, Ana and Bia (2) 2 ['Ana', 'Bia', 'Caio']
+11 16
+6
+8
+9
+[{ name: 'Caio', age: 20 }, { name: 'Bia', age: 30 }, { name: 'Ana', age: 30 }]
+['fig', 'pear', 'apple']
+Ok(12) Err('bad: -1') <function double> <function anonymous function>
+10 20
+==== generics
+---- source
+type Pair[A, B] = {
+first: A
+second: B
+}
+
+type Stack[T: orderable] = {
+items: T[]
+}
+
+function largest[T: orderable](items: T[]): Option[T] {
+if (items.length() == 0) { return None }
+
+mut best = items[0]
+
+for item in items[1..] {
+if (item > best) { best = item }
+}
+
+return Some(best)
+}
+
+function swap[A, B](pair: Pair[A, B]): Pair[B, A] {
+return { first: pair.second, second: pair.first }
+}
+
+function count[T: equatable](items: T[], wanted: T): int {
+mut total = 0
+
+for item in items {
+if (item == wanted) { total += 1 }
+}
+
+return total
+}
+
+function repeat[T](value: T, times: int): T[] {
+mut result: T[] = []
+
+for i in range(times) {
+result.push(value)
+}
+
+return result
+}
+
+function Pair.create(first: A, second: B): Pair[A, B] {
+return { first: first, second: second }
+}
+
+function Pair.swapped(self): Pair[B, A] {
+return swap(self)
+}
+
+function Pair.mapFirst[C](self, f: (A) => C): Pair[C, B] {
+return { first: f(self.first), second: self.second }
+}
+
+function Pair.display(self): string {
+return `<${self.first} | ${self.second}>`
+}
+
+function Stack.push(mut self, item: T) {
+self.items.push(item)
+}
+
+function Stack.peek(self): Option[T] {
+return largest(self.items)
+}
+
+immut pair: Pair[int, string] = { first: 1, second: 'one' }
+print(largest([3, 9, 2]), largest(['b', 'c', 'a']), largest([1.5]), count([1, 2, 1], 1), count(['a'], 'b'))
+print(swap(pair), pair.swapped(), Pair.create(true, 2.5), repeat('ab', 3), repeat([1], 2))
+print(pair.mapFirst((n: int) => n * 10), pair.mapFirst((n: int): string => `#${n}`))
+print(`${pair}`, swap(swap(pair)))
+
+mut stack: Stack[string] = { items: [] }
+stack.push('x')
+stack.push('z')
+print(stack, stack.peek())
+---- output
+Some(9) Some('c') Some(1.5) 2 0
+<one | 1> <one | 1> <true | 2.5> ['ab', 'ab', 'ab'] [[1], [1]]
+<10 | one> <#1 | one>
+<1 | one> <1 | one>
+{ items: ['x', 'z'] } Some('z')
+==== drops
+---- source
+type Conn = {
+name: string
+}
+
+function Conn.drop(mut self) {
+print(`close ${self.name}`)
+}
+
+function Conn.open(name: string): Conn {
+print(`open ${name}`)
+return { name: name }
+}
+
+function Conn.label(self): string {
+return self.name
+}
+
+type Pool = {
+main: Conn
+size: int
+}
+
+function use(take c: Conn) {
+print('using', c.name)
+}
+
+function peek(c: Conn): string {
+return c.name
+}
+
+function make(name: string): Conn {
+immut c = Conn.open(name)
+return c
+}
+
+function early(stop: boolean) {
+immut a = Conn.open('early-a')
+
+if (stop) {
+immut b = Conn.open('early-b')
+return
+}
+
+print('not stopped')
+}
+
+immut first = Conn.open('first')
+
+if (true) {
+immut inner = Conn.open('inner')
+immut second = Conn.open('second')
+print('in block')
+}
+
+mut replaced = Conn.open('old')
+replaced = Conn.open('new')
+print(peek(Conn.open('temp')), Conn.open('temp2').label())
+
+immut moved = Conn.open('moved')
+use(moved)
+immut kept = make('made')
+early(true)
+early(false)
+
+for i in range(3) {
+immut loop = Conn.open(`loop ${i}`)
+
+if (i == 1) { break }
+}
+
+immut pool: Pool = { main: Conn.open('pooled'), size: 1 }
+print('end')
+---- output
+open first
+open inner
+open second
+in block
+close second
+close inner
+open old
+open new
+close old
+open temp
+close temp
+open temp2
+close temp2
+temp temp2
+open moved
+using moved
+close moved
+open made
+open early-a
+open early-b
+close early-b
+close early-a
+open early-a
+not stopped
+close early-a
+open loop 0
+close loop 0
+open loop 1
+close loop 1
+open pooled
+end
+close pooled
+close made
+close new
+close first
+==== drops_nested
+---- source
+type Conn = {
+name: string
+}
+
+function Conn.drop(mut self) {
+print(`close ${self.name}`)
+}
+
+type Session = {
+Active(conn: Conn, user: string)
+Closed
+}
+
+function Session.drop(mut self) {
+print('session ends')
+}
+
+type Wrapper = {
+inner: Conn
+}
+
+function Wrapper.drop(mut self) {
+self.inner.name = `${self.inner.name} (renamed)`
+print('wrapper ends')
+}
+
+function Conn.finish(take self): string {
+return `finished ${self.name}`
+}
+
+function run() {
+immut session: Session = Active({ name: 'db' }, 'ana')
+immut idle: Session = Closed
+mut pool: Conn[] = [{ name: 'a' }]
+pool.push({ name: 'b' })
+immut wrapper: Wrapper = { inner: { name: 'w' } }
+immut solo: Conn = { name: 'solo' }
+print(solo.finish())
+print('run ends')
+}
+
+run()
+print('after run')
+---- output
+close solo
+finished solo
+run ends
+wrapper ends
+close w (renamed)
+close a
+close b
+session ends
+session ends
+close db
+after run
+==== standard_library
+---- source
+import math
+import path
+import system
+import { sqrt } from 'math'
+
+print(math.sqrt(16), math.sqrt(-1), sqrt(2.25), math.pow(2, 10), math.pow(-8, 0.5), math.pow(0, -1))
+print(math.abs(-3), math.abs(-2.5), math.floor(2.7), math.ceil(2.1), math.round(2.5), math.pi, math.e)
+print(int('42'), int(' 7 '), int('x'), int('99999999999999999999'), float('2.5'), float('nan'), int(3.9), int(true), float(false))
+
+match (int('abc')) {
+Ok(n) => print(n)
+Err(error) => print('error:', error, error.debug())
+}
+
+immut text = '  Hello, Koji World  '
+print(`[${text.trim()}]`, text.upper(), text.lower(), 'Hello World'.isTitle(), '123'.isNumeric(), ''.isSpace())
+print('a,b,,c'.split(','), 'banana'.replace('an', 'AN'), 'koji'.startsWith('ko'), 'koji'.endsWith('x'), 'olá mundo'.indexOf('mundo'), 'x'.indexOf('y'))
+print(path.join('src', 'main.kj'), path.parent('src/main.kj'), path.parent('main.kj'), path.name('a/b.kj'), path.stem('a/b.kj'), path.extension('Makefile'), path.isAbsolute('/tmp'))
+print(system.args(), system.env('KOJI_TEST_VARIABLE'), system.env('HOME') is Some)
+
+match (system.capture('echo', ['hi', 'there'])) {
+Ok(output) => print(output.status, output.stdout.trim(), output.stderr)
+Err(error) => print(error)
+}
+
+immut answer = input('name? ')
+print(answer, input())
+print('bye')
+---- output
+Ok(4) Err(Complex) Ok(1.5) Ok(1024) Err(Complex) Err(Infinite)
+3 2.5 2 3 3 3.141592653589793238462643383279503 2.718281828459045235360287471352662
+Ok(42) Ok(7) Err(InvalidNumber('x')) Err(OutOfRange('99999999999999999999')) Ok(0x1.4p1) Err(InvalidNumber('nan')) 3 1 0x0p0
+error: 'abc' is not a valid number InvalidNumber('abc')
+[Hello, Koji World]   HELLO, KOJI WORLD     hello, koji world   true true false
+['a', 'b', '', 'c'] bANANa true false Some(4) None
+src/main.kj Some('src') Some('.') Some('b.kj') Some('b') None true
+[] None true
+0 hi there 
+name? None None
+bye
+==== dates
+---- source
+import datetime
+import { DateTime } from 'datetime'
+
+immut now: DateTime = datetime.now()
+print(now.year >= 2026, now.month >= 1, datetime.today().length())
+print(datetime.format(0, 'yyyy-mm-dd hh:min:ss'), datetime.format(63867219200.7, 'dd/mm/yyyy'))
+print(datetime.parse('2024-02-29 12:30:00', 'yyyy-mm-dd hh:min:ss'), datetime.parse('2023-02-29', 'yyyy-mm-dd'), datetime.parse('2024/01/01', 'yyyy-mm-dd'))
+
+match (datetime.parse('31/12/1999', 'dd/mm/yyyy')) {
+Ok(timestamp) => print(datetime.format(timestamp, 'yyyy-mm-dd'))
+Err(error) => print(error)
+}
+
+match (datetime.parse('x', 'yyyy')) {
+Ok(timestamp) => print(timestamp)
+Err(error) => print('error:', error)
+}
+
+print(string(now).length())
+---- output
+true true 10
+0000-01-01 00:00:00 14/11/2023
+Ok(63876429000) Err(InvalidDate('2023-02-29')) Err(PatternMismatch('2024/01/01', 'yyyy-mm-dd'))
+1999-12-31
+error: 'x' does not match the pattern 'yyyy'
+19
+==== regular_expressions
+---- source
+import regex
+
+match (regex.compile('[0-9]+')) {
+Ok(numbers) => {
+immut text = 'olá 12, mundo 345 e 6'
+print(numbers, numbers.test(text), numbers.test('abc'))
+print(numbers.find(text), numbers.find('none'))
+print(numbers.findAll(text))
+
+for found in numbers.findAll(text) {
+print(found.value, found.start, found.end)
+}
+
+print(numbers.replace(text, '#'), numbers.replaceAll(text, '#'), numbers.split('a1b22c'))
+}
+Err(error) => print(error)
+}
+
+print(regex.compile('('), regex.compile('a').debug())
+
+match (regex.compile('[')) {
+Ok(r) => print(r)
+Err(error) => print('error:', error)
+}
+---- output
+<regex '[0-9]+'> true false
+Some({ value: '12', start: 4, end: 6 }) None
+[{ value: '12', start: 4, end: 6 }, { value: '345', start: 14, end: 17 }, { value: '6', start: 20, end: 21 }]
+12 4 6
+345 14 17
+6 20 21
+olá #, mundo 345 e 6 olá #, mundo # e # ['a', 'b', 'c']
+Err(InvalidPattern('(', 'unclosed group')) Ok(<regex 'a'>)
+error: invalid regular expression '[': unclosed character class
+==== json_values
+---- source
+import json
+import { Json } from 'json'
+
+immut text = '{"name": "Koji", "version": 1, "ratio": 2.50, "tags": ["fast", "safe"], "nested": {"ok": true, "none": null}, "name": "Koji 2", "big": 1e300, "escaped": "a\\"b\\nc\\u00e9"}'
+
+match (json.parse(text)) {
+Ok(value) => {
+print(value)
+print(json.stringify(value))
+print(json.get(value, 'name'), json.get(value, 'missing'))
+
+match (json.get(value, 'version')) {
+Some(version) => print(json.asInt(version), json.asDecimal(version), json.asString(version))
+None => print('no version')
+}
+
+match (json.get(value, 'tags')) {
+Some(Array(items)) => {
+for item in items {
+print(json.asString(item))
+}
+}
+_ => print('no tags')
+}
+}
+Err(error) => print(error)
+}
+
+immut built: Json = Object(['list': Array([Int(1), Decimal(2.0), Bool(false), Null]), 'text': String('x')])
+print(json.stringify(built))
+print(json.parse('[1, 2,'), json.parse('99999999999999999999'))
+
+match (json.parse('{"a": }')) {
+Ok(value) => print(value)
+Err(error) => print('error:', error)
+}
+---- output
+Object(['name': String('Koji 2'), 'version': Int(1), 'ratio': Decimal(2.5), 'tags': Array([String('fast'), String('safe')]), 'nested': Object(['ok': Bool(true), 'none': Null]), 'big': Decimal(1e300), 'escaped': String('a"b\ncé')])
+{"name":"Koji 2","version":1,"ratio":2.5,"tags":["fast","safe"],"nested":{"ok":true,"none":null},"big":1e300,"escaped":"a\"b\ncé"}
+Some(String('Koji 2')) None
+Some(1) Some(1) None
+Some('fast')
+Some('safe')
+{"list":[1,2.0,false,null],"text":"x"}
+Err(Syntax('unexpected end of input', 1, 7)) Err(NumberOutOfRange('99999999999999999999', 1, 1))
+error: invalid JSON at line 1, column 7: unexpected character '}'
+==== http_errors
+---- source
+import http
+
+print(http.get('not a url'))
+
+match (http.get('http://127.0.0.1:1/')) {
+Ok(response) => print(response.status)
+Err(ConnectionFailed(url, _)) => print('cannot connect to', url)
+Err(error) => print(error)
+}
+---- output
+Err(InvalidUrl('not a url'))
+cannot connect to http://127.0.0.1:1/
+==== generic_functions_as_values
+---- source
+function first[T](items: T[]): Option[T] {
+return if (items.length() > 0) { Some(items[0]) } else { None }
+}
+
+function apply(g: (string[]) => Option[string]): Option[string] {
+return g(['x'])
+}
+
+function biggest[T: orderable](a: T, b: T): T {
+return if (a > b) { a } else { b }
+}
+
+immut f: (int[]) => Option[int] = first
+immut pick: (string, string) => string = biggest
+immut many: ((int[]) => Option[int])[] = [first, first]
+print(f([1, 2]), f([]), apply(first), pick('a', 'b'), many[1]([7]), f)
+---- output
+Some(1) None Some('x') b Some(7) <function first>
+==== tasks_take_turns_in_groups
+---- source
+import task
+import time
+
+immut start = time.monotonic()
+immut results = task.group((tasks) => {
+    immut slow = tasks.spawn(() => {
+        time.sleep(0.4)
+        return 'slow'
+    })
+    immut fast = tasks.spawn(() => {
+        time.sleep(0.2)
+        print('fast first')
+        return 'fast'
+    })
+    return [slow.wait(), fast.wait()]
+})
+print(results)
+print(time.monotonic() - start < 0.55)
+print(task.all([() => 1, () => 2, () => 3]))
+
+// Tasks without a result, which start more tasks of the group.
+immut nothing = task.group((tasks) => {
+    tasks.spawn(() => {
+        tasks.spawn(() => print('inner'))
+        print('outer')
+    })
+    return 'done'
+})
+print(nothing)
+
+// Many tasks, each on a stack of its own, deep enough to need it.
+function depth(n: int): int {
+    if (n == 0) { return 0 }
+    return depth(n - 1) + 1
+}
+immut sum = task.group((tasks) => {
+    mut started: task.Task[int][] = []
+    for i in range(2000) {
+        started.push(tasks.spawn(() => depth(500) + i))
+    }
+    mut total = 0
+    for each in started {
+        total += each.wait()
+    }
+    return total
+})
+print(sum)
+---- output
+fast first
+['slow', 'fast']
+true
+[1, 2, 3]
+outer
+inner
+done
+2999000
+---- without valgrind
+==== tasks_share_through_channels_and_shared_values
+---- source
+import task
+import time
+
+immut counter = task.shared(0)
+task.group((tasks) => {
+    for i in range(100) {
+        tasks.spawn(() => {
+            time.sleep(0.001)
+            counter.update((n) => n + 1)
+        })
+    }
+})
+print(counter.get())
+
+immut names = task.shared(['a'])
+names.set(names.get() + ['b'])
+print(names.get())
+
+immut jobs: task.Channel[int] = task.channel(3)
+immut total = task.group((tasks) => {
+    tasks.spawn(() => {
+        for i in range(100) {
+            jobs.send(i)
+        }
+        jobs.close()
+    })
+    immut summer = tasks.spawn(() => {
+        mut sum = 0
+        while (true) {
+            match (jobs.receive()) {
+                Some(n) => sum += n
+                None => break
+            }
+        }
+        return sum
+    })
+    return summer.wait()
+})
+print(total)
+
+// With no capacity, a send waits for its value to be received.
+immut meeting: task.Channel[string] = task.channel(0)
+task.group((tasks) => {
+    tasks.spawn(() => {
+        meeting.send('hello')
+        print('received')
+    })
+    tasks.spawn(() => {
+        print('receiving')
+        print(meeting.receive())
+    })
+})
+---- output
+100
+['a', 'b']
+4950
+receiving
+Some('hello')
+received
+==== tasks_that_wait_for_each_other_are_a_deadlock #1
+---- source
+import task
+immut empty: task.Channel[int] = task.channel(1)
+task.group((tasks) => {
+    tasks.spawn(() => empty.receive())
+})
+---- panic
+none can go on: a deadlock
+==== tasks_that_wait_for_each_other_are_a_deadlock #2
+---- source
+import task
+immut n = task.shared(1)
+n.update((value) => {
+    n.set(2)
+    return value
+})
+---- panic
+'set' of a shared value inside the function of its own 'update'
+==== anonymous_functions_take_the_expected_parameter_types
+---- source
+immut half: (int) => int = (x) => x / 2
+function twice(f: (int) => int, x: int): int {
+    return f(f(x))
+}
+print(half(9))
+print(twice((x) => x + 1, 5))
+---- output
+4
+7
+==== tasks_that_compute_let_the_others_run
+---- source
+import task
+import time
+
+function fib(n: int): int {
+    if (n < 2) { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+// Two tasks that compute for half a second without waiting (time.monotonic does not wait), and one
+// that sleeps: it wakes on time all the same.
+immut start = time.monotonic()
+immut late = task.group((tasks) => {
+    tasks.spawn(() => {
+        mut total = 0
+        while (time.monotonic() - start < 0.5) {
+            total += 1
+        }
+        return total
+    })
+    tasks.spawn(() => {
+        mut total = 0
+        while (time.monotonic() - start < 0.5) {
+            total += fib(15)
+        }
+        return total
+    })
+    immut sleeper = tasks.spawn(() => {
+        mut worst: decimal = 0
+        for i in range(5) {
+            immut before = time.monotonic()
+            time.sleep(0.02)
+            immut delay = time.monotonic() - before - 0.02
+            if (delay > worst) { worst = delay }
+        }
+        return worst
+    })
+    return sleeper.wait()
+})
+print(late < 0.1)
+---- output
+true
+---- without valgrind
+==== calls_that_block_let_the_other_tasks_run
+---- source
+import file
+import system
+import task
+import time
+
+immut start = time.monotonic()
+immut ticks = task.shared(0)
+immut results = task.group((tasks) => {
+    tasks.spawn(() => {
+        for i in range(20) {
+            time.sleep(0.01)
+            ticks.update((n) => n + 1)
+        }
+    })
+    immut sleeper = tasks.spawn(() => match (system.capture('sleep', ['0.3'])) {
+        Ok(output) => output.status
+        Err(_) => -1
+    })
+    immut echo = tasks.spawn(() => match (system.run('sh', ['-c', 'sleep 0.2'])) {
+        Ok(status) => status
+        Err(_) => -1
+    })
+    immut listed = tasks.spawn(() => match (file.list('.')) {
+        Ok(names) => names.length() > 0
+        Err(_) => false
+    })
+    return `${sleeper.wait()} ${echo.wait()} ${listed.wait()} ${ticks.get() >= 10}`
+})
+print(results)
+print(time.monotonic() - start < 0.6)
+---- output
+0 0 true true
+true
+---- without valgrind
+==== digests_of_texts
+---- source
+import hash
+print(hash.sha256('abc'))
+print(hash.sha256(''))
+print(hash.sha512('abc').length())
+---- output
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+128
+==== the_arguments_of_a_command_line
+---- source
+import cli
+
+immut command = cli.command('greet', 'Greets someone.')
+    .flag('-l, --loud', 'Shout the greeting')
+    .number('-t, --times <n>', 'How many times', 1)
+    .option('-g, --greeting <text>', 'The greeting', 'hello')
+    .argument('<name>', 'Who to greet')
+    .argument('[others...]', 'More people')
+    .version('1.0.0')
+
+function show(args: string[]) {
+    match (cli.parseArgs(command, args)) {
+        Ok(parsed) => print(`${parsed.value('greeting')} ${parsed.value('name')} x${parsed.number('times')} loud=${parsed.flag('loud')} ${parsed.list('others')}`)
+        Err(Invalid(message)) => print(message.split('\n')[0])
+        Err(other) => print(other.display().split('\n')[0])
+    }
+}
+
+show(['ana'])
+show(['-lt2', 'ana', 'bia', 'caio'])
+show(['--times=3', '--greeting', 'oi', 'ana'])
+show(['--', '-ana'])
+show(['--lod', 'ana'])
+show([])
+show(['-t', 'x', 'ana'])
+show(['ana', '--times'])
+show(['--version'])
+show(['--help'])
+
+immut todo = cli.command('todo', 'A list.')
+    .subcommand(cli.command('add', 'Adds an item.').option('-p, --priority <level>', 'Its priority', 'normal').argument('<text...>', 'What to do'))
+    .subcommand(cli.command('list', 'Shows the items.').flag('-a, --all', 'Also those done'))
+
+match (cli.parseArgs(todo, ['add', 'buy', 'milk', '-p', 'high'])) {
+    Ok(parsed) => print(`${parsed.command()}: ${parsed.list('text')} ${parsed.value('priority')}`)
+    Err(error) => print(error)
+}
+
+match (cli.parseArgs(todo, ['lst'])) {
+    Ok(_) => print('?')
+    Err(error) => print(error.display().split('\n')[0])
+}
+---- output
+hello ana x1 loud=false []
+hello ana x2 loud=true ['bia', 'caio']
+oi ana x3 loud=false []
+hello -ana x1 loud=false []
+greet: unknown option '--lod' (did you mean '--loud'?)
+greet: missing <name>
+greet: '--times' needs an integer, found 'x'
+greet: '--times' needs a value (<n>)
+greet 1.0.0
+Greets someone.
+add: ['buy', 'milk'] high
+todo: unknown command 'lst' (did you mean 'list'?)
+==== mut_parts_change_in_place
+---- source
+type Box = {
+    code: int[]
+    n: int
+}
+
+function put(mut out: int[], v: int) {
+    out.push(v)
+}
+
+function Box.add(mut self, v: int) {
+    put(mut self.code, v)
+    self.n += 1
+}
+
+mut box: Box = { code: [], n: 0 }
+for i in range(200000) {
+    box.add(i)
+}
+print(box.n, box.code.length(), box.code[199999])
+
+function inside() {
+    mut local: Box = { code: [], n: 0 }
+    for i in range(200000) {
+        local.add(i)
+    }
+    print(local.code.length())
+}
+inside()
+
+// Functions that read the global they are given.
+mut seen: int[] = [1, 2]
+
+function peek(mut items: int[]) {
+    items.push(seen.length())
+}
+
+function peekLater(mut items: int[]) {
+    items.push(count())
+}
+
+function count(): int {
+    return seen.length()
+}
+
+peek(mut seen)
+peekLater(mut seen)
+print(seen)
+
+immut lengths = [() => seen.length()]
+function viaClosure(mut items: int[]) {
+    items.push(lengths[0]())
+}
+viaClosure(mut seen)
+print(seen)
+---- output
+200000 200000 199999
+200000
+[1, 2, 2, 3]
+[1, 2, 2, 3, 4]
+==== items_set_and_pushed_in_place
+---- source
+type Box = {
+    items: int[]
+}
+
+function mark(mut held: boolean[], which: int[]) {
+    for local in which {
+        held[local] = true
+    }
+
+    for local in which {
+        held[local + 1] = false
+    }
+}
+
+mut held = [false, false, false, false, false, false]
+immut other = held
+mark(mut held, [1, 3])
+print(held)
+print(other)
+mut box: Box = { items: [] }
+
+for i in range(10) {
+    box.items.push(i * i)
+}
+
+immut kept = box.items
+box.items[2] = -1
+box.items.push(100)
+print(box.items)
+print(kept)
+mut chars: char[] = []
+
+for c in 'héllo'.chars() {
+    chars.push(c)
+}
+
+chars[0] = 'H'
+print(chars)
+mut flags: boolean[] = []
+flags.push(true)
+immut copy = flags
+flags.push(false)
+flags[0] = false
+print(flags)
+print(copy)
+---- output
+[false, true, false, true, false, false]
+[false, false, false, false, false, false]
+[0, 1, -1, 9, 16, 25, 36, 49, 64, 81, 100]
+[0, 1, 4, 9, 16, 25, 36, 49, 64, 81]
+['H', 'é', 'l', 'l', 'o']
+[false, false]
+[true]
+==== divisions_by_constants
+---- source
+immut values = [0, 1, -1, 7, -7, 99, -99, 1000001, -1000001, 9223372036854775807, -9223372036854775807 - 1, 123456789012345, -98765432109876]
+for v in values {
+    immut a = v / 10
+    immut b = v % 10
+    immut c = v / 100
+    immut d = v % 100
+    immut e = v / 16
+    immut f = v % 16
+    immut g = v / 7
+    immut h = v % 7
+    immut k = v / 1000000000
+    immut m = v % 2
+    print(`${v}: ${a} ${b} ${c} ${d} ${e} ${f} ${g} ${h} ${k} ${m}`)
+}
+---- output
+0: 0 0 0 0 0 0 0 0 0 0
+1: 0 1 0 1 0 1 0 1 0 1
+-1: 0 -1 0 -1 0 -1 0 -1 0 -1
+7: 0 7 0 7 0 7 1 0 0 1
+-7: 0 -7 0 -7 0 -7 -1 0 0 -1
+99: 9 9 0 99 6 3 14 1 0 1
+-99: -9 -9 0 -99 -6 -3 -14 -1 0 -1
+1000001: 100000 1 10000 1 62500 1 142857 2 0 1
+-1000001: -100000 -1 -10000 -1 -62500 -1 -142857 -2 0 -1
+9223372036854775807: 922337203685477580 7 92233720368547758 7 576460752303423487 15 1317624576693539401 0 9223372036 1
+-9223372036854775808: -922337203685477580 -8 -92233720368547758 -8 -576460752303423488 0 -1317624576693539401 -1 -9223372036 0
+123456789012345: 12345678901234 5 1234567890123 45 7716049313271 9 17636684144620 5 123456 1
+-98765432109876: -9876543210987 -6 -987654321098 -76 -6172839506867 -4 -14109347444268 0 -98765 0

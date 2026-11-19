@@ -1,4 +1,4 @@
-// The tables of powers of 5 of Ryu (std/koji/decimal.kj): written by bootstrap/tables/ryu.kj (do
+// The tables of powers of 5 of Ryu (std/koji/decimal.kj): written by bootstrap/generate/ryu.kj (do
 // not edit). Records of 32 hexadecimal digits, the high 64 bits of a number of 128 bits first.
 
 // 5^i in its first 125 bits, for i below 326.

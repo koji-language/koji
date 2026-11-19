@@ -1,0 +1,35 @@
+// A client of test/programs/server.kj, for test/compiler.kj: ten slow requests at once take the time
+// of one, and a handler that computes for long does not hold the others up.
+
+import http
+import system
+import task
+import time
+
+immut port = system.args()[0]
+mut slow: (() => string)[] = []
+
+for _ in range(10) {
+    slow.push(() => match (http.get(`http://127.0.0.1:${port}/slow`)) {
+        Ok(response) => response.body
+        Err(error) => `${error}`
+    })
+}
+
+immut start = time.monotonic()
+immut bodies = task.all(slow)
+print(bodies.length(), bodies[0], bodies[9], time.monotonic() - start < 1.5)
+
+task.group((others) => {
+    others.spawn(() => http.get(`http://127.0.0.1:${port}/cpu`))
+    time.sleep(0.1)
+    immut before = time.monotonic()
+
+    match (http.get(`http://127.0.0.1:${port}/quick`)) {
+        Ok(response) => print(response.body, time.monotonic() - before < 0.5)
+        Err(error) => print(error)
+    }
+
+    // The server ends, and the request of /cpu with it.
+    http.get(`http://127.0.0.1:${port}/quit`)
+})

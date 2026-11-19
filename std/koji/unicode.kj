@@ -1,5 +1,5 @@
 // The tables of Unicode 17.0.0 of the library written in Koji, as Rust had them: written by
-// bootstrap/tables/unicode.kj (do not edit). Texts of hexadecimal digits in records of a fixed
+// bootstrap/generate/unicode.kj (do not edit). Texts of hexadecimal digits in records of a fixed
 // width (see std/koji/text.kj).
 
 // Alphabetic.

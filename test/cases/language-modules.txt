@@ -1,0 +1,538 @@
+// Programs run by `kojic run` with other files (test/cases.kj): as test/cases/language.txt, and
+// `---- main <name>` names the program's file, `---- file <path>` writes another file next to it,
+// and `---- error containing` gives a part of the error that must end the program.
+
+==== panics_name_modules_as_imports_write_them
+---- main main.kj
+---- source
+import { half } from 'lib/numbers.kj'
+print(half(4))
+---- file lib/numbers.kj
+export function half(n: int): int {
+    return n / 0
+}
+---- error
+panic: lib/numbers.kj:2: division by zero
+==== opaque_types
+---- main main.kj
+---- source
+import { Counter, Shape, counter, circle } from 'counter.kj'
+
+mut c = counter('clicks')
+c.add()
+c.add()
+immut list: Counter[] = [c, counter('other')]
+print(c, c.total(), list, Some(c).debug(), `${c}`)
+immut s = circle(2)
+print(s.area(), [s], s)
+---- file counter.kj
+export opaque type Counter = {
+    name: string
+    count: int
+}
+
+export opaque type Shape = {
+    Circle(radius: int)
+    Square(side: int)
+}
+
+export function counter(name: string): Counter {
+    return { name: name, count: 0 }
+}
+
+function Counter.display(self): string {
+    return `<counter ${self.name}=${self.count}>`
+}
+
+function Counter.add(mut self) {
+    self.count += 1
+}
+
+function Counter.total(self): int {
+    return self.count
+}
+
+export function circle(radius: int): Shape {
+    return Circle(radius)
+}
+
+function Shape.area(self): int {
+    return match (self) {
+        Circle(radius) => 3 * radius * radius
+        Square(side) => side * side
+    }
+}
+---- output
+<counter clicks=2> 2 [<counter clicks=2>, <counter other=0>] Some(<counter clicks=2>) <counter clicks=2>
+12 [<Shape>] <Shape>
+==== opaque types hide their fields
+---- main main.kj
+---- source
+import { Counter, Shape, counter, circle } from 'counter.kj'
+mut c = counter('a')
+immut s = circle(1)
+print(c.count)
+---- file counter.kj
+export opaque type Counter = {
+    name: string
+    count: int
+}
+
+export opaque type Shape = {
+    Circle(radius: int)
+    Square(side: int)
+}
+
+export function counter(name: string): Counter {
+    return { name: name, count: 0 }
+}
+
+export function circle(radius: int): Shape {
+    return Circle(radius)
+}
+---- error containing
+Counter is opaque: its fields are not visible outside its module
+==== opaque types cannot be changed outside
+---- main main.kj
+---- source
+import { Counter, Shape, counter, circle } from 'counter.kj'
+mut c = counter('a')
+immut s = circle(1)
+c.count = 3
+---- file counter.kj
+export opaque type Counter = {
+    name: string
+    count: int
+}
+
+export opaque type Shape = {
+    Circle(radius: int)
+    Square(side: int)
+}
+
+export function counter(name: string): Counter {
+    return { name: name, count: 0 }
+}
+
+export function circle(radius: int): Shape {
+    return Circle(radius)
+}
+---- error containing
+Counter is opaque: its fields are not visible outside its module
+==== opaque types have no literals outside
+---- main main.kj
+---- source
+import { Counter, Shape, counter, circle } from 'counter.kj'
+mut c = counter('a')
+immut s = circle(1)
+immut d: Counter = { name: 'x', count: 1 }
+---- file counter.kj
+export opaque type Counter = {
+    name: string
+    count: int
+}
+
+export opaque type Shape = {
+    Circle(radius: int)
+    Square(side: int)
+}
+
+export function counter(name: string): Counter {
+    return { name: name, count: 0 }
+}
+
+export function circle(radius: int): Shape {
+    return Circle(radius)
+}
+---- error containing
+Counter is opaque: it is built by the functions of its module, not with a literal
+==== opaque types hide their variants
+---- main main.kj
+---- source
+import { Counter, Shape, counter, circle } from 'counter.kj'
+mut c = counter('a')
+immut s = circle(1)
+immut q = Circle(1)
+---- file counter.kj
+export opaque type Counter = {
+    name: string
+    count: int
+}
+
+export opaque type Shape = {
+    Circle(radius: int)
+    Square(side: int)
+}
+
+export function counter(name: string): Counter {
+    return { name: name, count: 0 }
+}
+
+export function circle(radius: int): Shape {
+    return Circle(radius)
+}
+---- error containing
+undefined variable 'Circle'
+==== opaque types cannot be matched outside
+---- main main.kj
+---- source
+import { Counter, Shape, counter, circle } from 'counter.kj'
+mut c = counter('a')
+immut s = circle(1)
+match (s) {
+    Circle(r) => print(r)
+    _ => {}
+}
+---- file counter.kj
+export opaque type Counter = {
+    name: string
+    count: int
+}
+
+export opaque type Shape = {
+    Circle(radius: int)
+    Square(side: int)
+}
+
+export function counter(name: string): Counter {
+    return { name: name, count: 0 }
+}
+
+export function circle(radius: int): Shape {
+    return Circle(radius)
+}
+---- error containing
+Shape is opaque: its variants are not visible outside its module
+==== modules_and_imports
+---- main main.kj
+---- source
+// file: main.kj
+
+import math from 'math.kj'
+import { add, subtract, Shape, count, increment } from 'math.kj'
+
+immut result: int = math.add(5, 10)
+
+print(result) // 15
+print(add(5, 10), subtract(5, 10))
+
+immut s: Shape = Circle(1.0)
+immut t: math.Shape = math.Square(2.0)
+
+print(s, t)
+
+increment()
+
+math.increment()
+
+print(count, math.count) // always the current value
+---- file math.kj
+// file: math.kj
+
+export function add(a: int, b: int): int {
+    return a + b
+}
+
+export function subtract(a: int, b: int): int {
+    return a - b
+}
+
+function clamp(x: int): int {
+    return x
+}
+
+export type Shape = {
+    Circle(radius: decimal)
+    Square(side: decimal)
+}
+
+export mut count = 0
+
+export immut origin = [0, 0]
+
+export function increment() {
+    count += 1
+}
+---- output
+15
+15 -5
+Circle(1) Square(2)
+2 2
+==== a module has only its members
+---- main main.kj
+---- source
+import { nope } from 'math.kj'
+---- file math.kj
+export function add(a: int, b: int): int {
+    return a + b
+}
+
+function clamp(x: int): int {
+    return x
+}
+
+export mut count = 0
+
+export immut origin = [0, 0]
+---- error containing
+has no member 'nope'
+==== what a module does not export cannot be imported
+---- main main.kj
+---- source
+import { clamp } from 'math.kj'
+---- file math.kj
+export function add(a: int, b: int): int {
+    return a + b
+}
+
+function clamp(x: int): int {
+    return x
+}
+
+export mut count = 0
+
+export immut origin = [0, 0]
+---- error containing
+'clamp' is not exported by 'math.kj'
+==== what a module does not export cannot be used
+---- main main.kj
+---- source
+import math from 'math.kj'
+print(math.clamp(1))
+---- file math.kj
+export function add(a: int, b: int): int {
+    return a + b
+}
+
+function clamp(x: int): int {
+    return x
+}
+
+export mut count = 0
+
+export immut origin = [0, 0]
+---- error containing
+'clamp' is not exported by 'math.kj'
+==== the variables of a module are read-only outside
+---- main main.kj
+---- source
+import { count } from 'math.kj'
+count = 5
+---- file math.kj
+export mut count = 0
+
+export immut origin = [0, 0]
+---- error containing
+'count' is read-only outside 'math.kj'
+==== the variables of a module are read-only through its name
+---- main main.kj
+---- source
+import math from 'math.kj'
+math.count = 5
+---- file math.kj
+export mut count = 0
+
+export immut origin = [0, 0]
+---- error containing
+'count' is read-only outside 'math.kj'
+==== the items of a variable of a module are read-only outside
+---- main main.kj
+---- source
+import { origin } from 'math.kj'
+origin[0] = 1
+---- file math.kj
+export mut count = 0
+
+export immut origin = [0, 0]
+---- error containing
+'origin' is read-only outside 'math.kj'
+==== the variables of a module are read-only for operators
+---- main main.kj
+---- source
+import { count } from 'math.kj'
+count += 1
+---- file math.kj
+export mut count = 0
+
+export immut origin = [0, 0]
+---- error containing
+'count' is read-only outside 'math.kj'
+==== the items of a variable of a module are read-only through its name
+---- main main.kj
+---- source
+import math from 'math.kj'
+math.origin[0] = 1
+---- file math.kj
+export mut count = 0
+
+export immut origin = [0, 0]
+---- error containing
+'origin' is read-only outside 'math.kj'
+==== stdlib_file
+---- source
+import file
+
+match (file.open('notes.txt', file.Write)) {
+    Ok(f) => {
+        print(f.write('Hello world!'))
+        f.close()
+    }
+    Err(error) => print(error)
+}
+
+match (file.open('notes.txt', file.Read)) {
+    Ok(f) => {
+        match (f.read()) {
+            Ok(content) => print(content)
+            Err(error) => print(error)
+        }
+        f.close()
+    }
+    Err(error) => print(error)
+}
+
+match (file.open('/nonexistent/notes.txt', file.Read)) {
+    Ok(_) => print('opened?')
+    Err(NotFound(missing)) => print(`not found: ${missing}`)
+    Err(error) => print(error)
+}
+
+import { Mode } from 'file'
+
+match (file.open('notes.txt', Append)) {
+    Ok(f) => f.write(' Bye!')
+    Err(error) => Err(error)
+}
+
+match (file.open('notes.txt', Read)) {
+    Ok(f) => print(f.read())
+    Err(error) => print(error)
+}
+---- output
+Ok(void)
+Hello world!
+not found: /nonexistent/notes.txt
+Ok('Hello world! Bye!')
+==== a mode of a file is a Mode
+---- source
+import file
+immut f = file.open('x', 'r')
+---- error containing
+must be Mode, found string
+==== methods_of_imported_types
+---- main main.kj
+---- source
+import geo from 'geo.kj'
+import { Point, make, double } from 'geo.kj'
+
+print(geo.Point.origin().sum(), Point.origin().sum(), make(2, 3).sum())
+
+mut n = 3
+
+geo.double(mut n)
+
+double(mut n)
+
+print(n)
+---- file geo.kj
+export type Point = {
+    x: int
+    y: int
+}
+
+function Point.origin(): Point {
+    return { x: 0, y: 0 }
+}
+
+function Point.sum(self): int {
+    return self.x + self.y
+}
+
+export function make(x: int, y: int): Point {
+    return { x: x, y: y }
+}
+
+export function double(mut n: int) {
+    n = n * 2
+}
+---- output
+0 0 5
+12
+==== files_are_closed_by_their_owner
+---- main main.kj
+---- source
+import file
+
+function save(path: string): Result[int, file.FileError] {
+    mut f = file.open(path, file.Write)?
+
+    f.write('one ')?
+
+    immut g = f
+
+    g.write('two')?
+
+    return Ok(2)
+}
+
+function load(path: string): Result[string, file.FileError] {
+    immut f = file.open(path, file.Read)?
+
+    return f.read()
+}
+
+print(save('notes.txt'))
+print(load('notes.txt'))
+
+immut h = file.open('notes.txt', file.Read)?
+
+h.close()
+---- output
+Ok(2)
+Ok('one two')
+==== generics_across_modules
+---- main main.kj
+---- source
+import box from 'box.kj'
+import { Box, wrap } from 'box.kj'
+
+immut b = wrap(5)
+immut c: Box[string] = { value: 'x' }
+immut d: box.Box[int] = box.wrap(2)
+
+print(b.get(), c.get(), box.wrap(true).get(), d.value)
+---- file box.kj
+export type Box[T] = {
+    value: T
+}
+
+function Box.get(self): T {
+    return self.value
+}
+
+export function wrap[T](value: T): Box[T] {
+    return { value: value }
+}
+---- output
+5 x true 2
+==== stdlib_path_and_directories
+---- main main.kj
+---- source
+import path
+import file
+
+print(path.join('src', 'main.kj'), path.join('/usr', '/etc'))
+print(path.parent('src/main.kj'), path.parent('main.kj'), path.parent('/'))
+print(path.name('src/main.kj'), path.stem('src/main.kj'), path.extension('src/main.kj'), path.extension('Makefile'))
+print(path.isAbsolute('/tmp'), path.isAbsolute('src'))
+
+immut out = path.join('work', 'out')
+print(file.createDir(path.join(out, 'c')), file.exists(out), file.exists(path.join('work', 'nope')))
+print(file.list(out), file.list(path.join('work', 'missing')) is Err)
+---- output
+src/main.kj /etc
+Some('src') Some('.') None
+Some('main.kj') Some('main') Some('kj') None
+true false
+Ok(void) true false
+Ok(['c']) true

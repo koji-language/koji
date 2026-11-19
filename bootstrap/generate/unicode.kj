@@ -2,7 +2,7 @@
 // of the Unicode Character Database (UnicodeData.txt, DerivedCoreProperties.txt and
 // SpecialCasing.txt, of https://www.unicode.org/Public/<version>/ucd/) in a directory:
 //
-//     build/kojic run bootstrap/tables/unicode.kj 17.0.0 ucd/ > std/koji/unicode.kj
+//     build/kojic run bootstrap/generate/unicode.kj 17.0.0 ucd/ > std/koji/unicode.kj
 //
 // The methods of strings give what the methods of `char` of Rust gave when the runtime was in Rust
 // (the tables were first written from them): `isAlpha` is Alphabetic, `isDigit`... Numeric the
@@ -281,7 +281,7 @@ immut lower = mappings(data, specials, 13, 1)
 immut upper = mappings(data, specials, 12, 3)
 
 print(`// The tables of Unicode ${version} of the library written in Koji, as Rust had them: written by`)
-print('// bootstrap/tables/unicode.kj (do not edit). Texts of hexadecimal digits in records of a fixed')
+print('// bootstrap/generate/unicode.kj (do not edit). Texts of hexadecimal digits in records of a fixed')
 print('// width (see std/koji/text.kj).')
 print('')
 print('// Alphabetic.')

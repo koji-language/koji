@@ -1,0 +1,118 @@
+// What each stage of the compiler gives (`kojic dump tokens|ast|types|ir`) for the cases of the
+// tests, against the snapshots in test/snapshots/: a change of a stage shows as a change of its
+// snapshot (KOJI_UPDATE_SNAPSHOTS=1 writes them again: read the diff). And compiler/stdlib.kj, which
+// must be what bootstrap/generate/stdlib.kj writes.
+
+import file
+import path
+import system
+import { compiler, finish, kojic, readFile, removeAll, root, writeFile } from 'koji.kj'
+
+// A program of the tests: its name, the directory `kojic` runs in (the messages name the file as it
+// is given, relative to that directory) and its file.
+type Case = {
+    name: string
+    directory: string
+    file: string
+}
+
+// The `.kj` files of `directory`, in order, run from the root of the repository.
+function files(directory: string): Case[] {
+    mut found: Case[] = []
+
+    match (file.list(directory)) {
+        Ok(names) => {
+            for name in names {
+                if (name.endsWith('.kj')) {
+                    immut each = `${directory}/${name}`
+                    found.push({ name: each, directory: root, file: each })
+                }
+            }
+        }
+        Err(error) => panic(`${directory}: ${error}`)
+    }
+
+    return found
+}
+
+// The programs of a file of cases (after its header, separated by lines `----`), as files of a
+// directory of their own, `case` followed by their number.
+function cases(source: string): Case[] {
+    immut text = readFile(source)
+    immut parts = text.split('----\n')
+    immut programs = text[parts[0].length() + 5..].split('\n----\n')
+    immut directory = path.join(root, `build/test/stages/${source.replace('/', '-')}`)
+    removeAll(directory)
+    mut found: Case[] = []
+
+    for i in range(programs.length()) {
+        mut program = programs[i]
+
+        while (program.endsWith('\n')) {
+            program = program[0..program.length() - 1]
+        }
+
+        writeFile(path.join(directory, `case${i}.kj`), program + '\n')
+        found.push({ name: `${if (source == 'test/parser/cases.txt') { 'parser cases' } else { source }} #${i}`, directory: directory, file: `case${i}.kj` })
+    }
+
+    return found
+}
+
+// Checks the snapshot test/snapshots/<stage>.txt: what `kojic dump <stage>` prints for each case,
+// after a line `==== <case>`.
+function checkSnapshot(stage: string, all: Case[]) {
+    mut text = ''
+
+    for each in all {
+        immut dumped = finish(compiler(['dump', stage, each.file], each.directory))
+        assert(dumped.status == 0, `kojic dump ${stage} ${each.name} failed: ${dumped.stderr}`)
+        text += `==== ${each.name}\n${dumped.stdout}`
+    }
+
+    immut target = `test/snapshots/${stage}.txt`
+
+    if (system.env('KOJI_UPDATE_SNAPSHOTS') != None) {
+        writeFile(target, text)
+        return
+    }
+
+    immut expected = if (file.exists(target)) { readFile(target) } else { '' }
+
+    if (text == expected) { return }
+
+    // The first case that changed.
+    immut before = expected.split('==== ')
+    immut now = text.split('==== ')
+
+    for i in range(1, now.length()) {
+        if (i >= before.length() or before[i] != now[i]) {
+            immut was = if (i < before.length()) { before[i] } else { '' }
+            panic(`${now[i].split('\n')[0]} differs from the snapshot ${target} (KOJI_UPDATE_SNAPSHOTS=1 writes it again).\nexpected:\n${was}\nfound:\n${now[i]}`)
+        }
+    }
+
+    panic(`${target} has cases the tests do not have (KOJI_UPDATE_SNAPSHOTS=1 writes it again)`)
+}
+
+test 'tokens' {
+    checkSnapshot('tokens', files('examples') + files('test/lexer'))
+}
+
+test 'syntax_trees' {
+    checkSnapshot('ast', files('examples') + files('test/lexer') + cases('test/parser/cases.txt'))
+}
+
+test 'types' {
+    checkSnapshot('types', files('examples') + cases('test/parser/cases.txt') + cases('test/checker/cases.txt') + files('test/checker'))
+}
+
+test 'intermediate_representation' {
+    checkSnapshot('ir', files('examples') + files('test/checker') + cases('test/ir/cases.txt'))
+}
+
+test 'the_standard_library_is_up_to_date' {
+    immut written = finish(compiler(['run', 'bootstrap/generate/stdlib.kj'], root))
+    assert(written.status == 0, written.stderr)
+    assert(written.stdout == readFile('compiler/stdlib.kj'), 'compiler/stdlib.kj is out of date: build/kojic run bootstrap/generate/stdlib.kj > compiler/stdlib.kj')
+}

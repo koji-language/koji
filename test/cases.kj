@@ -1,0 +1,20 @@
+// The programs of test/cases/: run by `kojic run`, or built by `kojic build` and run, against what
+// they must print (see the header of each file).
+
+import { runCases } from 'koji.kj'
+
+test 'programs run by kojic run' {
+    runCases('test/cases/language.txt', false)
+}
+
+test 'programs run by kojic run, with other files' {
+    runCases('test/cases/language-modules.txt', false)
+}
+
+test 'programs built by kojic build' {
+    runCases('test/cases/compiler.txt', true)
+}
+
+test 'programs built by kojic build, with other files' {
+    runCases('test/cases/compiler-modules.txt', true)
+}

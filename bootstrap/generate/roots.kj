@@ -2,7 +2,7 @@
 // when the system has none), from Mozilla's list as curl extracts it (`cacert.pem`, also in the
 // Python package `certifi`):
 //
-//     build/kojic run bootstrap/tables/roots.kj cacert.pem > std/koji/roots.kj
+//     build/kojic run bootstrap/generate/roots.kj cacert.pem > std/koji/roots.kj
 //
 // Of each certificate only what a chain is verified with: its subject and its public key (the
 // SubjectPublicKeyInfo), both in DER. The module holds them as one text of base64: for each
@@ -158,7 +158,7 @@ for line in text.split('\n') {
 }
 
 print(`// The certificate authorities of Mozilla's list (${labels.length()} of them), built into the library written in`)
-print('// Koji for the systems that have none: written by bootstrap/tables/roots.kj (do not edit). For each,')
+print('// Koji for the systems that have none: written by bootstrap/generate/roots.kj (do not edit). For each,')
 print('// the size of its subject in 2 bytes, its subject, the size of its key in 2 bytes and its key')
 print('// (SubjectPublicKeyInfo), in DER, all in base64 (see std/koji/x509.kj).')
 print('//')

@@ -1,0 +1,455 @@
+// Programs built by `kojic build` and run, with other files (test/cases.kj): as
+// test/cases/compiler.txt, and `---- main <name>` names the program's file, `---- file <path>`
+// writes another file next to it, and `---- stderr` is what the program must print on its standard
+// error output.
+
+==== objects_sum_types_and_match
+---- main records.kj
+---- source
+type Person = {
+name: string
+age: int
+tags: string[]
+}
+
+type Tree = {
+Leaf
+Node(left: Tree, value: int, right: Tree)
+}
+
+type AppError = {
+Parse(message: string)
+Range(value: int)
+}
+
+function insert(tree: Tree, value: int): Tree {
+return match (tree) {
+Leaf => Node(Leaf, value, Leaf)
+Node(left, v, right) => if (value < v) { Node(insert(left, value), v, right) } else { Node(left, v, insert(right, value)) }
+}
+}
+
+function sum(tree: Tree): int {
+match (tree) {
+Leaf => return 0
+Node(left, value, right) => return sum(left) + value + sum(right)
+}
+}
+
+function check(n: int): Result[int, string] {
+if (n < 0) { return Err('negative') }
+
+return Ok(n * 2)
+}
+
+function twice(n: int): Result[int, AppError] {
+immut a = check(n).mapErr(Parse)?
+return Ok(a * 2)
+}
+
+function triple(n: int): Result[int, AppError] {
+immut a = check(n)?
+return Ok(a * 3)
+}
+
+function first(items: int[]): Option[int] {
+if (items.length() == 0) { return None }
+
+return Some(items[0])
+}
+
+function addFirst(items: int[]): Option[int] {
+immut value = first(items)?
+return Some(value + 1)
+}
+
+mut people: Person[] = [{ name: 'Ana', age: 30, tags: [] }]
+people.push({ age: 25, name: 'Bia', tags: ['x'] })
+people[0].age += 1
+people[1].tags.push('y')
+immut copy = people[1]
+people[1].name = 'Bea'
+print(people, copy.name, people[0] == people[0], people[0] != copy)
+
+mut tree = Leaf
+
+for n in [5, 2, 8, 1] {
+tree = insert(tree, n)
+}
+
+print(tree, sum(tree))
+print(check(2), check(-1), addFirst([4]), addFirst([]))
+
+mut items = [1, 2, 3]
+print(items.pop(), items.removeAt(5), items.removeAt(0), items.indexOf(2), items.indexOf(9), items)
+
+immut maybe = first([7])
+
+if (maybe is Some) {
+print('got', maybe.value)
+}
+
+for x in [0, 1, 2, 3] {
+immut label = match (x) {
+0 => 'zero'
+n if (n % 2 == 1) => `odd ${n}`
+_ => 'other'
+}
+print(label)
+}
+
+print(Range(3), Parse('bad') == Parse('bad'), twice(1), twice(-1), triple(1), triple(-1))
+immut value = check(-5)?
+print('unreachable')
+---- output
+[{ name: 'Ana', age: 31, tags: [] }, { name: 'Bea', age: 25, tags: ['x', 'y'] }] Bia true true
+Node(Node(Node(Leaf, 1, Leaf), 2, Leaf), 5, Node(Leaf, 8, Leaf)) 16
+Ok(4) Err('negative') Some(5) None
+Some(3) None Some(1) Some(0) None [2]
+got 7
+zero
+odd 1
+other
+odd 3
+Range(3) true Ok(4) Err(Parse('negative')) Ok(6) Err(Parse('negative'))
+---- panic
+records.kj:94: negative
+==== maps_and_sets
+---- main maps.kj
+---- source
+mut ages: Map[string, int] = ['Ana': 30, 'Bia': 25]
+immut names = [1: 'one', 2: 'two']
+mut empty: Map[string, int] = [:]
+
+print(ages['Ana'], ages.get('Carl'), ages.get('Bia'), 'Bia' in ages, ages.has('Zed'))
+
+immut before = ages
+ages['Carl'] = 41
+ages['Ana'] += 1
+print(ages.remove('Bia'), ages.remove('Bia'), ages, before, names, empty, empty.length())
+
+for name in ages {
+print(name, ages[name])
+}
+
+print(ages.keys(), ages.values(), ages == ['Carl': 41, 'Ana': 31], ages != before)
+
+mut groups: Map[string, int[]] = ['even': [], 'odd': []]
+
+for n in range(6) {
+if (n % 2 == 0) {
+groups['even'].push(n)
+} else {
+groups['odd'].push(n)
+}
+}
+
+print(groups)
+
+mut seen: Set[string] = Set.from(['a', 'b', 'a'])
+seen.add('c')
+seen.add('a')
+print(seen.remove('a'), seen.remove('z'), seen.has('b'), 'c' in seen, seen, seen.length(), seen.values())
+
+for item in seen {
+print(item)
+}
+
+immut points: Set[int[]] = Set.from([[1, 2], [1, 2], [3]])
+print(points, Set.from([1, 2]) == Set.from([2, 1]))
+
+type Point = {
+x: int
+y: int
+}
+
+mut visits: Map[Point, int] = [:]
+immut home: Point = { x: 0, y: 0 }
+visits[home] = 1
+immut same: Point = { x: 0, y: 0 }
+visits[same] += 1
+print(visits, visits[home])
+print(ages['Zed'])
+---- output
+30 None Some(25) true false
+Some(25) None ['Ana': 31, 'Carl': 41] ['Ana': 30, 'Bia': 25] [1: 'one', 2: 'two'] [:] 0
+Ana 31
+Carl 41
+['Ana', 'Carl'] [31, 41] true true
+['even': [0, 2, 4], 'odd': [1, 3, 5]]
+true false true true Set(['b', 'c']) 2 ['b', 'c']
+b
+c
+Set([[1, 2], [3]]) true
+[{ x: 0, y: 0 }: 2] 2
+---- panic
+maps.kj:53: key 'Zed' not found
+==== chars
+---- main chars.kj
+---- source
+immut initial: char = 'K'
+immut text = 'olá, Koji'
+immut letters: char[] = ['b', 'a', '\'']
+mut sorted = letters
+sorted.sort()
+print(initial, initial.code(), char(97), char(-1), initial.debug(), letters, sorted)
+print(text[2], text[5..9], text[..3], text.chars(), 'K' in text, 'z' in text, initial == 'K', 'a' < 'b')
+
+mut vowels = 0
+
+for c in text {
+if (c in 'aeiouá') { vowels += 1 }
+}
+
+print(vowels, `${initial}!`, string(initial))
+mut counts: Map[char, int] = [:]
+
+for c in 'banana' {
+if (c in counts) {
+counts[c] += 1
+} else {
+counts[c] = 1
+}
+}
+
+print(counts)
+print(text[20])
+---- output
+K 75 Some('a') None 'K' ['b', 'a', '\''] ['\'', 'a', 'b']
+á Koji olá ['o', 'l', 'á', ',', ' ', 'K', 'o', 'j', 'i'] true false true true
+4 K! K
+['b': 1, 'a': 3, 'n': 2]
+---- panic
+chars.kj:27: index 20 out of range (length 9)
+==== modules
+---- main main.kj
+---- source
+import { count, increment } from 'lib/counter.kj'
+import shapes from 'lib/shapes.kj'
+import { Shape, largest } from 'lib/shapes.kj'
+
+print('main starts', count)
+increment()
+print(count, shapes.largest([3, 7, 2]), largest(['a', 'c']))
+
+immut all: Shape[] = [Circle(1), shapes.Square(2), shapes.Dot, shapes.unit]
+
+for shape in all {
+print(shape, shape.area())
+}
+
+function helper(): string {
+return 'from main'
+}
+
+print(helper(), shapes.describe(), shapes.divide(7, 2))
+print(shapes.divide(1, 0))
+---- file lib/counter.kj
+print('counter loaded')
+
+export mut count = 0
+
+export function increment(): int {
+count += 1
+return count
+}
+---- file lib/shapes.kj
+import { increment } from 'counter.kj'
+
+print('shapes loaded', increment())
+
+export type Shape = {
+Circle(radius: decimal)
+Square(side: decimal)
+Dot
+}
+
+function Shape.area(self): decimal {
+return match (self) {
+Circle(radius) => 3.0 * radius * radius
+Square(side) => side * side
+Dot => 0.0
+}
+}
+
+export function largest[T: orderable](items: T[]): T {
+mut best = items[0]
+
+for item in items {
+if (item > best) { best = item }
+}
+
+return best
+}
+
+export immut unit = Square(1)
+
+export function divide(a: int, b: int): int {
+return a / b
+}
+
+function helper(): string {
+return 'from shapes'
+}
+
+export function describe(): string {
+return helper()
+}
+---- output
+counter loaded
+shapes loaded 1
+main starts 1
+2 7 c
+Circle(1) 3
+Square(2) 4
+Dot 0
+Square(1) 1
+from main from shapes 3
+---- panic
+lib/shapes.kj:32: division by zero
+==== imports_inside_blocks
+---- main main.kj
+---- source
+print('start')
+
+function greet(name: string): string {
+import { shout, uses } from 'tools.kj'
+import math
+
+print('uses before', uses, math.floor(2.7))
+return shout(name)
+}
+
+function area(radius: decimal): decimal {
+import math
+
+math.pi * radius ** 2
+}
+
+print(greet('ana'))
+print(greet('bia'))
+
+if (true) {
+import tools from 'tools.kj'
+print(tools.uses, area(1))
+}
+---- file tools.kj
+print('tools loaded')
+
+export mut uses = 0
+
+export function shout(text: string): string {
+uses += 1
+return `${text.upper()}!`
+}
+---- output
+start
+tools loaded
+uses before 0 2
+ANA!
+uses before 1 2
+BIA!
+2 3.141592653589793238462643383279503
+==== files
+---- main files.kj
+---- source
+import file
+import { Mode } from 'file'
+
+function save(path: string, text: string): Result[void, file.FileError] {
+immut out = file.open(path, file.Write)?
+out.write(text)?
+return Ok()
+}
+
+function load(path: string): Result[string, file.FileError] {
+immut input = file.open(path, Read)?
+return input.read()
+}
+
+print(file.createDir('data/sub'), file.exists('data'), file.exists('nothing'))
+print(save('data/notes.txt', 'first line\n'))
+
+match (file.open('data/notes.txt', Append)) {
+Ok(f) => {
+print(f.write('second line\n'), f)
+f.close()
+}
+Err(error) => print(error)
+}
+
+print(load('data/notes.txt'))
+print(load('data/missing.txt'), file.list('data'), file.list('nothing'))
+
+match (load('data')) {
+Ok(text) => print(text)
+Err(error) => print('error:', error)
+}
+
+immut text = load('data/notes.txt')?
+print(text.split('\n').length())
+load('data/absent.txt')?
+print('not printed')
+---- output
+Ok(void) true false
+Ok(void)
+Ok(void) <file 'data/notes.txt'>
+Ok('first line\nsecond line\n')
+Err(NotFound('data/missing.txt')) Ok(['notes.txt', 'sub']) Err(NotFound('nothing'))
+error: 'data' is a directory
+3
+---- panic
+absent.txt' not found
+==== errors_files_and_the_operating_system
+---- main system.kj
+---- source
+import file
+import system
+
+type Point = { x: int }
+
+function Point.display(self): string {
+    return `(${self.x})`
+}
+
+immut point: Point = { x: 1 }
+print('out', point)
+printError('error', point, 2)
+printError()
+print('after')
+
+match (file.open('scratch.txt', file.Write)) {
+    Ok(output) => print(output.write('x'))
+    Err(error) => print(error)
+}
+
+print(file.exists('scratch.txt'), file.remove('scratch.txt'), file.exists('scratch.txt'))
+print(file.remove('scratch.txt'))
+print(file.remove('folder') is Err)
+
+immut known = match (system.os) {
+    Linux => true
+    MacOS => true
+    Windows => true
+    Other(_) => false
+}
+print(known)
+print(system.run('echo', ['from', 'echo']))
+print(system.run('sh', ['-c', 'echo to errors >&2; exit 4']))
+---- file folder/keep
+
+---- output
+out (1)
+after
+Ok(void)
+true Ok(void) false
+Err(NotFound('scratch.txt'))
+true
+true
+from echo
+Ok(0)
+Ok(4)
+---- stderr
+error (1) 2
+
+to errors

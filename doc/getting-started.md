@@ -107,12 +107,15 @@ kojic run examples/shapes.kj
 
 ## Running the Tests
 
-If you want to contribute, run the test suite with [Rust](https://www.rust-lang.org/tools/install)'s `cargo` (the tests are written in Rust; building Koji does not need it):
+If you want to contribute, run the test suite: it is written in Koji, and runs with the compiler built by `bootstrap/build.sh`, from the root of the repository:
 
 ```sh
-cargo test
+sh bootstrap/build.sh
+build/kojic test test/*.kj
 ```
 
-The tests build the compiler from the seed, like `bootstrap/build.sh`, and run it on their programs. `test/crypto.rs` tests the cryptography of the runtime by C programs linked with it, and the test of `https://` uses the `openssl` command when it is there. `cargo test --test bootstrap -- --ignored` also checks that the compiler compiles itself to the same executable, byte for byte (the fixed point). The stages of the compiler are compared with snapshots (`test/snapshots/`): after a change of a stage, `KOJI_UPDATE_SNAPSHOTS=1 cargo test --test stages` writes them again.
+The programs of `test/cases/` are run by `kojic run`, or built by `kojic build` and run (under valgrind when it is installed), against what they must print, several at a time (`KOJI_TEST_JOBS`, 8 by default); `test/*.kj` test the rest: the commands of the compiler, servers, the cryptography of the runtime, the platforms Koji builds for, and that the compiler compiles itself to the same executable, byte for byte (the fixed point). The test of `https://` uses the `openssl` command when it is there, and those of other platforms qemu, lld or Wine when they are there. `KOJI_COMPILER` names another compiler to test; `KOJI_TEST_WINDOWS=1` builds the programs of the cases for Windows and runs them with Wine.
+
+The stages of the compiler are compared with snapshots (`test/snapshots/`): after a change of a stage, `KOJI_UPDATE_SNAPSHOTS=1 build/kojic test test/stages.kj` writes them again. After a change of `std/`, `build/kojic run bootstrap/generate/stdlib.kj > compiler/stdlib.kj` writes the sources the compiler carries again (then build it again).
 
 See the [contributing guide](../CONTRIBUTING.md) for details.

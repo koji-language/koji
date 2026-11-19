@@ -1,0 +1,41 @@
+// The compiler written in Koji compiles itself: stage 2 is the compiler the tests run (built by
+// bootstrap/build.sh from the seed, stage 1), stage 3 the compiler of compiler/ built by stage 2,
+// and stage 4 by stage 3. Stages 3 and 4 must be the same executable, byte for byte (the fixed
+// point): the seed written again from stage 2 (`bootstrap/build.sh --seed`) is stage 3.
+
+import file
+import path
+import system
+import { finish, kojic, root, scratch } from 'koji.kj'
+
+function readBytes(source: string): byte[] {
+    return match (file.open(source, file.Read)) {
+        Ok(opened) => match (opened.readBytes()) {
+            Ok(bytes) => bytes
+            Err(error) => panic(`${source}: ${error}`)
+        }
+        Err(error) => panic(`${source}: ${error}`)
+    }
+}
+
+test 'the_compiler_in_koji_compiles_itself' {
+    immut directory = scratch('bootstrap-stages')
+    immut runtime = match (path.parent(kojic)) {
+        Some(found) => path.join(found, 'libkoji_runtime.a')
+        None => 'libkoji_runtime.a'
+    }
+
+    function build(compiler: string, output: string) {
+        mut command = system.command(compiler, ['build', 'compiler/main.kj', '-o', output])
+        command.directory = root
+        command.environment['KOJI_RUNTIME'] = runtime
+        immut built = finish(command)
+        assert(built.status == 0, built.stderr)
+    }
+
+    immut stage3 = path.join(directory, 'stage3')
+    immut stage4 = path.join(directory, 'stage4')
+    build(kojic, stage3)
+    build(stage3, stage4)
+    assert(readBytes(stage3) == readBytes(stage4), 'stage 4 is another executable than stage 3')
+}

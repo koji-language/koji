@@ -1,0 +1,4019 @@
+// Programs run by `kojic run` (test/cases.kj): each case is a program (after `---- source`), with
+// what it reads (`---- input`), and what it must print (`---- output`), the error that must end it
+// (`---- error`, the standard error output without the white space at its end) or its exit code
+// (`---- exit 3`). A text marked `(no line break at the end)` has none after its last line.
+
+==== primitive_types
+---- source
+immut age: int = 23
+immut pi: decimal = 3.14
+immut name: string = 'Mary'
+immut isStudent: boolean = true
+
+print(age, pi, name, isStudent)
+---- output
+23 3.14 Mary true
+==== option_instead_of_null
+---- source
+immut name: Option[string] = None
+mut x: Option[int] = None
+
+// Later in the code
+x = Some(42)
+
+print(name, x)
+---- output
+None Some(42)
+==== global_and_local_variables #1
+---- source
+immut globalVar = 1 // Global variable
+
+function test() {
+    mut localVar = 2 // Local variable
+
+    print(globalVar) // 1 (accesses the global variable)
+    print(localVar) // 2 (accesses the local variable within the function)
+}
+
+test()
+
+print(globalVar) // 1 (global variable accessible outside the function)
+---- output
+1
+2
+1
+==== global_and_local_variables #2
+---- source (no line break at the end)
+function test() {
+ mut localVar = 2
+}
+print(localVar)
+---- error
+type error: test.kj:4:7: undefined variable 'localVar'
+    4 | print(localVar)
+      |       ^^^^^^^^
+==== functions_can_update_globals
+---- source
+mut count = 0
+
+function increment() {
+    count += 1
+}
+
+increment()
+increment()
+
+print(count)
+---- output
+2
+==== immut_cannot_change #1
+---- source (no line break at the end)
+immut pi = 3.14159
+pi = 3.14
+---- error
+type error: test.kj:2:1: cannot modify 'pi': it is immut
+    2 | pi = 3.14
+      | ^^^^^^^^^
+==== immut_cannot_change #2
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+mut person: Person = {
+    name: 'Ana',
+    age: 30
+}
+
+person.age = 31
+person = { name: 'Bia', age: 25 }
+
+print(person.name, person.age)
+---- output
+Bia 25
+==== immut_cannot_change #3
+---- source (no line break at the end)
+type Person = { name: string }
+immut person: Person = { name: 'Ana' }
+person = { name: 'Bia' }
+---- error
+type error: test.kj:3:1: cannot modify 'person': it is immut
+    3 | person = { name: 'Bia' }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^
+==== declarations_need_a_keyword #1
+---- source (no line break at the end)
+count = 1
+---- error
+type error: test.kj:1:1: 'count' is not declared: declare it with 'mut count = ...' (or 'immut' if it never changes)
+    1 | count = 1
+      | ^^^^^^^^^
+==== declarations_need_a_keyword #2
+---- source (no line break at the end)
+mut count = 0
+cuont = 1
+---- error
+type error: test.kj:2:1: 'cuont' is not declared: declare it with 'mut cuont = ...' (or 'immut' if it never changes)
+    2 | cuont = 1
+      | ^^^^^^^^^
+==== declarations_need_a_keyword #3
+---- source (no line break at the end)
+name: string = 'Ana'
+---- error
+syntax error: test.kj:1:1: declare 'name' with 'mut' or 'immut': 'mut name: ... = ...'
+    1 | name: string = 'Ana'
+      | ^
+==== declarations_need_a_keyword #4
+---- source (no line break at the end)
+var x = 1
+---- error
+syntax error: test.kj:1:1: Koji has no 'var': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
+    1 | var x = 1
+      | ^
+==== declarations_need_a_keyword #5
+---- source (no line break at the end)
+const x = 1
+---- error
+syntax error: test.kj:1:1: Koji has no 'const': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
+    1 | const x = 1
+      | ^
+==== declarations_need_a_keyword #6
+---- source (no line break at the end)
+let x = 1
+---- error
+syntax error: test.kj:1:1: Koji has no 'let': declare with 'mut name = ...' for a variable that changes, or 'immut name = ...' for one that does not
+    1 | let x = 1
+      | ^
+==== declarations_need_a_keyword #7
+---- source
+immut imut = 1
+print(imut)
+---- output
+1
+==== imut_is_deeply_immutable #1
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+immut person: Person = { name: 'Ana', age: 30 }
+immut matrix = [[1, 2], [3, 4]]
+
+print(person.age, matrix[1][0])
+---- output
+30 3
+==== imut_is_deeply_immutable #2
+---- source (no line break at the end)
+type P = { age: int }
+immut person: P = { age: 30 }
+person.age = 31
+---- error
+type error: test.kj:3:1: cannot modify 'person': it is immut
+    3 | person.age = 31
+      | ^^^^^^^^^^^^^^^
+==== imut_is_deeply_immutable #3
+---- source (no line break at the end)
+immut items = [1, 2]
+items[0] = 5
+---- error
+type error: test.kj:2:1: cannot modify 'items': it is immut
+    2 | items[0] = 5
+      | ^^^^^^^^^^^^
+==== imut_is_deeply_immutable #4
+---- source (no line break at the end)
+immut matrix = [[1]]
+matrix[0][0] = 5
+---- error
+type error: test.kj:2:1: cannot modify 'matrix': it is immut
+    2 | matrix[0][0] = 5
+      | ^^^^^^^^^^^^^^^^
+==== imut_is_deeply_immutable #5
+---- source (no line break at the end)
+immut x = 1
+x = 2
+---- error
+type error: test.kj:2:1: cannot modify 'x': it is immut
+    2 | x = 2
+      | ^^^^^
+==== imut_is_deeply_immutable #6
+---- source (no line break at the end)
+immut x = 1
+x += 2
+---- error
+type error: test.kj:2:1: cannot modify 'x': it is immut
+    2 | x += 2
+      | ^^^^^^
+==== imut_is_deeply_immutable #7
+---- source
+mut items = [1, 2]
+items[0] = 5
+print(items)
+---- output
+[5, 2]
+==== comments
+---- source
+// Single-line comment
+/*
+Multi-line
+comment
+*/
+print('ok') // trailing
+---- output
+ok
+==== lists #1
+---- source
+immut numbers: int[] = [1, 2, 3]
+immut coordinates: int[][] = [[1, 2], [3, 4]]
+immut positions: int[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+
+print(numbers, coordinates[1][0], positions[1][1][1], numbers.length())
+---- output
+[1, 2, 3] 3 8 3
+==== lists #2
+---- source (no line break at the end)
+immut numbers: int[] = [1, 'a']
+---- error
+type error: test.kj:1:28: list elements must have the same type: found int and string
+    1 | immut numbers: int[] = [1, 'a']
+      |                            ^^^
+==== arithmetic_operators
+---- source
+print(1 + 2, 5 - 7, 3 * 4, 2 ** 10, 7 % 3, 2.5 * 2)
+---- output
+3 -2 12 1024 1 5
+==== division_follows_the_operand_types #1
+---- source
+print(7 / 2, -7 / 2, 7.0 / 2.0, 7 / 2.0, -7 % 2, 7.5 % 2.0)
+---- output
+3 -3 3.5 3.5 -1 1.5
+==== division_follows_the_operand_types #2
+---- source
+mut x: int = 17
+x /= 5
+print(x)
+---- output
+3
+==== division_follows_the_operand_types #3
+---- source (no line break at the end)
+immut x: int = 7 / 2.0
+---- error
+type error: test.kj:1:16: cannot assign a value of type decimal to 'x' of type int
+    1 | immut x: int = 7 / 2.0
+      |                ^^^^^^^
+==== division_follows_the_operand_types #4
+---- source (no line break at the end)
+print(1 / 0)
+---- error
+panic: test.kj:1: division by zero
+==== double_slash_is_always_a_comment
+---- source
+immut x = 7 //2
+print(x)
+---- output
+7
+==== comparison_operators
+---- source
+print(1 == 1, 1 != 2, 3 > 2, 2 < 3, 3 >= 3, 2 <= 1, 'a' < 'b')
+---- output
+true true true true true false true
+==== equality_and_membership #1
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+immut a: Person = { name: 'Ana', age: 30 }
+immut b: Person = { name: 'Ana', age: 30 }
+
+print(a == b) // true: the fields are equal
+print('a' in 'banana')
+print(2 in [1, 2, 3], 'x' in ['a'])
+---- output
+true
+true
+true false
+==== equality_and_membership #2
+---- source (no line break at the end)
+immut a = [1]
+immut b = a
+print(a is b)
+---- error
+type error: test.kj:3:7: 'is' checks a variant ('result is Some'); to compare values, use '=='
+    3 | print(a is b)
+      |       ^^^^^^
+==== equality_and_membership #3
+---- source (no line break at the end)
+immut x = 1
+print(x is 1)
+---- error
+type error: test.kj:2:7: 'is' checks a variant ('result is Some'); to compare values, use '=='
+    2 | print(x is 1)
+      |       ^^^^^^
+==== logical_operators
+---- source
+immut age = 20
+
+if not (age > 18) { print('minor') } else { print('adult') }
+
+print(true and false, true or false, not true)
+---- output
+adult
+false true false
+==== assignment_operators
+---- source
+mut e = 10
+
+e += 1
+e -= 2
+e *= 3
+e /= 2
+e **= 2
+e %= 7
+
+mut f = 1.0
+
+f /= 4
+
+print(e, f)
+---- output
+1 0.25
+==== string_operators
+---- source
+print('ab' + 'cd', 'ab' * 3)
+---- output
+abcd ababab
+==== bitwise_operators
+---- source
+immut a = 5
+immut b = 3
+print(a & b, a | b, a ^ b, ~a, a << 1, a >> 1)
+---- output
+1 7 6 -6 10 2
+==== operator_type_errors #1
+---- source (no line break at the end)
+print(1 + 'a')
+---- error
+type error: test.kj:1:7: operator '+' cannot be applied to int and string
+    1 | print(1 + 'a')
+      |       ^^^^^^^
+==== operator_type_errors #2
+---- source (no line break at the end)
+print(true + 1)
+---- error
+type error: test.kj:1:7: operator '+' cannot be applied to boolean and int
+    1 | print(true + 1)
+      |       ^^^^^^^^
+==== string_interpolation
+---- source
+immut name: string = 'Emma'
+
+print(`Hello, ${name}!`) // Hello, Emma!
+print('Hello, ${name}!') // Hello, ${name}!
+print("Hello, ${name}!") // Hello, ${name}!
+print(`1 + 1 = ${1 + 1}`)
+---- output
+Hello, Emma!
+Hello, ${name}!
+Hello, ${name}!
+1 + 1 = 2
+==== conversion_methods #1
+---- source
+print(int('0'), int('abc'), float('0'), string(0), int(3.9), float(2))
+---- output
+Ok(0) Err(InvalidNumber('abc')) Ok(0x0p0) 0 3 0x1p1
+==== conversion_methods #2
+---- source
+print(int('99999999999999999999'), float('1e400'), float('nan'), float('inf'))
+---- output
+Err(OutOfRange('99999999999999999999')) Err(OutOfRange('1e400')) Err(InvalidNumber('nan')) Err(InvalidNumber('inf'))
+==== conversion_methods #3
+---- source
+print(int(' -9223372036854775808\n'), int('+9223372036854775807'), int('-9223372036854775809'), int('9223372036854775808x'), int('　7'), int('+-1'), int('-'))
+---- output
+Ok(-9223372036854775808) Ok(9223372036854775807) Err(OutOfRange('-9223372036854775809')) Err(InvalidNumber('9223372036854775808x')) Ok(7) Err(InvalidNumber('+-1')) Err(InvalidNumber('-'))
+==== conversion_methods #4
+---- source
+print(float('-0'), float('.5'), float('5.'), float('1e22'), float('1e23'), float('9007199254740993'), float('0.1'), float('4.9e-324'), float('1e-400'), float('1e'), float('.'), float('1.2.3'))
+---- output
+Ok(-0x0p0) Ok(0x1p-1) Ok(0x1.4p2) Ok(0x1.0f0cf064dd592p73) Ok(0x1.52d02c7e14af6p76) Ok(0x1p53) Ok(0x1.999999999999ap-4) Ok(0x0.0000000000001p-1022) Ok(0x0p0) Err(InvalidNumber('1e')) Err(InvalidNumber('.')) Err(InvalidNumber('1.2.3'))
+==== conversion_methods #5
+---- source
+print(float('0x1.999999999999ap-4'), float('0x1.00000000000008p0'), float('0x1.00000000000018p0'), float('0x1.000000000000081p0'), float('0x1.8p-1074'), float('-0x1.8p1'), float('0x1p1024'), float('0x'))
+---- output
+Ok(0x1.999999999999ap-4) Ok(0x1p0) Ok(0x1.0000000000002p0) Ok(0x1.0000000000001p0) Ok(0x0.0000000000002p-1022) Ok(-0x1.8p1) Err(OutOfRange('0x1p1024')) Err(InvalidNumber('0x'))
+==== conversion_methods #6
+---- source
+match (int('42')) {
+    Ok(value) => print(value + 1)
+    Err(InvalidNumber(text)) => print(`not a number: ${text}`)
+    Err(OutOfRange(text)) => print(`too large: ${text}`)
+}
+---- output
+43
+==== string_methods #1
+---- source
+print('abc'.length(), '  hi  '.trim(), 'hello'.upper(), 'HELLO'.lower())
+print('   '.isSpace(), '123'.isNumeric(), 'abc'.isAlpha(), 'abc123'.isAlphaNumeric())
+print('ABC'.isUpper(), 'abc'.isLower(), 'Hello World'.isTitle(), 'Hello world'.isTitle(), '123'.isTitle())
+print('a b'.split(' '), 'hello'.replace('hello', 'hi'))
+---- output
+3 hi HELLO hello
+true true true true
+true true true false false
+['a', 'b'] hi
+==== string_methods #2
+---- source
+print('　 ção \t'.trim().debug(), 'ção, é, '.split(', '), ',,'.split(','), ''.split(','))
+print('éaéa'.replace('a', 'ã'), 'abc'.replace('x', 'y'), 'aaa'.replace('aa', 'b'))
+print('ção😀x'.indexOf('x'), 'ção'.indexOf(''), 'ção'.indexOf('z'), 'ção'.startsWith('çã'), 'ção'.endsWith('ão'), 'a'.endsWith('ba'))
+---- output
+'ção' ['ção', 'é', ''] ['', '', ''] ['']
+éãéã abc ba
+Some(4) Some(0) None true true false
+==== string_methods #3
+---- source
+print('straße ﬃ ŉ'.upper(), 'İSTANBUL'.lower().length(), 'ΟΔΥΣΣΕΥΣ, ΣΑΣ. Σ'.lower(), 'Ǆungla'.lower())
+print('ção'.isAlpha(), '٣٤'.isNumeric(), 'Ⅻ'.isNumeric(), 'ÉCOLE'.isUpper(), 'école1'.isLower(), 'Élan Vital'.isTitle(), '　'.isSpace())
+---- output
+STRASSE FFI ʼN 9 οδυσσευς, σας. σ ǆungla
+true true true true true true true
+==== string_methods #4
+---- source (no line break at the end)
+print('a'.split(''))
+---- error
+panic: test.kj:1: split() separator cannot be empty
+==== string_methods #5
+---- source (no line break at the end)
+print('a'.replace('', 'b'))
+---- error
+panic: test.kj:1: replace() needs a non-empty text to replace
+==== input_returns_an_option #1
+---- source
+immut name: Option[string] = input("What's your name?")
+
+match (name) {
+    Some(line) => print(`Hello, ${line}!`)
+    None => print('No input')
+}
+---- input
+Ana
+---- output
+What's your name?Hello, Ana!
+==== input_returns_an_option #2
+---- source
+immut name: Option[string] = input("What's your name?")
+
+match (name) {
+    Some(line) => print(`Hello, ${line}!`)
+    None => print('No input')
+}
+---- output
+What's your name?No input
+==== input_returns_an_option #3
+---- source
+mut line = input()
+
+while (line is Some) {
+    print(line)
+    line = input()
+}
+---- input (no line break at the end)
+a
+
+bé
+last
+---- output
+Some('a')
+Some('')
+Some('bé')
+Some('last')
+==== if_else_statement_and_expression #1
+---- source
+immut age = 20
+
+if (age > 18) {
+    print('Adult')
+} else {
+    print('Minor')
+}
+
+immut label: string = if (age > 18) { 'Adult' } else { 'Minor' }
+
+print(label)
+---- output
+Adult
+Adult
+==== if_else_statement_and_expression #2
+---- source (no line break at the end)
+immut x = if (true) { 1 }
+---- error
+type error: test.kj:1:1: this expression has no value (to be used as a value, every branch must produce a value of the same type, and 'if' needs an 'else')
+    1 | immut x = if (true) { 1 }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^
+==== if_else_statement_and_expression #3
+---- source (no line break at the end)
+if (1) { print(1) }
+---- error
+type error: test.kj:1:1: the condition of 'if' must be boolean, found int
+    1 | if (1) { print(1) }
+      | ^^^^^^^^^^^^^^^^^^^
+==== if_else_statement_and_expression #4
+---- source (no line break at the end)
+if (true) { } else if (false) { }
+---- error
+syntax error: test.kj:1:20: Koji does not have 'else if'; use 'match' with guards
+    1 | if (true) { } else if (false) { }
+      |                    ^
+==== for_loops
+---- source
+print(range(0, 5))
+
+for i in range(0, 3) { print(i) }
+
+for i in range(2) { print(i) }
+
+for i in range(10, 0, -4) { print(i) }
+
+immut names: string[] = ['Anna', 'Claire', 'Leon']
+
+// By index
+for i in range(0, names.length()) {
+    print(names[i])
+}
+
+// Direct iteration
+for name in names {
+    print(name)
+}
+---- output
+[0, 1, 2, 3, 4]
+0
+1
+2
+0
+1
+10
+6
+2
+Anna
+Claire
+Leon
+Anna
+Claire
+Leon
+==== while_break_and_continue #1
+---- source
+mut count = 0
+
+while (count < 3) {
+    print(count)
+
+    count += 1
+}
+
+for i in range(0, 10) {
+    if (i == 5) {
+        break
+    }
+
+    print(i)
+}
+
+for i in range(0, 10) {
+    if (i % 2 == 0) {
+        continue
+    }
+
+    print(i)
+}
+---- output
+0
+1
+2
+0
+1
+2
+3
+4
+1
+3
+5
+7
+9
+==== while_break_and_continue #2
+---- source (no line break at the end)
+break
+---- error
+syntax error: test.kj:1:1: 'break' can only be used inside a loop
+    1 | break
+      | ^
+==== while_break_and_continue #3
+---- source (no line break at the end)
+continue
+---- error
+syntax error: test.kj:1:1: 'continue' can only be used inside a loop
+    1 | continue
+      | ^
+==== match_with_guards
+---- source
+function classify(age: int): string {
+    match (age) {
+        x if (x > 18) => 'Adult'
+        x if (x > 12) => 'Teen'
+        _             => 'Minor'
+    }
+}
+
+immut age: int = 14
+
+immut label: string = match (age) {
+    x if (x > 18) => 'Adult'
+    x if (x > 12) => 'Teen'
+    _             => 'Minor'
+}
+
+print(label) // Teen
+print(classify(30), classify(5))
+---- output
+Teen
+Adult Minor
+==== match_arms_must_agree_with_the_declared_type
+---- source (no line break at the end)
+
+        immut result: Result[int, string] = Ok(1)
+
+        immut label: int = match (result) {
+            Ok(value) => `Value: ${value}` // Error! string is not int
+            Err(error) => `Error: ${error}`
+        }
+    
+---- error
+type error: test.kj:4:28: match arm branch has type string, expected int
+    4 |         immut label: int = match (result) {
+      |                            ^^^^^^^^^^^^^^^^
+==== match_must_be_exhaustive #1
+---- source (no line break at the end)
+immut option = Some(1)
+match (option) {
+ Some(value) => print(value)
+}
+---- error
+type error: test.kj:2:1: match is not exhaustive: None is not handled (add an arm for it or a wildcard '_ => ...')
+    2 | match (option) {
+      | ^^^^^^^^^^^^^^^^
+==== match_must_be_exhaustive #2
+---- source (no line break at the end)
+match (1) {
+ 1 => print(1)
+}
+---- error
+type error: test.kj:1:1: match is not exhaustive: add a wildcard arm '_ => ...'
+    1 | match (1) {
+      | ^^^^^^^^^^^
+==== match_must_be_exhaustive #3
+---- source
+immut option = Some(1)
+
+match (option) {
+    Some(value) => print(value)
+    _ => print('No value')
+}
+---- output
+1
+==== match_arms_on_separate_lines
+---- source
+function sign(n: int): string {
+    match (n) {
+        0 => 'zero'
+        -1 => 'minus one'
+        x if (x > 0) => 'positive'
+        _ => 'negative'
+    }
+}
+
+print(sign(0), sign(-1), sign(5), sign(-9))
+---- output
+zero minus one positive negative
+==== match_literals_and_nested_patterns
+---- source
+type Shape = {
+    Circle(radius: decimal)
+    Rectangle(width: decimal, height: decimal)
+}
+
+immut shapes: Option[Shape][] = [Some(Circle(2.0)), None, Some(Rectangle(1.0, 2.0))]
+
+for s in shapes {
+    match (s) {
+        Some(Circle(r)) => print(`circle ${r}`)
+        Some(Rectangle(w, h)) => print(`rect ${w}x${h}`)
+        None => print('nothing')
+    }
+}
+
+match ('b') {
+    'a' => print('A')
+    'b' => print('B')
+    _ => print('?')
+}
+---- output
+circle 2
+nothing
+rect 1x2
+B
+==== sum_types
+---- source
+type Result = {
+    Ok(value: string)
+    Err(message: string)
+}
+
+function handleResult(result: Result) {
+    match (result) {
+        Ok(value) => print(`Success: ${value}`)
+        Err(message) => print(`Error: ${message}`)
+    }
+}
+
+handleResult(Ok('saved'))
+handleResult(Err('disk full'))
+---- output
+Success: saved
+Error: disk full
+==== sum_type_destructuring
+---- source
+type Shape = {
+    Circle(radius: decimal)
+    Rectangle(width: decimal, height: decimal)
+}
+
+function area(shape: Shape): decimal {
+    match (shape) {
+        Circle(radius) => 3.14 * radius * radius
+        Rectangle(width, height) => width * height
+    }
+}
+
+print(area(Circle(1.0)), area(Rectangle(2.0, 3.0)))
+---- output
+3.14 6
+==== unit_variants
+---- source
+type User = {
+    Admin(name: string)
+    Guest
+}
+
+immut users: User[] = [Admin('Ana'), Guest]
+
+for user in users {
+    match (user) {
+        Admin(name) => print(`Admin: ${name}`)
+        Guest => print('Guest user')
+    }
+}
+---- output
+Admin: Ana
+Guest user
+==== recursive_sum_types
+---- source
+type List = {
+    Cons(head: int, tail: List)
+    Nil
+}
+
+function total(list: List): int {
+    match (list) {
+        Cons(head, tail) => head + total(tail)
+        Nil => 0
+    }
+}
+
+print(total(Cons(1, Cons(2, Cons(3, Nil)))))
+---- output
+6
+==== shape_types #1
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+immut person: Person = {
+    name: 'John',
+    age: 20
+}
+
+print(person.name, person.age, person)
+---- output
+John 20 { name: 'John', age: 20 }
+==== shape_types #2
+---- source (no line break at the end)
+type P = { a: int }
+immut p: P = { a: 1, b: 2 }
+---- error
+type error: test.kj:2:14: P has no field 'b'
+    2 | immut p: P = { a: 1, b: 2 }
+      |              ^^^^^^^^^^^^^^
+==== shape_types #3
+---- source (no line break at the end)
+type P = { a: int  b: int }
+immut p: P = { a: 1 }
+---- error
+type error: test.kj:2:14: missing field(s) b in P
+    2 | immut p: P = { a: 1 }
+      |              ^^^^^^^^
+==== shape_types #4
+---- source (no line break at the end)
+type P = { a: int }
+immut p: P = { a: 'x' }
+---- error
+type error: test.kj:2:19: field 'a' of P must be int, found string
+    2 | immut p: P = { a: 'x' }
+      |                   ^^^
+==== sort_by_calls_its_comparison_in_a_known_order
+---- source
+type Person = { name: string, age: int }
+mut people: Person[] = [{ name: 'Ana', age: 30 }, { name: 'Bo', age: 25 }, { name: 'Cy', age: 30 }]
+people.sortBy((a: Person, b: Person) => {
+    print(`${a.name} ${b.name}`)
+    return a.age < b.age
+})
+print(people)
+---- output
+Cy Bo
+Bo Ana
+Cy Ana
+[{ name: 'Bo', age: 25 }, { name: 'Ana', age: 30 }, { name: 'Cy', age: 30 }]
+==== appending_to_a_top_level_string
+---- source
+mut text = 'a'
+immut alias = text
+text += 'b'
+mut keep = text
+text += 'c'
+text += text
+for i in range(3) {
+    keep += `${i}`
+}
+print(text, alias, keep)
+---- output
+abcabc a ab012
+==== lists_of_two_words_and_shared_lists
+---- source
+mut prices = [2.50, 0.10, 7.25]
+immut before = prices
+prices.insert(1, 1.75)
+prices.insert(4, 0.10)
+prices.sort()
+print(prices, before, prices.indexOf(7.25), 0.10 in prices, prices[1..3])
+print(prices.removeAt(0), prices.pop(), prices, prices + before)
+mut grid = [[1, 2], [3]]
+immut copy = grid
+grid[1].push(4)
+print(grid, copy)
+---- output
+[0.1, 0.1, 1.75, 2.5, 7.25] [2.5, 0.1, 7.25] Some(4) true [0.1, 1.75]
+Some(0.1) Some(7.25) [0.1, 1.75, 2.5] [0.1, 1.75, 2.5, 2.5, 0.1, 7.25]
+[[1, 2], [3, 4]] [[1, 2], [3]]
+==== maps_keep_their_order_through_removals
+---- source
+mut seed = 7
+mut m: Map[int, int] = [:]
+mut sum = 0
+for step in range(3000) {
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    immut key = (seed / 16) % 64
+    if (seed % 3 == 0) {
+        m.remove(key)
+    } else {
+        m[key] = step
+    }
+    match (m.get((key * 5) % 64)) {
+        Some(v) => sum += v % 11
+        None => sum += 1
+    }
+}
+print(m.length(), sum, m.keys())
+---- output
+42 11081 [10, 7, 17, 34, 21, 43, 13, 27, 58, 57, 49, 15, 55, 2, 35, 48, 5, 45, 51, 6, 33, 0, 61, 44, 38, 62, 8, 11, 4, 12, 42, 22, 31, 40, 47, 25, 16, 1, 24, 26, 39, 53]
+==== maps_and_sets #1
+---- source
+type Dictionary = Map[string, string]
+
+mut translations: Dictionary = [
+
+    'hello': 'olá',
+    'world': 'mundo'
+]
+
+translations['bye'] = 'tchau'
+
+print(translations['hello'], 'world' in translations, translations.length())
+
+for key in translations { print(key) }
+
+immut ages: Map[string, int] = ['Ana': 30, 'Bia': 25]
+mut copy = ages
+
+copy['Ana'] += 1
+
+print(ages['Ana'], copy['Ana'], ages.get('Bia'), ages.get('X'), ages.has('Ana'))
+print(copy.remove('Bia'), copy.remove('X'), copy, copy.keys(), copy.values())
+
+immut empty: Map[int, string] = [:]
+
+print(empty, [1: 'um'])
+
+type Point = {
+    x: int
+    y: int
+}
+
+mut seen: Set[Point] = Set.from([])
+
+seen.add({ x: 1, y: 2 })
+seen.add({ x: 1, y: 2 })
+
+immut p: Point = { x: 1, y: 2 }
+
+print(seen.length(), seen.has(p), p in seen)
+
+immut s = Set.from([3, 1, 3, 2])
+mut t = s
+
+print(t.remove(3), t.remove(9))
+print(s, t, s.values(), s == Set.from([1, 2, 3]))
+
+mut counts: Map[char, int] = [:]
+
+for c in 'banana' {
+    if (c in counts) {
+        counts[c] += 1
+    } else {
+        counts[c] = 1
+    }
+}
+
+print(counts)
+---- output
+olá true 3
+hello
+world
+bye
+30 31 Some(25) None true
+Some(25) None ['Ana': 31] ['Ana'] [31]
+[:] [1: 'um']
+1 true true
+true false
+Set([3, 1, 2]) Set([1, 2]) [3, 1, 2] true
+['b': 1, 'a': 3, 'n': 2]
+==== maps_and_sets #2
+---- source (no line break at the end)
+type D = { [key: string]: string }
+---- error
+type error: test.kj:1: 'D' cannot be an index signature: use a map, 'type D = Map[string, ...]'
+==== maps_and_sets #3
+---- source (no line break at the end)
+immut d: Map[string, int] = { 'a': 1 }
+---- error
+type error: test.kj:1:29: a map is written with brackets, not braces: ['key': value] (for Map[string, int])
+    1 | immut d: Map[string, int] = { 'a': 1 }
+      |                             ^^^^^^^^^^
+==== maps_and_sets #4
+---- source (no line break at the end)
+immut m = ['a': 1, 'b': 'x']
+---- error
+type error: test.kj:1:11: map values must have the same type: found int and string
+    1 | immut m = ['a': 1, 'b': 'x']
+      |           ^^^^^^^^^^^^^^^^^^
+==== maps_and_sets #5
+---- source (no line break at the end)
+immut m = [(n: int) => n: 1]
+---- error
+type error: test.kj:1:11: map keys must be equatable, and (int) => int is not
+    1 | immut m = [(n: int) => n: 1]
+      |           ^^^^^^^^^^^^^^^^^^
+==== maps_and_sets #6
+---- source (no line break at the end)
+immut m = ['a': 1]
+m.remove('a')
+---- error
+type error: test.kj:2:1: cannot call 'remove' on 'm', as it changes the value: it is immut
+    2 | m.remove('a')
+      | ^^^^^^^^^^^^^
+==== maps_and_sets #7
+---- source (no line break at the end)
+immut m = ['a': 1, 2]
+---- error
+syntax error: test.kj:1:22: a map literal needs 'key: value' for every entry
+    1 | immut m = ['a': 1, 2]
+      |                      ^
+==== maps_and_sets #8
+---- source (no line break at the end)
+immut s: Set[(int) => int] = Set.from([])
+---- error
+type error: test.kj:1:1: (int) => int is not equatable, as 'Set' requires
+    1 | immut s: Set[(int) => int] = Set.from([])
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+==== untagged_unions_are_rejected
+---- source (no line break at the end)
+type Result = string | int
+---- error
+syntax error: test.kj:1:22: untagged union in type 'Result' is not allowed; use a sum type with named variants
+    1 | type Result = string | int
+      |                      ^
+==== type_intersection_and_no_subtyping #1
+---- source
+        type Animal = {
+            name: string
+        }
+
+        type Dog = Animal & {
+            breed: string
+        }
+
+        function greet(animal: Animal) {
+            print(animal.name)
+        }
+
+        immut dog: Dog = {
+            name: 'Rex',
+            breed: 'Pug'
+        }
+
+greet({ name: dog.name })
+print(dog.breed)
+---- output
+Rex
+Pug
+==== type_intersection_and_no_subtyping #2
+---- source (no line break at the end)
+
+        type Animal = {
+            name: string
+        }
+
+        type Dog = Animal & {
+            breed: string
+        }
+
+        function greet(animal: Animal) {
+            print(animal.name)
+        }
+
+        immut dog: Dog = {
+            name: 'Rex',
+            breed: 'Pug'
+        }
+    
+greet(dog)
+---- error
+type error: test.kj:19:7: argument 1 of 'greet' must be Animal, found Dog (Dog is not a subtype of Animal: Koji has no subtyping, pass the fields explicitly)
+    19 | greet(dog)
+       |       ^^^
+==== nested_shapes #1
+---- source
+type Address = {
+    street: string
+    city: string
+}
+
+type User = {
+    id: int
+    name: string
+    address: Address
+}
+
+immut user: User = {
+    id: 42
+    name: 'Bob'
+    address: {
+        street: '123 Main St'
+        city: 'Exampleville'
+    }
+}
+
+type Product = {
+    id: int
+    name: string
+    price: decimal
+}
+
+function printProduct(product: Product) {
+    print(`Product: ${product.name} (${product.id}) - ${product.price}`)
+}
+
+print(user.address.city)
+
+printProduct({ id: 1, name: 'Pen', price: 2.5 })
+---- output
+Exampleville
+Product: Pen (1) - 2.5
+==== nested_shapes #2
+---- source (no line break at the end)
+type U = { id: int }
+immut u: U = { id: 1, extra: true }
+---- error
+type error: test.kj:2:14: U has no field 'extra'
+    2 | immut u: U = { id: 1, extra: true }
+      |              ^^^^^^^^^^^^^^^^^^^^^^
+==== shapes_are_nominal
+---- source (no line break at the end)
+
+        type Celsius = { value: decimal }
+
+        type Fahrenheit = { value: decimal }
+
+        immut c: Celsius = { value: 20.0 }
+        immut f: Fahrenheit = c
+    
+---- error
+type error: test.kj:7:31: cannot assign a value of type Celsius to 'f' of type Fahrenheit
+    7 |         immut f: Fahrenheit = c
+      |                               ^
+==== interface_is_reserved #1
+---- source (no line break at the end)
+interface User { id: int }
+---- error
+syntax error: test.kj:1:1: 'interface' is a reserved word; to describe the shape of a value, use 'type'
+    1 | interface User { id: int }
+      | ^
+==== interface_is_reserved #2
+---- source (no line break at the end)
+immut interface = 1
+---- error
+syntax error: test.kj:1:7: 'interface' is a reserved word: it cannot be a name
+    1 | immut interface = 1
+      |       ^
+==== functions #1
+---- source
+function sum(a: int, b: int): int {
+    return a + b
+}
+
+print(sum(2, 2)) // 4
+
+function factorial(x: int): int {
+    if (x <= 1) { return 1 }
+
+    return x * factorial(x - 1)
+}
+
+print(factorial(4)) // 24
+---- output
+4
+24
+==== functions #2
+---- source (no line break at the end)
+function f(a: int): int { return a }
+f('x')
+---- error
+type error: test.kj:2:3: argument 1 of 'f' must be int, found string
+    2 | f('x')
+      |   ^^^
+==== functions #3
+---- source (no line break at the end)
+function f(): int {
+ print(1)
+}
+---- error
+type error: test.kj:1:1: 'f' must return a value of type int (add a 'return' or end with an expression)
+    1 | function f(): int {
+      | ^^^^^^^^^^^^^^^^^^^
+==== functions #4
+---- source (no line break at the end)
+function f() { return 1 }
+---- error
+type error: test.kj:1:16: cannot return a value from a function without a return type
+    1 | function f() { return 1 }
+      |                ^^^^^^^^
+==== anonymous_functions_and_closures
+---- source
+immut double = (x: int): int => {
+    return x * 2
+}
+
+// or simply
+
+immut triple = (x: int) => x * 3
+
+print(double(10), triple(10)) // 20 30
+
+function makeAdder(amount: int): (int) => int {
+    return (x: int) => x + amount
+}
+
+immut addFive = makeAdder(5)
+
+print(addFive(1))
+
+immut apply = (f: (int) => int, x: int) => f(x)
+
+print(apply(double, 21))
+---- output
+20 30
+6
+42
+==== closures_capture_a_read_only_copy #1
+---- source
+function make(): int[] {
+    mut results: int[] = []
+    mut x = 1
+    immut read = () => x
+
+    x = 2
+    results += [read()]
+
+    mut fns: (() => int)[] = []
+
+    for i in range(3) {
+        fns += [() => i * 10]
+    }
+
+    for f in fns {
+        results += [f()]
+    }
+
+    function inner(): int { return x }
+
+    x = 3
+    results += [inner()]
+
+    return results
+}
+
+print(make())
+
+// Module variables are not captured: functions read and change them.
+mut total = 0
+
+function add(n: int) {
+    total += n
+}
+
+add(2)
+add(3)
+
+print(total)
+---- output
+[1, 0, 10, 20, 2]
+5
+==== closures_capture_a_read_only_copy #2
+---- source (no line break at the end)
+
+        function makeCounter(): () => int {
+            mut count = 0
+
+            return () => {
+                count += 1
+
+                return count
+            }
+        }
+    
+---- error
+type error: test.kj:6:17: cannot modify 'count' here: functions capture a read-only copy of the variables around them
+    6 |                 count += 1
+      |                 ^^^^^^^^^^
+==== closures_capture_a_read_only_copy #3
+---- source (no line break at the end)
+function f() {
+ mut items = [1]
+ immut g = () => { items[0] = 2 }
+}
+---- error
+type error: test.kj:3:20: cannot modify 'items' here: functions capture a read-only copy of the variables around them
+    3 |  immut g = () => { items[0] = 2 }
+      |                    ^^^^^^^^^^^^
+==== functions_are_hoisted
+---- source
+print(later(1))
+function later(x: int): int { return x + 1 }
+---- output
+2
+==== question_mark_operator
+---- source
+function parseAge(text: string): Result[int, ParseError] {
+    immut age = int(text)?
+
+    return Ok(age)
+}
+
+print(parseAge('42'), parseAge('x'))
+
+function first(items: string[]): Option[string] {
+    if (items.length() == 0) { return None }
+
+    return Some(items[0])
+}
+
+function shout(items: string[]): Option[string] {
+    immut item = first(items)?
+
+    return Some(item.upper())
+}
+
+print(shout(['hey']), shout([]))
+---- output
+Ok(42) Err(InvalidNumber('x'))
+Some('HEY') None
+==== question_mark_wraps_errors_automatically #1
+---- source
+import json
+
+type AppError = {
+    Parse(error: ParseError)
+    Json(error: json.JsonError)
+    Message(text: string)
+}
+
+function load(text: string, count: string): Result[int, AppError] {
+    json.parse(text)?
+
+    immut n = int(count)?
+
+    return Ok(n)
+}
+
+print(load('[1]', '3'), load('[1', '3'), load('[1]', 'x'))
+---- output
+Ok(3) Err(Json(Syntax('expected \',\' or \']\'', 1, 3))) Err(Parse(InvalidNumber('x')))
+==== question_mark_wraps_errors_automatically #2
+---- source (no line break at the end)
+function f(): Result[int, string] {
+ immut x = int('1')?
+ return Ok(x)
+}
+---- error
+type error: test.kj:2:12: '?' cannot convert ParseError into string: use '.mapErr(...)' to convert ParseError into string
+    2 |  immut x = int('1')?
+      |            ^^^^^^^^^
+==== question_mark_wraps_errors_automatically #3
+---- source (no line break at the end)
+type E = { A(e: ParseError)  B(e: ParseError) }
+function f(): Result[int, E] {
+ immut x = int('1')?
+ return Ok(x)
+}
+---- error
+type error: test.kj:3:12: '?' cannot choose how to convert ParseError into E: the variants A, B all hold a ParseError (use '.mapErr(...)' to convert ParseError into E)
+    3 |  immut x = int('1')?
+      |            ^^^^^^^^^
+==== readable_error_messages #1
+---- source
+import file
+import json
+import math
+
+match (file.open('/nonexistent/notes.txt', file.Read)) {
+    Ok(_) => print('opened?')
+    Err(error) => {
+        print(error)
+        print(`failed: ${error}`, error.display().length() > 0)
+    }
+}
+
+match (int('abc')) {
+    Ok(_) => print('?')
+    Err(error) => print(error)
+}
+
+match (json.parse('[1,')) {
+    Ok(_) => print('?')
+    Err(error) => print(error)
+}
+
+match (math.sqrt(-1)) {
+    Ok(_) => print('?')
+    Err(error) => print(error.display(), '|', error.debug())
+}
+
+print(int('abc')) // a Result keeps its structural form
+---- output
+file '/nonexistent/notes.txt' not found
+failed: file '/nonexistent/notes.txt' not found true
+'abc' is not a valid number
+invalid JSON at line 1, column 4: unexpected end of input
+the result is not a real number (it is complex) | Complex
+Err(InvalidNumber('abc'))
+==== readable_error_messages #2
+---- source (no line break at the end)
+print(int('a').message())
+---- error
+type error: test.kj:1:7: a value of type Result[int, ParseError] has no method 'message'
+    1 | print(int('a').message())
+      |       ^^^^^^^^^^^^^^^^^^
+==== map_err #1
+---- source
+function parse(text: string): Result[int, string] {
+    immut n = int(text).mapErr((error: ParseError) => `bad number: ${text}`)?
+
+    return Ok(n)
+}
+
+type Wrapped = { Wrap(error: ParseError) }
+
+print(parse('1'), parse('x'), int('y').mapErr(Wrap))
+---- output
+Ok(1) Err('bad number: x') Err(Wrap(InvalidNumber('y')))
+==== map_err #2
+---- source (no line break at the end)
+immut x = int('1').mapErr(5)
+---- error
+type error: test.kj:1:11: 'mapErr' expects a function with one parameter (or a variant with one field), found int
+    1 | immut x = int('1').mapErr(5)
+      |           ^^^^^^^^^^^^^^^^^^
+==== question_mark_rules #1
+---- source (no line break at the end)
+function f(): int {
+ return int('1')?
+}
+---- error
+type error: test.kj:2:9: '?' on a Result needs the function to return a Result too, but it returns int
+    2 |  return int('1')?
+      |         ^^^^^^^^^
+==== question_mark_rules #2
+---- source (no line break at the end)
+immut x = 5?
+---- error
+type error: test.kj:1:11: '?' can only be used on a Result or an Option, found int
+    1 | immut x = 5?
+      |           ^^
+==== question_mark_rules #3
+---- source (no line break at the end)
+immut g = (s: string) => int(s)?
+---- error
+type error: test.kj:1:26: '?' needs the function to declare its return type
+    1 | immut g = (s: string) => int(s)?
+      |                          ^^^^^^^
+==== question_mark_rules #4
+---- source (no line break at the end)
+print(int('1')?)
+immut n = int('oops')?
+print('never')
+---- output
+1
+---- error
+error: test.kj:2: 'oops' is not a valid number
+==== imports_are_hoisted
+---- source
+type Failure = { Bad(error: math.MathError) }
+
+print(root(16.0))
+
+function root(x: decimal): Result[decimal, Failure] {
+    return Ok(math.sqrt(x)?)
+}
+
+import math
+---- output
+Ok(4)
+==== compound_bitwise_assignments #1
+---- source
+mut x = 12
+x &= 10
+x |= 5
+x ^= 3
+x <<= 2
+x >>= 1
+print(x)
+---- output
+28
+==== compound_bitwise_assignments #2
+---- source (no line break at the end)
+mut s = 'a'
+s &= 1
+---- error
+type error: test.kj:2:1: operator '&' cannot be applied to string and int
+    2 | s &= 1
+      | ^^^^^^
+==== compound_bitwise_assignments #3
+---- source (no line break at the end)
+mut f = 1.5
+f <<= 1
+---- error
+type error: test.kj:2:1: operator '<<' cannot be applied to decimal and int
+    2 | f <<= 1
+      | ^^^^^^^
+==== compound_bitwise_assignments #4
+---- source (no line break at the end)
+immut x = 1
+x |= 2
+---- error
+type error: test.kj:2:1: cannot modify 'x': it is immut
+    2 | x |= 2
+      | ^^^^^^
+==== errors_files_and_the_operating_system_are_checked #1
+---- source (no line break at the end)
+printError(print)
+---- error
+type error: test.kj:1:12: 'print' is a built-in function and must be called
+    1 | printError(print)
+      |            ^^^^^
+==== errors_files_and_the_operating_system_are_checked #2
+---- source (no line break at the end)
+import file
+immut x: int = file.remove('a')
+---- error
+type error: test.kj:2:16: cannot assign a value of type Result[void, FileError] to 'x' of type int
+    2 | immut x: int = file.remove('a')
+      |                ^^^^^^^^^^^^^^^^
+==== errors_files_and_the_operating_system_are_checked #3
+---- source (no line break at the end)
+import file
+file.remove(1)
+---- error
+type error: test.kj:2:13: argument 1 of 'file.remove' must be string, found int
+    2 | file.remove(1)
+      |             ^
+==== errors_files_and_the_operating_system_are_checked #4
+---- source (no line break at the end)
+import system
+immut n = match (system.os) {
+    Linux => 1
+    MacOS => 2
+}
+---- error
+type error: test.kj:2:11: match is not exhaustive: Windows is not handled (add an arm for it or a wildcard '_ => ...')
+    2 | immut n = match (system.os) {
+      |           ^^^^^^^^^^^^^^^^^^^
+==== errors_files_and_the_operating_system_are_checked #5
+---- source (no line break at the end)
+import system
+system.os = system.Linux
+---- error
+type error: test.kj:2:1: 'os' is read-only outside 'system'
+    2 | system.os = system.Linux
+      | ^^^^^^^^^^^^^^^^^^^^^^^^
+==== export_rules #1
+---- source (no line break at the end)
+function f() {
+ export immut x = 1
+}
+---- error
+syntax error: test.kj:2:2: 'export' is only allowed at the top level of a file
+    2 |  export immut x = 1
+      |  ^
+==== export_rules #2
+---- source (no line break at the end)
+export x = 1
+---- error
+syntax error: test.kj:1:8: expected 'function', 'mut', 'immut' or 'type' after 'export', found 'x'
+    1 | export x = 1
+      |        ^
+==== export_rules #3
+---- source (no line break at the end)
+type Hidden = { value: int }
+export function make(): Hidden { return { value: 1 } }
+---- error
+type error: test.kj:2: 'make' is exported, but its type uses the private type 'Hidden' (export 'Hidden' too)
+==== export_rules #4
+---- source
+type Counts = Map[string, int]
+export type Stats = { counts: Map[string, int] }
+immut stats: Stats = { counts: ['a': 1] }
+print(stats.counts)
+---- output
+['a': 1]
+==== export_rules #5
+---- source
+export immut answer = 42
+print(answer)
+---- output
+42
+==== stdlib_time
+---- source
+import time
+
+print('Waiting...')
+
+time.sleep(0.01)
+
+print('Done!')
+
+immut start = time.monotonic()
+// Do something
+immut end = time.monotonic()
+
+print(end - start >= 0.0, time.now() > 1700000000.0)
+
+// Timestamps count from 0000-01-01 00:00:00 UTC; those of Unix, from 1970.
+immut unix = time.now() - 62167219200
+print(unix > 1700000000 and unix < 4000000000)
+
+immut before = time.monotonic()
+time.sleep(0.05)
+print(time.monotonic() - before >= 0.05)
+time.sleep(0)
+time.sleep(-1)
+---- output
+Waiting...
+Done!
+true true
+true
+true
+==== bytes #1
+---- source
+immut a: byte = 200
+immut b: byte = 55
+immut c = a + b
+mut data: byte[] = [1, 2, 255]
+data.push(a)
+data[0] = 7
+data.sort()
+immut counts: Map[byte, int] = [a: 1, b: 2]
+print(c, a - b, a / b, a % b, a & b, a | b, a ^ b, ~a, b << 2, a >> 3, a > b, a == 200, 3 + b)
+print(data, data.debug(), counts, counts[b], int(a) + 1000, float(a), decimal(b), byte(17), `${a}!`, string(b).length())
+mut bytes: byte[] = []
+
+for i in range(256) {
+    bytes.push(byte(i))
+}
+
+print(bytes.length(), bytes[255], 255 in bytes, byte(2) ** byte(7))
+---- output
+255 145 3 35 0 255 255 55 220 25 true true 58
+[2, 7, 200, 255] [2, 7, 200, 255] [200: 1, 55: 2] 2 1200 0x1.9p7 55 17 200! 2
+256 255 true 128
+==== bytes #2
+---- source (no line break at the end)
+immut x: byte = 256
+---- error
+type error: test.kj:1:17: 256 is not a byte (0 to 255)
+    1 | immut x: byte = 256
+      |                 ^^^
+==== bytes #3
+---- source (no line break at the end)
+immut x: byte = 1
+immut n = 5
+print(x + n)
+---- error
+type error: test.kj:3:7: operator '+' cannot be applied to byte and int
+    3 | print(x + n)
+      |       ^^^^^
+==== bytes #4
+---- source (no line break at the end)
+immut x: byte = 1
+print(-x)
+---- error
+type error: test.kj:2:7: operator '-' cannot be applied to byte
+    2 | print(-x)
+      |       ^^
+==== bytes #5
+---- source (no line break at the end)
+print(byte(1.5))
+---- error
+type error: test.kj:1:7: cannot convert decimal to byte (only an int)
+    1 | print(byte(1.5))
+      |       ^^^^^^^^^
+==== bytes #6
+---- source (no line break at the end)
+immut x: byte = 200
+print(x + 100)
+---- error
+panic: test.kj:2: byte overflow
+==== bytes #7
+---- source (no line break at the end)
+print(byte(300))
+---- error
+panic: test.kj:1: the value is not a byte (0 to 255)
+==== bytes #8
+---- source (no line break at the end)
+immut x: byte = 2
+print(x << 9)
+---- error
+panic: test.kj:2: shift of a byte out of range (0 to 7)
+==== unsafe_is_for_the_standard_library #1
+---- source (no line break at the end)
+import { allocate } from 'koji:unsafe'
+print(allocate(8))
+---- error
+type error: test.kj:1: 'koji:unsafe' is only for the standard library
+==== unsafe_is_for_the_standard_library #2
+---- source (no line break at the end)
+import { trim } from 'koji:core'
+print(trim(' a '))
+---- error
+type error: test.kj:1: 'koji:core' is only for the standard library
+==== unsafe_is_for_the_standard_library #3
+---- source (no line break at the end)
+extern function abs(x: int): int
+print(abs(-1))
+---- error
+type error: test.kj:1: 'extern' functions are only for the standard library
+==== stdlib_datetime
+---- source
+import datetime
+
+immut date = datetime.today()
+
+print(date.length())
+
+match (datetime.parse('2025-04-20', 'YYYY-MM-DD')) {
+    Ok(timestamp) => {
+        print(timestamp)
+        print(datetime.format(timestamp, 'DD/MM/YYYY'))
+        print(datetime.format(timestamp, 'yyyy-mm-dd hh:min:ss'))
+        print(datetime.format(timestamp + 3661, 'yyyy-mm-dd hh:min:ss'))
+    }
+    Err(error) => print(error)
+}
+
+print(datetime.parse('2025-02-30', 'YYYY-MM-DD'), datetime.parse('20/04', 'YYYY-MM-DD'))
+print(datetime.parse('2025/02/03', 'YYYY-MM-DD'))
+
+immut now = datetime.now()
+
+print(now.year >= 2025, now.month >= 1 and now.month <= 12)
+---- output
+10
+63912326400
+20/04/2025
+2025-04-20 00:00:00
+2025-04-20 01:01:01
+Err(InvalidDate('2025-02-30')) Err(PatternMismatch('20/04', 'YYYY-MM-DD'))
+Err(PatternMismatch('2025/02/03', 'YYYY-MM-DD'))
+true true
+==== stdlib_math #1
+---- source
+import math
+
+match (math.pow(5, 2)) {
+    Ok(squared) => print(math.pi * squared)
+    Err(error) => print(error)
+}
+
+match (math.sqrt(-1)) {
+    Ok(root) => print(root)
+    Err(Complex) => print('no real square root')
+    Err(Indeterminate) => print('indeterminate')
+    Err(Infinite) => print('infinite')
+}
+
+print(math.sqrt(16), math.pow(-8, 0.5), math.pow(0, 0), math.pow(0, -1), math.pow(-2, 3))
+print(math.abs(-3), math.abs(-2.5), math.floor(2.7), math.ceil(2.1), math.round(2.5))
+print(math.e > 2.71)
+---- output
+78.53981633974483096156608458198758
+no real square root
+Ok(4) Err(Complex) Ok(1) Err(Infinite) Ok(-8)
+3 2.5 2 3 3
+true
+==== stdlib_math #2
+---- source (no line break at the end)
+import math
+print(math.pow(10, 7000))
+---- error
+panic: test.kj:2: decimal overflow
+==== stdlib_math #3
+---- source (no line break at the end)
+import math
+print(math.pow(float(10), 400))
+---- error
+panic: test.kj:2: float overflow
+==== stdlib_math #4
+---- source (no line break at the end)
+import math
+print(math.round(1e300))
+---- error
+panic: test.kj:2: integer overflow: 1e300 does not fit in an int
+==== stdlib_math #5
+---- source
+import math
+immut z = 0 * 1.5
+print(math.ceil(z), math.floor(-z), math.ceil(1e-50), math.floor(-1e-50))
+---- output
+0 0 1 -1
+==== stdlib_math #6
+---- source (no line break at the end)
+import math
+
+print(math.abs(-9223372036854775807 - 1))
+---- error
+panic: test.kj:3: integer overflow
+==== stdlib_math #7
+---- source (no line break at the end)
+import math
+
+print(math.pow(float(10), float(400)))
+---- error
+panic: test.kj:3: float overflow
+==== stdlib_math #8
+---- source (no line break at the end)
+import math
+
+print(math.floor(1e30))
+---- error
+panic: test.kj:3: integer overflow: 1000000000000000000000000000000 does not fit in an int
+==== stdlib_math #9
+---- source
+import math
+type MathError = { Complex }
+print(Complex, math.Complex)
+---- output
+Complex the result is not a real number (it is complex)
+==== stdlib_math #10
+---- source
+import { abs, sqrt, pow } from 'math'
+print(abs(float(-2.5)), sqrt(16), sqrt(float(-1)), pow(2, 10))
+---- output
+0x1.4p1 Ok(4) Err(Complex) Ok(1024)
+==== floats_have_no_nan_or_infinity #1
+---- source (no line break at the end)
+immut x = float(1e308) * float(10)
+---- error
+panic: test.kj:1: float overflow
+==== floats_have_no_nan_or_infinity #2
+---- source (no line break at the end)
+immut x = float(1.5) / float(0)
+---- error
+panic: test.kj:1: division by zero
+==== floats_have_no_nan_or_infinity #3
+---- source (no line break at the end)
+immut x = float(-8) ** float(0.5)
+---- error
+panic: test.kj:1: -0x1p3 ** 0x1p-1 is not a real number (use math.pow to handle it)
+==== floats_have_no_nan_or_infinity #4
+---- source (no line break at the end)
+immut x = (-8.0) ** 0.5
+---- error
+panic: test.kj:1: -8 ** 0.5 is not a real number (use math.pow to handle it)
+==== floats_have_no_nan_or_infinity #5
+---- source (no line break at the end)
+immut x = 0.0 ** -1.0
+---- error
+panic: test.kj:1: division by zero
+==== floats_have_no_nan_or_infinity #6
+---- source (no line break at the end)
+immut x = float(1e400)
+---- error
+type error: test.kj:1:11: 1e400 is too large for a float
+    1 | immut x = float(1e400)
+      |           ^^^^^^^^^^^^
+==== floats_have_no_nan_or_infinity #7
+---- source (no line break at the end)
+immut x = 0x1p1024
+---- error
+syntax error: test.kj:1:11: 0x1p1024 is too large for a float
+    1 | immut x = 0x1p1024
+      |           ^
+==== floats_have_no_nan_or_infinity #8
+---- source (no line break at the end)
+match (float(1.5)) {
+    -0x1p2000 => print(0)
+    _ => print(1)
+}
+---- error
+syntax error: test.kj:2:6: 0x1p2000 is too large for a float
+    2 |     -0x1p2000 => print(0)
+      |      ^
+==== floats_have_no_nan_or_infinity #9
+---- source
+print(2.0 ** 0.5 > 1.41, 2 ** 3, (-8.0) ** 2.0, float(2) ** float(0.5) > float(1.41))
+---- output
+true 8 64 true
+==== floats_have_no_nan_or_infinity #10
+---- source
+print(0 ** 0, 0.0 ** 0.0, float(0) ** float(0))
+---- output
+1 1 0x1p0
+==== floats_have_no_nan_or_infinity #11
+---- source
+print(6.022e23, 1e15, 2.5e-3)
+---- output
+602200000000000000000000 1000000000000000 0.0025
+==== decimals_are_exact_as_written #1
+---- source
+import math
+
+immut price: decimal = 0.1
+immut tax: decimal = 0.2
+print(price + tax, price + tax == 0.3)
+print(0.1 + 0.2)
+mut total: decimal = 0
+for i in range(10) {
+    total += 0.1
+}
+print(total, total == 1)
+immut third = decimal(1) / 3
+print(third, third * 3)
+print(decimal(2) / 3, -decimal(7.5), 7.5 * price)
+print(decimal(1.5) ** 2, decimal(2) ** -2, decimal(10) ** 20)
+print(decimal(7.5) % 2, math.abs(decimal(-2.5)), math.sqrt(decimal(2)))
+print(math.floor(decimal(-2.5)), math.ceil(decimal(2.1)), math.round(decimal(2.5)), int(decimal(-2.7)))
+print(float(decimal(0.1)), decimal(float(0.1) + float(0.2)), decimal('12.50'), decimal('x'))
+immut values: decimal[] = [1.5, 0.25, 3]
+print(values, values.length())
+mut sorted = values
+sorted.sort()
+print(sorted, decimal(1.50) == 1.5, 1.5 < decimal(2), decimal(1e300) * 10)
+immut big: decimal = 1e384
+print(big, `interpolated ${price}`, string(tax))
+immut counts: Map[decimal, int] = [1.5: 1, 1.50: 2]
+print(counts)
+match (price) {
+    0.1 => print('a tenth')
+    _ => print('other')
+}
+---- output
+0.3 true
+0.3
+1 true
+0.3333333333333333333333333333333333 0.9999999999999999999999999999999999
+0.6666666666666666666666666666666667 -7.5 0.75
+2.25 0.25 100000000000000000000
+1.5 2.5 Ok(1.414213562373095048801688724209698)
+-3 3 3 -2
+0x1.999999999999ap-4 0.30000000000000004 Ok(12.5) Err(InvalidNumber('x'))
+[1.5, 0.25, 3] 3
+[0.25, 1.5, 3] true true 1e301
+1e384 interpolated 0.1 0.2
+[1.5: 2]
+a tenth
+==== decimals_are_exact_as_written #2
+---- source (no line break at the end)
+immut x: decimal = 0.12345678901234567890123456789012345
+---- error
+type error: test.kj:1:20: decimal literal 0.12345678901234567890123456789012345 has more than 34 significant digits, the precision of a decimal
+    1 | immut x: decimal = 0.12345678901234567890123456789012345
+      |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+==== decimals_are_exact_as_written #3
+---- source (no line break at the end)
+immut x: decimal = 1e6145
+---- error
+type error: test.kj:1:20: decimal literal 1e6145 is too large for a decimal
+    1 | immut x: decimal = 1e6145
+      |                    ^^^^^^
+==== decimals_are_exact_as_written #4
+---- source (no line break at the end)
+immut x: decimal = 1e-6177
+---- error
+type error: test.kj:1:20: decimal literal 1e-6177 is too small for a decimal
+    1 | immut x: decimal = 1e-6177
+      |                    ^^^^^^^
+==== decimals_are_exact_as_written #5
+---- source (no line break at the end)
+immut f = float(1.5)
+immut d: decimal = f
+---- error
+type error: test.kj:2:20: cannot assign a value of type float to 'd' of type decimal
+    2 | immut d: decimal = f
+      |                    ^
+==== decimals_are_exact_as_written #6
+---- source (no line break at the end)
+immut d: decimal = 1
+immut f = float(2.5)
+print(d + f)
+---- error
+type error: test.kj:3:7: operator '+' cannot be applied to decimal and float: convert one of them with float(x) or decimal(x)
+    3 | print(d + f)
+      |       ^^^^^
+==== decimals_are_exact_as_written #7
+---- source (no line break at the end)
+immut f: float = 2.5
+---- error
+type error: test.kj:1:18: 2.5 is a decimal: write float(2.5) for the nearest float, or the float in hexadecimal
+    1 | immut f: float = 2.5
+      |                  ^^^
+==== decimals_are_exact_as_written #8
+---- source (no line break at the end)
+immut f = 0x1.fffffffffffff8p0
+---- error
+syntax error: test.kj:1:11: 0x1.fffffffffffff8p0 has more digits than a float holds (53 bits): it would be rounded
+    1 | immut f = 0x1.fffffffffffff8p0
+      |           ^
+==== decimals_are_exact_as_written #9
+---- source (no line break at the end)
+immut d: decimal = -8
+print(d ** 0.5)
+---- error
+panic: test.kj:2: -8 ** 0.5 is not a real number (use math.pow to handle it)
+==== decimals_are_exact_as_written #10
+---- source (no line break at the end)
+import math
+print(math.pow(float(2), 1.5))
+---- error
+type error: test.kj:2:7: the arguments of 'math.pow' are a float and a decimal: convert one of them with float(x) or decimal(x)
+    2 | print(math.pow(float(2), 1.5))
+      |       ^^^^^^^^^^^^^^^^^^^^^^^
+==== decimals_are_exact_as_written #11
+---- source (no line break at the end)
+print(decimal(true))
+---- error
+type error: test.kj:1:7: cannot convert boolean to decimal
+    1 | print(decimal(true))
+      |       ^^^^^^^^^^^^^
+==== decimals_are_exact_as_written #12
+---- source (no line break at the end)
+immut d: decimal = 9e6144
+print(d * 10)
+---- error
+panic: test.kj:2: decimal overflow
+==== decimals_are_exact_as_written #13
+---- source (no line break at the end)
+immut d: decimal = 1
+print(d / 0)
+---- error
+panic: test.kj:2: division by zero
+==== decimals_are_exact_as_written #14
+---- source (no line break at the end)
+immut d: decimal = 1e-6176
+print(d / 3)
+---- error
+panic: test.kj:2: decimal underflow
+==== decimals_are_exact_as_written #15
+---- source (no line break at the end)
+print(int(decimal(1e20)))
+---- error
+panic: test.kj:1: integer overflow: 100000000000000000000 does not fit in an int
+==== decimals_by_default_and_floats_as_stored
+---- source
+import math
+import time
+import json
+
+function main(): Result[void, math.MathError] {
+
+mut a: decimal = 10
+print(a)
+a = 0.1
+immut b: decimal = 0.2
+immut c = a + b
+print(c, float(c))
+immut x: float = 0x1.999999999999ap-4
+immut y = float(0.2)
+immut z = x + y
+print(z, decimal(z), float(c) == z, c == decimal(z))
+print(0xff, 0x10, 0x1.8p1, -0x1p-2, 0x0.0000000000001p-1022, float(3), float(1) / float(3))
+print(decimal(10) ** 20, 2 ** 0.5, 2 ** 0.5 == math.sqrt(2)?, math.pow(2, 0.5), math.pow(float(2), float(0.5)), math.pow(1.5, 2))
+print(math.pi, math.e, math.sqrt(16), math.sqrt(float(16)))
+immut started = time.monotonic()
+immut now: decimal = time.now()
+print(now > 1700000000, time.monotonic() >= started)
+print(json.parse('[0.1, 2, 1e3]'), json.stringify(json.Decimal(0.30)))
+    return Ok()
+}
+print(main())
+---- output
+10
+0.3 0x1.3333333333333p-2
+0x1.3333333333334p-2 0.30000000000000004 false false
+255 16 0x1.8p1 -0x1p-2 0x0.0000000000001p-1022 0x1.8p1 0x1.5555555555555p-2
+100000000000000000000 1.414213562373095048801688724209698 true Ok(1.414213562373095048801688724209698) Ok(0x1.6a09e667f3bcdp0) Ok(2.25)
+3.141592653589793238462643383279503 2.718281828459045235360287471352662 Ok(4) Ok(0x1p2)
+true true
+Ok(Array([Decimal(0.1), Int(2), Decimal(1000)])) 0.3
+Ok(void)
+==== panic_builtin #1
+---- source (no line break at the end)
+panic('impossible state')
+---- error
+panic: test.kj:1: impossible state
+==== panic_builtin #2
+---- source
+function check(x: int): int {
+    if (x > 0) { return x }
+
+    panic('x must be positive')
+}
+
+print(check(2))
+---- output
+2
+==== stdlib_json #1
+---- source
+import json
+
+match (json.parse('{"name": "koji", "year": 2025, "tags": ["a"], "ok": true, "x": null, "pi": 3.14}')) {
+    Ok(Object(fields)) => {
+        match (fields['name']) {
+            String(name) => print(name) // koji
+            _ => print('name is not a string')
+        }
+
+        match (fields['x']) {
+            Null => print('null')
+            _ => print('not null')
+        }
+
+        print(fields['year'], fields['tags'], fields['pi'])
+    }
+    Ok(_) => print('expected an object')
+    Err(error) => print(`invalid JSON: ${error}`)
+}
+
+match (json.parse('{"year": 2025}')) {
+    Ok(data) => {
+        print(json.get(data, 'year'), json.get(data, 'nope'))
+
+        match (json.get(data, 'year')) {
+            Some(year) => print(json.asInt(year), json.asDecimal(year), json.asString(year))
+            None => print('no year')
+        }
+
+        print(json.stringify(data))
+    }
+    Err(error) => print(error)
+}
+
+print(json.stringify(json.Array([json.Decimal(2.0), json.Int(2), json.String('a'), json.Null, json.Bool(false), json.Decimal(6.022e23)])))
+
+// parse and stringify give back the same text; floats keep their decimal point
+for text in ['{"name":"koji","year":2025,"tags":[1,2.5,null]}', '[2.0, 1e3]'] {
+    match (json.parse(text)) {
+        Ok(value) => print(json.stringify(value))
+        Err(error) => print(error)
+    }
+}
+
+print(json.parse('{"a": }'))
+print(json.parse('[1,\n 99999999999999999999]'))
+---- output
+koji
+null
+Int(2025) Array([String('a')]) Decimal(3.14)
+Some(Int(2025)) None
+Some(2025) Some(2025) None
+{"year":2025}
+[2.0,2,"a",null,false,602200000000000000000000.0]
+{"name":"koji","year":2025,"tags":[1,2.5,null]}
+[2.0,1000.0]
+Err(Syntax('unexpected character \'}\'', 1, 7))
+Err(NumberOutOfRange('99999999999999999999', 2, 2))
+==== stdlib_json #2
+---- source (no line break at the end)
+import json
+print(json.stringify(1))
+---- error
+type error: test.kj:2:22: argument 1 of 'json.stringify' must be Json, found int
+    2 | print(json.stringify(1))
+      |                      ^
+==== stdlib_regex #1
+---- source
+import regex
+
+match (regex.compile('[0-9]+')) {
+    Ok(digits) => {
+        print(digits.test('abc123'), digits.test('abc'))
+
+        match (digits.find('Order number: 12345')) {
+            Some(found) => print(found.value, found.start, found.end)
+            None => print('no number')
+        }
+
+        for found in digits.findAll('a1b22c333') {
+            print(found.value)
+        }
+
+        print(digits.replace('a1b2', '#'), digits.replaceAll('a1b2', '#'))
+        print(digits.split('a1b22c'))
+        print(digits.find('abc'))
+    }
+    Err(error) => print(error)
+}
+
+match (regex.compile('(abc')) {
+    Ok(_) => print('valid?')
+    Err(error) => print(error, '|', error.debug())
+}
+
+function countWords(text: string): Result[int, regex.RegexError] {
+    immut word = regex.compile('[a-z]+')?
+
+    return Ok(word.findAll(text).length())
+}
+
+print(countWords('hello big world'))
+---- output
+true false
+12345 14 19
+1
+22
+333
+a#b2 a#b#
+['a', 'b', 'c']
+None
+invalid regular expression '(abc': unclosed group | InvalidPattern('(abc', 'unclosed group')
+Ok(3)
+==== stdlib_regex #2
+---- source (no line break at the end)
+import regex
+print(regex.match('a', 'a'))
+---- error
+type error: test.kj:2:7: module 'regex' has no member 'match'
+    2 | print(regex.match('a', 'a'))
+      |       ^^^^^^^^^^^^^^^^^^^^^
+==== stdlib_regex #3
+---- source
+import regex
+
+print(regex.compile('(?=a)b'))
+print(regex.compile('a{1000}{1000}'))
+
+match (regex.compile('(a)\\1')) {
+    Ok(_) => print('valid?')
+    Err(error) => print(error)
+}
+---- output
+Err(Unsupported('(?=a)b', 'look-around, including look-ahead and look-behind, is not supported'))
+Err(TooLarge('a{1000}{1000}'))
+unsupported regular expression '(a)\1': backreferences are not supported
+==== methods_and_associated_functions #1
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+function Person.create(name: string): Person {
+    return { name: name, age: 0 }
+}
+
+function Person.greet(self) {
+    print(`Hello, I'm ${self.name}!`)
+}
+
+function Person.olderThan(self, other: Person): boolean {
+    return self.age > other.age
+}
+
+type Shape = {
+    Circle(radius: decimal)
+    Square(side: decimal)
+}
+
+function Shape.area(self): decimal {
+    return match (self) {
+        Circle(r) => 3.0 * r * r
+        Square(s) => s * s
+    }
+}
+
+immut person: Person = { name: 'John', age: 20 }
+
+person.greet()
+
+immut baby = Person.create('Ana')
+
+baby.greet()
+
+print(person.olderThan(baby), Square(2.0).area())
+---- output
+Hello, I'm John!
+Hello, I'm Ana!
+true 4
+==== methods_and_associated_functions #2
+---- source (no line break at the end)
+type P = { name: string }
+function P.hi(self) { self.name = 'a' }
+---- error
+type error: test.kj:2:23: cannot modify 'self': parameters can only be modified when declared 'mut'
+    2 | function P.hi(self) { self.name = 'a' }
+      |                       ^^^^^^^^^^^^^^^
+==== methods_and_associated_functions #3
+---- source (no line break at the end)
+type P = { name: string }
+function P.debug(self) {}
+---- error
+type error: test.kj:2: cannot declare 'P.debug': every type has 'debug()', which shows the structure of the value
+==== methods_and_associated_functions #4
+---- source (no line break at the end)
+type P = { name: string }
+function P.display(self): int { 1 }
+---- error
+type error: test.kj:2: 'P.display' must be declared as 'function P.display(self): string'
+==== methods_and_associated_functions #5
+---- source (no line break at the end)
+type P = { name: string }
+function P.hi(self: P) {}
+---- error
+type error: test.kj:2: 'self' has no type annotation: in 'P.hi' it is always 'P'
+==== methods_and_associated_functions #6
+---- source (no line break at the end)
+type P = { name: string }
+function P.name(self) {}
+---- error
+type error: test.kj:2: 'P.name' has the same name as a field of 'P'
+==== methods_and_associated_functions #7
+---- source (no line break at the end)
+type P = { name: string }
+function Q.hi(self) {}
+---- error
+type error: test.kj:2: cannot declare 'Q.hi': methods belong to a type with fields or variants declared in the same file
+==== methods_and_associated_functions #8
+---- source (no line break at the end)
+type P = { name: string }
+export function P.hi(self) {}
+---- error
+type error: test.kj:2: 'P.hi' does not take 'export': methods are available wherever their type is
+==== methods_and_associated_functions #9
+---- source (no line break at the end)
+type P = { name: string }
+function f() { function P.hi(self) {} }
+---- error
+type error: test.kj:2:1: 'P.hi' must be declared at the top level of the file that declares 'P'
+    2 | function f() { function P.hi(self) {} }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+==== methods_and_associated_functions #10
+---- source (no line break at the end)
+type P = { name: string }
+function P.hi(self) {}
+P.hi()
+---- error
+type error: test.kj:3:1: 'P.hi' takes 'self': call it on a value ('value.hi(...)')
+    3 | P.hi()
+      | ^^^^^^
+==== methods_and_associated_functions #11
+---- source (no line break at the end)
+type P = { name: string }
+function P.make(): P { return { name: 'a' } }
+immut x: P = { name: 'b' }
+x.make()
+---- error
+type error: test.kj:4:1: 'P.make' has no 'self': call it on the type ('P.make(...)')
+    4 | x.make()
+      | ^^^^^^^^
+==== mut_parameters #1
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+type Box = {
+    inner: int
+}
+
+function reset(mut n: int) {
+    n = 0
+}
+
+function replace(mut items: int[]) {
+    items = [9, 9]
+}
+
+function birthday(mut p: Person) {
+    p.age += 1
+}
+
+mut count = 5
+
+reset(mut count)
+
+mut list = [1, 2]
+
+replace(mut list)
+
+mut people: Person[] = [{ name: 'Ana', age: 30 }]
+
+birthday(mut people[0])
+
+mut data: Box = { inner: 3 }
+
+reset(mut data.inner)
+
+print(count, list, people[0].age, data.inner)
+---- output
+0 [9, 9] 31 0
+==== mut_parameters #2
+---- source (no line break at the end)
+function f(x: int) { x = 1 }
+---- error
+type error: test.kj:1:22: cannot modify 'x': parameters can only be modified when declared 'mut'
+    1 | function f(x: int) { x = 1 }
+      |                      ^^^^^
+==== mut_parameters #3
+---- source (no line break at the end)
+function f(items: int[]) { items[0] = 1 }
+---- error
+type error: test.kj:1:28: cannot modify 'items': parameters can only be modified when declared 'mut'
+    1 | function f(items: int[]) { items[0] = 1 }
+      |                            ^^^^^^^^^^^^
+==== mut_parameters #4
+---- source (no line break at the end)
+function f(mut x: int) {}
+immut c = 1
+f(mut c)
+---- error
+type error: test.kj:3:1: cannot pass 'c' as 'mut': it is immut
+    3 | f(mut c)
+      | ^^^^^^^^
+==== mut_parameters #5
+---- source (no line break at the end)
+function f(mut x: int) {}
+immut c = [1]
+f(mut c[0])
+---- error
+type error: test.kj:3:1: cannot modify 'c': it is immut
+    3 | f(mut c[0])
+      | ^^^^^^^^^^^
+==== mut_parameters #6
+---- source (no line break at the end)
+function f(mut x: int) {}
+mut c = 1
+f(c)
+---- error
+type error: test.kj:3:3: argument 1 of 'f' is a 'mut' parameter: pass a variable with 'mut' ('f(mut x)')
+    3 | f(c)
+      |   ^
+==== mut_parameters #7
+---- source (no line break at the end)
+function f(x: int) {}
+mut c = 1
+f(mut c)
+---- error
+type error: test.kj:3:1: argument 1 of 'f' is not a 'mut' parameter: remove 'mut'
+    3 | f(mut c)
+      | ^^^^^^^^
+==== mut_parameters #8
+---- source (no line break at the end)
+function f(mut x: float) {}
+mut c = 1
+f(mut c)
+---- error
+type error: test.kj:3:1: argument 1 of 'f' is 'mut' and must be exactly float, found int
+    3 | f(mut c)
+      | ^^^^^^^
+==== mut_parameters #9
+---- source (no line break at the end)
+function f(mut x: int) {}
+immut g = f
+---- error
+type error: test.kj:2:11: 'f' has 'mut' or 'take' parameters and can only be called, not used as a value
+    2 | immut g = f
+      |           ^
+==== mut_parameters #10
+---- source (no line break at the end)
+immut g = (mut x: int) => x
+---- error
+type error: test.kj:1:11: anonymous functions cannot have 'mut' parameters ('x')
+    1 | immut g = (mut x: int) => x
+      |           ^^^^^^^^^^^^^^^^^
+==== mut_parameters #11
+---- source (no line break at the end)
+function f(mut x: int) {}
+f(mut 1 + 2)
+---- error
+type error: test.kj:2:1: only a variable, a field or an element can be passed as 'mut'
+    2 | f(mut 1 + 2)
+      | ^^^^^^^^^^^^
+==== mut_parameters #12
+---- source (no line break at the end)
+mut x = 1
+print(mut x)
+---- error
+type error: test.kj:2:1: 'mut' is only used before a call argument: 'f(mut x)'
+    2 | print(mut x)
+      | ^^^^^^^^^^^
+==== mut_parameters #13
+---- source (no line break at the end)
+function f(mut x: int) {}
+function outer() {
+mut b = 1
+function inner() { f(mut b) }
+}
+---- error
+type error: test.kj:4:20: cannot modify 'b' here: functions capture a read-only copy of the variables around them
+    4 | function inner() { f(mut b) }
+      |                    ^^^^^^^^
+==== mut_self #1
+---- source
+type Counter = {
+    count: int
+}
+
+function Counter.increment(mut self) {
+    self.count += 1
+}
+
+function Counter.addTwice(mut self) {
+    self.increment()
+    self.increment()
+}
+
+mut counter: Counter = { count: 0 }
+
+counter.increment()
+
+mut fixed: Counter = { count: 10 }
+
+fixed.addTwice()
+
+mut counters: Counter[] = [{ count: 5 }]
+
+counters[0].increment()
+
+print(counter.count, fixed.count, counters[0].count)
+---- output
+1 12 6
+==== mut_self #2
+---- source (no line break at the end)
+type C = { count: int }
+function C.inc(mut self) { self.count += 1 }
+immut c: C = { count: 0 }
+c.inc()
+---- error
+type error: test.kj:4:1: cannot call 'C.inc' on 'c', as it changes the value: it is immut
+    4 | c.inc()
+      | ^^^^^^^
+==== mut_self #3
+---- source (no line break at the end)
+type C = { count: int }
+function C.inc(mut self) { self.count += 1 }
+function f(c: C) { c.inc() }
+---- error
+type error: test.kj:3:20: cannot call 'C.inc' on 'c', as it changes the value: parameters can only be modified when declared 'mut'
+    3 | function f(c: C) { c.inc() }
+      |                    ^^^^^^^
+==== mut_self #4
+---- source (no line break at the end)
+type C = { count: int }
+function C.inc(mut self) { self.count += 1 }
+function C.peek(self) { self.inc() }
+---- error
+type error: test.kj:3:25: cannot call 'C.inc' on 'self', as it changes the value: parameters can only be modified when declared 'mut'
+    3 | function C.peek(self) { self.inc() }
+      |                         ^^^^^^^^^^
+==== mut_self #5
+---- source (no line break at the end)
+type C = { count: int }
+function C.inc(mut self) { self.count += 1 }
+function C.make(): C { return { count: 0 } }
+C.make().inc()
+---- error
+type error: test.kj:4:1: 'C.inc' changes the value it is called on: call it on a variable, a field or an element
+    4 | C.make().inc()
+      | ^^^^^^^^^^^^^^
+==== mut_self #6
+---- source
+type Light = {
+    On
+    Off
+}
+
+function Light.toggle(mut self) {
+    self = match (self) {
+        On => Off
+        Off => On
+    }
+}
+
+mut light: Light = Off
+
+light.toggle()
+
+print(light)
+
+light.toggle()
+
+print(light)
+---- output
+On
+Off
+==== display_and_debug
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+function Person.display(self): string {
+    return `${self.name} (${self.age})`
+}
+
+type Shape = {
+    Circle(radius: decimal)
+    Square(side: decimal)
+}
+
+function Shape.display(self): string {
+    return match (self) {
+        Circle(r) => `circle of radius ${r}`
+        Square(s) => `square of side ${s}`
+    }
+}
+
+immut ana: Person = { name: 'Ana', age: 30 }
+
+print(ana)
+print(`Hi, ${ana}!`)
+print(string(ana), ana.display(), ana.debug())
+print(Circle(1.0), Circle(1.0).debug())
+print([ana])
+print('text'.debug(), 'text'.display(), [1, 2].debug())
+---- output
+Ana (30)
+Hi, Ana (30)!
+Ana (30) Ana (30) { name: 'Ana', age: 30 }
+circle of radius 1 Circle(1)
+[{ name: 'Ana', age: 30 }]
+'text' text [1, 2]
+==== loop_and_match_variables_are_imut #1
+---- source (no line break at the end)
+for x in [1, 2] { x = 3 }
+---- error
+type error: test.kj:1:19: cannot modify 'x': the 'for' variable is immut (use 'for mut' to change it)
+    1 | for x in [1, 2] { x = 3 }
+      |                   ^^^^^
+==== loop_and_match_variables_are_imut #2
+---- source (no line break at the end)
+for row in [[1]] { row[0] = 3 }
+---- error
+type error: test.kj:1:20: cannot modify 'row': the 'for' variable is immut (use 'for mut' to change it)
+    1 | for row in [[1]] { row[0] = 3 }
+      |                    ^^^^^^^^^^
+==== loop_and_match_variables_are_imut #3
+---- source (no line break at the end)
+match (Some(1)) {
+Some(n) => { n = 2 }
+None => {}
+}
+---- error
+type error: test.kj:2:14: cannot modify 'n': variables bound by 'match' are immut
+    2 | Some(n) => { n = 2 }
+      |              ^^^^^
+==== loop_and_match_variables_are_imut #4
+---- source
+mut rows = [[1, 2], [3, 4]]
+
+for mut row in rows {
+    row[0] = 0
+
+    print(row)
+}
+
+print(rows)
+---- output
+[0, 2]
+[0, 4]
+[[1, 2], [3, 4]]
+==== object_literals_need_a_type #1
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+function make(name: string): Person {
+    return { name: name, age: 0 }
+}
+
+function show(person: Person) {
+    print(person.name, person.age)
+}
+
+immut a: Person = { name: 'Ana', age: 30 }
+mut people: Person[] = [{ name: 'Bia', age: 20 }]
+
+people[0] = { name: 'Caio', age: 40 }
+
+immut maybe: Option[Person] = Some({ name: 'Duda', age: 10 })
+
+show(a)
+show(make('Eva'))
+show({ name: 'Fábio', age: 50 })
+show(people[0])
+
+match (maybe) {
+    Some(person) => show(person)
+    None => print('none')
+}
+---- output
+Ana 30
+Eva 0
+Fábio 50
+Caio 40
+Duda 10
+==== object_literals_need_a_type #2
+---- source (no line break at the end)
+immut d = { name: 'Leo' }
+---- error
+type error: test.kj:1:11: this object literal needs a type: declare one with 'type' and annotate the variable ('person: Person = { ... }')
+    1 | immut d = { name: 'Leo' }
+      |           ^^^^^^^^^^^^^^^
+==== object_literals_need_a_type #3
+---- source (no line break at the end)
+print({ a: 1 })
+---- error
+type error: test.kj:1:7: this object literal needs a type: declare one with 'type' and annotate the variable ('person: Person = { ... }')
+    1 | print({ a: 1 })
+      |       ^^^^^^^^
+==== object_literals_need_a_type #4
+---- source (no line break at the end)
+immut x: int = { a: 1 }
+---- error
+type error: test.kj:1:16: an object literal cannot be a value of type int
+    1 | immut x: int = { a: 1 }
+      |                ^^^^^^^^
+==== object_literals_need_a_type #5
+---- source (no line break at the end)
+type S = { Circle(r: decimal) }
+immut s: S = { r: 1.0 }
+---- error
+type error: test.kj:2:14: an object literal cannot be a value of type S
+    2 | immut s: S = { r: 1.0 }
+      |              ^^^^^^^^^^
+==== value_semantics
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+immut a = [1, 2, 3]
+mut b = a
+
+b[0] = 9
+
+print(a, b)
+
+immut m = [[1, 2], [3, 4]]
+mut n = m
+
+n[1][0] = 0
+
+print(m, n)
+
+immut ana: Person = { name: 'Ana', age: 30 }
+mut people: Person[] = [ana]
+
+people[0].age = 31
+
+print(ana.age, people[0].age)
+
+function birthday(mut p: Person) {
+    p.age += 1
+}
+
+birthday(mut people[0])
+
+print(ana.age, people[0].age)
+
+function same(items: int[]): int[] {
+    return items
+}
+
+immut fixed = [1, 2]
+mut copy = same(fixed)
+
+copy[0] = 100
+
+print(fixed, copy)
+
+function makeReader(items: int[]): () => int[] {
+    return () => items
+}
+
+mut source = [1]
+immut read = makeReader(source)
+
+source[0] = 2
+
+print(read(), source)
+---- output
+[1, 2, 3] [9, 2, 3]
+[[1, 2], [3, 4]] [[1, 2], [0, 4]]
+30 31
+30 32
+[1, 2] [100, 2]
+[1] [2]
+==== drop_runs_when_the_owner_goes_out_of_scope
+---- source
+type Conn = {
+    name: string
+}
+
+function Conn.drop(mut self) {
+    print(`closing ${self.name}`)
+}
+
+function Conn.open(name: string): Conn {
+    print(`opening ${name}`)
+
+    return { name: name }
+}
+
+function use(conn: Conn) {
+    print(`using ${conn.name}`)
+}
+
+    immut a = Conn.open('a')
+
+    if (true) {
+        immut b = Conn.open('b')
+
+        use(b)
+    }
+
+    immut c = Conn.open('c')
+    immut d = c
+
+    use(Conn.open('temp'))
+
+    Conn.open('statement')
+
+    mut e = Conn.open('e1')
+
+    e = Conn.open('e2')
+
+    function make(): Conn {
+        immut x = Conn.open('made')
+        immut y = Conn.open('local')
+
+        return x
+    }
+
+    immut m = make()
+
+    print('end')
+---- output
+opening a
+opening b
+using b
+closing b
+opening c
+opening temp
+using temp
+closing temp
+opening statement
+closing statement
+opening e1
+opening e2
+closing e1
+opening made
+opening local
+closing local
+end
+closing made
+closing e2
+closing c
+closing a
+==== drop_runs_for_fields_after_the_owner
+---- source
+type Conn = {
+    name: string
+}
+
+function Conn.drop(mut self) {
+    print(`closing ${self.name}`)
+}
+
+function Conn.open(name: string): Conn {
+    print(`opening ${name}`)
+
+    return { name: name }
+}
+
+function use(conn: Conn) {
+    print(`using ${conn.name}`)
+}
+
+    type Pool = {
+        first: Conn
+        second: Conn
+    }
+
+    function Pool.drop(mut self) {
+        print('closing the pool')
+    }
+
+    type Maybe = {
+        One(conn: Conn)
+        Nothing
+    }
+
+    immut p: Pool = { first: Conn.open('p1'), second: Conn.open('p2') }
+    immut list: Conn[] = [Conn.open('l1'), Conn.open('l2')]
+    immut maybe: Maybe = One(Conn.open('v'))
+---- output
+opening p1
+opening p2
+opening l1
+opening l2
+opening v
+closing v
+closing l1
+closing l2
+closing the pool
+closing p1
+closing p2
+==== move_only_values_cannot_be_used_after_a_move #1
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+immut c = Conn.open('a')
+immut d = c
+print(c.name)
+---- error
+type error: test.kj:21:7: 'c' cannot be used here: its value was moved (or closed) on line 20; assign it a new value first
+    21 | print(c.name)
+       |       ^
+==== move_only_values_cannot_be_used_after_a_move #2
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+immut c = Conn.open('a')
+if (true) { immut d = c }
+print(c.name)
+---- error
+type error: test.kj:21:7: 'c' cannot be used here: its value was moved (or closed) on line 20; assign it a new value first
+    21 | print(c.name)
+       |       ^
+==== move_only_values_cannot_be_used_after_a_move #3
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+function f(c: Conn) { immut d = c }
+---- error
+type error: test.kj:19:23: 'c' cannot be moved: it is a parameter, which only borrows its value (Conn is move-only)
+    19 | function f(c: Conn) { immut d = c }
+       |                       ^^^^^^^^^^^
+==== move_only_values_cannot_be_used_after_a_move #4
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+immut c = Conn.open('a')
+for i in range(2) { immut d = c }
+---- error
+type error: test.kj:20:21: 'c' cannot be moved inside a loop: it is declared outside the loop, and the next iteration would use it again
+    20 | for i in range(2) { immut d = c }
+       |                     ^^^^^^^^^^^
+==== move_only_values_cannot_be_used_after_a_move #5
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+immut c = Conn.open('a')
+function g() { immut d = c }
+---- error
+type error: test.kj:20:16: 'c' cannot be moved here: it is declared outside this function, which may run more than once
+    20 | function g() { immut d = c }
+       |                ^^^^^^^^^^^
+==== move_only_values_cannot_be_used_after_a_move #6
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+function g() {
+immut c = Conn.open('a')
+immut h = () => c.name
+}
+---- error
+type error: test.kj:21:17: 'c' cannot be used here: functions capture a copy of the variables around them, and 'Conn' cannot be copied
+    21 | immut h = () => c.name
+       |                 ^
+==== move_only_values_cannot_be_used_after_a_move #7
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+immut c = Conn.open('a')
+immut x = if (true) { c } else { c }
+---- error
+type error: test.kj:20:1: a value of type Conn cannot be moved out of a variable inside an 'if', a 'match' or a block; move it first ('x = value')
+    20 | immut x = if (true) { c } else { c }
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+==== move_only_values_cannot_be_used_after_a_move #8
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+type Pair = { a: Conn }
+immut p: Pair = { a: Conn.open('x') }
+immut q = p.a
+---- error
+type error: test.kj:21:1: a value of type Conn cannot be copied out of a field or an element (it is move-only)
+    21 | immut q = p.a
+       | ^^^^^^^^^^^^^
+==== move_only_values_cannot_be_used_after_a_move #9
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+immut c = Conn.open('a')
+c.drop()
+---- error
+type error: test.kj:20:1: 'drop' cannot be called: it runs by itself when the value goes out of scope
+    20 | c.drop()
+       | ^^^^^^^^
+==== move_only_values_cannot_be_used_after_a_move #10
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+immut cs: Conn[] = [Conn.open('a')]
+for mut c in cs { print(c.name) }
+---- error
+type error: test.kj:20:1: 'for mut' would copy each item, and Conn is move-only: use 'for c in'
+    20 | for mut c in cs { print(c.name) }
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+==== move_only_values_cannot_be_used_after_a_move #11
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+type Other = { n: int }
+function Other.drop(self) {}
+---- error
+type error: test.kj:20: 'Other.drop' must be declared as 'function Other.drop(mut self)'
+==== move_only_values_cannot_be_used_after_a_move #12
+---- source
+type Conn = {
+    name: string
+}
+
+function Conn.drop(mut self) {
+    print(`closing ${self.name}`)
+}
+
+function Conn.open(name: string): Conn {
+    print(`opening ${name}`)
+
+    return { name: name }
+}
+
+function use(conn: Conn) {
+    print(`using ${conn.name}`)
+}
+
+    mut c = Conn.open('a')
+    immut d = c
+
+    c = Conn.open('b')
+
+    function pick(flag: boolean): Conn {
+        immut x = Conn.open('x')
+
+        if (flag) {
+            return x
+        }
+
+        print(x.name)
+
+        return x
+    }
+
+    immut p = pick(false)
+
+    print(c.name, d.name, p.name)
+---- output
+opening a
+opening b
+opening x
+x
+b a x
+closing x
+closing a
+closing b
+==== move_only_values_cannot_be_used_after_a_move #13
+---- source (no line break at the end)
+import file
+immut h = file.open('x', file.Read)?
+h.close()
+print(h.read())
+---- error
+type error: test.kj:4:7: 'h' cannot be used here: its value was moved (or closed) on line 3; assign it a new value first
+    4 | print(h.read())
+      |       ^
+==== range_in_a_for_loop #1
+---- source
+mut total = 0
+
+for i in range(100000) {
+    total += i
+}
+
+print(total)
+
+for i in range(10, 0, -3) {
+    print(i)
+}
+
+print(range(3))
+---- output
+4999950000
+10
+7
+4
+1
+[0, 1, 2]
+==== range_in_a_for_loop #2
+---- source (no line break at the end)
+for i in range(0, 5, 0) { print(i) }
+---- error
+panic: test.kj:1: range() step cannot be 0
+==== take_parameters #1
+---- source
+type Conn = {
+    name: string
+}
+
+function Conn.drop(mut self) {
+    print(`closing ${self.name}`)
+}
+
+function Conn.open(name: string): Conn {
+    print(`opening ${name}`)
+
+    return { name: name }
+}
+
+function use(conn: Conn) {
+    print(`using ${conn.name}`)
+}
+
+    type Pool = {
+        conn: Conn
+    }
+
+    function Pool.create(take conn: Conn): Pool {
+        return { conn: conn }
+    }
+
+    function consume(take conn: Conn) {
+        print(`consuming ${conn.name}`)
+    }
+
+    function Conn.finish(take self) {
+        print(`finishing ${self.name}`)
+    }
+
+    immut c = Conn.open('a')
+    immut p = Pool.create(c)
+    immut d = Conn.open('b')
+
+    consume(d)
+    consume(Conn.open('temp'))
+
+    immut e = Conn.open('e')
+
+    e.finish()
+
+    print('end')
+---- output
+opening a
+opening b
+consuming b
+closing b
+opening temp
+consuming temp
+closing temp
+opening e
+finishing e
+closing e
+end
+closing a
+==== take_parameters #2
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+function consume(take conn: Conn) {}
+immut c = Conn.open('a')
+consume(c)
+print(c.name)
+---- error
+type error: test.kj:22:7: 'c' cannot be used here: its value was moved (or closed) on line 21; assign it a new value first
+    22 | print(c.name)
+       |       ^
+==== take_parameters #3
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+function consume(take conn: Conn) {}
+function f(c: Conn) { consume(c) }
+---- error
+type error: test.kj:20:23: 'c' cannot be moved: it is a parameter, which only borrows its value (Conn is move-only)
+    20 | function f(c: Conn) { consume(c) }
+       |                       ^^^^^^^^^^
+==== take_parameters #4
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+function consume(take conn: Conn) {}
+immut g = consume
+---- error
+type error: test.kj:20:11: 'consume' has 'mut' or 'take' parameters and can only be called, not used as a value
+    20 | immut g = consume
+       |           ^^^^^^^
+==== take_parameters #5
+---- source (no line break at the end)
+
+    type Conn = {
+        name: string
+    }
+
+    function Conn.drop(mut self) {
+        print(`closing ${self.name}`)
+    }
+
+    function Conn.open(name: string): Conn {
+        print(`opening ${name}`)
+
+        return { name: name }
+    }
+
+    function use(conn: Conn) {
+        print(`using ${conn.name}`)
+    }
+immut g = (take c: Conn) => c.name
+---- error
+type error: test.kj:19:11: anonymous functions cannot have 'take' parameters ('c')
+    19 | immut g = (take c: Conn) => c.name
+       |           ^^^^^^^^^^^^^^^^^^^^^^^^
+==== generic_functions_and_types
+---- source
+function first[T](items: T[]): Option[T] {
+    if (items.length() == 0) {
+        return None
+    }
+
+    return Some(items[0])
+}
+
+function map[A, B](items: A[], f: (A) => B): B[] {
+    mut result: B[] = []
+
+    for item in items {
+        result = result + [f(item)]
+    }
+
+    return result
+}
+
+type Pair[A, B] = {
+    first: A
+    second: B
+}
+
+function Pair.create(first: A, second: B): Pair[A, B] {
+    return { first: first, second: second }
+}
+
+function Pair.swap(self): Pair[B, A] {
+    return { first: self.second, second: self.first }
+}
+
+function Pair.mapFirst[C](self, f: (A) => C): Pair[C, B] {
+    return { first: f(self.first), second: self.second }
+}
+
+type Tree[T] = {
+    Leaf
+    Node(value: T, left: Tree[T], right: Tree[T])
+}
+
+function Tree.size(self): int {
+    return match (self) {
+        Leaf => 0
+        Node(_, left, right) => 1 + left.size() + right.size()
+    }
+}
+
+print(first([1, 2, 3]), first(['a']))
+
+immut nothing: Option[int] = first([])
+
+print(nothing)
+print(map([1, 2, 3], (x: int) => `#${x}`))
+
+immut p = Pair.create(1, 'one')
+immut q = p.swap()
+immut r = p.mapFirst((n: int) => n * 10)
+
+print(p.first, p.second, q.first, q.second, r.first, r.second)
+
+immut explicit: Pair[string, int] = { first: 'x', second: 2 }
+
+print(explicit.swap().first)
+
+immut tree: Tree[int] = Node(1, Node(2, Leaf, Leaf), Leaf)
+
+print(tree.size())
+---- output
+Some(1) Some('a')
+None
+['#1', '#2', '#3']
+1 one one 1 10 one
+2
+2
+==== generic_errors #1
+---- source (no line break at the end)
+function eq[T](a: T, b: T): boolean { return a == b }
+---- error
+type error: test.kj:1:46: operator '==' needs 'T' to be equatable: declare it as '[T: equatable]'
+    1 | function eq[T](a: T, b: T): boolean { return a == b }
+      |                                              ^^^^^^
+==== generic_errors #2
+---- source (no line break at the end)
+function f[T](a: T): int { return a.length }
+---- error
+type error: test.kj:1:35: a value of type T has no field 'length'
+    1 | function f[T](a: T): int { return a.length }
+      |                                   ^^^^^^^^
+==== generic_errors #3
+---- source (no line break at the end)
+function id[T](a: T): T { return a }
+immut g = id
+---- error
+type error: test.kj:2:11: the type arguments of 'id' are not known here: call it, or use it where a function type is expected (annotate the variable)
+    2 | immut g = id
+      |           ^^
+==== generic_errors #4
+---- source (no line break at the end)
+function id[T](a: T): T { return a }
+immut x: int = id('a')
+---- error
+type error: test.kj:2:19: argument 1 of 'id' must be int, found string
+    2 | immut x: int = id('a')
+      |                   ^^^
+==== generic_errors #5
+---- source (no line break at the end)
+type Box[T] = { value: T }
+immut b: Box = { value: 1 }
+---- error
+type error: test.kj:2:1: type 'Box' needs 1 type argument(s), e.g. Box[int]
+    2 | immut b: Box = { value: 1 }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+==== generic_errors #6
+---- source (no line break at the end)
+type Box[T] = { value: T }
+immut b: Box[int, int] = { value: 1 }
+---- error
+type error: test.kj:2:1: type 'Box' expects 1 type argument(s), found 2
+    2 | immut b: Box[int, int] = { value: 1 }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+==== generic_errors #7
+---- source (no line break at the end)
+import file
+type Box[T] = { value: T }
+function f(b: Box[file.File]) {}
+---- error
+type error: test.kj:3: a type parameter cannot be File: type parameters cannot be move-only values yet
+==== generic_errors #8
+---- source (no line break at the end)
+type Alias[T] = int
+---- error
+type error: test.kj:1: the alias 'Alias' cannot have type parameters
+==== generic_errors #9
+---- source (no line break at the end)
+function f[T, T]() {}
+---- error
+syntax error: test.kj:1:17: type parameter 'T' is declared twice
+    1 | function f[T, T]() {}
+      |                 ^
+==== generic_errors #10
+---- source (no line break at the end)
+type Box[T] = { value: T }
+function Box.make[T](v: T): Box[T] { return { value: v } }
+---- error
+type error: test.kj:2: in 'Box.make', the type parameter 'T' is already a type parameter of 'Box'
+==== generic_errors #11
+---- source (no line break at the end)
+function pair[A, B](a: A, b: B): A { return b }
+---- error
+type error: test.kj:1:45: returning B, but the function returns A
+    1 | function pair[A, B](a: A, b: B): A { return b }
+      |                                             ^
+==== generic_constraints #1
+---- source
+type Point = {
+    x: int
+    y: int
+}
+
+function max[T: orderable](items: T[]): T {
+    mut best = items[0]
+
+    for item in items {
+        if (item > best) {
+            best = item
+        }
+    }
+
+    return best
+}
+
+function count[T: equatable](items: T[], wanted: T): int {
+    mut n = 0
+
+    for item in items {
+        if (item == wanted) {
+            n += 1
+        }
+    }
+
+    return n
+}
+
+type Set[T: equatable] = {
+    items: T[]
+}
+
+function Set.has(self, item: T): boolean {
+    return item in self.items
+}
+
+print(max([3, 1, 2]), max(['b', 'a']), max([1.5, 0.5]))
+
+immut p: Point = { x: 1, y: 2 }
+
+print(count([p, p], { x: 1, y: 2 }), count([1, 2, 1], 1))
+
+immut s: Set[string] = { items: ['a', 'b'] }
+
+print(s.has('b'), s.has('z'))
+---- output
+3 b 1.5
+2 2
+true false
+==== generic_constraints #2
+---- source (no line break at the end)
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+immut a: Person = { name: 'a' }
+immut x = max([a])
+---- error
+type error: test.kj:6:11: Person is not orderable, as 'max' requires
+    6 | immut x = max([a])
+      |           ^^^^^^^^
+==== generic_constraints #3
+---- source (no line break at the end)
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+immut x = same([(n: int) => n], [(n: int) => n])
+---- error
+type error: test.kj:5:11: ((int) => int)[] is not equatable, as 'same' requires
+    5 | immut x = same([(n: int) => n], [(n: int) => n])
+      |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+==== generic_constraints #4
+---- source (no line break at the end)
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+immut f: (int) => int = (n: int) => n
+print(f == f)
+---- error
+type error: test.kj:6:7: values of type (int) => int cannot be compared with '==': it is not equatable (it holds functions or move-only values)
+    6 | print(f == f)
+      |       ^^^^^^
+==== generic_constraints #5
+---- source (no line break at the end)
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+immut s: Set[(int) => int] = { items: [] }
+---- error
+type error: test.kj:5:1: (int) => int is not equatable, as 'Set' requires
+    5 | immut s: Set[(int) => int] = { items: [] }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+==== generic_constraints #6
+---- source (no line break at the end)
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+function f[T: equatable](a: T, b: T): boolean { return a < b }
+---- error
+type error: test.kj:5:56: operator '<' needs 'T' to be orderable: declare it as '[T: orderable]'
+    5 | function f[T: equatable](a: T, b: T): boolean { return a < b }
+      |                                                        ^^^^^
+==== generic_constraints #7
+---- source (no line break at the end)
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+function f[T](a: T, b: T): boolean { return a == b }
+---- error
+type error: test.kj:5:45: operator '==' needs 'T' to be equatable: declare it as '[T: equatable]'
+    5 | function f[T](a: T, b: T): boolean { return a == b }
+      |                                             ^^^^^^
+==== generic_constraints #8
+---- source (no line break at the end)
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+function f[T: comparable](a: T): T { return a }
+---- error
+type error: test.kj:5: unknown constraint 'comparable' for 'T': the constraints are 'equatable' and 'orderable'
+==== generic_constraints #9
+---- source (no line break at the end)
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+function f[T: orderable](a: T, b: T): T { return a + b }
+---- error
+type error: test.kj:5:50: operator '+' cannot be used on 'T': a type parameter only supports the comparisons of its constraint
+    5 | function f[T: orderable](a: T, b: T): T { return a + b }
+      |                                                  ^^^^^
+==== generic_constraints #10
+---- source (no line break at the end)
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+import file
+immut f = file.open('x', file.Read)?
+immut g = file.open('y', file.Read)?
+print(f == g)
+---- error
+type error: test.kj:8:7: values of type File cannot be compared with '==': it is not equatable (it holds functions or move-only values)
+    8 | print(f == g)
+      |       ^^^^^^
+==== generic_constraints #11
+---- source
+type Person = { name: string }
+function max[T: orderable](items: T[]): T { return items[0] }
+function same[T: equatable](a: T, b: T): boolean { return a == b }
+type Set[T: equatable] = { items: T[] }
+immut a: Person = { name: 'a' }
+print(same(a, a))
+---- output
+true
+==== building_text #1
+---- source
+mut text = ''
+
+for i in range(1000) {
+    text += 'x'
+}
+
+print(text.length())
+
+immut a = 'ab'
+mut b = a
+
+b += 'c'
+
+print(a, b)
+print(['a', 'b', 'c'].join(', '), ['x'].join(''))
+
+immut names: string[] = ['Ana', 'Bia']
+
+print(names.join(' & '))
+---- output
+1000
+ab abc
+a, b, c x
+Ana & Bia
+==== building_text #2
+---- source (no line break at the end)
+print([1, 2].join(','))
+---- error
+type error: test.kj:1:7: 'join' needs a list of strings, found int[]
+    1 | print([1, 2].join(','))
+      |       ^^^^^^^^^^^^^^^^
+==== list_methods_and_slices #1
+---- source
+type Person = {
+    name: string
+    age: int
+}
+
+mut items = [3, 1, 2]
+
+items.push(4)
+
+items.insert(0, 9)
+
+print(items)
+print(items.pop(), items.removeAt(0), items.removeAt(10), items)
+
+items.sort()
+
+print(items, items.indexOf(3), items.indexOf(7))
+
+mut people: Person[] = [{ name: 'Ana', age: 30 }, { name: 'Bia', age: 25 }, { name: 'Caio', age: 30 }]
+
+people.sortBy((a: Person, b: Person) => a.age < b.age)
+
+print(people[0].name, people[1].name, people[2].name)
+
+mut copy = items
+
+copy.push(100)
+
+print(items, copy)
+
+mut empty = []
+
+empty.push('x')
+
+print(empty)
+
+immut list = [10, 20, 30, 40]
+
+print(list[1..3], list[..2], list[2..], list[..])
+
+immut text = 'Hello, Koji'
+
+print(text[0..5], text[7..])
+---- output
+[9, 3, 1, 2, 4]
+Some(4) Some(9) None [3, 1, 2]
+[1, 2, 3] Some(2) None
+Bia Ana Caio
+[1, 2, 3] [1, 2, 3, 100]
+['x']
+[20, 30] [10, 20] [30, 40] [10, 20, 30, 40]
+Hello Koji
+==== list_methods_and_slices #2
+---- source (no line break at the end)
+immut fixed = [1]
+fixed.push(2)
+---- error
+type error: test.kj:2:1: cannot call 'push' on 'fixed', as it changes the value: it is immut
+    2 | fixed.push(2)
+      | ^^^^^^^^^^^^^
+==== list_methods_and_slices #3
+---- source (no line break at the end)
+type P = { n: int }
+mut ps: P[] = []
+ps.sort()
+---- error
+type error: test.kj:3:1: 'sort' needs orderable items, and P is not: use 'sortBy' with a comparison
+    3 | ps.sort()
+      | ^^^^^^^^^
+==== list_methods_and_slices #4
+---- source (no line break at the end)
+mut items = [1]
+items.push('a')
+---- error
+type error: test.kj:2:1: the item must be int, found string
+    2 | items.push('a')
+      | ^^^^^^^^^^^^^^^
+==== list_methods_and_slices #5
+---- source (no line break at the end)
+function f(items: int[]) { items.push(1) }
+---- error
+type error: test.kj:1:28: cannot call 'push' on 'items', as it changes the value: parameters can only be modified when declared 'mut'
+    1 | function f(items: int[]) { items.push(1) }
+      |                            ^^^^^^^^^^^^^
+==== list_methods_and_slices #6
+---- source (no line break at the end)
+immut items = [1, 2]
+print(items[2..1])
+---- error
+panic: test.kj:2: slice 2..1 out of range (length 2)
+==== every_variable_has_a_known_type #1
+---- source
+mut items = []
+items.push(1)
+
+mut counts = [:]
+counts['a'] = 1
+
+mut seen = Set.from([])
+seen.add('x')
+
+mut maybe = None
+maybe = Some(2.5)
+
+print(items, counts, seen, maybe)
+---- output
+[1] ['a': 1] Set(['x']) Some(2.5)
+==== every_variable_has_a_known_type #2
+---- source (no line break at the end)
+mut items = []
+---- error
+type error: test.kj:1: the type of 'items' cannot be inferred (it is ?[]): annotate it, as in 'mut items: int[] = ...'
+==== every_variable_has_a_known_type #3
+---- source (no line break at the end)
+immut x = None
+---- error
+type error: test.kj:1: the type of 'x' cannot be inferred (it is Option[?]): annotate it, as in 'immut x: Option[int] = ...'
+==== every_variable_has_a_known_type #4
+---- source (no line break at the end)
+function f() {
+mut m = [:]
+print(m.length())
+}
+---- error
+type error: test.kj:1:1: the type of 'm' cannot be inferred (it is Map[?, ?]): annotate it, as in 'mut m: Map[int, int] = ...'
+    1 | function f() {
+      | ^^^^^^^^^^^^^^
+==== every_variable_has_a_known_type #5
+---- source (no line break at the end)
+immut r = Ok(1)
+---- error
+type error: test.kj:1: the type of 'r' cannot be inferred (it is Result[int, ?]): annotate it, as in 'immut r: Result[int, int] = ...'
+==== every_variable_has_a_known_type #6
+---- source (no line break at the end)
+function first[T](items: T[]): Option[T] { return None }
+immut x = first([])
+---- error
+type error: test.kj:2: the type of 'x' cannot be inferred (it is Option[?]): annotate it, as in 'immut x: Option[int] = ...'
+==== every_variable_has_a_known_type #7
+---- source (no line break at the end)
+for i in [] { print(i) }
+---- error
+type error: test.kj:1:1: the type of 'i' cannot be inferred (it is ?): give a type to the value it comes from
+    1 | for i in [] { print(i) }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^
+==== int_to_float_conversions #1
+---- source
+immut a: float[] = [1, 0x1.4p1]
+immut b: Option[float] = Some(1)
+immut c: Result[float, string] = Ok(3)
+print(a, a[0] / 2, b, c, [1, 2.5])
+---- output
+[0x1p0, 0x1.4p1] 0x1p-1 Some(0x1p0) Ok(0x1.8p1) [1, 2.5]
+==== int_to_float_conversions #2
+---- source (no line break at the end)
+immut counts = [1, 2]
+immut values: float[] = counts
+---- error
+type error: test.kj:2:25: cannot assign a value of type int[] to 'values' of type float[]
+    2 | immut values: float[] = counts
+      |                         ^^^^^^
+==== int_to_float_conversions #3
+---- source (no line break at the end)
+print([[1], [2.5]])
+---- error
+type error: test.kj:1:13: list elements must have the same type: found int[] and decimal[]
+    1 | print([[1], [2.5]])
+      |             ^^^^^
+==== object_fields_follow_the_declaration
+---- source
+type Point = {
+    x: decimal
+    y: int
+}
+
+immut p: Point = { y: 1, x: 2 }
+print(p, p.x / 4)
+---- output
+{ x: 2, y: 1 } 0.5
+==== a_char_in_a_string
+---- source
+immut c: char = 'a'
+print(c in 'banana', c in 'xyz', 'an' in 'banana')
+---- output
+true false true
+==== ok_without_a_value #1
+---- source
+function save(ok: boolean): Result[void, string] {
+    if (not ok) { return Err('failed') }
+
+    return Ok()
+}
+
+print(save(true), save(false), save(true) == Ok())
+---- output
+Ok(void) Err('failed') true
+==== ok_without_a_value #2
+---- source (no line break at the end)
+immut x: Result[int, string] = Ok()
+---- error
+type error: test.kj:1:32: 'Ok' expects 1 argument(s), found 0
+    1 | immut x: Result[int, string] = Ok()
+      |                                ^^^^
+==== generic_functions_as_values #1
+---- source
+function first[T](items: T[]): Option[T] {
+    return if (items.length() > 0) { Some(items[0]) } else { None }
+}
+
+immut f: (int[]) => Option[int] = first
+print(f([3, 4]))
+---- output
+Some(3)
+==== generic_functions_as_values #2
+---- source (no line break at the end)
+function first[T](items: T[]): Option[T] {
+    return if (items.length() > 0) { Some(items[0]) } else { None }
+}
+
+immut f = first
+---- error
+type error: test.kj:5:11: the type arguments of 'first' are not known here: call it, or use it where a function type is expected (annotate the variable)
+    5 | immut f = first
+      |           ^^^^^

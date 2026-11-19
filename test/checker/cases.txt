@@ -1,4 +1,4 @@
-// Programs for comparing the checkers (test/bootstrap.rs): each one is a file, and they are
+// Programs for the snapshots of the checker (test/stages.kj): each one is a file, and they are
 // separated by a line with four dashes. Most of them have a type error.
 ----
 function test() {

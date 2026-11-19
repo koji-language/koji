@@ -1,0 +1,547 @@
+// What the tests share: the compiler they test (KOJI_COMPILER, or build/kojic from
+// bootstrap/build.sh), directories of their own, files, and the cases of test/cases/, run several at
+// a time. The tests run from the root of the repository: `build/kojic test test`.
+
+import file
+import path
+import system
+import task
+import time
+
+// The root of the repository.
+export immut root = match (system.currentDirectory()) {
+    Some(found) => found
+    None => panic('the current directory is unknown')
+}
+
+// The compiler the tests run.
+export immut kojic = match (system.env('KOJI_COMPILER')) {
+    Some(found) => if (path.isAbsolute(found)) { found } else { path.join(root, found) }
+    None => path.join(root, 'build/kojic')
+}
+
+// How many programs run at the same time (KOJI_TEST_JOBS, 8 by default).
+immut jobs = match (system.env('KOJI_TEST_JOBS')) {
+    Some(text) => match (int(text)) {
+        Ok(count) => if (count > 0) { count } else { 1 }
+        Err(_) => 8
+    }
+    None => 8
+}
+
+mut scratchCount = 0
+
+// A new empty directory, in build/test/, for one run.
+export function scratch(name: string): string {
+    scratchCount += 1
+    immut directory = path.join(root, `build/test/${name}-${scratchCount}`)
+    removeAll(directory)
+    expect(file.createDir(directory), directory)
+    return directory
+}
+
+// Removes a file, or a directory and all it holds; nothing when there is none. A link is removed,
+// never followed: `file.remove` takes files and links, and fails only on a directory.
+export function removeAll(target: string) {
+    match (file.remove(target)) {
+        Ok(_) => return
+        Err(_) => {}
+    }
+
+    match (file.list(target)) {
+        Ok(names) => {
+            for name in names {
+                removeAll(path.join(target, name))
+            }
+
+            expect(file.removeDir(target), target)
+        }
+        Err(_) => {}
+    }
+}
+
+// Writes `text` into the file at `target`, and the directories missing before it.
+export function writeFile(target: string, text: string) {
+    match (path.parent(target)) {
+        Some(directory) => expect(file.createDir(directory), directory)
+        None => {}
+    }
+
+    match (file.open(target, file.Write)) {
+        Ok(opened) => expect(opened.write(text), target)
+        Err(error) => panic(`cannot write ${target}: ${error}`)
+    }
+}
+
+export function readFile(source: string): string {
+    return match (file.open(source, file.Read)) {
+        Ok(opened) => match (opened.read()) {
+            Ok(text) => text
+            Err(error) => panic(`cannot read ${source}: ${error}`)
+        }
+        Err(error) => panic(`cannot read ${source}: ${error}`)
+    }
+}
+
+function expect(result: Result[void, file.FileError], what: string) {
+    match (result) {
+        Ok(_) => {}
+        Err(error) => panic(`${what}: ${error}`)
+    }
+}
+
+// The text without the white space at its end.
+export function trimEnd(text: string): string {
+    mut end = text.length()
+
+    while (end > 0 and text[end - 1..end].trim() == '') {
+        end -= 1
+    }
+
+    return text[0..end]
+}
+
+// Runs a command: what it printed and its exit code (a command that cannot start panics).
+export function finish(command: system.Command): system.Output {
+    return match (command.output()) {
+        Ok(output) => output
+        Err(error) => panic(`${command.program}: ${error}`)
+    }
+}
+
+// A command of the compiler, in `directory`.
+export function compiler(args: string[], directory: string): system.Command {
+    mut command = system.command(kojic, args)
+    command.directory = directory
+    return command
+}
+
+// Whether valgrind is installed.
+export immut hasValgrind = match (system.capture('valgrind', ['--version'])) {
+    Ok(output) => output.status == 0
+    Err(_) => false
+}
+
+// With KOJI_TEST_WINDOWS: the programs are built for Windows on x86-64 and run by Wine (in a clean
+// environment, with a prefix of its own in build/test/, or KOJI_WINEPREFIX).
+export immut onWindows = system.env('KOJI_TEST_WINDOWS') != None
+
+mut windowsLibraries: string[] = []
+
+// The runtime library for Windows, built once.
+function windowsLibrary(): string {
+    if (windowsLibraries.length() == 0) {
+        immut library = path.join(root, 'build/test/libkoji-windows.a')
+        mut command = compiler(['library', '-o', library], root)
+        command.environment['KOJI_TARGET'] = 'windows-x64'
+        immut built = finish(command)
+        assert(built.status == 0, built.stderr)
+        windowsLibraries.push(library)
+    }
+
+    return windowsLibraries[0]
+}
+
+// `kojic run <file>` in `directory` (the program's current directory, which also holds its
+// temporary executable), with `input` as the program's input.
+export function run(source: string, directory: string, input: string): system.Output {
+    if (onWindows) { return runWindows(source, directory, input) }
+
+    mut command = compiler(['run', source], directory)
+    command.input = input
+    command.environment['TMPDIR'] = directory
+    return finish(command)
+}
+
+function runWindows(source: string, directory: string, input: string): system.Output {
+    immut executable = path.join(directory, 'program.exe')
+    mut build = compiler(['build', source, '-o', executable], directory)
+    build.environment['KOJI_TARGET'] = 'windows-x64'
+    build.environment['KOJI_RUNTIME'] = windowsLibrary()
+    immut built = finish(build)
+
+    if (built.status != 0) { return built }
+
+    immut prefix = match (system.env('KOJI_WINEPREFIX')) {
+        Some(found) => found
+        None => path.join(root, 'build/test/wine')
+    }
+    immut wine = if (file.exists('/usr/lib/wine/wine64')) { '/usr/lib/wine/wine64' } else { 'wine' }
+    mut command = system.command(wine, [executable])
+    command.directory = directory
+    command.input = input
+    command.cleared = true
+    command.environment['PATH'] = '/usr/bin:/bin'
+    command.environment['HOME'] = directory
+    command.environment['WINEPREFIX'] = prefix
+    command.environment['WINEDEBUG'] = '-all'
+
+    for name in ['SSL_CERT_FILE', 'SSL_CERT_DIR'] {
+        match (system.env(name)) {
+            Some(value) => command.environment[name] = value
+            None => {}
+        }
+    }
+
+    return finish(command)
+}
+
+// `kojic build <file>` to `executable`, in `directory`: it must compile.
+export function build(source: string, executable: string, directory: string) {
+    immut built = finish(compiler(['build', source, '-o', executable], directory))
+    assert(built.status == 0, `${source} does not compile: ${built.stderr}`)
+}
+
+// Runs an executable built by the tests: under valgrind when it is installed, without the pool (a
+// memory error fails the test even when the output is right).
+// It runs in the directory of the executable.
+export function runBuilt(executable: string, valgrind: boolean): system.Output {
+    immut directory = match (path.parent(executable)) {
+        Some(found) => found
+        None => '.'
+    }
+
+    if (not valgrind or not hasValgrind) {
+        mut alone = system.command(executable, [])
+        alone.directory = directory
+        return finish(alone)
+    }
+
+    mut command = system.command('valgrind', ['-q', '--error-exitcode=99', executable])
+    command.directory = directory
+    command.environment['KOJI_POOL'] = '0'
+    immut output = finish(command)
+    assert(output.status != 99, `memory errors:\n${output.stderr}`)
+    return output
+}
+
+// The last line of a text.
+export function lastLine(text: string): string {
+    immut lines = trimEnd(text).split('\n')
+    return lines[lines.length() - 1]
+}
+
+// A case of test/cases/: a program (and the other files it needs), what it reads, and what it
+// must do.
+export type Case = {
+    name: string
+    main: string
+    source: string
+    files: string[]
+    texts: string[]
+    input: string
+    output: string
+    error: string
+    errorPart: string
+    stderr: string
+    exit: int
+    panic: string
+    valgrind: boolean
+}
+
+function newCase(name: string): Case {
+    return { name: name, main: 'test.kj', source: '', files: [], texts: [], input: '', output: '', error: '', errorPart: '', stderr: '', exit: 0, panic: '', valgrind: true }
+}
+
+// The cases of a file of test/cases/ (see its header).
+export function cases(source: string): Case[] {
+    mut found: Case[] = []
+    mut section = ''
+    mut text = ''
+    mut ended = true
+    mut current = newCase('')
+    mut started = false
+
+    mut lines = readFile(source).split('\n')
+
+    // A file ends with a line break: no line after it.
+    if (lines.length() > 0 and lines[lines.length() - 1] == '') { lines.pop() }
+
+    for line in lines + ['==== '] {
+        immut header = line.startsWith('==== ') or line.startsWith('---- ')
+
+        if (not header) {
+            if (section != '') { text += line + '\n' }
+
+            continue
+        }
+
+        if (section != '') {
+            immut value = if (ended) { text } else { text[0..text.length() - 1] }
+
+            match (section) {
+                'source' => current.source = value
+                'input' => current.input = value
+                'output' => current.output = value
+                'error' => current.error = trimEnd(value)
+                'error containing' => current.errorPart = trimEnd(value)
+                'stderr' => current.stderr = value
+                'panic' => current.panic = trimEnd(value)
+                other if (other.startsWith('file ')) => {
+                    current.files.push(other[5..])
+                    current.texts.push(value)
+                }
+                other => panic(`${source}: a section ${other}?`)
+            }
+        }
+
+        section = ''
+        text = ''
+        immut rest = line[5..]
+        ended = not rest.endsWith(' (no line break at the end)')
+        immut name = if (ended) { rest } else { rest[0..rest.length() - 27] }
+
+        if (line.startsWith('==== ')) {
+            if (started) { found.push(current) }
+
+            current = newCase(name)
+            started = true
+            continue
+        }
+
+        if (name.startsWith('exit ')) {
+            current.exit = match (int(name[5..])) {
+                Ok(code) => code
+                Err(_) => panic(`${source}: ${line}`)
+            }
+            continue
+        }
+
+        if (name == 'without valgrind') {
+            current.valgrind = false
+            continue
+        }
+
+        if (name.startsWith('main ')) {
+            current.main = name[5..]
+            continue
+        }
+
+        section = name
+    }
+
+    return found
+}
+
+// What went wrong with a case, or '' when it did what it must.
+function checkRun(each: Case, ran: system.Output): string {
+    mut problems = ''
+
+    if (ran.stdout != each.output) { problems += `output:\n${ran.stdout}\nexpected:\n${each.output}\n` }
+
+    if (each.error != '' or each.errorPart != '') {
+        immut found = trimEnd(ran.stderr)
+
+        if (ran.status != 1 or (each.error != '' and found != each.error) or not (each.errorPart in found)) { problems += `error (exit ${ran.status}):\n${found}\nexpected:\n${each.error}${each.errorPart}\n` }
+    } else {
+        if (ran.status != each.exit) { problems += `exit ${ran.status}, expected ${each.exit}:\n${ran.stderr}\n` }
+    }
+
+    return problems
+}
+
+function checkBuilt(each: Case, ran: system.Output): string {
+    mut problems = ''
+
+    if (ran.stdout != each.output) { problems += `output:\n${ran.stdout}\nexpected:\n${each.output}\n` }
+
+    if (each.panic != '') {
+        if (ran.status == 0 or not lastLine(ran.stderr).endsWith(each.panic)) { problems += `panic (exit ${ran.status}):\n${ran.stderr}\nexpected one ending with:\n${each.panic}\n` }
+    } else {
+        if (ran.status != 0) { problems += `the program failed (exit ${ran.status}):\n${ran.stderr}\n` }
+    }
+
+    if (each.stderr != '' and ran.stderr != each.stderr) { problems += `standard error:\n${ran.stderr}\nexpected:\n${each.stderr}\n` }
+
+    return problems
+}
+
+// One case: run by `kojic run` as test.kj in a directory of its own, or built (`building`) and run.
+function runCase(each: Case, building: boolean): string {
+    immut directory = scratch('case')
+    writeFile(path.join(directory, each.main), each.source)
+
+    for i in range(each.files.length()) {
+        writeFile(path.join(directory, each.files[i]), each.texts[i])
+    }
+
+    if (not building) {
+        immut problems = checkRun(each, run(each.main, directory, each.input))
+
+        if (problems == '') { removeAll(directory) }
+
+        return problems
+    }
+
+    immut built = finish(compiler(['build', each.main, '-o', 'test'], directory))
+
+    if (built.status != 0) { return `it does not compile:\n${built.stderr}` }
+
+    immut problems = checkBuilt(each, runBuilt(path.join(directory, 'test'), each.valgrind))
+
+    if (problems == '') { removeAll(directory) }
+
+    return problems
+}
+
+// Runs the cases of a file of test/cases/, several at a time; the test fails with the report of
+// those that went wrong.
+export function runCases(source: string, building: boolean) {
+    immut all = cases(source)
+
+    // Built once, before the cases run at the same time.
+    if (onWindows and not building) { windowsLibrary() }
+
+    mut failed: string[] = []
+    mut at = 0
+
+    while (at < all.length()) {
+        mut works: (() => string)[] = []
+        immut end = if (at + jobs < all.length()) { at + jobs } else { all.length() }
+
+        for i in range(at, end) {
+            immut each = all[i]
+            works.push(() => runCase(each, building))
+        }
+
+        immut results = task.all(works)
+
+        for i in range(results.length()) {
+            if (results[i] != '') { failed.push(`---- ${all[at + i].name}\n${results[i]}`) }
+        }
+
+        at = end
+    }
+
+    if (failed.length() > 0) {
+        print(failed.join('\n'))
+        panic(`${failed.length()} of ${all.length()} cases of ${source} failed`)
+    }
+
+    print(`${all.length()} cases`)
+}
+
+// A server of TCP on 127.0.0.1 for the tests (of the C library: `accept` and the reads wait on
+// a thread that helps, so that the other tasks run meanwhile).
+foreign 'c' {
+    function socket(domain: CInt, kind: CInt, protocol: CInt): CInt
+    function bind(fd: CInt, address: byte[], size: CInt): CInt
+    function listen(fd: CInt, backlog: CInt): CInt
+    function getsockname(fd: CInt, mut address: byte[], mut size: int): CInt
+    blocking function accept(fd: CInt, address: int, size: int): CInt
+    blocking function receiveInto(fd: CInt, mut buffer: byte[], size: CSize): int from 'read'
+    blocking function sendText(fd: CInt, text: string, size: CSize): int from 'write'
+    function close(fd: CInt): CInt
+    blocking function connect(fd: CInt, address: byte[], size: CInt): CInt
+    function setsockopt(fd: CInt, level: CInt, name: CInt, value: byte[], size: CInt): CInt
+}
+
+// A socket that listens, and its port.
+export type Listener = {
+    fd: int
+    port: int
+}
+
+// A `struct sockaddr_in` of 127.0.0.1: its family (after its size on macOS), its port.
+function localAddress(port: int): byte[] {
+    mut address: byte[] = [2, 0, byte(port >> 8), byte(port & 0xFF), 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    if (system.os == system.MacOS) {
+        address[0] = 16
+        address[1] = 2
+    }
+
+    return address
+}
+
+// Listens on a free port of 127.0.0.1.
+export function listenLocally(): Listener {
+    immut fd = socket(2, 1, 0)
+    assert(fd >= 0, 'no socket')
+    mut address = localAddress(0)
+
+    assert(bind(fd, address, 16) == 0, 'cannot bind')
+    assert(listen(fd, 16) == 0, 'cannot listen')
+    mut size = 16
+    getsockname(fd, mut address, mut size)
+    return { fd: fd, port: int(address[2]) * 256 + int(address[3]) }
+}
+
+// The next connection.
+export function acceptConnection(listener: Listener): int {
+    immut fd = accept(listener.fd, 0, 0)
+    assert(fd >= 0, 'cannot accept')
+    return fd
+}
+
+// What a connection gives at once (up to 4096 bytes, read as ASCII), or '' at its end.
+export function receive(fd: int): string {
+    mut buffer: byte[] = []
+
+    for _ in range(4096) {
+        buffer.push(0)
+    }
+
+    immut size = receiveInto(fd, mut buffer, 4096)
+    mut text = ''
+
+    for i in range(if (size > 0) { size } else { 0 }) {
+        text += match (char(int(buffer[i]))) {
+            Some(c) => string(c)
+            None => '?'
+        }
+    }
+
+    return text
+}
+
+// Sends a text (ASCII) whole.
+export function send(fd: int, text: string) {
+    mut rest = text
+
+    while (rest != '') {
+        immut sent = sendText(fd, rest, rest.length())
+
+        if (sent <= 0) { return }
+
+        rest = rest[sent..]
+    }
+}
+
+export function closeSocket(fd: int) {
+    close(fd)
+}
+
+// Sends `request` to the port of 127.0.0.1 (once something listens there), and reads the answer
+// until the connection ends, or 5 seconds without a byte.
+export function exchange(port: int, request: string): string {
+    mut fd = -1
+
+    while (fd < 0) {
+        fd = socket(2, 1, 0)
+
+        if (connect(fd, localAddress(port), 16) != 0) {
+            close(fd)
+            fd = -1
+            time.sleep(0.02)
+        }
+    }
+
+    // SO_RCVTIMEO: a `struct timeval` of 5 seconds.
+    immut level = if (system.os == system.MacOS) { 0xFFFF } else { 1 }
+    immut option = if (system.os == system.MacOS) { 0x1006 } else { 20 }
+    setsockopt(fd, level, option, [5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
+    send(fd, request)
+    mut answer = ''
+
+    while (true) {
+        immut got = receive(fd)
+
+        if (got == '') { break }
+
+        answer += got
+    }
+
+    close(fd)
+    return answer
+}

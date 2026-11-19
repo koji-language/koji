@@ -1,0 +1,37 @@
+// Tasks that print to a pipe read late, for test/compiler.kj: the one that sleeps wakes on time.
+
+import task
+import time
+
+function repeated(text: string, count: int): string {
+    mut out = ''
+    for i in range(count) {
+        out += text
+    }
+    return out
+}
+
+immut late = task.group((tasks) => {
+    tasks.spawn(() => {
+        for i in range(2000) {
+            print(`line ${i} ${repeated('x', 90)}`)
+        }
+    })
+    tasks.spawn(() => {
+        for i in range(3) {
+            print(repeated('a', 10000))
+        }
+    })
+    immut sleeper = tasks.spawn(() => {
+        mut worst: decimal = 0
+        for i in range(20) {
+            immut before = time.monotonic()
+            time.sleep(0.02)
+            immut delay = time.monotonic() - before - 0.02
+            if (delay > worst) { worst = delay }
+        }
+        return worst
+    })
+    return sleeper.wait()
+})
+printError(`${late < 0.1}`)

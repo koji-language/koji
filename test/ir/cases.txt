@@ -1,4 +1,4 @@
-// Programs for comparing the lowering to the IR (test/bootstrap.rs): each one is a file, and they
+// Programs for the snapshots of the lowering to the IR (test/stages.kj): each one is a file, and they
 // are separated by a line with four dashes. Some use what 'kojic build' does not support yet.
 ----
 function outer(): int {

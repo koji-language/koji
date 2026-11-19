@@ -1,0 +1,260 @@
+// The parts of the language and of its standard library that test/cases/ cannot show alone: the
+// requests of `http` to servers of the tests, the processes of `system`, and the examples.
+
+import file
+import path
+import system
+import task
+import { Listener, acceptConnection, closeSocket, finish, kojic, listenLocally, onWindows, receive, root, run, scratch, send, writeFile } from 'koji.kj'
+
+// Runs `source` as test.kj in a directory of its own: what it printed, and its exit code.
+function runProgram(source: string): system.Output {
+    immut directory = scratch('language')
+    writeFile(path.join(directory, 'test.kj'), source)
+    return run('test.kj', directory, '')
+}
+
+// The value of a header (by its name in lower case) in the headers of a request.
+function header(headers: string, name: string): string {
+    for line in headers.split('\r\n') {
+        immut parts = line.split(':')
+
+        if (parts.length() >= 2 and parts[0].lower() == name) { return line[parts[0].length() + 1..].trim() }
+    }
+
+    return ''
+}
+
+// A request read whole from a connection: its headers, then as many bytes of its body as its
+// `content-length` says.
+function readRequest(fd: int): string {
+    mut text = ''
+
+    while (true) {
+        immut got = receive(fd)
+        text += got
+        immut parts = text.split('\r\n\r\n')
+
+        if (parts.length() >= 2) {
+            immut length = match (int(header(parts[0], 'content-length'))) {
+                Ok(count) => count
+                Err(_) => 0
+            }
+
+            if (text.length() - parts[0].length() - 4 >= length) { return text }
+        }
+
+        if (got == '') { return text }
+    }
+
+    return text
+}
+
+// Serves `count` connections of `listener`, each with the answer `answer` gives to its request.
+function serve(listener: Listener, count: int, answer: (string) => string): string {
+    for _ in range(count) {
+        immut fd = acceptConnection(listener)
+        send(fd, answer(readRequest(fd)))
+        closeSocket(fd)
+    }
+
+    closeSocket(listener.fd)
+    return ''
+}
+
+test 'stdlib_http' {
+    immut server = listenLocally()
+    immut port = server.port
+    immut source = `import http
+
+match (http.get('http://127.0.0.1:${port}/api')) {
+    Ok(res) => if (res.status == 200) { print(res.body) }
+    Err(error) => print(error)
+}
+
+match (http.post('http://127.0.0.1:${port}/items', 'data')) {
+    Ok(res) => print(res.body)
+    Err(error) => print(error)
+}
+
+match (http.get('http://127.0.0.1:1/closed')) {
+    Ok(_) => print('connected?')
+    Err(ConnectionFailed(_, _)) => print('connection failed')
+    Err(error) => print(error)
+}
+`
+    immut results = task.all([
+        () => serve(server, 2, (request) => {
+            immut firstLine = request.split('\r\n')[0]
+            immut parts = request.split('\r\n\r\n')
+            immut body = if (parts.length() > 1) { parts[1] } else { '' }
+            immut reply = `${firstLine} ${body}`
+            return `HTTP/1.1 200 OK\r\nContent-Length: ${reply.length()}\r\nConnection: close\r\n\r\n${reply}`
+        }),
+        () => runProgram(source).stdout,
+    ])
+    assert(results[1] == 'GET /api HTTP/1.1 \nPOST /items HTTP/1.1 data\nconnection failed\n', results[1])
+}
+
+// A POST redirected by 303 becomes a GET without a body; the answer comes in chunks, with an
+// extension and a trailer (std/http.kj reads both, as HTTP/1.1 allows).
+test 'stdlib_http_redirects_and_chunks' {
+    immut server = listenLocally()
+    immut source = `import http
+
+match (http.post('http://127.0.0.1:${server.port}/form', 'name=Ana')) {
+    Ok(res) => print(res.status, res.body)
+    Err(error) => print(error)
+}
+`
+    immut digits = '0123456789abcdef'
+    immut results = task.all([
+        () => serve(server, 2, (request) => {
+            immut firstLine = request.split('\r\n')[0]
+
+            if (firstLine.startsWith('POST /form')) { return 'HTTP/1.1 303 See Other\r\nLocation: /done?ok=1\r\nContent-Length: 0\r\n\r\n' }
+
+            immut size = firstLine.length() + 1
+            immut hex = digits[size / 16..size / 16 + 1] + digits[size % 16..size % 16 + 1]
+            return `HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;ext=1\r\nhello\r\n${hex}\r\n ${firstLine}\r\n0\r\nX-Trailer: y\r\n\r\n`
+        }),
+        () => runProgram(source).stdout,
+    ])
+    assert(results[1] == '200 hello GET /done?ok=1 HTTP/1.1\n', results[1])
+}
+
+// `https://` (std/http.kj over koji:tls) against `openssl s_server`, with certificates made by the
+// `openssl` command: left out where it is missing, or cannot serve TLS 1.3.
+test 'stdlib_https' {
+    immut directory = scratch('https')
+
+    function openssl(args: string[]): boolean {
+        mut command = system.command('openssl', args)
+        command.directory = directory
+        return match (command.output()) {
+            Ok(output) => output.status == 0
+            Err(_) => false
+        }
+    }
+
+    if (not openssl(['version'])) {
+        print('no openssl command: https:// not tested')
+        return
+    }
+
+    // An authority, and a certificate for localhost signed by it (P-256, two days).
+    writeFile(path.join(directory, 'leaf.ext'), 'subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE\n')
+    writeFile(path.join(directory, 'hello.txt'), 'hello over TLS 1.3\n')
+    immut made = openssl(['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', 'root.key', '-out', 'root.pem', '-subj', '/CN=Koji Test Root', '-days', '2', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign'])
+        and openssl(['req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', 'leaf.key', '-out', 'leaf.csr', '-subj', '/CN=localhost'])
+        and openssl(['x509', '-req', '-in', 'leaf.csr', '-CA', 'root.pem', '-CAkey', 'root.key', '-CAcreateserial', '-out', 'leaf.pem', '-days', '2', '-extfile', 'leaf.ext'])
+
+    if (not made) {
+        print('openssl cannot make the certificates: https:// not tested')
+        return
+    }
+
+    // A free port, for the server, which ends after the two requests.
+    immut free = listenLocally()
+    immut port = free.port
+    closeSocket(free.fd)
+    immut source = `import http
+import time
+
+// The server starts meanwhile.
+mut tries = 0
+
+while (tries < 100) {
+    match (http.get('http://127.0.0.1:${port}/')) {
+        Err(ConnectionFailed(_, _)) => {
+            time.sleep(0.05)
+            tries += 1
+        }
+        _ => break
+    }
+}
+
+match (http.get('https://localhost:${port}/hello.txt')) {
+    Ok(res) => print(res.status, res.body.trim())
+    Err(error) => print(error)
+}
+
+// The certificate names localhost, not this address.
+match (http.get('https://127.0.0.1:${port}/hello.txt')) {
+    Ok(_) => print('trusted?')
+    Err(Tls(_, message)) => print(message)
+    Err(error) => print(error)
+}
+`
+    writeFile(path.join(directory, 'test.kj'), source)
+    immut results = task.all([
+        () => {
+            mut server = system.command('openssl', ['s_server', '-accept', string(port), '-tls1_3', '-cert', 'leaf.pem', '-key', 'leaf.key', '-WWW', '-quiet', '-naccept', '3'])
+            server.directory = directory
+            return finish(server).stdout
+        },
+        () => {
+            // The authorities of the program: only the test's.
+            mut client = system.command(kojic, ['run', 'test.kj'])
+            client.directory = directory
+            client.environment['SSL_CERT_FILE'] = path.join(directory, 'root.pem')
+            client.environment['SSL_CERT_DIR'] = path.join(directory, 'no-directory')
+            return finish(client).stdout
+        },
+    ])
+    assert(results[1] == `200 hello over TLS 1.3\nhttps://127.0.0.1:${port}/hello.txt: invalid certificate: the certificate is not valid for this name\n`, results[1])
+}
+
+test 'all_examples_type_check' {
+    match (file.list('examples')) {
+        Ok(names) => {
+            for name in names {
+                if (not name.endsWith('.kj')) { continue }
+
+                mut command = system.command(kojic, ['check', path.join('examples', name)])
+                immut checked = finish(command)
+                assert(checked.status == 0, `${name}: ${checked.stderr}`)
+            }
+        }
+        Err(error) => panic(`examples: ${error}`)
+    }
+}
+
+test 'stdlib_system' {
+    // On Windows (KOJI_TEST_WINDOWS), its command interpreter for `echo`, `true` and `false`.
+    immut echo = if (onWindows) { '\'cmd\', [\'/c\', \'echo hello koji\']' } else { '\'echo\', [\'hello\', \'koji\']' }
+    immut yes = if (onWindows) { '\'cmd\', [\'/c\', \'exit 0\']' } else { '\'true\', []' }
+    immut no = if (onWindows) { '\'cmd\', [\'/c\', \'exit 1\']' } else { '\'false\', []' }
+    immut source = `import system
+
+print(system.args(), system.env('KOJI_NOT_SET'))
+print(system.executable() is Some)
+
+match (system.capture(${echo})) {
+    Ok(output) => print(output.status, output.stdout.trim())
+    Err(error) => print(error)
+}
+
+match (system.capture('kj-no-such-command', [])) {
+    Ok(_) => print('?')
+    Err(error) => print(error, '|', error.debug())
+}
+
+// run uses the terminal: the program's output is not in its output here.
+print(system.run(${yes}), system.run(${no}))
+
+match (system.run('kj-no-such-command', [])) {
+    Ok(_) => print('?')
+    Err(error) => print(error, '|', error.debug())
+}
+
+print('before exit')
+
+system.exit(3)
+
+print('not printed')
+`
+    immut ran = runProgram(source)
+    assert(ran.status == 3, ran.stderr)
+    assert(ran.stdout == '[] None\ntrue\n0 hello koji\ncommand \'kj-no-such-command\' not found | NotFound(\'kj-no-such-command\')\nOk(0) Ok(1)\ncommand \'kj-no-such-command\' not found | NotFound(\'kj-no-such-command\')\nbefore exit\n', ran.stdout)
+}

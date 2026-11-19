@@ -1,0 +1,33 @@
+// A server of HTTP for test/compiler.kj: on the port of its argument; `/quit` ends it.
+
+import http
+import system
+import time
+
+immut port = match (int(system.args()[0])) {
+    Ok(n) => n
+    Err(_) => 0
+}
+immut failed = http.serve(port, (request) => {
+    if (request.path == '/quit') { system.exit(0) }
+    if (request.path == '/slow') {
+        time.sleep(0.3)
+        return http.text(200, 'slow')
+    }
+    if (request.path == '/echo') {
+        return http.json(201, `{"method": "${request.method}", "body": "${request.body}", "q": "${request.query.get('q')}", "host": "${request.headers.get('host')}"}`)
+    }
+    if (request.path == '/cpu') {
+        mut total = 0
+        for i in range(3000000000) {
+            total += i % 7
+        }
+        return http.text(200, `${total}`)
+    }
+    if (request.path == '/close') {
+        immut response: http.Response = { status: 200, body: 'bye', headers: ['connection': 'close', 'x-custom': 'one\r\ntwo'] }
+        return response
+    }
+    return http.text(404, `no ${request.path}`)
+})
+print(failed)
