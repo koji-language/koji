@@ -7,7 +7,7 @@ import path
 import system
 import task
 import time
-import { Listener, acceptConnection, closeSocket, compiler, exchange, finish, hasValgrind, kojic, lastLine, listenLocally, readFile, receive, removeAll, root, runBuilt, scratch, send, trimEnd, writeFile } from 'koji.kj'
+import { Listener, acceptConnection, closeSocket, compiler, exchange, finish, hasValgrind, kojic, lastLine, listenLocally, readFile, receive, removeAll, root, runBuilt, runWine, scratch, send, trimEnd, writeFile } from 'koji.kj'
 
 // A command of the compiler in `directory`, with variables of the environment.
 function kojicWith(directory: string, args: string[], variables: Map[string, string]): system.Output {
@@ -744,14 +744,7 @@ test 'koji_generates_windows_executables' {
 
     if (wine == '') { return }
 
-    mut command = system.command(wine, [executable])
-    command.directory = directory
-    command.cleared = true
-    command.environment['PATH'] = '/usr/bin:/bin'
-    command.environment['HOME'] = directory
-    command.environment['WINEPREFIX'] = path.join(directory, 'prefix')
-    command.environment['WINEDEBUG'] = '-all'
-    immut ran = finish(command)
+    immut ran = runWine(executable, directory, '', path.join(directory, 'prefix'))
     assert(ran.stdout == '1 0\ntrue\n6765 3.75 0.3333333333333333333333333333333333 3\n', ran.stdout + ran.stderr)
     assert(ran.status == 0)
 }

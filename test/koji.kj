@@ -166,10 +166,18 @@ function runWindows(source: string, directory: string, input: string): system.Ou
         Some(found) => found
         None => path.join(root, 'build/test/wine')
     }
-    immut wine = if (file.exists('/usr/lib/wine/wine64')) { '/usr/lib/wine/wine64' } else { 'wine' }
-    mut command = system.command(wine, [executable])
+
+    return runWine(executable, directory, input, prefix)
+}
+
+immut wine = if (file.exists('/usr/lib/wine/wine64')) { '/usr/lib/wine/wine64' } else { 'wine' }
+immut wineserver = if (file.exists('/usr/lib/wine/wineserver')) { '/usr/lib/wine/wineserver' } else { 'wineserver' }
+mut winePrefixes: string[] = []
+
+// A command of `sh` in the clean environment of Wine (with a prefix of its own), in `directory`.
+function wineShell(script: string, args: string[], directory: string, prefix: string): system.Command {
+    mut command = system.command('sh', ['-c', script, 'sh'] + args)
     command.directory = directory
-    command.input = input
     command.cleared = true
     command.environment['PATH'] = '/usr/bin:/bin'
     command.environment['HOME'] = directory
@@ -183,7 +191,31 @@ function runWindows(source: string, directory: string, input: string): system.Ou
         }
     }
 
-    return finish(command)
+    return command
+}
+
+// The prefix made once, and a wineserver that stays while the programs run (until 30 seconds after
+// the last): neither is then made by programs started at the same time, nor do they wait for the
+// server to end. Its outputs are not ours: it lives on after this command.
+function prepareWine(prefix: string) {
+    if (prefix in winePrefixes) { return }
+
+    winePrefixes.push(prefix)
+    expect(file.createDir(prefix), prefix)
+    immut started = finish(wineShell('"$1" -p30 < /dev/null > /dev/null 2>&1; "$2" wineboot -i < /dev/null > /dev/null 2>&1; exit 0', [wineserver, wine], prefix, prefix))
+    assert(started.status == 0, started.stderr)
+}
+
+// Runs an executable of Windows with Wine, with `input`: what it printed and its exit code. Its
+// input and outputs are files, not pipes: the processes Wine starts for itself (services.exe,
+// winedevice.exe), which inherit them and outlive the program, then hold no pipe of ours open.
+export function runWine(executable: string, directory: string, input: string, prefix: string): system.Output {
+    prepareWine(prefix)
+    // Next to the directory of the program, which may list its own.
+    immut base = `${directory}-wine`
+    writeFile(`${base}.in`, input)
+    immut ran = finish(wineShell('exec "$1" "$2" < "$3.in" > "$3.out" 2> "$3.err"', [wine, executable, base], directory, prefix))
+    return { status: ran.status, stdout: readFile(`${base}.out`), stderr: ran.stderr + readFile(`${base}.err`) }
 }
 
 // `kojic build <file>` to `executable`, in `directory`: it must compile.
