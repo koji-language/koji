@@ -27,7 +27,7 @@ match (opened) {
 } // the database is closed here: `sqlite3_close` runs when `db` is dropped
 ```
 
--   The string is the name of the library: the program is linked with it (`-lsqlite3`). `'c'` is the C library, which every program has.
+-   The string is the name of the library: the program is linked with it (`libsqlite3.so`, by Koji's linker, in the directories of libraries of the system or of `LIBRARY_PATH`; `sqlite3.dll` on Windows; on macOS, and for a library found only as an archive, by the linker of the system). `'c'` is the C library, which every program has.
 -   A block is at the top level of a file, and its names are those of the module (to offer them to other modules, export functions of your own that call them).
 -   A function has no body: it is the function of the library with the same name, or the one named by `from` (`function version(): string from 'sqlite3_libversion'`).
 

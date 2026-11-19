@@ -211,6 +211,33 @@ export function sharedSymbols(bytes: byte[]): Result[Set[string], string] {
     return Ok(found)
 }
 
+// The name of a shared library for the dynamic loader (its DT_SONAME, `libsqlite3.so.0`), or ''
+// when it has none.
+export function sharedName(bytes: byte[]): string {
+    if (bytes.length() < 64 or bytes[0] != 0x7F or bytes[1] != 0x45 or bytes[4] != 2 or bytes[5] != 1) { return '' }
+
+    immut sectionsAt = readNumber(bytes, 40, 8)
+    immut count = readNumber(bytes, 60, 2)
+
+    for i in range(count) {
+        immut at = sectionsAt + 64 * i
+
+        // SHT_DYNAMIC, its strings in the section `link`: its entries of 16 bytes, a tag and a value.
+        if (readNumber(bytes, at + 4, 4) != 6) { continue }
+
+        immut entriesAt = readNumber(bytes, at + 24, 8)
+        immut size = readNumber(bytes, at + 32, 8)
+        immut stringsAt = readNumber(bytes, sectionsAt + 64 * readNumber(bytes, at + 40, 4) + 24, 8)
+
+        for entry in range(entriesAt, entriesAt + size, 16) {
+            // DT_SONAME.
+            if (readNumber(bytes, entry, 8) == 14) { return cString(bytes, stringsAt + readNumber(bytes, entry + 8, 8)) }
+        }
+    }
+
+    return ''
+}
+
 // The executable of the objects, linked with the shared libraries `libraries` (their names for the
 // dynamic loader, `libc.so.6`) that define the symbols `provided`, or why this linker cannot make
 // it (a symbol no object nor library defines among them).

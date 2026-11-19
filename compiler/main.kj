@@ -14,7 +14,7 @@ import { generateNative } from 'native.kj'
 import { inlineSmall, targetPlatform } from 'inline.kj'
 import { machArchive } from 'macho.kj'
 import { machArchiveObjects, linkMach } from 'machlink.kj'
-import { archive, archiveNamed, archiveObjects, linkExecutable, sharedSymbols } from 'linker.kj'
+import { archive, archiveNamed, archiveObjects, linkExecutable, sharedName, sharedSymbols } from 'linker.kj'
 import { coffGlobals } from 'coff.kj'
 import { linkWindows } from 'pelink.kj'
 import { serve } from 'lsp.kj'
@@ -280,16 +280,19 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
         None => return Err('compile error: the runtime library (libkoji_runtime.a) is not next to kojic: set KOJI_RUNTIME to its path')
     }
 
-    // Koji's linker (linker.kj), for a program without libraries of foreign blocks but the C ones; the system's
-    // when it cannot link the objects (KOJI_LINKER=koji to see why), or with KOJI_LINKER=system.
+    // Koji's linker (linker.kj, machlink.kj, pelink.kj), with the shared libraries of the blocks
+    // `foreign`; the system's (KOJI_CC) when it cannot link the objects (KOJI_LINKER=koji to see
+    // why: a library found only as an archive, say), or with KOJI_LINKER=system.
     immut chosen = variable('KOJI_LINKER', '')
 
     // The libraries it links always (the C library, its mathematics and its threads) may be named.
-    mut others = false
+    mut foreign: string[] = []
 
     for library in program.libraries {
-        if (not (library in ['c', 'm', 'pthread'])) { others = true }
+        if (not (library in ['c', 'm', 'pthread'])) { foreign.push(library) }
     }
+
+    immut others = foreign.length() > 0
 
     // For macOS, its linker of Mach-O (machlink.kj).
     if (not others and chosen != 'system' and targetPlatform() / 3 == 1) {
@@ -301,15 +304,22 @@ function linkNative(program: IrProgram, output: string): Result[void, string] {
         }
     }
 
-    // For Windows, its linker of PE (pelink.kj), the only one.
+    // For Windows, its linker of PE (pelink.kj), the only one: the functions of a block `foreign`
+    // from the DLL of its library (`foreign 'user32'`: user32.dll).
     if (targetPlatform() / 3 == 2) {
-        if (others) { return Err('compile error: libraries of foreign blocks are not linked for Windows yet') }
+        mut dlls: Map[string, string] = [:]
 
-        return linkWindowsOwn(object, runtime, output)
+        for each in program.externs {
+            if (each.library == '' or each.library in ['c', 'm', 'pthread']) { continue }
+
+            dlls[each.symbol] = if (each.library.lower().endsWith('.dll')) { each.library } else { `${each.library}.dll` }
+        }
+
+        return linkWindowsOwn(object, runtime, output, dlls)
     }
 
-    if (not others and chosen != 'system' and targetPlatform() / 3 != 1) {
-        match (linkOwn(object, runtime, output)) {
+    if (chosen != 'system' and targetPlatform() / 3 != 1) {
+        match (linkOwn(object, runtime, output, foreign)) {
             Ok(_) => return Ok()
             Err(message) => {
                 if (chosen == 'koji') { return Err(`compile error: ${message}`) }
@@ -370,7 +380,7 @@ function linkMachOwn(object: byte[], runtime: string, output: string): Result[vo
     }
 }
 
-function linkWindowsOwn(object: byte[], runtime: string, output: string): Result[void, string] {
+function linkWindowsOwn(object: byte[], runtime: string, output: string, dlls: Map[string, string]): Result[void, string] {
     immut library = match (file.open(runtime, file.Read)) {
         Ok(opened) => match (opened.readBytes()) {
             Ok(bytes) => bytes
@@ -384,14 +394,61 @@ function linkWindowsOwn(object: byte[], runtime: string, output: string): Result
         objects.push(member)
     }
 
-    immut executable = match (linkWindows(objects)) {
+    immut executable = match (linkWindows(objects, dlls)) {
         Ok(bytes) => bytes
         Err(message) => return Err(`compile error: ${message}`)
     }
     return writeBytes(output, executable)
 }
 
-function linkOwn(object: byte[], runtime: string, output: string): Result[void, string] {
+// The shared library of a block `foreign` (`foreign 'sqlite3'`: libsqlite3.so, in the directories of
+// libraries of the system or of LIBRARY_PATH), through the script of the linker it may be (as
+// libc.so is): its path, or '' when there is none.
+function sharedLibrary(name: string, directories: string[]): string {
+    mut all = directories
+
+    match (system.env('LIBRARY_PATH')) {
+        Some(paths) => {
+            for each in paths.split(':') {
+                if (each != '') { all.push(each) }
+            }
+        }
+        None => {}
+    }
+
+    for directory in all + ['/usr/local/lib'] {
+        immut found = path.join(directory, `lib${name}.so`)
+
+        if (not file.exists(found)) { continue }
+
+        immut bytes = match (file.open(found, file.Read)) {
+            Ok(opened) => match (opened.readBytes()) {
+                Ok(read) => read
+                Err(_) => continue
+            }
+            Err(_) => continue
+        }
+
+        if (bytes.length() >= 4 and bytes[0] == 0x7F and bytes[1] == 0x45) { return found }
+
+        // A script: the first path of a shared library it names.
+        match (file.open(found, file.Read)) {
+            Ok(opened) => match (opened.read()) {
+                Ok(text) => {
+                    for word in text.replace('(', ' ').replace(')', ' ').replace('\n', ' ').split(' ') {
+                        if (word.startsWith('/') and '.so' in word and file.exists(word)) { return word }
+                    }
+                }
+                Err(_) => {}
+            }
+            Err(_) => {}
+        }
+    }
+
+    return ''
+}
+
+function linkOwn(object: byte[], runtime: string, output: string, foreign: string[]): Result[void, string] {
     immut library = match (file.open(runtime, file.Read)) {
         Ok(opened) => match (opened.readBytes()) {
             Ok(bytes) => bytes
@@ -440,6 +497,35 @@ function linkOwn(object: byte[], runtime: string, output: string): Result[void, 
         }
 
         libraries.push(name)
+    }
+
+    // The libraries of the blocks `foreign`, by their names for the dynamic loader.
+    immut systemDirectories = if (targetPlatform() == 1) { ['/lib/aarch64-linux-gnu', '/usr/lib/aarch64-linux-gnu', '/usr/aarch64-linux-gnu/lib'] } else { ['/lib/x86_64-linux-gnu', '/usr/lib/x86_64-linux-gnu', '/lib64', '/usr/lib64', '/lib', '/usr/lib'] }
+
+    for name in foreign {
+        immut found = sharedLibrary(name, systemDirectories)
+
+        if (found == '') { return Err(`cannot find the shared library of 'foreign \'${name}\'' (lib${name}.so)`) }
+
+        immut bytes = match (file.open(found, file.Read)) {
+            Ok(opened) => match (opened.readBytes()) {
+                Ok(read) => read
+                Err(error) => return Err(`cannot read '${found}': ${ioMessage(error)}`)
+            }
+            Err(error) => return Err(`cannot read '${found}': ${ioMessage(error)}`)
+        }
+
+        for symbol in sharedSymbols(bytes)? {
+            provided.add(symbol)
+        }
+
+        immut soname = sharedName(bytes)
+        immut needed = if (soname != '') { soname } else { match (path.name(found)) {
+            Some(file) => file
+            None => found
+        } }
+
+        if (not (needed in libraries)) { libraries.push(needed) }
     }
 
     immut executable = linkExecutable(objects, libraries, provided)?

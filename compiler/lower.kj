@@ -701,6 +701,16 @@ function memoryName(ty: Ty): string {
 }
 
 // The C type of a parameter or result of an `extern` function, from its written type.
+// The library of the module of a block `foreign`, from its path (its source, which starts by naming
+// it, see foreign.kj), or '' for another module.
+function foreignLibrary(modulePath: string): string {
+    immut start = `${foreignPrefix}// The functions of the library '`
+
+    if (not modulePath.startsWith(start)) { return '' }
+
+    return modulePath[start.length()..].split('\'')[0]
+}
+
 function cTypeOf(written: Option[TypeExpr]): string {
     return match (written) {
         Some(Named('CInt')) => 'int'
@@ -1116,7 +1126,7 @@ function Lowerer.declareFunctions(mut self): Result[void, string] {
                     None => 'void'
                 }
 
-                if (self.externNamed(name) is None) { self.externs.push({ name: name, params: types, returns: returned, symbol: symbol, blocking: blocking }) }
+                if (self.externNamed(name) is None) { self.externs.push({ name: name, params: types, returns: returned, symbol: symbol, blocking: blocking, library: foreignLibrary(self.modules[self.module].path) }) }
             }
             _ => {}
         }

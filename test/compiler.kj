@@ -563,6 +563,27 @@ test 'koji_links_executables_itself' {
     assert(ran.status == 0, ran.stderr)
 }
 
+// Koji's linker with the shared libraries of blocks `foreign` (libz, where it is): found in the
+// directories of libraries, named for the dynamic loader by their own names (libz.so.1).
+test 'koji_links_the_libraries_of_foreign_blocks' {
+    if (system.os != system.Linux) { return }
+
+    immut source = 'foreign \'z\' {\n    function crc32(crc: CLong, data: byte[], size: CInt): CLong\n    function zlibVersion(): string\n}\n\nprint(crc32(0, [104, 101, 108, 108, 111], 5), zlibVersion().length() > 0)\n'
+    immut directory = scratch('foreign-linked')
+    writeFile(path.join(directory, 'zlib.kj'), source)
+    immut linked = kojicWith(directory, ['build', 'zlib.kj', '-o', 'zlib'], ['KOJI_LINKER': 'koji'])
+
+    if ('cannot find the shared library' in linked.stderr) { return }
+
+    assert(linked.status == 0, linked.stderr)
+    immut ran = runBuilt(path.join(directory, 'zlib'), true)
+    assert(ran.stdout == '907060870 true\n' and ran.status == 0, ran.stdout + ran.stderr)
+    // A library that is nowhere.
+    writeFile(path.join(directory, 'none.kj'), 'foreign \'kojinowhere\' {\n    function nothing(): CInt\n}\n\nprint(nothing())\n')
+    immut missing = kojicWith(directory, ['build', 'none.kj', '-o', 'none'], ['KOJI_LINKER': 'koji'])
+    assert(missing.status != 0 and 'cannot find the shared library of \'foreign \'kojinowhere\'\' (libkojinowhere.so)' in missing.stderr, missing.stderr)
+}
+
 // The machine IR (compiler/mir.kj): functions of ints, booleans and chars (recursion, loops, ranges,
 // six arguments, checked arithmetic), their registers allocated by linear scan.
 test 'the_machine_ir_compiles_functions' {
@@ -707,7 +728,7 @@ test 'koji_generates_windows_executables' {
     immut library = path.join(directory, 'libkoji.a')
     immut made = kojicWith(directory, ['library', '-o', library], ['KOJI_TARGET': 'windows-x64'])
     assert(made.status == 0, made.stderr)
-    writeFile(path.join(directory, 'windows.kj'), 'import task\nimport file\nfunction fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\ntask.group((group) => {\n    group.spawn(() => print(file.exists(\'.\')))\n})\nprint(`${fib(20)} ${1.5 + 2.25} ${decimal(1) / 3} ${[3, 1, 2].length()}`)\n')
+    writeFile(path.join(directory, 'windows.kj'), 'import task\nimport file\nforeign \'shlwapi\' {\n    function PathIsRelativeA(path: string): CInt\n}\nprint(PathIsRelativeA(\'a\\\\b\'), PathIsRelativeA(\'C:\\\\a\'))\nfunction fib(n: int): int {\n    if (n < 2) { return n }\n    return fib(n - 1) + fib(n - 2)\n}\ntask.group((group) => {\n    group.spawn(() => print(file.exists(\'.\')))\n})\nprint(`${fib(20)} ${1.5 + 2.25} ${decimal(1) / 3} ${[3, 1, 2].length()}`)\n')
     immut executable = path.join(directory, 'program.exe')
     immut linked = kojicWith(directory, ['build', 'windows.kj', '-o', executable], ['KOJI_TARGET': 'windows-x64', 'KOJI_RUNTIME': library])
     assert(linked.status == 0, linked.stderr)
@@ -731,6 +752,6 @@ test 'koji_generates_windows_executables' {
     command.environment['WINEPREFIX'] = path.join(directory, 'prefix')
     command.environment['WINEDEBUG'] = '-all'
     immut ran = finish(command)
-    assert(ran.stdout == 'true\n6765 3.75 0.3333333333333333333333333333333333 3\n', ran.stderr)
+    assert(ran.stdout == '1 0\ntrue\n6765 3.75 0.3333333333333333333333333333333333 3\n', ran.stdout + ran.stderr)
     assert(ran.status == 0)
 }

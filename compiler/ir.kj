@@ -249,6 +249,8 @@ export type IrExtern = {
     // Its name in the library (`from 'symbol'`), and whether a thread that helps makes the call.
     symbol: string
     blocking: boolean
+    // The library of its block `foreign` ('' for one of the standard library).
+    library: string
 }
 
 // Text, in the formats of Rust's `{:?}` that `kojic dump ir` uses

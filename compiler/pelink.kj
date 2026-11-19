@@ -59,8 +59,14 @@ type CoffInput = {
     relocations: CoffRelocation[]
 }
 
-// The DLL of a function of the system.
-function dllOf(name: string): string {
+// The DLL of a function of the system, or of the library of a block `foreign` (`foreign`: its
+// symbols, and their DLLs).
+function dllOf(name: string, foreign: Map[string, string]): string {
+    match (foreign.get(name)) {
+        Some(dll) => return dll
+        None => {}
+    }
+
     if (name in kernel32) { return 'KERNEL32.dll' }
 
     if (name in ws2) { return 'WS2_32.dll' }
@@ -70,7 +76,7 @@ function dllOf(name: string): string {
     return 'ucrtbase.dll'
 }
 
-export function linkWindows(objects: byte[][]): Result[byte[], string] {
+export function linkWindows(objects: byte[][], foreign: Map[string, string]): Result[byte[], string] {
     mut inputs: CoffInput[] = []
 
     for object in objects {
@@ -115,7 +121,7 @@ export function linkWindows(objects: byte[][]): Result[byte[], string] {
     mut dlls: string[] = []
 
     for name in imported {
-        immut dll = dllOf(name)
+        immut dll = dllOf(name, foreign)
 
         if (not (dll in dlls)) { dlls.push(dll) }
     }
@@ -161,7 +167,7 @@ export function linkWindows(objects: byte[][]): Result[byte[], string] {
         mut count = 1
 
         for name in imported {
-            if (dllOf(name) == dll) { count += 1 }
+            if (dllOf(name, foreign) == dll) { count += 1 }
         }
 
         place += 8 * count
@@ -198,7 +204,7 @@ export function linkWindows(objects: byte[][]): Result[byte[], string] {
         addressAt.push(cursor)
 
         for i in range(imported.length()) {
-            if (dllOf(imported[i]) == dll) {
+            if (dllOf(imported[i], foreign) == dll) {
                 entryOf[i] = cursor
                 cursor += 8
             }
@@ -327,7 +333,7 @@ export function linkWindows(objects: byte[][]): Result[byte[], string] {
         mut slot = 0
 
         for i in range(imported.length()) {
-            if (dllOf(imported[i]) != dlls[k]) { continue }
+            if (dllOf(imported[i], foreign) != dlls[k]) { continue }
 
             immut named = rdataRva + nameAt[i]
             putWordInto(mut rdata, lookupAt[k] + 8 * slot, named)
