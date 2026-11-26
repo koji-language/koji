@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+-   A source that is not UTF-8 (saved in Latin-1 by some editors) says where and what to do:
+    `error: main.kj:20:21: the file is not UTF-8 (byte 0xE3); save it as UTF-8`, rather than
+    `stream did not contain valid UTF-8`.
+
 ## 0.2.1 (preview)
 
 A preview of Koji with the mathematics of floats in Koji itself: the functions of floats no longer

@@ -7,7 +7,7 @@ import system
 import time
 import { tokenize, dump } from 'lexer.kj'
 import parser from 'parser.kj'
-import { dumpTypes, check, checkLibrary } from 'checker.kj'
+import { dumpTypes, check, checkLibrary, sourceError } from 'checker.kj'
 import { lower, lowerTests } from 'lower.kj'
 import { IrExtern, IrProgram, programText } from 'ir.kj'
 import { generateNative } from 'native.kj'
@@ -61,7 +61,7 @@ function ioMessage(error: file.FileError): string {
         NotFound(_) => 'No such file or directory (os error 2)'
         PermissionDenied(_) => 'Permission denied (os error 13)'
         IsDirectory(_) => 'Is a directory (os error 21)'
-        InvalidUtf8(_) => 'stream did not contain valid UTF-8'
+        InvalidUtf8(_) => 'the file is not UTF-8'
         Io(_, message) => message
     }
 }
@@ -126,7 +126,7 @@ function dumpStage(stage: string, name: string) {
     immut source = match (readSource(name)) {
         Ok(source) => source
         Err(error) => {
-            printError(`cannot read '${name}': ${ioMessage(error)}`)
+            printError(sourceError(name, error))
             system.exit(1)
         }
     }
@@ -1010,7 +1010,7 @@ function formatCommand(given: string[]) {
         immut source = match (readSource(name)) {
             Ok(text) => text
             Err(error) => {
-                printError(`${name}: ${ioMessage(error)}`)
+                printError(sourceError(name, error))
                 failed += 1
                 continue
             }

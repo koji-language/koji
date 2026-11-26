@@ -72,8 +72,8 @@ is the fastest way to see where a bug starts.
 
 ## Sending a change
 
-1.  Work on a branch made from `dev`, and open the pull request against `dev`. `main` receives
-    `dev` at each release.
+1.  Fork the repository, work on a branch of your fork made from `main`, and open the pull
+    request against `main`. The repository keeps `main` and the tags of the releases only.
 2.  Keep a pull request to one change: a fix, a feature, a cleanup. A large change goes easier as
     several small ones.
 3.  Before you send it:

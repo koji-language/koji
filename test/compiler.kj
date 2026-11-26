@@ -136,6 +136,48 @@ test 'errors_are_reported_before_compiling' {
     assert(output.stderr.startsWith('type error: '), output.stderr)
 }
 
+// A source that is not UTF-8 (here in Latin-1, as some editors save it): the place of its first
+// byte that is not, and what to do, for the program and for a module it imports.
+test 'a_source_that_is_not_utf8_says_where' {
+    immut directory = scratch('not-utf8')
+    writeLatin1(path.join(directory, 'main.kj'), 'print(1)\nimmut word = \'n', ['\'\n'])
+    immut output = kojicWith(directory, ['run', 'main.kj'], [:])
+    assert(output.status == 1)
+    assert(output.stderr == 'error: main.kj:2:16: the file is not UTF-8 (byte 0xE3); save it as UTF-8\n', output.stderr)
+    writeFile(path.join(directory, 'uses.kj'), 'import { f } from \'lib.kj\'\nprint(f())\n')
+    writeLatin1(path.join(directory, 'lib.kj'), 'export function f(): string {\n    return \'', ['\'\n}\n'])
+    immut imported = kojicWith(directory, ['run', 'uses.kj'], [:])
+    assert(imported.stderr == 'error: lib.kj:2:13: the file is not UTF-8 (byte 0xE3); save it as UTF-8\n', imported.stderr)
+}
+
+// A file of ASCII text with the byte 0xE3 (an a with a tilde in Latin-1) between `before` and the
+// texts of `after`.
+function writeLatin1(target: string, before: string, after: string[]) {
+    mut bytes: byte[] = []
+
+    for c in before {
+        bytes.push(byte(c.code()))
+    }
+
+    bytes.push(byte(0xE3))
+
+    for text in after {
+        for c in text {
+            bytes.push(byte(c.code()))
+        }
+    }
+
+    match (file.open(target, file.Write)) {
+        Ok(output) => {
+            match (output.writeBytes(bytes)) {
+                Ok(_) => {}
+                Err(error) => panic(`${target}: ${error}`)
+            }
+        }
+        Err(error) => panic(`${target}: ${error}`)
+    }
+}
+
 test 'assert_shows_the_condition_and_the_two_sides' {
     immut passes = finish(system.command(built('assert_passes', 'immut values = [3, 4]\nassert(values.length() == 2)\nassert(values[0] < values[1], \'in order\')\nprint(\'ok\')\n', [:]), []))
     assert(passes.stdout == 'ok\n' and passes.status == 0, passes.stderr)

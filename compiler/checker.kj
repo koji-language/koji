@@ -641,9 +641,84 @@ function ioMessage(error: file.FileError): string {
         NotFound(_) => 'No such file or directory (os error 2)'
         PermissionDenied(_) => 'Permission denied (os error 13)'
         IsDirectory(_) => 'Is a directory (os error 21)'
-        InvalidUtf8(_) => 'stream did not contain valid UTF-8'
+        InvalidUtf8(_) => 'the file is not UTF-8'
         Io(_, message) => message
     }
+}
+
+// Why the source `path` cannot be read, as a whole message: for a file that is not UTF-8, where
+// it stops being so and what to do (`error: main.kj:20:21: the file is not UTF-8 (byte 0xE3);
+// save it as UTF-8`).
+export function sourceError(path: string, error: file.FileError): string {
+    return match (error) {
+        InvalidUtf8(_) => `error: ${notUtf8(path)}`
+        _ => `import error: cannot read '${path}': ${ioMessage(error)}`
+    }
+}
+
+// The place of the first byte of `path` that does not start a sequence of UTF-8, and that byte.
+function notUtf8(path: string): string {
+    immut advice = 'save it as UTF-8'
+    immut bytes = match (file.open(path, file.Read)) {
+        Ok(input) => match (input.readBytes()) {
+            Ok(found) => found
+            Err(_) => return `${path}: the file is not UTF-8; ${advice}`
+        }
+        Err(_) => return `${path}: the file is not UTF-8; ${advice}`
+    }
+    mut line = 1
+    mut column = 1
+    mut at = 0
+
+    while (at < bytes.length()) {
+        immut size = utf8Size(bytes, at)
+
+        if (size == 0) { return `${path}:${line}:${column}: the file is not UTF-8 (byte 0x${hexByte(int(bytes[at]))}); ${advice}` }
+
+        if (bytes[at] == byte(10)) {
+            line += 1
+            column = 1
+        } else {
+            column += 1
+        }
+
+        at += size
+    }
+
+    return `${path}: the file is not UTF-8; ${advice}`
+}
+
+// The length of the sequence of UTF-8 at `at` (a character), or 0 when there is none: a first
+// byte that cannot start one, a byte after it out of its range (no overlong forms, no surrogates,
+// nothing above U+10FFFF), or the end of the file before its last byte.
+function utf8Size(bytes: byte[], at: int): int {
+    immut first = int(bytes[at])
+
+    if (first < 0x80) { return 1 }
+
+    immut size = if (first >= 0xC2 and first <= 0xDF) { 2 } else { if (first >= 0xE0 and first <= 0xEF) { 3 } else { if (first >= 0xF0 and first <= 0xF4) { 4 } else { 0 } } }
+
+    if (size == 0 or at + size > bytes.length()) { return 0 }
+
+    // The range of the second byte, narrower after E0, ED, F0 and F4.
+    immut low = if (first == 0xE0) { 0xA0 } else { if (first == 0xF0) { 0x90 } else { 0x80 } }
+    immut high = if (first == 0xED) { 0x9F } else { if (first == 0xF4) { 0x8F } else { 0xBF } }
+
+    for i in range(1, size) {
+        immut next = int(bytes[at + i])
+        immut least = if (i == 1) { low } else { 0x80 }
+        immut most = if (i == 1) { high } else { 0xBF }
+
+        if (next < least or next > most) { return 0 }
+    }
+
+    return size
+}
+
+// A byte in two hexadecimal digits: `E3`.
+function hexByte(value: int): string {
+    immut digits = '0123456789ABCDEF'
+    return `${digits[value >> 4]}${digits[value & 15]}`
 }
 
 // The source of a module of the standard library: the one the compiler carries, or, to work on
@@ -1379,6 +1454,8 @@ function Checker.importedModule(mut self, path: string): Result[int, string] {
 
     immut source = match (readSource(resolved)) {
         Ok(source) => source
+        // A module that is not UTF-8: the place in it, rather than the import.
+        Err(InvalidUtf8(_)) => return Err(sourceError(resolved, file.InvalidUtf8(resolved)))
         Err(error) => return Err(self.failure(`cannot import '${path}': ${ioMessage(error)}`))
     }
 
@@ -6217,7 +6294,7 @@ export function checkText(path: string, source: string): Checked {
 export function check(path: string): Result[Program, string] {
     immut source = match (readSource(path)) {
         Ok(source) => source
-        Err(error) => return Err(`import error: cannot read '${path}': ${ioMessage(error)}`)
+        Err(error) => return Err(sourceError(path, error))
     }
 
     preparePackages(path, true)?
