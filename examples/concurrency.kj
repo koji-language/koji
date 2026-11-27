@@ -1,0 +1,8 @@
+import http
+import task
+
+// Requests at the same time, on one thread.
+immut pages = task.all([
+    () => http.get('https://example.com'),
+    () => http.get('https://example.org'),
+])
